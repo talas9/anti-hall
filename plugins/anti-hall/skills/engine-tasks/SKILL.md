@@ -13,6 +13,7 @@ Task-list, task-lifecycle and dispatch guards.
 - `task-lifecycle-log`: Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index
 - `dispatch-tier`: Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task...
 - `task-guard`: Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has...
+- `task-pair-guard`: Pairs every task with the agent working on it: an unnamed spawn is denied unless its description...
 - `tasklist-guard`: Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale...
 - `task-tracker`: UserPromptSubmit task-list discipline: the full directive or the short reminder (window,...
 
@@ -28,11 +29,14 @@ Task-list, task-lifecycle and dispatch guards.
 - `guards.tasklistNoTaskTools` = "reduced": Nag form when task tools are missing
 - `guards.tasklistGuard` = true: Where the on/off switch is read from (guards.tasklistGuard, default on)
 - `guards.tasklistWorkThreshold` = 3: How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)
+- `guards.pairRule` = true: Switch guards.pairRule (default on)
+- `guards.pairRuleByTaskId` = true: Switch guards.pairRuleByTaskId (default on, kill switch)
 - `context.taskTrackerChangeOnly` = true: Short reminder speaks only on list change
 - `guards.dispatchSkipFileConflict` = true: Skips tasks whose file a running agent holds
 - `guards.dispatchSkipHeld` = true: Skips held tasks in DISPATCH NOW
 - `context.taskTracker` = true: Where the check's on/off switch is read from (context.taskTracker, default on)
 - `guards.dispatchQuietSpawnStop` = true: Quiets DISPATCH NOW during the spawn stop
+- `context.taskTrackerTerse` = true: Where the switch is read from that gives the tracker its factual wording...
 - `context.taskTrackerUntrackedPrompts` = 8: Prompts before the short reminder repeats
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

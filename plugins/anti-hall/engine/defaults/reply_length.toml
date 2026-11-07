@@ -1,0 +1,183 @@
+# R-style (plan v3 L10, GH #488 #489): the reply-length guard behind guards.styleRule (off by default), Stop, Claude and Codex.
+# Replies are short by default and long only when the user asked for detail: a final reply over the size limits is held (form block)
+# or noted (form note) with a two-line message (shorten, keep decision + evidence + next action, move the detail to a file, PR or
+# ledger and link it). Stateless: no state file; a retry after the hold carries stop_hook_active and is allowed, so it cannot loop.
+# Logic: engine/logic/reply-length-guard.js (reads the reply and the owner turn's text only). Every number, pattern and text is here.
+# With the switch off the answer is empty as on dev; only the reply_style_observed counter is bumped, so the problem rate is
+# measurable before the switch turns on. Regular expressions in detail_res / table_delim_re / table_break_re are Rust syntax (linear
+# time, no look-around); fence_re / fence_close_re / fence_quote_re / table_quote_re / table_escape_re / table_edge_re are JavaScript patterns. The visible text is split
+# into blocks by a small line classifier (CommonMark fenced code, GFM tables found by their delimiter row), see the keys below.
+# Measured by reply_style_fired{again} and reply_style_observed (no delivery.act row: a shorter next reply is not a tool reaction).
+
+[reply_length.sw_guard]
+doc = "Switch guards.styleRule (default off, plan v2 D14). On: a final reply over guards.replyMaxChars / guards.replyMaxLines that the user did not ask for is held once (reply_length.form). Off: nothing is held; only reply_style_observed is counted."
+value = { section = "guards", key = "styleRule", type = "boolean", env = "ANTIHALL_STYLE_RULE", option = "", default = false }
+
+[reply_length.sw_max_chars]
+doc = "Setting guards.replyMaxChars: the most visible characters of a final reply before it is held (fenced code and tables are free up to their allowances)."
+value = { type = "number", section = "guards", key = "replyMaxChars", env = "ANTIHALL_REPLY_MAX_CHARS", option = "", min = 100, max = 100000, default = 1200 }
+
+[reply_length.sw_max_lines]
+doc = "Setting guards.replyMaxLines: the most non-blank visible lines of a final reply before it is held (fenced code and tables are free up to their allowances)."
+value = { type = "number", section = "guards", key = "replyMaxLines", env = "ANTIHALL_REPLY_MAX_LINES", option = "", min = 3, max = 1000, default = 18 }
+
+[reply_length.guard_name]
+doc = "The guard id this check answers to in skip.json and in its messages."
+value = "reply-length-guard"
+
+[reply_length.summary]
+doc = "One-line description of the reply-length-guard check in the generated reference."
+value = "Stop (Claude and Codex): with guards.styleRule on, holds a final reply over guards.replyMaxChars / guards.replyMaxLines (fenced code and tables free up to an allowance) when the user's last message did not ask for detail, a plan, a design, a spec or a report; stateless (a retry carries stop_hook_active); counts reply_style_observed on every main-session Stop."
+
+[reply_length.form]
+doc = "What a hit does: block (the Stop is held; the default, OD7) or note (a systemMessage only). Both are implemented; a note can be moved out of sight by the Stop channel while background work runs."
+value = "block"
+
+[reply_length.marker]
+doc = "A fixed phrase of msg_what, looked for in the hook feedback after the user's last prompt to tell a repeated hit (again) from a first one. Must stay a literal substring of msg_what (a test checks it)."
+value = "Reply too long:"
+
+[reply_length.feedback_tokens]
+doc = "Substrings that mark a transcript line as hook feedback (as opposed to the assistant quoting the marker); one of them plus the marker, on a record that is not an assistant message, counts as an earlier hit this turn."
+value = ["Stop hook feedback", "hook_additional_context", "hook_blocking_error", "hook_system_message"]
+
+[reply_length.assistant_type]
+doc = "The transcript record type of the assistant's own messages, never counted as hook feedback."
+value = "assistant"
+
+[reply_length.tail_bytes]
+doc = "How many bytes at the end of the transcript are read to find the user's last prompt and any earlier hit after it."
+value = 524288
+min = 4096
+max = 8388608
+
+[reply_length.code_allow_lines]
+doc = "Non-blank lines of fenced code that do not count toward the line limit; only the excess counts."
+value = 60
+min = 0
+max = 10000
+
+[reply_length.code_allow_chars]
+doc = "Characters of fenced code that do not count toward the character limit; only the excess counts."
+value = 4000
+min = 0
+max = 1000000
+
+[reply_length.table_allow_lines]
+doc = "Table rows (the header, the delimiter row and the body rows of a GFM table) that do not count toward the line limit; only the excess counts (survey: 30)."
+value = 30
+min = 0
+max = 10000
+
+[reply_length.table_allow_chars]
+doc = "Characters of table rows that do not count toward the character limit; only the excess counts."
+value = 3000
+min = 0
+max = 1000000
+
+[reply_length.fence_re]
+doc = "A line that opens a fenced code block (CommonMark; JavaScript pattern, per line): group 1 the prefix (any mix of indent, blockquote markers and list markers), group 2 the fence run (3 or more backticks or tildes), group 3 the info string. A backtick fence whose info string holds a backtick is not a fence. An unclosed fence runs to the end of the reply."
+value = '^((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])[ \t]))*[ \t]*)(`{3,}|~{3,})([^\n]*)$'
+
+[reply_length.fence_close_re]
+doc = "A line that can close a fence once its blockquote markers are removed (JavaScript pattern): group 1 the indent, group 2 the run, then only spaces and tabs (CommonMark: no other Unicode space, no form feed, no text). Text or a list marker before the run is not a closer. The run must be of the opener's character and at least as long."
+value = '^([ \t]*)(`{3,}|~{3,})[ \t]*$'
+
+[reply_length.fence_quote_re]
+doc = "One blockquote marker (JavaScript pattern: spaces and tabs, then the quote sign, then one optional space or tab), removed from a line once per quote level of the opener before the closer is read, and counted to find a line's quote depth. A line with fewer markers than the opener (a blank line included) is outside the quote: the quote and its fence end there (CommonMark), and the line is read afresh as prose or as a new fence."
+value = '^[ \t]*>[ \t]?'
+
+[reply_length.fence_close_indent]
+doc = "How many columns a closing fence may be indented past the content width of the opener's list marker (CommonMark: 3; the opener's own leading spaces do not count)."
+value = 3
+min = 0
+max = 16
+
+[reply_length.tab_width]
+doc = "Columns one tab counts in a fence's indentation (CommonMark: 4)."
+value = 4
+min = 1
+max = 16
+
+[reply_length.table_delim_re]
+doc = "A GFM table delimiter row (Rust regular expression): cells of dashes with optional alignment colons, separated by pipes, outer pipes optional (|---|---|, ---|---, :--|--:). The line must also hold a pipe (table_pipe) and have as many cells as the header row before it; a table is found by this row, a line that merely holds pipes is prose."
+value = '^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$'
+
+[reply_length.table_pipe]
+doc = "The GFM table cell separator."
+value = "|"
+
+[reply_length.table_quote_re]
+doc = "The blockquote markers (and indent) at the start of a line (JavaScript pattern), removed before a line is read as a table row; a table row continues the table only at the same quote depth as its header."
+value = '^\s*(?:>\s?)*'
+
+[reply_length.table_escape_re]
+doc = "An escaped character inside a table row (JavaScript pattern, global): removed before cells are counted, so an escaped pipe does not split a cell."
+value = '\\.'
+
+[reply_length.table_edge_re]
+doc = "The optional outer pipes of a table row (JavaScript pattern, global), removed before cells are counted."
+value = '^\s*\||\|\s*$'
+
+[reply_length.table_break_re]
+doc = "A line that begins another block (Rust regular expression, case-insensitive, run on the line without its quote markers): an ATX heading, a list item, a thematic break or an HTML block start (a block-level tag, a comment, a declaration or a processing instruction; an inline tag like <b> is not one) ends a table; a blank line, a fence or a quote depth change ends it too. Any other non-blank line after the delimiter row is a table row, with or without pipes (GFM)."
+value = '(?i)^\s*(?:#{1,6}(?:\s|$)|[-*+]\s|\d{1,9}[.)]\s|(?:[-*_][ \t]*){3,}$|<(?:/?(?:address|article|aside|blockquote|body|caption|center|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hr|html|iframe|legend|li|main|menu|nav|ol|optgroup|option|p|pre|script|section|style|summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|ul)(?:\s|/?>|$)|!--|![a-z]|\?))'
+
+[reply_length.detail_res]
+doc = "Phrases in the user's last message that ask for detail, an explanation, a plan, a design, a specification, a roadmap or a report, in any form of explain and specify (a long reply is then allowed). Rust regular expressions, case-insensitive."
+value = [
+  '\bdetails?\b',
+  '\bdetailed\b',
+  '\bexplain(?:s|ed|ing|er|ers)?\b',
+  '\bexplanat(?:ion|ions|ory)\b',
+  '\bwhy\b',
+  '\bfull\s+(?:report|list|output|write-?up|breakdown)\b',
+  '\bin[\s-]+depth\b',
+  '\bwalk\s+me\s+through\b',
+  '\bhow\s+(?:does|do|did)\b',
+  '\bin\s+full\b',
+  '\bthorough(?:ly)?\b',
+  '\belaborate\b',
+  '\bplans?\b',
+  '\bdesigns?\b',
+  '\bspecs?\b',
+  '\bspecif(?:y|ies|ied|ying|ication|ications)\b',
+  '\broadmap\b',
+  '\breports?\b',
+]
+
+[reply_length.log_kind]
+doc = "Engine log kind written for a hit (fired)."
+value = "reply_length"
+
+[reply_length.log_fired]
+doc = "Log text of a hit. Placeholders: {chars} {lines} {max_chars} {max_lines}."
+value = "fired: {chars} chars, {lines} lines (limit {max_chars} / {max_lines})"
+
+[reply_length.msg_what]
+doc = "Block headline (one emoji, at most two lines in all); starts with the marker. Placeholders: {chars} {lines} {max_chars} {max_lines}."
+value = "\U0001F4CF Reply too long: {chars} chars / {lines} lines (limit {max_chars} / {max_lines})."
+
+[reply_length.msg_instead]
+doc = "Block advice: the step that clears the hold."
+value = "shorten it, keep the decision, evidence and next action, and link the detail from a file or PR."
+
+[reply_length.results]
+doc = "The result label values of reply_style_observed (ok: within the limits; over: over them and not exempt; exempt: skipped for a reason) and the reason label (none) that ok and over carry."
+value = { ok = "ok", over = "over", exempt = "exempt", none = "none" }
+
+[reply_length.reasons]
+doc = "The reason label values of reply_style_suppressed / the exempt reply_style_observed series (no_reply_text: a Codex payload with no last_assistant_message, allowed; no_owner_text: the user's last prompt cannot be read from the transcript, allowed)."
+value = { asked = "asked", short = "short", plan_mode = "plan_mode", subagent = "subagent", stop_hook_active = "stop_hook_active", no_reply_text = "no_reply_text", no_owner_text = "no_owner_text" }
+
+[metric.reply_style_observed]
+doc = "Final replies seen at a main-session Stop, whatever the switch: result ok (within the limits), over (over the limits and not exempt) or exempt (with its reason: asked, plan_mode, subagent, stop_hook_active, no_reply_text). Problem rate = over / (over + ok)."
+value = { kind = "counter", unit = "replies", labels = ["result", "reason"] }
+
+[metric.reply_style_fired]
+doc = "Replies the R-style guard held or noted (guards.styleRule on), by form (block, note) and again (true: an earlier hit of this owner turn is in the transcript; false: the first). Acted-on = 1 - again=true / again=false."
+value = { kind = "counter", unit = "replies", labels = ["form", "again"] }
+
+[metric.reply_style_suppressed]
+doc = "Replies the R-style guard let pass with the switch on, by reason (asked, short, plan_mode, subagent, stop_hook_active, no_reply_text)."
+value = { kind = "counter", unit = "replies", labels = ["reason"] }

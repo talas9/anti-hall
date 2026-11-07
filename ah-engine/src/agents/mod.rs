@@ -440,6 +440,9 @@ pub struct Agent {
     /// Background tasks among `bg_ids` whose command is of a doubt class (burn.doubt.classes: a build), GH #458.
     #[serde(default)]
     pub bg_builds: Vec<String>,
+    /// Background tasks among `bg_ids` whose command checks or watches CI (agent_tracker.patterns.ci_wait): a CI wait still outstanding.
+    #[serde(default)]
+    pub bg_ci: Vec<String>,
     /// The outcome a background shell task among `bg_ids` stands to earn once it ends with success (PR #472): it is a check, and the
     /// files it writes. A background launch is at most a SOFT outcome; its completion notice with a success status is the HARD one.
     #[serde(default)]
@@ -468,6 +471,30 @@ pub struct Agent {
     pub waste: waste::Mark,
     /// Signals up now.
     pub flags: BTreeMap<String, Flag>,
+    /// Its last distinct progress lines (the first line of each reply text), newest last (GH #518, `nudges.stall_limits.lines_kept`).
+    #[serde(default)]
+    pub said: Vec<String>,
+    /// When the newest of `said` first appeared, and its progress units then.
+    #[serde(default)]
+    pub said_since: u64,
+    /// Progress units when the newest line of `said` first appeared.
+    #[serde(default)]
+    pub said_progress: u64,
+    /// Its last reply text, cut at `nudges.parallel_limits.reply_chars` (GH #517: the gap lines).
+    #[serde(default)]
+    pub last_reply: String,
+    /// The observable stall fingerprint of the last sample (transcript offset, tool calls, commits, changes, progress, edits, line).
+    #[serde(default)]
+    pub stall_obs: Vec<u64>,
+    /// Since when `stall_obs` holds.
+    #[serde(default)]
+    pub stall_since: u64,
+    /// The CPU (ms) of the process tree below the agent's session the last time it moved by `cpu_step_ms` (`None`: not read yet).
+    #[serde(default)]
+    pub stall_cpu: Option<u64>,
+    /// When that CPU last moved (0: never): the agent was doing work no transcript line shows.
+    #[serde(default)]
+    pub stall_cpu_at: u64,
     /// When each signal was last reminded.
     pub last_sent: BTreeMap<String, u64>,
     /// Reminders queued (signal, time), for the daily cap.
@@ -577,6 +604,81 @@ pub(crate) fn load_state(env: &Env) -> State {
         Ok(m) if m.len() <= lim("state_max_bytes") => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         _ => State::default(),
     }
+}
+
+/// The signal names up now, per agent id, on the agents of one session (itself, its children and theirs; agents that are gone,
+/// finished or dead raise none, and an agent with no signal up is not listed), read from the tracker's persisted state for the nudge
+/// ladder's fact check. The agent id is the subject a reminder names (`Reminder::agent`), so a fact is checked per agent, never over
+/// the union of them. `None`: the file is absent, over its size cap or not valid state, so nothing can be said (the ladder then
+/// blocks nothing on a signal it cannot verify).
+pub(crate) fn live_flags(
+    home: &std::path::Path,
+    session: &str,
+    transcript: &str,
+) -> Option<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>> {
+    let p = home.join(pth("base")).join(pth("dir")).join(pth("state"));
+    if std::fs::metadata(&p).ok()?.len() > lim("state_max_bytes") {
+        return None;
+    }
+    let st: State = serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
+    let owner = st.agents.values().find(|a| !transcript.is_empty() && a.path == transcript).map_or_else(|| session.to_string(), |a| a.id.clone());
+    let mut mine: std::collections::BTreeSet<String> = std::collections::BTreeSet::from([owner]);
+    loop {
+        let before = mine.len();
+        let more: Vec<String> = st.agents.values().filter(|a| mine.contains(&a.parent)).map(|a| a.id.clone()).collect();
+        mine.extend(more);
+        if mine.len() == before {
+            break;
+        }
+    }
+    Some(
+        st.agents
+            .values()
+            .filter(|a| mine.contains(&a.id) && !(a.gone || a.finished || a.dead) && !a.flags.is_empty())
+            .map(|a| (a.id.clone(), a.flags.keys().cloned().collect()))
+            .collect(),
+    )
+}
+
+/// One reminder row a hook event put in front of the agent that owns a queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivered {
+    /// The agent the reminder is about (`Reminder::agent`).
+    pub agent: String,
+    /// The signal that raised it.
+    pub signal: String,
+    /// The reminder's text.
+    pub text: String,
+}
+
+/// The reminders the `agent-reminders` check took from the queue of `key` (an agent or session id) since line `prev`, and the line the
+/// queue's cursor stands at now: `(cursor, rows)`. The check counts the non-empty lines of the queue file and keeps the number it
+/// took in `<queue>.cursor`, so the lines before the cursor are the delivered ones. With no `prev` (the caller never looked) the last
+/// `first` of them are returned; at most `most` rows are ever returned. `None`: the queue file is over `max_bytes` or cannot be
+/// read, so nothing can be said about who a reminder was about.
+pub(crate) fn delivered_since(home: &std::path::Path, key: &str, prev: Option<u64>, first: u64, most: u64, max_bytes: u64) -> Option<(u64, Vec<Delivered>)> {
+    let dir = home.join(pth("base")).join(pth("dir")).join(pth("reminders"));
+    let queue = dir.join(format!("{}{}", sinks::key_of(key), pth("queue_ext")));
+    let cursor_file = dir.join(format!("{}{}{}", sinks::key_of(key), pth("queue_ext"), pth("cursor_ext")));
+    let cursor: u64 = std::fs::read_to_string(&cursor_file).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+    let text = match std::fs::metadata(&queue) {
+        Ok(m) if m.len() > max_bytes => return None,
+        Ok(_) => std::fs::read_to_string(&queue).ok()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let lines: Vec<&str> = text.split('\n').filter(|l| !l.is_empty()).collect();
+    let end = cursor.min(lines.len() as u64);
+    let from = prev.filter(|p| *p <= end).map_or_else(|| end.saturating_sub(first), |p| p.max(end.saturating_sub(most)));
+    let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let rows = lines
+        .iter()
+        .skip(from as usize)
+        .take(end.saturating_sub(from) as usize)
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|v| Delivered { agent: field(&v, "agent"), signal: field(&v, "signal"), text: field(&v, "text") })
+        .collect();
+    Some((end, rows))
 }
 
 /// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come

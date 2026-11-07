@@ -102,6 +102,9 @@ pub static SILENT_AGENT_NUDGE: Scripted = Scripted::new("silent-agent-nudge", "s
 /// `task-guard`.
 pub static TASK_GUARD: Scripted = Scripted::new("task-guard", "task_guard.summary");
 
+/// `task-pair-guard` (PreToolUse and PostToolUse on Agent and Task, Stop; engine-only; R-pair, GH #589): every task is paired with the named agent working on it.
+pub static TASK_PAIR_GUARD: Scripted = Scripted::new("task-pair-guard", "pair_rule.summary");
+
 /// `tasklist-guard`.
 pub static TASKLIST_GUARD: Scripted = Scripted::new("tasklist-guard", "tasklist_guard.summary");
 
@@ -110,6 +113,9 @@ pub static STALE_AGENT_STOP_NOTE: Scripted = Scripted::new("stale-agent-stop-not
 
 /// `claim-ledger`.
 pub static CLAIM_LEDGER: Scripted = Scripted::new("claim-ledger", "claim_ledger.summary");
+
+/// `reply-length-guard` (Stop, Claude and Codex; R-style, GH #488 #489): a long reply the user did not ask for is held (guards.styleRule); counts every reply.
+pub static REPLY_LENGTH_GUARD: Scripted = Scripted::new("reply-length-guard", "reply_length.summary");
 
 /// `claim-evidence-guard` (Stop; engine-only; GH #313): a claim needs a tool call of this turn, and pushed is not done.
 pub static CLAIM_EVIDENCE_GUARD: Scripted = Scripted::new("claim-evidence-guard", "claim_evidence.summary");

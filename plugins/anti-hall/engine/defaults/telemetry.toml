@@ -104,16 +104,25 @@ min = 50
 unit = "ms"
 
 [telemetry.block_keep_days]
-doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the first line of the message."
+doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the message."
 value = 14
 min = 1
 unit = "days"
 
 [telemetry.block_reason_chars]
-doc = "How many characters of a guard block's message (its first non-empty line) are kept with the block."
-value = 200
+doc = "How many characters of a guard block's full message are kept with the block (`ah-engine query guard_blocks`), so the block can be judged afterwards; the text is the one the host gave the model (a JSON block's reason, else the stderr of an exit 2)."
+value = 2048
 min = 20
+max = 16384
 unit = "chars"
+
+[telemetry.block_truncated_marker]
+doc = "Appended to a guard block's kept message when it was cut at `telemetry.block_reason_chars`, so a cut message is never mistaken for a whole one. The cut is at a character boundary that does not strand a combining mark."
+value = " [...cut]"
+
+[telemetry.block_channel_joiner]
+doc = "Put between the two texts of a block that exited 2 with a JSON reason on stdout and a different message on stderr: both are kept, the JSON reason first. When one contains the other (the usual case) only the longer is kept."
+value = "\n--- stderr ---\n"
 
 [telemetry.retention_days]
 doc = "How many days of per-day counter rows and events stay in hot.db; older ones are removed by `telemetry rollup` after they are archived in archive.db, where the daily rollups are kept."
@@ -582,6 +591,10 @@ value = { kind = "counter", unit = "bytes", labels = ["h", "e"] }
 doc = "Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed)."
 value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
+[metric.tel_child_counts]
+doc = "Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read)."
+value = { kind = "counter", unit = "series", labels = ["result"] }
+
 [metric.procwatch_events]
 doc = "Process-watch findings, by kind (orphan_candidate, orphan_kill, resource_warning, disk_warning) and class or reason."
 value = { kind = "counter", unit = "events", labels = ["kind", "class"] }
@@ -655,6 +668,10 @@ value = { kind = "counter", unit = "events", labels = ["name"] }
 [metric.fail_open]
 doc = "Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict)."
 value = { kind = "counter", unit = "events", labels = ["reason", "check"] }
+
+[metric.settings_value_invalid]
+doc = "Settings numbers outside the f64 range (such as 1e400, which JavaScript reads as Infinity) found in a settings file (#569), by file (guardkit.settings_file, guardkit.claude_settings_file, guardkit.skip_file, guardkit.migration_markers_file, guardkit.jev_legacy_file). Each one invalidates only its own key (the next source, then the default, answers); the rest of the file still counts. Counted once per file change. Lifetime."
+value = { kind = "counter", unit = "values", labels = ["file"] }
 
 [telemetry.spawn_tools]
 doc = "Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads."

@@ -32,6 +32,37 @@ pub fn cfg() -> toml::Table {
     text.parse::<toml::Table>().unwrap()
 }
 
+/// Make the outcome independent of the machine: the engine also looks for fixed machine locations (the DevSwarm app's own
+/// `hivecontrol`, which execs a Node script) that no scratch HOME or PATH can hide. In the plugin COPY (both the live and the
+/// pristine defaults) each setting named in harness.toml `[absent] settings` gets an empty list, so a machine that has the app
+/// installed behaves like one that has not.
+fn absent_machine_locations(plugin: &Path, cfg: &toml::Table) {
+    for key in cfg_list(cfg, "absent", "settings") {
+        let header = format!("[{key}]");
+        let mut patched = 0;
+        for dir in ["engine/defaults", "engine/defaults.pristine"] {
+            let Ok(rd) = fs::read_dir(plugin.join(dir)) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().is_none_or(|x| x != "toml") {
+                    continue;
+                }
+                let text = fs::read_to_string(&p).unwrap();
+                let Some(at) = text.lines().position(|l| l.trim() == header) else { continue };
+                let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+                let v = (at + 1..lines.len())
+                    .take_while(|&i| !lines[i].starts_with('['))
+                    .find(|&i| lines[i].starts_with("value ="))
+                    .unwrap_or_else(|| panic!("{key}: no value line in {}", p.display()));
+                lines[v] = "value = []".to_string();
+                fs::write(&p, lines.join("\n") + "\n").unwrap();
+                patched += 1;
+            }
+        }
+        assert!(patched > 0, "harness.toml [absent] names {key}, which no defaults file in the plugin copy has");
+    }
+}
+
 /// A string list at `section.key` of harness.toml.
 pub fn cfg_list(cfg: &toml::Table, section: &str, key: &str) -> Vec<String> {
     cfg[section][key].as_array().unwrap_or_else(|| panic!("harness.toml {section}.{key}")).iter().map(|v| v.as_str().unwrap().to_string()).collect()
@@ -112,6 +143,7 @@ impl World {
         let plugin = root.join("plugin");
         let st = Command::new("cp").arg("-R").arg(plugin_src()).arg(&plugin).status().unwrap();
         assert!(st.success(), "copying the plugin failed");
+        absent_machine_locations(&plugin, &cfg);
 
         // the engine and the thin client, installed where the hook command (hooks.json, direct form) looks for them
         let engine_dir = home.join(".anti-hall").join("ah-engine").join("bin");

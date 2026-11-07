@@ -38,6 +38,7 @@ function reconstructTasks(tail) {
     if (t.indexOf('Task') === -1 && t.indexOf('TodoWrite') === -1) continue;
     let entry;
     try { entry = JSON.parse(t); } catch (_) { continue; }
+    if (!isConversationRow(entry)) continue;
     if (entry.type === 'user') {
       const c = entry.message && Array.isArray(entry.message.content) ? entry.message.content : [];
       for (const it of c) {
@@ -330,4 +331,12 @@ function collectTU(node) {
 }
 
 
-module.exports = { reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };
+// Rows the task model does not read (engine key taskstate.skipped_row_types in task_guards.toml): api-request-blob rows replay a request's
+// message array (task tool uses and their results for tasks the conversation has settled). Every other row, an unknown, empty, missing
+// or non-string type included, is read: a wrongly skipped row can drop a real open task and let a Stop through.
+const SKIPPED_ROW_TYPES = ['api-request-blob'];
+function isConversationRow(entry) {
+  return !entry || typeof entry.type !== 'string' || !SKIPPED_ROW_TYPES.includes(entry.type);
+}
+
+module.exports = { isConversationRow, reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };

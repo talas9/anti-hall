@@ -118,8 +118,9 @@ resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
 	- tasklist_guard.stalled: ... tasks are marked in progress with no active agent.
 	- tasklist_guard.progress: ... files changed but progress is missing or stale.
 	- tasklist_guard.reduced: ... files changed but no work tracked.
-	- task_tracker.full: requests need tracking before work starts.
-	- task_tracker.short: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+task_tracker.setting	- task_tracker.full: requests need tracking before work starts.
+task_tracker.setting	- task_tracker.short: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+roles.sw_note_short	- roles.note_short: a subagent is told its role and where the engine guide is, in one line, not the verb list.
 	- task_tracker.primary: workspace-sized work needs a child workspace.
 	- uncommitted.msg: this edit is paused: ... lines are uncommitted (limit ...).
 --

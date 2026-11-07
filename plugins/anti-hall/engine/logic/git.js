@@ -217,6 +217,15 @@ function splitSegmentsUncached(cmd) {
   const segments = [];
   let cur = '', i = 0, inSingle = false, inDouble = false;
   const n = cmd.length;
+  // GH #591 comment lexing. A `#` is a shell comment only at the start of a word: `lastBreak` is the index just past the last
+  // UNESCAPED, UNQUOTED word break (space, tab, newline, `;` `&` `|` `(`) the scan consumed, so an escaped break (`a\ #`, `a\;#`)
+  // or a vertical tab / carriage return never counts. `ansi` marks an open `$'...'` (backslash escapes a quote there), `braceDepth`
+  // an open `${...}` (a `#` in it is text), `btOpen` an open backtick body (its comment ends at the closing backtick, not the line),
+  // `unsure` a construct this scan only approximates (`$(`, a backtick, `${` or `$((` inside double quotes, `$((`): from there on no
+  // `#` hides anything. Every doubt keeps the text live.
+  let lastBreak = 0, ansi = false, dollarEnd = -1, braceDepth = 0, btOpen = false, unsure = false, arithDepth = 0;
+  // `arithDepth`: open parens of an unquoted `((..))` / `$((..))` (bash reads its body as arithmetic text, never as a comment). `unsure`
+  // is dropped at an unquoted newline once nothing is open, so one `"${x}"` earlier in a wrapper does not keep every later comment live.
   function flush() { if (cur.trim().length) segments.push(cur); cur = ''; }
   function flushWithSubst() { cur += ' ' + CMDSUBST_SENTINEL + ' '; flush(); }
   // the pending heredoc whose body starts after its opener line: the body is text for its consumer, never a command of this chain
@@ -226,6 +235,7 @@ function splitSegmentsUncached(cmd) {
     if (heredoc && i >= heredoc.lineEnd) {
       flush();
       i = Math.max(i, heredoc.end);
+      lastBreak = i;
       heredoc = null;
       inSingle = false;
       inDouble = false;
@@ -233,19 +243,40 @@ function splitSegmentsUncached(cmd) {
     }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
-    if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
+    if (inSingle) {
+      if (ansi && c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      cur += c;
+      if (c === "'") inSingle = false;
+      i++;
+      continue;
+    }
     if (inDouble) {
       if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      if ((c === '$' && c2 === '(') || c === '`' || (c === '$' && c2 === '{')) unsure = true;
       if ((c === '$' && c2 === '(') || c === '`') { cur += ' ' + CMDSUBST_SENTINEL + ' '; i += (c === '$') ? 2 : 1; continue; }
       cur += c;
       if (c === '"') inDouble = false;
       i++;
       continue;
     }
-    if (c === "'") { inSingle = true; cur += c; i++; continue; }
+    if (c === "'") { inSingle = true; ansi = dollarEnd === i; cur += c; i++; continue; }
     if (c === '"') { inDouble = true; cur += c; i++; continue; }
-    // backslash-newline line continuation outside quotes: one logical command
-    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) { cur += ' '; i += (c2 === '\r') ? 3 : 2; continue; }
+    // GH #591: a `#` at the start of a word (lastBreak: right after an unescaped unquoted break) comments out the rest of its line, so an
+    // operator or quote inside the comment never opens a segment or quote. Any other `#` (`a#b`, `$#`, `a\ #`, `)#`, `>#`) stays text.
+    if (c === '#' && i === lastBreak && !unsure && !btOpen && braceDepth === 0 && arithDepth === 0) {
+      const nl = cmd.indexOf('\n', i);
+      i = nl < 0 ? n : nl;
+      continue;
+    }
+    if (c === ' ' || c === '\t') { cur += c; i++; lastBreak = i; continue; }
+    // backslash-newline line continuation outside quotes: one logical command (a break before it stays a break after it)
+    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
+      const wasBreak = lastBreak === i;
+      cur += ' ';
+      i += (c2 === '\r') ? 3 : 2;
+      if (wasBreak) lastBreak = i;
+      continue;
+    }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary
     if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
     // the operator word stays on the current segment and the rest of the opener line is split as usual (`cat <<EOF | git commit -F -`
@@ -259,30 +290,42 @@ function splitSegmentsUncached(cmd) {
         continue;
       }
     }
-    if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
-    if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
+    if (c === '&' && c2 === '&') { flush(); i += 2; lastBreak = i; continue; }
+    if (c === '|' && c2 === '|') { flush(); i += 2; lastBreak = i; continue; }
     if (c === '|') {
       const prev = cur.length ? cur[cur.length - 1] : '';
       let precedingBackslashes = 0;
       if (prev === '>') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
       if (prev === '>' && precedingBackslashes % 2 === 0) { cur += c; i++; continue; } // `>|` clobber redirect
-      flush(); i++; continue;
+      flush(); i++; lastBreak = i; continue;
     }
-    if (c === ';') { flush(); i++; continue; }
+    if (c === ';') { flush(); i++; lastBreak = i; continue; }
     if (c === '&' && c2 === '>') { cur += c; i++; continue; } // `&>` redirect-both
     if (c === '&') {
       const prev = cur.length ? cur[cur.length - 1] : '';
       let precedingBackslashes = 0;
       if (prev === '>' || prev === '<') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
       if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { cur += c; i++; continue; } // `2>&1`, `>&2`
-      flush(); i++; continue;
+      flush(); i++; lastBreak = i; continue;
     }
-    if (c === '\n') { flush(); i++; continue; }
-    if (c === ')') { flush(); i++; continue; }
+    if (c === '\n') { flush(); i++; lastBreak = i; if (arithDepth === 0 && !btOpen && braceDepth === 0) unsure = false; continue; }
+    if (c === ')') { if (arithDepth > 0) arithDepth--; flush(); i++; continue; }
+    if (c === '}' && braceDepth > 0) { braceDepth--; cur += c; i++; continue; }
     if ((c === '{' || c === '}') && isBraceGroupWord(cur, c, c2)) { flush(); i++; continue; }
-    if (c === '(') { flush(); i++; continue; }
-    if (c === '$' && c2 === '(') { flushWithSubst(); i += 2; continue; }
-    if (c === '`') { flushWithSubst(); i++; continue; }
+    if (c === '(') {
+      if (arithDepth > 0) arithDepth++;
+      else if (c2 === '(') { arithDepth = 2; flush(); i += 2; continue; }
+      flush(); i++; lastBreak = i; continue;
+    }
+    if (c === '$' && c2 === '(') {
+      if (arithDepth > 0) arithDepth++;
+      else if (cmd[i + 2] === '(') { arithDepth = 2; flushWithSubst(); i += 3; continue; }
+      flushWithSubst(); i += 2; continue;
+    }
+    if (c === '$' && c2 === '$') { cur += '$$'; i += 2; continue; } // the pid parameter: its 2nd `$` must not arm an ANSI-C `$'`
+    if (c === '$' && c2 === '{') { braceDepth++; cur += '${'; i += 2; continue; }
+    if (c === '`') { btOpen = !btOpen; flushWithSubst(); i++; continue; }
+    if (c === '$') dollarEnd = i + 1;
     cur += c;
     i++;
   }
@@ -2010,9 +2053,10 @@ function pushCreditVerdict(ev, lastCdDir) {
     }
     const key = [dir].concat(repo).join('\n');
     const scope = proven ? pushScope(ev) : null;
-    const ckey = key + '\n' + (scope ? scope.join('\u0001') : '');
+    const recurse = scope ? pushRecursesByFlag(ev) : false;
+    const ckey = key + '\n' + (scope ? scope.join('\u0001') : '') + (recurse ? '\nrecurse' : '');
     if (!S.pushChecks.has(ckey)) {
-      const fresh = unpushedCredit(dir, repo, ev.env, scope);
+      const fresh = unpushedCredit(dir, repo, ev.env, scope, recurse);
       if (fresh.scoped) ah.metric('git_push_scoped', []);
       if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
       S.pushChecks.set(ckey, fresh);
@@ -2144,10 +2188,17 @@ function resolvePushLongOpt(table, word) {
 function pushNarrowProven(cmd) {
   if (typeof cmd !== 'string') return false;
   const flags = ah.cfg('git.push_narrow_re_flags');
+  // a harmless output tail (2>&1, | tail -5) on the push changes nothing it publishes: it is cut off before the rest is proven
+  cmd = cmd.replace(new RegExp(ah.cfg('git.push_narrow_tail_re')), '');
   if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
   const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
   const last = segs.pop();
-  if (!new RegExp(ah.cfg('git.push_narrow_push_re'), flags).test(last)) return false;
+  const pm = new RegExp(ah.cfg('git.push_narrow_push_re'), flags).exec(last);
+  if (!pm) return false;
+  // plain NAME=value assignments before the push leave it narrowed, unless a name can change what git reads or runs
+  const deny = new RegExp(ah.cfg('git.push_narrow_env_deny_re'));
+  const names = (pm[1] || '').match(new RegExp(ah.cfg('git.push_narrow_env_name_re'), 'g')) || [];
+  if (names.some((n) => deny.test(n))) return false;
   const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
   return segs.every((sg) => allow.some((re) => re.test(sg)));
 }
@@ -2180,7 +2231,9 @@ function pushScope(ev) {
   const longOpts = pushLongOptTable(valueOpts, ah.cfg('git.push_flag_opts'));
   const refRe = new RegExp(ah.cfg('git.push_refspec_unscoped_re'));
   const pos = [];
-  const rest = gitSubcommand(ev.args).rest;
+  // the only redirect a proven push carries is the output tail (push_narrow_tail_re): it names no ref
+  const redirRe = new RegExp(ah.cfg('git.push_scope_redirect_re'));
+  const rest = gitSubcommand(ev.args).rest.filter((t) => !redirRe.test(t.text));
   for (let i = 0; i < rest.length; i++) {
     const t = rest[i].text;
     if (t === '--') { for (let j = i + 1; j < rest.length; j++) pos.push(rest[j].text); break; }
@@ -2245,7 +2298,51 @@ function pushConfigNarrow(dir, repo, env) {
   return defaults.every((l) => narrow.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
 }
 
-function unpushedCredit(dir, repo, env, scope) {
+// GH #506: true when the push command line may publish submodule commits: an option starting with git.push_recurse_flag_prefix
+// (--recurse-submodules or anything it may abbreviate) whose value, `=value` or the next word, is not one of git.push_recurse_off_values.
+function pushRecursesByFlag(ev) {
+  const prefix = ah.cfg('git.push_recurse_flag_prefix'), off = ah.cfg('git.push_recurse_off_values');
+  const rest = gitSubcommand(ev.args).rest;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i].text;
+    if (!t.startsWith(prefix)) continue;
+    const eq = t.indexOf('=');
+    const val = eq >= 0 ? t.slice(eq + 1) : (i + 1 < rest.length ? rest[i + 1].text : '');
+    if (!off.includes(val.toLowerCase())) return true;
+  }
+  return false;
+}
+
+// GH #506: true when the repository's configuration makes a push publish submodule commits; a query that fails counts as recursing
+function pushRecursesByConfig(dir, repo, env) {
+  const lines = pushConfigQuery('git.push_argv_config_raw', ah.cfg('git.push_recurse_config_pattern'), dir, repo, env);
+  if (lines === null) return true;
+  const off = ah.cfg('git.push_recurse_off_values');
+  return lines.some((l) => !off.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
+}
+
+// GH #506: the submodule gitlinks the pushed commits change, as Map(path -> new commit ids), or null when the listing cannot be
+// read (the caller then reads every submodule, never fewer).
+function pushedGitlinks(dir, repo, env, scope, cap) {
+  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(ah.cfg('git.push_argv_gitlinks'), dir, repo, cap + 1, scope), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  if (r === null || r.status !== 0 || r.truncated === true) return null;
+  const re = new RegExp(ah.cfg('git.push_gitlink_line_re'));
+  const mode = ah.cfg('git.push_gitlink_mode');
+  const out = new Map();
+  for (const l of String(r.stdout || '').split('\n')) {
+    if (!l.trim()) continue;
+    const m = re.exec(l);
+    if (!m) return null;
+    if (m[1] !== mode && m[2] !== mode) continue;
+    if (m[5].startsWith('"')) return null; // a quoted path: not read here
+    if (m[2] !== mode || /^0+$/.test(m[4])) continue; // a removed gitlink publishes no submodule commit
+    if (!out.has(m[5])) out.set(m[5], []);
+    if (!out.get(m[5]).includes(m[4])) out.get(m[5]).push(m[4]);
+  }
+  return out;
+}
+
+function unpushedCredit(dir, repo, env, scope, recurse) {
   const cap = ah.cfg('git.push_max_commits');
   const out = { unchecked: false, hits: [], tags: [], over: false, scoped: false, count: 0 };
   const unpushed = new Set(); // full hashes of the repository's own unpushed commits: the tags in scope point at one
@@ -2291,8 +2388,14 @@ function unpushedCredit(dir, repo, env, scope) {
       if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && unpushed.has((f[2] || '').trim()) && f[3] && hasSelfCredit(f[3])) out.tags.push(f[1]);
     }
   }
-  // submodules: each checked-out one is scanned the same way, inside the same commit cap
-  const cdup = run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
+  // submodules: each checked-out one is scanned the same way, inside the same commit cap. A narrowed push that does not recurse
+  // publishes only the submodule commits its gitlinks name, so only those are read (and only from the new gitlink back).
+  let gitlinks = null;
+  if (out.scoped && !recurse && !pushRecursesByConfig(dir, repo, execEnv)) {
+    gitlinks = pushedGitlinks(dir, repo, execEnv, scope, cap);
+    if (gitlinks !== null && gitlinks.size === 0) return out;
+  }
+  const cdup =run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
   if (cdup === null) return out;
   const top = posix.resolveIn(S.procCwd, [dir, cdup.trim() || '.']);
   if (ah.fs.realpath(posix.join(top, ah.cfg('git.push_gitmodules_file'))) === null) return out;
@@ -2305,8 +2408,12 @@ function unpushedCredit(dir, repo, env, scope) {
   }
   for (const p of subs.split('\n').map((x) => x.trim()).filter(Boolean)) {
     if (count > cap || out.unchecked) break;
-    const rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
-    scan(p, [], subEnv && Object.keys(subEnv).length ? subEnv : undefined, rel);
+    // git prints real paths; the top directory may be spelled through a symlink (/tmp), so try both spellings
+    let rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
+    if (gitlinks !== null && rel === p) { const realTop = ah.fs.realpath(top); if (realTop && p.startsWith(realTop + '/')) rel = p.slice(realTop.length + 1); }
+    const subEnvArg = subEnv && Object.keys(subEnv).length ? subEnv : undefined;
+    if (gitlinks === null || rel === p) scan(p, [], subEnvArg, rel); // a path not under the top directory cannot be matched: read it whole
+    else if (gitlinks.has(rel)) scan(p, [], subEnvArg, rel, gitlinks.get(rel));
   }
   out.over = out.over || count > cap;
   return out;

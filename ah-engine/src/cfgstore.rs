@@ -714,10 +714,14 @@ fn load_user(p: &Paths) -> Result<(BTreeMap<String, Json>, crate::hookcfg::Layer
 fn load_settings(p: &Paths) -> Result<Json, ConfigError> {
     let Some(path) = p.settings.as_deref() else { return Ok(Json::Null) };
     match read_text(path)? {
-        Some(t) => match serde_json::from_str::<Json>(&t) {
-            Ok(j @ Json::Object(_)) => Ok(j),
-            Ok(_) => Err(ConfigError::NotObject(path.to_path_buf())),
-            Err(e) => Err(ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() }),
+        // read the way JavaScript reads it: a number outside the f64 range (1e400) is `null` (that one key is unset, #569), not a bad file
+        Some(t) => match crate::checks::guardkit::jsdiff::parse_settings_as_js(&t) {
+            Some((j @ Json::Object(_), _)) => Ok(j),
+            Some(_) => Err(ConfigError::NotObject(path.to_path_buf())),
+            None => Err(ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: serde_json::from_str::<Json>(&t).err().map_or_else(|| "unreadable".to_string(), |e| e.to_string()),
+            }),
         },
         None => Ok(Json::Null),
     }
@@ -1259,12 +1263,27 @@ mod tests {
     #[test]
     fn no_shipped_key_is_a_path_the_node_settings_store_owns() {
         let mut paths = std::collections::BTreeSet::new();
+        // One setting registered on both sides is not a collision: the Node store documents the engine's own key at its own path
+        // (same `section.key`, same type, same default), so the owner's `settings.json` value IS the engine setting (e.g. the task
+        // snapshot kill switch). A collision is a path the engine ships with a different meaning, told apart by its default.
+        let mut shared = std::collections::BTreeSet::new();
         for e in crate::migrate::settings::entries() {
             paths_of(&e.section, &json!({ e.key.as_str(): {} }), &mut paths);
+            let path = format!("{}.{}", e.section, e.key);
+            let node_default = match &e.default {
+                Some(crate::checks::jsport::json::J::Bool(b)) => Some(json!(b)),
+                Some(crate::checks::jsport::json::J::Num(n)) => serde_json::Number::from_f64(*n).map(Json::Number),
+                Some(crate::checks::jsport::json::J::Str(s)) => Some(json!(s)),
+                _ => None,
+            };
+            if node_default.is_some() && defaults::get(&path).map(|s| s.value.to_json()) == node_default {
+                shared.insert(path);
+            }
         }
+        assert!(shared.contains("taskstate.snapshot_enabled"), "the shared-setting case this exemption exists for is gone: {shared:?}");
         let old = format!("{}.{}", defaults::text("migrate.settings_section_jev"), defaults::text("migrate.integrations_key_prefix").trim_end_matches('.'));
         paths.insert(old);
-        let hit: Vec<&String> = paths.iter().filter(|p| defaults::get(p).is_some()).collect();
+        let hit: Vec<&String> = paths.iter().filter(|p| !shared.contains(*p) && defaults::get(p).is_some()).collect();
         assert!(hit.is_empty(), "shipped keys named like Node settings.json paths: {hit:?}");
         // the behaviour behind it: the old per-integration form changes nothing the engine resolves
         let l = layers(json!({"jev": {"integrations": {"newRequest": "on"}}}), "");

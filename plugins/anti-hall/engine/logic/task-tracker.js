@@ -15,7 +15,16 @@
 // task_tracker.toml (task_tracker.*), task_guards.toml (taskstate.*, dispatch_tier.*).
 'use strict';
 
-function ttT(k) { return ah.cfg('task_tracker.' + k); }
+// Every text is read from its own key, whatever the switch says, so an edit of that key (the owner's or a shipped default's) is always honoured.
+// context.taskTrackerTerse (when on) only changes which wording an UNEDITED key has: a key still holding its stock value (stock_texts) reads as
+// terse_texts says; any other value is used as written.
+function ttT(k) {
+  var v = ah.cfg('task_tracker.' + k);
+  var stock = ah.cfg('task_tracker.stock_texts');
+  if (typeof stock[k] !== 'string' || v !== stock[k] || !ah.settings.bool('task_tracker.terse_setting')) return v;
+  var terse = ah.cfg('task_tracker.terse_texts');
+  return typeof terse[k] === 'string' ? terse[k] : v;
+}
 function ttN(k) { return ah.cfgNum('task_tracker.' + k); }
 
 function ttShort() { return text.message('tip', ttT('guard_name'), { what: ttT('what_short') }); }
@@ -355,7 +364,7 @@ function ttFresh(home, tp, sessionRaw, p) {
   if (tp === null) return null;
   var size = ah.fs.size(tp);
   if (!size) return null;
-  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'));
+  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, sessionRaw);
   // Claude Code's own store holds the whole list; the transcript tail of a long session does not (the creates lie before it)
   var store = tk.storeTasks(home, sessionRaw);
   if (store === null) {
@@ -614,6 +623,15 @@ function decide(p) {
   if (emit && !ch.hold && t.indexOf(short) === 0) {
     var show = should({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
+  }
+  // per-message counters: each directive and reminder is counted when sent and when held back as a state already told
+  if (chosen.full && emit && t.indexOf(full) === 0) ah.metric('task_tracker_emitted', ['form', ttT('event_full')]);
+  else if (!chosen.full) {
+    if (ch.hold) ah.metric('task_tracker_emitted', ['form', ttT('event_short_same')]);
+    else if (t.indexOf(short) === 0) {
+      var sentShort = emit && out.indexOf(short) === 0;
+      ah.metric('task_tracker_emitted', ['form', sentShort ? ttT('event_short') : ttT('event_short_same')]);
+    }
   }
   var pruneShown = pruneOut !== '' && (ch.hold || emit) ? pruneOut : '';
   if (pruneShown !== '') ah.advisory(ah.cfg('metric.tasklist_hygiene').advisory_kind, ah.cfg('tasklist_hygiene.event_prune'));

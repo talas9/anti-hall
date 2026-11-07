@@ -176,6 +176,14 @@ value = [".claude", "tasks"]
 doc = "Candidate directory names of a session's task list under the store, tried in order, the first that exists wins. `{sid}` is the session id, `{sid8}` its first 8 characters (the list id the `session-<8>` convention uses). A session id with a character outside `[A-Za-z0-9_-]` is not looked up."
 value = ["session-{sid8}", "{sid}"]
 
+[taskstate.list_id_env]
+doc = "Name of the environment variable Claude Code reads to put a session's tasks in a NAMED list (`<store_base>/<list id>/`) instead of `session-<8>`. The R-pair spawn-by-id check reads that named list as THE list when the variable is set to a valid id and its directory exists (even empty: Claude Code then keeps the session's tasks only there, and the `session-<8>` directory is left empty). Forwarded to the checks by `request_env.allow`. Unset, or a value that is not a valid id, or no such directory: the `store_dir_names` candidates apply."
+value = "CLAUDE_CODE_TASK_LIST_ID"
+
+[taskstate.list_id_re]
+doc = "A valid named-list id (one directory name under the store: starts with a letter, digit or underscore, then letters, digits, `_`, `.` or `-`; never a path)."
+value = "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+
 [taskstate.store_file_suffix]
 doc = "Suffix of the task files in a store directory (the lock and high-water-mark files lack it)."
 value = ".json"
@@ -189,6 +197,10 @@ min = 1
 doc = "Largest task file read; a bigger one is skipped."
 value = 65536
 min = 1
+
+[taskstate.store_fields]
+doc = "Field names of a task file in the store that a reader needs: `id` (a string or a number) and `status` (a string). A file without both is not a task. The ladder reads the open-task fact from the store with them, as the task guards do."
+value = { id = "id", status = "status" }
 
 [taskstate.re_created]
 doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
@@ -205,6 +217,10 @@ value = '^\s*Task\s*(?:#\S+)?\s*not\s+found\b'
 [taskstate.id_keys]
 doc = "The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`."
 value = ["taskId", "id", "task_id"]
+
+[taskstate.skipped_row_types]
+doc = "The transcript row types the task model does not read: rows that replay a request's whole message array (the `api-request-blob` rows), which carry copies of task tool uses and of their results for tasks the conversation has long settled, so reading them makes ghost or stale tasks. Every other row type, an unknown, empty, missing or non-string one included, is read as conversation (a skipped real row could let a Stop through with a task open)."
+value = ["api-request-blob"]
 
 [taskstate.tools_collect_keys]
 doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
@@ -289,6 +305,87 @@ min = 1
 [taskstate.prune_stamp_prefix]
 doc = "Prefix of the stamp file that throttles one prefix's sweep."
 value = ".prune-stamp-"
+
+# ---- task snapshot (#390): the list a transcript tail can no longer show -----------------------------
+
+[taskstate.snapshot_enabled]
+doc = "Keep one snapshot file of each session's rebuilt task list and lay the transcript-tail result over it (the tail wins per task id). Without it a list whose creates lie more than taskstate.tail_bytes before the end of the transcript is read as no tasks, and every task guard goes quiet. False = the tail alone, as before (kill switch)."
+value = true
+
+[taskstate.snapshot_dir]
+doc = "Directory of the task snapshots, relative to paths.base_dir (the home directory's state directory). One file per session transcript, overwritten in place. The engine never deletes a snapshot: when taskstate.snapshot_max_files is reached no new file is made, and old ones are left for the owner to remove."
+value = "ah-engine/task-snapshots"
+
+[taskstate.snapshot_file]
+doc = "File name of one session's snapshot. `{name}` is the transcript's file name without its extension (characters outside [A-Za-z0-9_.-] become `_`, cut to taskstate.snapshot_name_max), `{hash}` the first taskstate.snapshot_hash_len hex digits of the SHA-1 of the transcript path (two transcripts of one name do not share a file)."
+value = "{name}-{hash}.json"
+
+[taskstate.snapshot_name_max]
+doc = "Most characters of the transcript's file name used in a snapshot file name."
+value = 64
+min = 1
+
+[taskstate.snapshot_hash_len]
+doc = "Hex digits of the transcript path's SHA-1 in a snapshot file name."
+value = 8
+min = 4
+max = 40
+
+[taskstate.snapshot_max_files]
+doc = "Most files in the snapshot directory. At the cap a session that has no snapshot yet gets none (fail-open: its tail alone answers; counted as snapshot_error kind `cap`); nothing is deleted. A session that already has a file keeps updating it."
+value = 200
+min = 1
+
+[taskstate.snapshot_max_bytes]
+doc = "Largest snapshot written. A list over it is written without its finished tasks; still over, the write is skipped (counted as snapshot_error kind `big`). Must stay under script.write_max_bytes."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[taskstate.snapshot_gap_max_bytes]
+doc = "Most bytes read to catch a snapshot up when the transcript tail starts after the snapshot's size (bytes nobody has read since the snapshot was written, which can hold a TaskUpdate that finished a task the snapshot still lists as open). The rebuild then reads back to the snapshot's size instead of taskstate.tail_bytes. A gap over this is not read: the snapshot is not trusted for that rebuild (discarded, reason gap) and the tail alone answers, so no Stop blocks on a list that may be stale."
+value = 8388608
+min = 1
+unit = "bytes"
+
+[taskstate.snapshot_refresh_bytes]
+doc = "A snapshot whose tasks did not change is rewritten only after the transcript grew by this much since the last write (the recorded size is what tells a replaced, smaller transcript from the one the snapshot belongs to)."
+value = 262144
+min = 1
+unit = "bytes"
+
+[taskstate.snapshot_format]
+doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced. 2 added the session id and the file fingerprint; 3 added, per task, the tool-use id of the TaskCreate that made it (a task's identity: the subject is not one)."
+value = 3
+min = 1
+
+[taskstate.snapshot_lock_suffix]
+doc = "Suffix of the lock file a rebuild holds while it merges and rewrites a session's snapshot (next to the snapshot, never counted against taskstate.snapshot_max_files). Without a lock two hooks that rebuild at the same instant could each rewrite the whole file and lose the other's section."
+value = ".lock"
+
+[taskstate.snapshot_lock_kind]
+doc = "How the snapshot lock is taken: `flock` (a kernel lock on the file named by taskstate.snapshot_flock_suffix: one open and one lock call, released by the kernel when the holder dies; no Node peer uses this file) or `file` (the lock file of taskstate.snapshot_lock_suffix with the owner record, stale takeover and sidecar of the Node lock protocol: four directory creates and four removals per cycle). `file` is the kill switch. Where the platform or filesystem has no flock at all (ENOTSUP, EOPNOTSUPP, ENOSYS), a rebuild falls back to `file` on its own (counted snapshot_lock kind `fallback`); any other failure to take the flock (the file will not open, is a link, an errno) writes nothing (counted snapshot_lock result `failed`). On `file` and on the fallback a lock that is not positively held (busy, no lock file can be made, an exception) also writes nothing."
+value = "flock"
+
+[taskstate.snapshot_flock_suffix]
+doc = "Suffix of the file a rebuild flocks when taskstate.snapshot_lock_kind is `flock`. Kept (never deleted) next to the snapshot and never counted against taskstate.snapshot_max_files. Must differ from taskstate.snapshot_lock_suffix: an engine still on the lock-file protocol would read this empty file as a stale holder."
+value = ".flock"
+
+[taskstate.snapshot_lock_group]
+doc = "The defaults group whose `lock_*` keys (stale, step, reclaim, release) time the snapshot lock; the wait is taskstate.snapshot_lock_wait_ms."
+value = "advisor"
+
+[taskstate.snapshot_lock_wait_ms]
+doc = "How long a rebuild waits for the snapshot lock. A rebuild that cannot take it writes no snapshot this time (its answer is unchanged; counted as snapshot_error kind `lock`) and the next rebuild writes."
+value = 250
+unit = "ms"
+min = 0
+
+[taskstate.snapshot_fingerprint_bytes]
+doc = "Bytes hashed for the transcript fingerprint kept in a snapshot: the first bytes of the file, and the same number of bytes just before the tail window as it stood when the snapshot was written (read back at that fixed offset, so appends do not move it). A transcript whose bytes there differ is another file under the same path: the snapshot is discarded (reason `replaced`). Two reads of this size per rebuild."
+value = 4096
+min = 64
+unit = "bytes"
 
 # ---- task-guard --------------------------------------------------------------------------------
 
@@ -1464,3 +1561,158 @@ value = { kind = "counter", unit = "stops", labels = ["kind"] }
 [metric.tasklist_progress_carried]
 doc = "Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight)."
 value = { kind = "counter", unit = "stops", labels = ["kind"] }
+
+# ---- R-idle (plan v2 section 4, GH #461 #516 #517 #262 #177): the idle-task rule behind guards.idleRule (off by default) ----
+# With the switch off nothing below is read and the Stop answers are the ones task-guard always gave. With it on, the Stop block skips a task
+# that has a live owner agent, that an agent's description or launch name names (#<id>), that waits on the owner, that carries a blockedOn
+# reason, that says it is parked/blocked/waiting and gives the reason, or that waits on a clock; plan mode is quiet; and the block names the
+# exact task ids and the one step that clears them. Acted-on / ignored come from the delivery funnel (delivery.act, row task-guard).
+
+[task_guard.idle_rule_setting]
+doc = "Switch guards.idleRule (default off, plan v2 D14). On: the task-guard Stop blocks leave out tasks that are not idle (live owner agent, an agent that names the task, owner decision, blockedOn reason, parked/blocked/waiting marker with its reason, a wait on a clock), stay quiet in plan mode, and name the exact task ids and the step that clears them. Off: the Stop answers are unchanged."
+value = { section = "guards", key = "idleRule", type = "boolean", env = "ANTIHALL_IDLE_RULE", option = "", default = false }
+
+[idle_rule.text_max]
+doc = "Most UTF-16 units of a task's subject plus description that the parked and clock markers are looked for in."
+value = 600
+min = 1
+
+[idle_rule.blocked_on_min]
+doc = "Fewest characters a task's blockedOn text needs to count as a stated reason (a bare or one-letter value does not)."
+value = 3
+min = 1
+
+[idle_rule.parked_re]
+doc = "JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle; a negated marker (not/no/never blocked) does not match either."
+value = '(?:^|[\s\[(])(?<!\b(?:not|no|never)\s+)(?:parked|blocked|waiting|on hold|deferred)\b\s*(?::|-|–|—|\(|\bon\b|\bfor\b|\buntil\b|\btill\b|\bby\b|\bbehind\b)\s*[^\s.,;:)]{2,}'
+
+[idle_rule.clock_re]
+doc = "JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) that opens the text or a clause (after punctuation or the word then), so a noun inside a task title such as implement retry after 2 minutes is not a wait, followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date."
+value = '(?:^|[\n.;:,(\[–—]\s*|\bthen\s+)(?:waiting|wait|until|till|after|retry|retrying|re-?check|resumes?|resuming)\b[^.\n]{0,40}?(?:\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|weeks?)\b|\btomorrow\b|\btonight\b|\bnext (?:week|month|day)\b|\b\d{4}-\d{2}-\d{2}\b)'
+
+[idle_rule.reason_owner]
+doc = "Suppression reason label: the task waits on the owner."
+value = "owner"
+
+[idle_rule.reason_blocked_on]
+doc = "Suppression reason label: the task has a blockedOn reason."
+value = "blocked_on"
+
+[idle_rule.reason_parked]
+doc = "Suppression reason label: the task says parked/blocked/waiting and gives the reason."
+value = "parked"
+
+[idle_rule.reason_clock]
+doc = "Suppression reason label: the task waits on a clock."
+value = "clock"
+
+[idle_rule.reason_live_agent]
+doc = "Suppression reason label: the task's owner is a live agent or workspace."
+value = "live_agent"
+
+[idle_rule.reason_agent_ref]
+doc = "Suppression reason label: a running agent's description or launch name names the task (#<id>)."
+value = "agent_ref"
+
+[idle_rule.reason_plan_mode]
+doc = "Suppression reason label: the session is in plan mode (counted once per open task)."
+value = "plan_mode"
+
+[idle_rule.kind_idle]
+doc = "Counter label: the sharp idle-neglect block (dispatchable tasks no agent covers)."
+value = "idle"
+
+[idle_rule.kind_open]
+doc = "Counter label: the generic open-tasks block."
+value = "open"
+
+[idle_rule.minutes_cap]
+doc = "Most minutes one block adds to idle_slot_minutes (the age of the oldest listed task is capped here)."
+value = 240
+unit = "min"
+min = 1
+
+[idle_rule.ids_max]
+doc = "Most task ids the visible block line names; the rest are counted ({more}) and listed in the saved details."
+value = 6
+min = 1
+
+[idle_rule.id_sep]
+doc = "Separator between the task ids of the visible block line."
+value = ", "
+
+[idle_rule.more]
+doc = "Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out."
+value = " (+{n} more)"
+
+[idle_rule.what_idle]
+doc = "First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail. Kept short: the visible line is cut near 115 units."
+value = "{n} open tasks idle, no live agent, no blocked reason: {ids}{more}."
+
+[idle_rule.what_open]
+doc = "First line of the R-idle generic block; same placeholders as what_idle."
+value = "{n} open tasks unfinished, none has a live agent or a blocked reason: {ids}{more}."
+
+[idle_rule.instead]
+doc = "The step that clears the block, in the instead line (kept under 115 units so it stays visible); `{upd}` the task update tool, `{first}` the first listed id."
+value = "spawn an agent with #{first} in its description, or {upd} it blockedOn=<reason>, or finish it."
+
+[idle_rule.details_list]
+doc = "Saved-details block listing every idle task; `{list}` has one line per task: id, subject, status."
+value = "Idle tasks:\n{list}"
+
+[idle_rule.details_steps]
+doc = "Saved-details text with the three ways to clear a listed task; `{upd}` the task update tool, `{first}` the first listed id."
+value = "To clear a task, do one of: (1) start an agent whose description contains its id, for example description \"#{first} <what it does>\"; (2) {upd} taskId={first} with metadata blockedOn=<the reason>, or write a line \"BLOCKED: <reason>\" in its subject or description (a bare BLOCKED with no reason does not clear it); a wait on a clock: write \"waiting until <time>\"; (3) finish it and mark it completed."
+
+[metric.idle_rule_fired]
+doc = "R-idle Stop blocks delivered (guards.idleRule on), by kind (idle: the dispatch-demand block; open: the generic block)."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.idle_rule_listed]
+doc = "Tasks named by delivered R-idle blocks, by kind."
+value = { kind = "counter", unit = "tasks", labels = ["kind"] }
+
+[metric.idle_rule_suppressed]
+doc = "Open tasks the R-idle filter kept out of a block's list, by reason (owner, blocked_on, parked, clock, live_agent, agent_ref; plan_mode counts the open tasks of a plan-mode Stop). Counted once per delivered block, plus once per plan-mode Stop."
+value = { kind = "counter", unit = "tasks", labels = ["reason"] }
+
+[metric.idle_slot_minutes]
+doc = "PROXY for plan v2's idle-slot minutes: at each delivered R-idle block, the age in minutes of the oldest listed task since it was created or last set pending/in progress, capped at idle_rule.minutes_cap. Not a time integral (that would need persistent state); blocks of one idle spell add up, so read it as a relative size, not as minutes."
+value = { kind = "counter", unit = "min", labels = ["kind"] }
+
+[metric.idle_rule_age_unknown]
+doc = "Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.taskstate_rows_skipped]
+doc = "Transcript rows the task model skipped because their type is in taskstate.skipped_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon."
+value = { kind = "counter", unit = "rows", labels = [] }
+
+[metric.snapshot_written]
+doc = "Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail."
+value = { kind = "counter", unit = "files", labels = [] }
+
+[metric.snapshot_overlaid]
+doc = "Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them."
+value = { kind = "counter", unit = "tasks", labels = [] }
+
+[metric.snapshot_gap]
+doc = "Rebuilds whose transcript tail started after the snapshot's size, by result (caught_up: the bytes between were read, so a completion in them is seen; too_big: the gap is over taskstate.snapshot_gap_max_bytes; unread: the wider read could not be made exactly). too_big and unread discard the snapshot (snapshot_discarded reason gap): the Stop answers from the tail alone."
+value = { kind = "counter", unit = "rebuilds", labels = ["result"] }
+
+[metric.snapshot_discarded]
+doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail holds a TaskCreate for a number the snapshot holds whose tool-use id is not the one the snapshot recorded for it, so a new list began (subjects play no part); format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path; gap: the bytes between the snapshot's size and the tail's start could not be read, so the snapshot may be stale). A discarded snapshot is replaced by the new list, never deleted."
+value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
+
+[metric.snapshot_identity_unknown]
+doc = "Rebuilds whose tail holds a TaskCreate for a number the snapshot holds, over bytes the snapshot already covers, where the create's tool-use id or the snapshot's recorded one is missing (a task no create was recorded for, as a TodoWrite makes). Which list it belongs to cannot be told: the snapshot is kept (fail-open to the snapshot)."
+value = { kind = "counter", unit = "rebuilds", labels = [] }
+
+[metric.snapshot_lock]
+doc = "Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written). On the file and fallback kinds busy also covers a lock file that cannot be made (a directory or link in its place, an unwritable directory) and failed a lock call that raised: nothing is written either way. A write happens only under a lock that is positively held."
+value = { kind = "counter", unit = "takes", labels = ["kind", "result"] }
+
+[metric.snapshot_error]
+doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes (on a read, the file is replaced), lock: the snapshot lock was busy, cap: taskstate.snapshot_max_files reached, home: no usable home)."
+value = { kind = "counter", unit = "errors", labels = ["kind"] }

@@ -60,7 +60,7 @@ doc = "Telemetry events (routing, spawn, Jev, spill and the rest), newest first,
 value = { source = "telemetry_events", rows = "events", filters = [], params = ["window", "kind"] }
 
 [webapi.source_guard_blocks]
-doc = "Every guard block, newest first: time, guard (check), rule id, hook event, session, subagent, tool, project hash and the first line of the message. Kept telemetry.block_keep_days."
+doc = "Every guard block, newest first: time, guard (check), rule id, hook event, session, subagent, tool, project hash and the message (up to telemetry.block_reason_chars characters). Kept telemetry.block_keep_days."
 value = { source = "guard_blocks", rows = "blocks", filters = ["guard:guard", "session:session", "agent:agent", "project:project", "tool:tool"], params = ["window"] }
 
 [webapi.source_counters]

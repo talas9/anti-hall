@@ -173,6 +173,111 @@ pub fn ingest_from(path: &Path, mut take: impl FnMut(Event)) -> Ingested {
     out
 }
 
+// ---- counts of a scheduled child ---------------------------------------------------------------------------------
+
+/// The exit write of a scheduled subprocess action: the counts it bumped ([`crate::metrics::child_counts`] names the file) go to the
+/// counts file the daemon made for this run, one `counter` line per series.
+///
+/// Inert and bounded for every process that is not positively a marked child: it returns at once when the settings are not loaded in this
+/// process (it never loads them: the marker's name lives there, so no settings means no marker and nothing to flush), when the process is
+/// read-only, or when it has no marker. A panic or error inside is swallowed (this runs after the command's own answer). When it does
+/// write it takes no lock and makes no directory, and it touches only a file it has checked ([`open_child_counts`]); nothing is logged.
+pub fn write_child_counts() {
+    if !defaults::is_loaded() || READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    crate::discard::harmless(std::panic::catch_unwind(|| {
+        let Some(path) = crate::metrics::child_counts() else { return };
+        let mut bytes = Vec::new();
+        for (name, labels, n) in crate::metrics::take_child() {
+            // the values ride in the order the metric registers its labels, as the daemon reads them back positionally
+            let registered = defaults::raw(&format!("metric.{name}")).get("labels").map(defaults::V::strings).unwrap_or_default();
+            let ordered: Vec<(&str, &str)> =
+                registered.iter().filter_map(|l| labels.iter().find(|(k, _)| k == l).map(|(k, v)| (k.as_str(), v.as_str()))).collect();
+            if ordered.len() != registered.len() {
+                continue;
+            }
+            bytes.extend_from_slice(counter(&name, &ordered, n).to_json().to_string().as_bytes());
+            bytes.push(b'\n');
+        }
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(mut f) = open_child_counts(path, bytes.len() as u64) {
+            crate::discard::harmless(f.write_all(&bytes)); // keep: exit path, nothing may be logged or waited on
+        }
+    })); // keep: a panic on the exit path must not change the exit code
+}
+
+/// Open the counts file `path` for appending `add` bytes, or None when it is not what the daemon made. The path comes from the
+/// environment, so it is not trusted: it must sit directly in this engine's state directory (`files.telemetry_child_counts`, the daemon
+/// builds it as `<state dir>/<name>`), and the descriptor, opened without following a symlink, without creating anything and without
+/// blocking (a FIFO would otherwise hold the exit), must be a regular file owned by this user that stays within `telemetry.inbox_max_bytes`.
+fn open_child_counts(path: &Path, add: u64) -> Option<std::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    if path.parent()? != paths::dir() {
+        return None;
+    }
+    let f = std::fs::OpenOptions::new().append(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY).open(path).ok()?;
+    let m = f.metadata().ok()?;
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    (m.file_type().is_file() && m.uid() == me && m.len().saturating_add(add) <= defaults::num("telemetry.inbox_max_bytes")).then_some(f)
+}
+
+/// What the daemon found in a child's counts file.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ChildCounts {
+    /// Series added to the daemon's table.
+    pub series: u64,
+    /// Lines that were not valid UTF-8 or not a valid `counter` event for a registered metric.
+    pub bad: u64,
+    /// Lines past `telemetry.inbox_max_bytes`, which were not read.
+    pub overflow: u64,
+}
+
+/// Prepare the counts file of one run: create it (or empty it) with mode 0600 and no symlink followed. The daemon calls this before the
+/// child starts; the child only appends to it.
+pub fn prepare_child_counts(path: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path).map(drop)
+}
+
+/// Read the counts file of a run that has ended (at most `telemetry.inbox_max_bytes`), empty it, and add every `counter` line to this
+/// process's table ([`crate::metrics::bump_from_event`]). No lock: the writer is gone. An absent file is nothing to read.
+///
+/// The file is read as bytes and split at newlines, so a line that is not UTF-8 costs only itself. Everything in the file is consumed
+/// by the final empty: the writer has exited (or was killed), nothing will append to it, and the next run starts from an empty file, so
+/// there is nothing to keep. What lies past the read limit is counted (`overflow`, in lines) rather than lost silently.
+pub fn ingest_child_counts(path: &Path) -> ChildCounts {
+    let mut out = ChildCounts::default();
+    let Ok(mut f) = std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) else { return out };
+    let mut bytes = Vec::new();
+    let read = Read::by_ref(&mut f).take(defaults::num("telemetry.inbox_max_bytes")).read_to_end(&mut bytes);
+    let rest = if read.is_ok() { count_lines(&mut f) } else { 0 };
+    crate::discard::logged("tel_child_counts_clear", f.set_len(0));
+    if crate::discard::logged_ok("tel_child_counts_read", read).is_none() {
+        return out;
+    }
+    out.overflow = rest;
+    // a line the limit cut in two is not parsed: its tail is the first of the lines counted as overflow, so it is counted once
+    if rest > 0 && bytes.last().is_some_and(|b| *b != b'\n') {
+        bytes.truncate(bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1));
+    }
+    for line in bytes.split(|b| *b == b'\n').filter(|l| !l.iter().all(u8::is_ascii_whitespace)) {
+        let ev = std::str::from_utf8(line).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok()).and_then(|v| Event::from_json(&v).ok());
+        match ev {
+            Some(ev) if ev.kind == Kind::Counter && crate::metrics::bump_from_event(ev.h.as_str(), ev.e.as_str(), ev.ib) => out.series += 1,
+            _ => out.bad += 1,
+        }
+    }
+    out
+}
+
+/// The lines left in `f` from its current position (a final line without a newline counts).
+fn count_lines(f: &mut std::fs::File) -> u64 {
+    std::io::BufRead::split(std::io::BufReader::new(f), b'\n').map_while(Result::ok).count() as u64
+}
+
 // ---- items changed by a command --------------------------------------------------------------------------------
 
 /// Count `n` more items the running command changed (it is reported in the command's `cmd` event).
@@ -291,10 +396,25 @@ pub fn stop_channel(counter: &str, check: &str, model: &str, project: &str) -> E
     base(Kind::StopChan, counter, check, Outcome::Advise, 0, 0, Extras::Fields(Fields::new().tok("model", model).tok("project", project)))
 }
 
+/// The event for `by` counts of the metric `name` bumped in a process that is not the daemon (the hook dispatcher): the label values
+/// ride in `e`, in the order the metric registers its labels, joined by `/` (a `/` inside a value becomes `_`). The daemon adds them to
+/// its own registry when it reads the inbox ([`crate::metrics::add_from_event`]).
+pub fn counter(name: &str, labels: &[(&str, &str)], by: u64) -> Event {
+    let values: Vec<String> = labels.iter().map(|(_, v)| v.replace('/', "_")).collect();
+    base(Kind::Counter, name, &values.join("/"), Outcome::Advise, 0, by, Extras::None)
+}
+
 /// The event for a dispatcher path that would have handed the event to the Node hooks and answered without them
 /// (`path` is `budget`, `infra` or `panic`; `outcome` is Skip for an advisory event, Block or Allow for a guard event).
 pub fn no_node_path(path: &str, event: &str, outcome: Outcome) -> Event {
     base(Kind::Hook, &format!("dispatcher-{path}"), event, outcome, 0, 0, Extras::None)
+}
+
+/// One step of the nudge escalation ladder (GH #516): hook `nudges.telemetry_prefix` + `kind`, event the step word (fired,
+/// repeated, escalated, blocked, acted, ignored); a step that blocked has outcome block, every other one advise.
+pub fn nudge_step(kind: &str, step: &str, blocked: bool) -> Event {
+    let o = if blocked { Outcome::Block } else { Outcome::Advise };
+    base(Kind::Check, &format!("{}{kind}", defaults::text("nudges.telemetry_prefix")), step, o, 0, 0, Extras::None)
 }
 
 /// The event for a daemon health snapshot: `readings` are the numbers the `daemon` schema lists.
@@ -414,6 +534,121 @@ pub fn mistake(r: &ActRec<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_daemon_reads_a_counts_file_adds_the_counters_counts_the_bad_lines_and_empties_it() {
+        let p = scratch("childcounts").with_file_name("counts.jsonl");
+        prepare_child_counts(&p).unwrap();
+        let good = counter("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")], 3).to_json().to_string();
+        let plain = counter("tel_child_counts", &[("result", "bad")], 2).to_json().to_string();
+        let unregistered = counter("no_such_metric_416", &[], 1).to_json().to_string();
+        let not_counter = nudge_step("k", "fired", false).to_json().to_string();
+        std::fs::write(&p, format!("{good}\n{plain}\n{unregistered}\n{not_counter}\n{{\"k\":\"coun\n\n")).unwrap();
+        let got = ingest_child_counts(&p);
+        assert_eq!(got, ChildCounts { series: 2, bad: 3, overflow: 0 });
+        // the values are stored in the metric's registered label order
+        assert_eq!(crate::metrics::bumped_on_this_thread("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")]), 3);
+        assert_eq!(crate::metrics::bumped_on_this_thread("tel_child_counts", &[("result", "bad")]), 2);
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 0, "the file is emptied, not deleted");
+        assert_eq!(ingest_child_counts(&p), ChildCounts::default());
+        assert_eq!(ingest_child_counts(&p.with_file_name("absent.jsonl")), ChildCounts::default(), "an absent file is nothing to read");
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_costs_only_itself_and_the_valid_records_around_it_are_kept() {
+        let p = scratch("childcounts_utf8").with_file_name("counts-utf8.jsonl");
+        prepare_child_counts(&p).unwrap();
+        let line = |n: u64| counter("tel_child_counts", &[("result", "series")], n).to_json().to_string();
+        let mut bytes = format!("{}\n", line(5)).into_bytes();
+        bytes.extend_from_slice(b"{\"k\":\"\xff\xfe\"}\n");
+        bytes.extend_from_slice(format!("{}\n", line(7)).as_bytes());
+        std::fs::write(&p, bytes).unwrap();
+        assert_eq!(ingest_child_counts(&p), ChildCounts { series: 2, bad: 1, overflow: 0 });
+        assert_eq!(crate::metrics::bumped_on_this_thread("tel_child_counts", &[("result", "series")]), 12);
+    }
+
+    #[test]
+    fn lines_past_the_read_limit_are_counted_not_lost_silently() {
+        let p = scratch("childcounts_overflow").with_file_name("counts-overflow.jsonl");
+        prepare_child_counts(&p).unwrap();
+        let cap = defaults::num("telemetry.inbox_max_bytes") as usize;
+        let line = format!("{}\n", counter("tel_child_counts", &[("result", "series")], 1).to_json());
+        let total = cap / line.len() + 40;
+        std::fs::write(&p, line.repeat(total)).unwrap();
+        let got = ingest_child_counts(&p);
+        // every whole line before the limit is a series; the line the limit cuts and everything after it is overflow
+        assert_eq!(got.series + got.bad + got.overflow, total as u64, "{got:?}");
+        assert!(got.overflow >= 39 && got.series > 0, "{got:?}");
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), 0);
+    }
+
+    /// A counts file as the daemon would make it, in the state directory the exit write is bound to.
+    fn state_file(tag: &str) -> PathBuf {
+        let p = paths::dir().join(format!("counts-{tag}-{}.jsonl", std::process::id()));
+        std::fs::create_dir_all(paths::dir()).unwrap();
+        crate::discard::harmless(std::fs::remove_file(&p));
+        p
+    }
+
+    #[test]
+    fn the_exit_write_opens_only_a_regular_file_the_daemon_made_in_the_state_dir() {
+        let p = state_file("ok");
+        prepare_child_counts(&p).unwrap();
+        assert!(open_child_counts(&p, 10).is_some());
+        // a file elsewhere than the state dir is refused, the way a path a parent made up would be
+        let other = std::env::temp_dir().join(format!("ah-416-elsewhere-{}.jsonl", std::process::id()));
+        std::fs::write(&other, "").unwrap();
+        assert!(open_child_counts(&other, 10).is_none(), "outside the state dir");
+        crate::discard::harmless(std::fs::remove_file(&other));
+        // a dotdot path that resolves into the state dir is not the state dir either
+        let dotdot = paths::dir().join("..").join(paths::dir().file_name().unwrap()).join(p.file_name().unwrap());
+        assert!(open_child_counts(&dotdot, 10).is_none(), "{dotdot:?}");
+        // absent: nothing is created
+        let absent = state_file("absent");
+        assert!(open_child_counts(&absent, 10).is_none() && !absent.exists());
+        crate::discard::harmless(std::fs::remove_file(&p));
+    }
+
+    #[test]
+    fn the_exit_write_refuses_a_symlink_a_directory_and_a_fifo_without_waiting() {
+        let target = state_file("target");
+        prepare_child_counts(&target).unwrap();
+        let link = state_file("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(open_child_counts(&link, 10).is_none(), "a symlink is not followed");
+        let dir = state_file("dir");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(open_child_counts(&dir, 10).is_none(), "a directory");
+        // a FIFO with a reader attached: a blocking open would succeed or hang; the checked open must refuse it at once
+        let fifo = state_file("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: `c` is a NUL-terminated path that lives through the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let reader = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&fifo).unwrap();
+        let t = std::time::Instant::now();
+        assert!(open_child_counts(&fifo, 10).is_none(), "a FIFO is not a regular file");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        drop(reader);
+        // and with no reader at all, a write open of a FIFO must not block either
+        let t = std::time::Instant::now();
+        assert!(open_child_counts(&fifo, 10).is_none());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        for f in [&target, &link, &fifo] {
+            crate::discard::harmless(std::fs::remove_file(f));
+        }
+        crate::discard::harmless(std::fs::remove_dir(&dir));
+    }
+
+    #[test]
+    fn the_exit_write_refuses_a_file_already_at_the_size_cap() {
+        let p = state_file("big");
+        prepare_child_counts(&p).unwrap();
+        let cap = defaults::num("telemetry.inbox_max_bytes");
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().set_len(cap - 5).unwrap();
+        assert!(open_child_counts(&p, 5).is_some(), "exactly at the cap is allowed");
+        assert!(open_child_counts(&p, 6).is_none(), "one byte over the cap");
+        crate::discard::harmless(std::fs::remove_file(&p));
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ah-tel-emit-{tag}-{}-{}", std::process::id(), now_ms()));

@@ -76,6 +76,7 @@ What the automatic guards check and how to read a block.
 - `guards.pruneStopBlockMax` = 2: Max prune Stop blocks per completed-task count
 - `guards.pruneStopBlock` = true: Capped Stop block after an ignored prune advisory
 - `guards.pruneCompletedTasksAfter` = 3: Completed or cancelled tasks kept before the task tracker suggests pruning
+- `guards.inlineRule` = false: R-inline
 - `guards.laneTestGuard` = true: Default on; off lets a subagent run suite-scale test commands
 - `guards.allowTestSuites` = false: Lets a subagent run test suites
 - `guards.testPolicy` = "targeted": Test policy for subagents
@@ -83,10 +84,11 @@ What the automatic guards check and how to read a block.
 - `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
 - `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
+- `guards.advisorRank` = false: Skips plan/retry blocks for an equal/higher main
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
-- `guards.advisorReview` = true: Blocks a review agent on a non-flagship model once
-- `guards.advisorSayDo` = true: Blocks a Stop once per turn when the turn says it will ask the advisor and no advisor call follows
-- `guards.advisorThinking` = true: Nudges, then blocks once, thinking work dispatched by a non-flagship main with no advisor call...
+- `guards.advisorReview` = true: Blocks a non-flagship review agent once
+- `guards.advisorSayDo` = true: Blocks a Stop once per turn that promises an advisor call
+- `guards.advisorThinking` = true: Nudges, then blocks once, thinking dispatch by a non-flagship main
 - `guards.broadKill` = true: Switch for the broad-kill guard
 - `guards.uncommittedWork` = true: Off lets a subagent leave work uncommitted (default on)
 - `statusline.devswarm.enabled` = true: Show the DevSwarm statusline segment
@@ -94,8 +96,8 @@ What the automatic guards check and how to read a block.
 - `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
 - `statusline.devswarm.stale_ms` = 180000: Data older than this shows as `?`, not a guess
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
-- `devswarm_sup.dryRun.retention` = false: Dry run of retention: plans and logs what it would tombstone, writes nothing
-- `devswarm_sup.dryRun.verdicts` = false: Dry run of the liveness sweep: computes verdicts, reports them, writes nothing
+- `devswarm_sup.dryRun.retention` = false: Retention dry run (writes nothing)
+- `devswarm_sup.dryRun.verdicts` = false: Liveness sweep dry run (writes nothing)
 - `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node:...
 - `devswarm_sup.retention.capAlone` = false: Owner-gated (OFF by default)
 - `devswarm_sup.retention.foldAlone` = false: Owner-gated (OFF by default)

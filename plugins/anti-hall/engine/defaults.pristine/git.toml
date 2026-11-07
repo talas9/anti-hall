@@ -907,13 +907,29 @@ value = ""
 doc = "Regular expression (JavaScript syntax) of what makes a Bash call unprovable for narrowing a push to its own commits (GH #506, PR #524 review): a command chain or pipe other than a double ampersand (semicolon, double bar, bar, a single ampersand, a newline), a substitution or subshell (dollar-paren, backtick, parentheses), a block or function body (braces), a here-document or here-string, and the words eval, source, alias, function, a shell name, exec, command, builtin, env, xargs, time or a leading dot (source). Any match: the push counts every unpushed commit of the repository."
 value = '[;|\n\r`(){}]|(?<!&)&(?!&)|<<|\$\(|(?:^|[\s&])(?:eval|source|alias|function|sh|bash|zsh|dash|ksh|exec|command|builtin|env|xargs|time|\.)\s'
 
+[git.push_narrow_tail_re]
+doc = "Regular expression (JavaScript syntax), anchored at the end of the command, for the only output tail a proven push may carry (GH #506): an optional `2>&1`, then optionally a pipe to `tail` or `head` (with an optional `-n N` or `-N`) or to `cat`. It is cut off before push_narrow_forbidden_re and the segment patterns are checked; any other pipe, redirect (`>`, `<`), `tee` or shell stays unproven."
+value = '''(?:\s+2>&1)?(?:\s*\|\s*(?:(?:tail|head)(?:\s+(?:-n\s*\d+|-\d+))?|cat))?\s*$'''
+
+[git.push_scope_redirect_re]
+doc = "Regular expression (JavaScript syntax) for a push word that is a file-descriptor redirect (`2>&1`), the only redirect a proven push carries (push_narrow_tail_re): it is not read as a remote or refspec."
+value = '''^\d*>&\d+$'''
+
 [git.push_narrow_separator]
 doc = "The only command separator a narrowed push may follow."
 value = "&&"
 
 [git.push_narrow_push_re]
-doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, with no environment prefix and no option before the subcommand except -C <plain literal path>, and only plain words after it (no quote, dollar sign, glob or redirect: a word the shell may expand is not proven to name one remote or ref). -c and --config-env are not allowed."
-value = '''^\s*git\s+(?:-C\s+(?![-~])[A-Za-z0-9_./@%+=:,-]+\s+)?push(?:\s+[A-Za-z0-9_./@%+=:,^-]+)*\s*$'''
+doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, optionally after plain NAME=value assignments (group 1; a name matching push_narrow_env_deny_re keeps the push unproven), with no option before the subcommand except -C <plain literal path>, and only plain words after it (no quote, dollar sign, glob or redirect: a word the shell may expand is not proven to name one remote or ref). -c and --config-env are not allowed."
+value = '''^\s*((?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./@%+=:,-]*\s+)*)git\s+(?:-C\s+(?![-~])[A-Za-z0-9_./@%+=:,-]+\s+)?push(?:\s+[A-Za-z0-9_./@%+=:,^-]+)*\s*$'''
+
+[git.push_narrow_env_name_re]
+doc = "Regular expression (JavaScript syntax), read globally, for each variable name in the assignments before a narrowed push (group 1 of push_narrow_push_re)."
+value = '''[A-Za-z_][A-Za-z0-9_]*(?==)'''
+
+[git.push_narrow_env_deny_re]
+doc = "Regular expression (JavaScript syntax) over a variable name set on a push: a match can change which repository, configuration, binary or hook git reads or runs (GIT_*, HOME, XDG_*, PATH, loader and shell start-up variables), so the push is not narrowed to its own commits. Any other plain NAME=value assignment leaves it narrowed."
+value = '''^(?:GIT_|XDG_|LD_|DYLD_)|^(?:HOME|USERPROFILE|PATH|BASH_ENV|ENV|SHELLOPTS|PS4|IFS|EXEC_PATH)$'''
 
 [git.push_narrow_before_res]
 doc = "Allowlist of segments (regular expressions, JavaScript syntax) that may run before a narrowed push: only commands that change nothing a push publishes. Start: `cd <path>` with a literal absolute, ./, ../, ~/ or ~ path, or . or .. (not `cd -`, which goes to the previous directory; not a bare relative name, which CDPATH can redirect; not ~user). Capture group 1 is the target (pushNarrowDir)."
@@ -1071,6 +1087,30 @@ value = ["-C", "{dir}", "{repo}", "rev-parse", "--show-cdup"]
 [git.push_gitmodules_file]
 doc = "The file at the top of a work tree whose presence makes the pre-push credit check scan each checked-out submodule too."
 value = ".gitmodules"
+
+[git.push_argv_gitlinks]
+doc = "git arguments listing, in raw form, every path the commits a push sends change (GH #506, guards.gitPushCreditScope): the submodule gitlinks among them name the only submodules a non-recursing push publishes a commit of. {revs} expands to the revisions the push names; a merge is listed against each parent."
+value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "-m", "--no-renames", "--raw", "--no-abbrev", "--format=", "{revs}", "--not", "--remotes", "--"]
+
+[git.push_gitlink_line_re]
+doc = "Regular expression (JavaScript syntax) for one raw line of push_argv_gitlinks: groups old mode, new mode, old id, new id, path."
+value = '''^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]\d*\t(.+)$'''
+
+[git.push_gitlink_mode]
+doc = "The file mode of a submodule gitlink in a raw tree listing."
+value = "160000"
+
+[git.push_recurse_flag_prefix]
+doc = "A push option starting with this text may be --recurse-submodules (git resolves an unambiguous prefix): its value, from `=value` or the next word, decides whether the push publishes submodule commits. Any other option that starts with it counts as recursing (the submodules are read, as without guards.gitPushCreditScope)."
+value = "--rec"
+
+[git.push_recurse_off_values]
+doc = "Values of --recurse-submodules (and of push.recurseSubmodules, submodule.recurse as git reports them) that publish no submodule commit. Any other value, or one this code cannot read, counts as recursing."
+value = ["no", "false", "off", "0"]
+
+[git.push_recurse_config_pattern]
+doc = "Key pattern (git --get-regexp syntax) of the settings that make a push publish submodule commits: push.recurseSubmodules and submodule.recurse."
+value = "^(push\\.recursesubmodules|submodule\\.recurse)$"
 
 [git.push_argv_submodules]
 doc = "git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits."

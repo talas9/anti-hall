@@ -42,6 +42,9 @@ fn lines_of(parts: &[(String, bool)], max_lines: usize, pointer: &str) -> String
 /// Replace the digestible contexts of `results` by one digest, in place. Nothing changes when the switch is off, fewer than the
 /// threshold speak, the digest would not be shorter, or the full-text file cannot be written.
 pub fn apply(event: &str, env: &RequestEnv, results: &mut [HookResult]) {
+    if super::ctxkeep::covers(event, env) {
+        return; // context.injectGateNoSpill: the event budget replaces the digest and its file
+    }
     if !defaults::list("inject_gate.digest_events").contains(&event) {
         return;
     }

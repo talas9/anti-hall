@@ -146,6 +146,9 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             if a.watch {
                 turn(a, b, ts);
             }
+            if str_of(b, tr("type_key")) == tr("text") {
+                note_said(a, str_of(b, tr("text")), ts);
+            }
             if str_of(b, tr("type_key")) == tr("tool_use") {
                 a.running = true;
                 tool_use(a, b, ts, str_of(v, tr("cwd")));
@@ -185,6 +188,19 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             }
         }
     }
+}
+
+/// Keep a reply's text: the whole (cut) as the last reply, its first line as a progress line when it differs from the newest.
+pub(crate) fn note_said(a: &mut Agent, t: &str, ts: u64) {
+    let n = |tab: &str, k: &str| crate::defaults::raw(tab).get(k).and_then(crate::defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+    a.last_reply = t.chars().take(n("nudges.parallel_limits", "reply_chars") as usize).collect();
+    let line: String = t.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(n("nudges.stall_limits", "line_chars") as usize).collect();
+    if line.is_empty() || a.said.last() == Some(&line) {
+        return;
+    }
+    push_ring(&mut a.said, line, n("nudges.stall_limits", "lines_kept").max(1));
+    a.said_since = ts;
+    a.said_progress = a.progress;
 }
 
 /// Keep one assistant block of a watched agent (a parent with an open nudge) for the nudge's turn matching: a reply's text, or a tool
@@ -615,6 +631,10 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     {
         if defaults::raw("burn.doubt").get("classes").map(V::strings).unwrap_or_default().iter().any(|c| *c == p.class) {
             push_ring(&mut a.bg_builds, id.clone(), lim("loop_window"));
+        }
+        // a background command that checks or watches CI: a CI wait that stays outstanding until its end notice (the stall exemption)
+        if pat("ci_wait").is_some_and(|r| r.is_match(&p.label)) {
+            push_ring(&mut a.bg_ci, id.clone(), lim("loop_window"));
         }
         // a task backgrounded inside the task as well (a top-level `&`) ends when its launching shell does: no outcome waits for it
         if !p.amp && (p.class == "check" || !p.writes.is_empty()) {

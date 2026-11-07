@@ -1182,7 +1182,7 @@ fn a_repeated_task_reminder_is_cut_through_the_daemon_and_a_new_session_starts_w
     let tr = e.dir.join("tr.jsonl");
     std::fs::write(&tr, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}}))).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit"];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("ANTIHALL_TASK_TRACKER_TERSE", "0")]; // the full wording the marker reads: the terse wording ships on
     warm(&e, &args, &on);
     let marker = ah_engine::defaults::text("task_tracker.what_full");
     let seen: Vec<String> = (0..5).map(|_| context_of(&e.run_with(&args, false, &ups_payload_tr("sess-on", &tr), true, &on).1)).collect();
@@ -1198,6 +1198,60 @@ fn a_repeated_task_reminder_is_cut_through_the_daemon_and_a_new_session_starts_w
     let other = context_of(&e.run_with(&args, false, &ups_payload_tr("sess-b", &tr), true, &on).1);
     e.stop();
     assert!(first.contains(marker) && other.contains(marker), "{first:?} {other:?}");
+}
+
+/// The value of the counter `name` in a `metrics --json` document whose labels hold every `want` pair (summed), 0 when absent.
+fn counter_in(metrics: &str, name: &str, want: &[(&str, &str)]) -> u64 {
+    let v: serde_json::Value = serde_json::from_str(metrics.trim()).unwrap_or_else(|e| panic!("metrics --json is not JSON ({e}): {metrics}"));
+    v["metrics"]["counters"]
+        .as_array()
+        .map(|rows| {
+            rows.iter().filter(|r| r["name"] == name && want.iter().all(|(l, x)| r["labels"][*l] == *x)).map(|r| r["value"].as_u64().unwrap_or(0)).sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Plan v3 L05 C3 review P1: the notice-turn counters are bumped where the plan is made (the hook client), so they must reach the
+/// DAEMON's metrics, the only ones `ah-engine metrics --json` and the snapshots show. Every notice kind is counted
+/// (`notice_turn_matched{kind}`) with the switch off and on; the skipped reminders (`notice_turn_skipped{kind,check}`) only with it on.
+#[test]
+fn notice_turn_counters_reach_the_daemons_metrics_with_the_switch_off_and_on() {
+    let notices = [
+        ("notification", "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"),
+        ("mesh_tick", "/Users/someone/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick primary-xxxx --quiet"),
+        ("goal_checkin", "Goal check-in: how is the goal going?"),
+        ("peer", "<cross-session-message from=\"abc\">hello</cross-session-message>"),
+        ("teammate", "<teammate-message teammate_id=\"w1\">done</teammate-message>"),
+    ];
+    let args = ["hook", "--event", "UserPromptSubmit", "--host", "claude"];
+    let e = Env::new("notice-counters");
+    warm(&e, &args, &[]);
+    let send = |kind: &str, prompt: &str, on: bool| {
+        let payload = serde_json::json!({"session_id": format!("notice-{kind}"), "hook_event_name": "UserPromptSubmit", "prompt": prompt}).to_string();
+        let extra: &[(&str, &str)] = if on { &[("ANTIHALL_NOTICE_TURNS", "1")] } else { &[] };
+        let (code, _, err) = e.run_with(&args, false, &payload, true, extra);
+        assert_eq!((code, err.as_str()), (0, ""), "{kind}");
+    };
+    let metrics = || e.run(&["metrics", "--json"], false, "", true).1;
+    for (kind, prompt) in notices {
+        send(kind, prompt, false);
+    }
+    let m = metrics();
+    for (kind, _) in notices {
+        assert_eq!(counter_in(&m, "notice_turn_matched", &[("kind", kind)]), 1, "{kind}: counted with the switch off: {m}");
+    }
+    assert_eq!(counter_in(&m, "notice_turn_skipped", &[]), 0, "nothing is skipped with the switch off: {m}");
+    for (kind, prompt) in notices {
+        send(kind, prompt, true);
+    }
+    let m = metrics();
+    e.stop();
+    for (kind, _) in notices {
+        assert_eq!(counter_in(&m, "notice_turn_matched", &[("kind", kind)]), 2, "{kind}: counted again with the switch on: {m}");
+        for check in ["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
+            assert_eq!(counter_in(&m, "notice_turn_skipped", &[("kind", kind), ("check", check)]), 1, "{kind}/{check}: skipped once: {m}");
+        }
+    }
 }
 
 /// Copy `from` into `to`, recursively.
@@ -1273,7 +1327,7 @@ fn a_reminder_that_is_cut_is_no_output_not_an_empty_context() {
     let tr = e.dir.join("tr.jsonl");
     std::fs::write(&tr, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}}))).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit"];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("ANTIHALL_TASK_TRACKER_TERSE", "0")]; // the full wording the marker reads: the terse wording ships on
     warm(&e, &args, &on);
     let first = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
     let second = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);

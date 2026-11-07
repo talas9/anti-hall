@@ -147,6 +147,9 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `nested_spawn.msg` (essential, switch `guards.allowNestedSpawns`): this agent is a worker and can't start agents of its own. Why: Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes). Instead: report back to the coordinator if more agents are needed.
 - `task_guard.idle` (essential, switch `guards.taskGuard`): ... open tasks have no agent working on them. Why: Work that could run in parallel is sitting idle. Instead: assign the pending tasks to agents.
 - `task_guard.generic` (skill): open tasks remain unfinished. Why: Open tasks should not be left behind when the session stops. Instead: finish the pending tasks before stopping.
+- `pair_rule.pre` (skill, switch `guards.pairRule`): this agent has no name, so its task cannot be paired with it. Why: An unnamed agent cannot be addressed by SendMessage and cannot be shown as the owner of a task. Instead: add name: "<short-name>" to the Agent call (the name you will set as the task owner), then spawn again.
+- `pair_rule.post` (skill, switch `guards.pairRule`): agent "..." is running but no open task names it as owner. Why: A task owned by the agent's name shows who works on it and the agent's live activity in the task panel. Instead: TaskUpdate the task it works on with owner "..." (TaskCreate one first if it has none).
+- `pair_rule.stop` (skill, switch `guards.pairRule`): ... agent/task pairs are off: ....... Why: Each task should be owned by the name of the agent working on it, so the task panel pairs them. Instead: TaskUpdate a task per listed agent to owner=its name (TaskCreate if none).
 - `tasklist_guard.reset` (skill): the task list was lost during session restore. Why: The old tasks are gone, not finished. Instead: restore the open tasks, then stop again.
 - `rules_json.rm_rf_root` (essential): `rm -rf` on / or the home directory. Why: Deleting data cannot be undone and needs the owner's explicit confirmation. Instead: confirm with the owner before deleting data, and delete only the exact paths you created.
 - `write.no_heredoc` (essential): a file written through a Bash heredoc. Why: The git and command guards scan the heredoc body as shell, so file content gets blocked or misread. Instead: write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.
@@ -154,8 +157,9 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `tasklist_guard.stalled` (skill): ... tasks are marked in progress with no active agent. Why: They are stalled, not running in parallel. Instead: assign an agent to each stalled task.
 - `tasklist_guard.progress` (skill): ... files changed but progress is missing or stale. Why: The progress file must record what was done. Instead: update the progress file, then stop again.
 - `tasklist_guard.reduced` (skill): ... files changed but no work tracked. Why: Untracked work gets lost. Instead: list the open tasks and their status in your reply, priority first.
-- `task_tracker.full` (skill): requests need tracking before work starts.
-- `task_tracker.short` (skill): capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+- `task_tracker.full` (skill, switch `context.taskTracker`): requests need tracking before work starts.
+- `task_tracker.short` (skill, switch `context.taskTracker`): capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.
+- `roles.note_short` (skill, switch `context.roleNoteShort`): a subagent is told its role and where the engine guide is, in one line, not the verb list.
 - `task_tracker.primary` (skill): workspace-sized work needs a child workspace. Instead: assign the feature, fix or deploy to a child workspace.
 - `uncommitted.msg` (skill): this edit is paused: ... lines are uncommitted (limit ...). Why: Large unsaved changes are harder to review and resume. Instead: Commit the working changes, then continue editing.
 - `fable_availability.msg` (skill): Fable is available this session (per ~/.claude.json). Why: Fable routing is re-enabled per MODEL-POLICY.md (2026-07-12); revisit if Fable's track record regresses. Instead: pass args.fableAvailable=true to the review workflow.

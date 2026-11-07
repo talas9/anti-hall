@@ -244,7 +244,10 @@ fn payload(event: &str, extra: Value) -> String {
 }
 
 fn note(extra: Value, env_pairs: &[(&str, &str)], event: &str) -> String {
-    let (code, out, err) = run(&["check", "engine-role-note"], env_pairs, &payload(event, extra));
+    // the full note under test: the one-line form (context.roleNoteShort) ships on, so it is switched off here
+    let mut env = env_pairs.to_vec();
+    env.push(("ANTIHALL_ROLE_NOTE_SHORT", "0"));
+    let (code, out, err) = run(&["check", "engine-role-note"], &env, &payload(event, extra));
     assert_eq!(code, 0, "{err}");
     let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("no note: {out:?} {err}"));
     v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string()
@@ -415,6 +418,17 @@ fn settings_tunables_lists_every_shipped_default_key() {
 fn every_block_text_has_a_rule_row_and_every_listed_rule_is_in_the_generated_output() {
     let problems = skillgen::rule_problems();
     assert!(problems.is_empty(), "rule registry drift (fix guard_rules.toml, then run ah-regen): {problems:#?}");
+}
+
+#[test]
+fn the_clear_step_allowlist_holds_only_registered_rules_that_still_have_no_instead() {
+    // the ratchet (#538): an id that gained an instead must leave the list, and a rule with an instead is never on it
+    let allow = ah_engine::defaults::list("guard_rules.no_step_allow");
+    assert!(!allow.is_empty(), "the allowlist is the measured set of rules without a clear step");
+    for id in allow {
+        let row = skillgen::rules().into_iter().find(|r| r.id == id).unwrap_or_else(|| panic!("{id} is not a registered rule"));
+        assert!(skillgen::rule_parts(row.source).2.trim().is_empty(), "{id} has an instead now: remove it from guard_rules.no_step_allow");
+    }
 }
 
 #[test]

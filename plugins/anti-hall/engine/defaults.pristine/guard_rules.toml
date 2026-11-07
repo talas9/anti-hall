@@ -107,6 +107,7 @@ value = [
   { id = "scan_throttle.first", setting = "", tier = "skill", source = "scan_throttle.msg_first_what" },
   { id = "coordinator_work.nudge", setting = "", tier = "skill", source = "coordinator_work.nudge_what" },
   { id = "coordinator_work.block", setting = "safety.commandGuard", hosts = ["claude"], tier = "essential", source = "coordinator_work.block_what" },
+  { id = "coordinator_work.inline_window", setting = "guards.inlineRule", hosts = ["claude"], tier = "off", source = "inline_rule.window_what" },
   { id = "model_routing.update", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_update_what" },
   { id = "model_routing.handover", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_handover_what" },
   { id = "model_routing.deploy_omitted", setting = "", hosts = ["claude"], tier = "skill", source = "model_routing.msg_deploy_omitted_what" },
@@ -137,6 +138,18 @@ value = [
   { id = "nested_spawn.msg", setting = "guards.allowNestedSpawns", inverted = true, tier = "essential", source = "nested_spawn.msg_what" },
   { id = "task_guard.idle", setting = "guards.taskGuard", tier = "essential", source = "task_guard.idle_what" },
   { id = "task_guard.generic", setting = "", tier = "skill", source = "task_guard.generic_what" },
+  { id = "task_guard.idle_rule_idle", setting = "guards.idleRule", tier = "off", source = "idle_rule.what_idle" },
+  { id = "task_guard.idle_rule_open", setting = "guards.idleRule", tier = "off", source = "idle_rule.what_open" },
+  { id = "reply_length.block", setting = "guards.styleRule", tier = "off", source = "reply_length.msg_what" },
+  { id = "nudge_ladder.first_fire", setting = "nudges.enabled", tier = "off", source = "nudges.msg_first_fire" },
+  { id = "nudge_ladder.escalated", setting = "nudges.enabled", tier = "off", source = "nudges.msg_escalated" },
+  { id = "agent_tracker.stalled", setting = "nudges.stall", tier = "off", source = "msg.agent_stalled" },
+  { id = "agent_tracker.idle_no_agents", setting = "nudges.idleWake", tier = "off", source = "msg.agent_idle_no_agents" },
+  { id = "agent_tracker.false_claim", setting = "nudges.idleWake", tier = "off", source = "msg.agent_false_claim" },
+  { id = "agent_tracker.underparallel", setting = "nudges.parallel", tier = "off", source = "msg.agent_underparallel" },
+  { id = "pair_rule.pre", setting = "guards.pairRule", hosts = ["claude"], tier = "skill", source = "pair_rule.msg_pre_what" },
+  { id = "pair_rule.post", setting = "guards.pairRule", hosts = ["claude"], tier = "skill", source = "pair_rule.msg_post_what" },
+  { id = "pair_rule.stop", setting = "guards.pairRule", hosts = ["claude"], tier = "skill", source = "pair_rule.msg_stop_what" },
   { id = "tasklist_guard.reset", setting = "", tier = "skill", source = "tasklist_guard.what_reset" },
   { id = "rules_json.rm_rf_root", setting = "", tier = "essential", source = "guard_rules.msg_rm_rf_root" },
   { id = "write.no_heredoc", setting = "", tier = "essential", source = "guard_rules.msg_no_heredoc" },
@@ -144,20 +157,26 @@ value = [
   { id = "tasklist_guard.stalled", setting = "", tier = "skill", source = "tasklist_guard.what_stalled" },
   { id = "tasklist_guard.progress", setting = "", tier = "skill", source = "tasklist_guard.what_progress" },
   { id = "tasklist_guard.reduced", setting = "", tier = "skill", source = "tasklist_guard.what_reduced" },
-  { id = "task_tracker.full", setting = "", tier = "skill", source = "task_tracker.what_full" },
-  { id = "task_tracker.short", setting = "", tier = "skill", source = "task_tracker.what_short" },
+  { id = "task_tracker.full", setting = "context.taskTracker", tier = "skill", source = "task_tracker.what_full" },
+  { id = "task_tracker.short", setting = "context.taskTracker", tier = "skill", source = "task_tracker.what_short" },
+  { id = "roles.note_short", setting = "context.roleNoteShort", tier = "skill", source = "roles.note_short_what" },
   { id = "task_tracker.primary", setting = "", tier = "skill", source = "task_tracker.primary_what" },
   { id = "uncommitted.msg", setting = "", tier = "skill", source = "uncommitted.msg_what" },
   { id = "fable_availability.msg", setting = "", hosts = ["claude"], tier = "skill", source = "fable_availability.msg_what" },
 ]
 
 [guard_rules.exempt]
-doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not agent-facing rules: setup, error-context and diagnostic wording."
+doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry)."
 value = [
+  "advisor.msg_plan_what_lower",
+  "advisor.msg_plan_what_unknown",
+  "advisor.msg_retry_what_lower",
+  "advisor.msg_retry_what_unknown",
   "msg.client_what_timeout",
   "jev.what_read_requests",
   "jev.what_read_texts",
   "jev.what_create_dir",
+  "merge_gate.msg_what_v2",
   "mesh_write.what_store_dir",
   "mesh_write.what_store",
   "mesh_write.what_registry",
@@ -268,12 +287,12 @@ doc = "When the session summary is shown to the user (ui.sessionSummary, default
 value = { section = "ui", key = "sessionSummary", env = "ANTIHALL_UI_SESSION_SUMMARY", aliases = [], option = "", default = "end", values = ["off", "end"] }
 
 [guard_rules.banner_text]
-doc = "The session banner. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause."
-value = "anti-hall {version} active: {rules} rules enforced{last}."
+doc = "The session banner; the host shows it as \"SessionStart says: ...\", so it states it is info. Placeholders: {version} the plugin version, {rules} the number of rules the engine enforces, {last} the last-session clause."
+value = "ℹ️ anti-hall {version} OK (info, not an error) · {rules} rules on{last}"
 
 [guard_rules.banner_last]
 doc = "The last-session clause of the banner when blocks were recorded. Placeholders: {blocks}."
-value = "; last session {blocks} blocks"
+value = " · {blocks} guard blocks last session"
 
 [guard_rules.summary_text]
 doc = "The session summary. Placeholders: {blocks} blocks in this session, {top} the most frequent rules."
@@ -379,6 +398,41 @@ value = { what = "`rm -rf` on / or the home directory.", why = "Deleting data ca
 [guard_rules.msg_no_heredoc]
 doc = "Rule text: files are written with the edit tools, never a Bash heredoc. The git guard and the command guard read a heredoc body as shell, so a heredoc that writes a handover, ledger or progress file is blocked or misread."
 value = { what = "a file written through a Bash heredoc.", why = "The git and command guards scan the heredoc body as shell, so file content gets blocked or misread.", instead = "write the file with the Write or Edit tool; for a delegated ledger entry, tell the teammate the same.", digest = "Write files with the edit tools, never a Bash heredoc." }
+
+[guard_rules.no_step_allow]
+doc = "Ratchet for the clear-step lint (#538): the ids of registered non-off rules that have no instead text today. The list may only shrink: a new rule needs an instead (the step that clears the block), and an id that gains one must be removed here (guard_rules.problem_stale_allow)."
+value = [
+  "broad_kill.pattern",
+  "broad_kill.everyone",
+  "broad_kill.lookup",
+  "burn.waste",
+  "command.heavy",
+  "command.dsread_monitor",
+  "command.dsread_rm",
+  "ctxbudget.ah_tokens",
+  "ctxbudget.ah_pct",
+  "edit_guard.msg",
+  "inference.msg",
+  "queued_wait.loop",
+  "resource_watch.proc",
+  "speculation_guard.jev",
+  "standdown.msg",
+  "model_routing.row1_research",
+  "devswarm_comms.main",
+  "devswarm_comms.ok",
+  "tasklist_guard.no_tasks",
+  "task_tracker.full",
+  "task_tracker.short",
+  "roles.note_short",
+]
+
+[guard_rules.problem_no_step]
+doc = "Registry problem: a non-off rule has no instead text (the step that clears it) and is not in guard_rules.no_step_allow. Placeholder: {id}."
+value = "{id}: no instead text naming the step that clears it (add the instead key beside its what, or, for an existing rule, list it in guard_rules.no_step_allow)"
+
+[guard_rules.problem_stale_allow]
+doc = "Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}."
+value = "{id}: has an instead text now, remove it from guard_rules.no_step_allow"
 
 [guard_rules.problem_id]
 doc = "Registry problem: a rule id that is empty or repeated. Placeholder: {id}."

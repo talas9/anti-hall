@@ -113,10 +113,14 @@ unit = "ms"
 
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "jev_arrival", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "devswarm_supervisor", "refresh", "mcp_reaper", "engine_update", "noop"]
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "jev_arrival", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "devswarm_supervisor", "refresh", "mcp_reaper", "engine_update", "engine_currency", "noop"]
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
 value = ["maintain", "backup", "jev_sweep", "jev_arrival", "handovers", "agent_tick", "gh_poll", "refresh", "mcp_reaper", "engine_update"]
+
+[schedule.child_counts_env]
+doc = "Name of the environment variable through which the daemon names the counts file of a scheduled subprocess job to the job (`files.telemetry_child_counts`). Its value is `<daemon pid>:<path>`; the job accepts it only while its parent process is that pid, so a process the job starts in turn ignores it."
+value = "AH_ENGINE_CHILD_COUNTS"
 
 [schedule.skip_without_work]
 doc = "Subprocess actions the scheduler skips when they have no recent session or pending-request work. The command itself still reports the skip reason for manual runs."

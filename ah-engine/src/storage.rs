@@ -31,7 +31,7 @@ pub struct ImpactEvent {
     pub project: String,
 }
 
-/// One guard block, for asking about it afterwards. `reason` is the first line of the guard's own message, capped.
+/// One guard block, for asking about it afterwards. `reason` is the guard's own message (a JSON block's reason, else the stderr of an exit 2), capped at `telemetry.block_reason_chars`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockRow {
     /// When it happened, milliseconds since the Unix epoch.
@@ -50,7 +50,7 @@ pub struct BlockRow {
     pub tool: String,
     /// Hashed project key.
     pub project: String,
-    /// The first line of the block message.
+    /// The block message, capped.
     pub reason: String,
     /// 0, or how many blocks this guard gave this session inside the repeat window when this one was the repeat (`session_switches.toml`).
     pub repeat: u64,

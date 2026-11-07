@@ -43,6 +43,7 @@ Subagent, delegation and routing guards.
 - `context.codexOrchFullOn` = "session": Codex delivery mode of the full rules
 - `context.orchFullOn` = "auto": Where the delivery mode of the full orchestration rules is read from (context.orchFullOn)
 - `context.verifyFirstOrchestration` = true: Orchestration rules switch
+- `nudges.enabled` = false: Nudge ladder on/off
 - `context.verifyFirstSubagent` = true: Verify-first-subagent switch
 - `guards.idleAgentSweepCount` = 3: Where the idle-agent count that fires the advisory is read from (guards.idleAgentSweepCount,...
 - `guards.idleAgentSweepMin` = 15: Where the idle minutes that fire the advisory for any one agent are read from...
@@ -61,12 +62,14 @@ Subagent, delegation and routing guards.
 - `guards.silentAgentNudgeMin` = 20: Silence threshold in minutes
 - `guards.silentAgentNudge` = true: Where the on/off switch is read from (guards.silentAgentNudge, default on)
 - `guards.staleAgentStopNote` = true: Where the on/off switch is read from (guards.staleAgentStopNote, default on)
+- `guards.sharedTreeBareClone` = false: Bare fresh-clone statements name a tree
 - `guards.sharedTreeQuietNoWorktrees` = true: Quiets the shared-tree note when worktrees are forbidden
 - `guards.sharedTreeScratchOnly` = true: Report-only agents share no tree
 - `safety.swarmGuard` = true: The switch safety.swarmGuard (on by default); off makes the guard a no-op
 - `guards.sharedTreeAgentNote` = true: Shared-tree spawn advisory switch
 - `guards.idleNeglectAgentMaxAgeMin` = 30: Max age of an agent counted as cover
 - `guards.stopNagBudgetPerPrompt` = 0: Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)
+- `guards.idleRule` = false: Switch guards.idleRule (default off, plan v2 D14)
 - `guards.maxParallelDispatch` = 0: A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap
 - `guards.idleNeglectMinPriority` = "p1": Priority floor of the idle-neglect block
 - `guards.idleNeglectProvenOnly` = true: Block idle neglect only when proven
@@ -74,11 +77,14 @@ Subagent, delegation and routing guards.
 - `agents.burnBreaker` = true: Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker...
 - `guards.siblingSweep` = true: Where the on/off switch is read from (guards.siblingSweep, default on)
 - `agents.actOnStuck` = true: Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, a...
+- `nudges.idleWake` = false: Idle wake on/off (#515)
 - `agents.nudgeOwnerActive` = true: Where the switch of the owner-active rule is read from (agents.nudgeOwnerActive, default on):...
 - `agents.ownerNotify` = false: Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes...
+- `nudges.parallel` = false: Parallel nudge on/off (#517)
 - `agents.rearmNeedsChildren` = true: Quiets the re-arm note with no child workspaces
 - `agents.reminders` = true: Where the reminder switch is read from (agents.reminders, default on): off, signals are still...
 - `agents.tracker` = true: Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does...
+- `nudges.stall` = true: Stall nudge on/off (#518)
 - `agents.wakeCoalesceSeconds` = 20: Wake rows merge into one line per window
 - `agents.wakeWatch` = true: Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off,...
 - `agents.wasteSense` = true: Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no...

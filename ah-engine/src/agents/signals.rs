@@ -160,6 +160,66 @@ pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
     a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
 }
 
+/// Whether `ts` is an age of at most `span` ms at `now`. A stamp later than `now` has no age: it is NOT within any span (a skewed or
+/// rewound clock must never make evidence look current for ever).
+pub(crate) fn age_within(now: u64, ts: u64, span: u64) -> bool {
+    now.checked_sub(ts).is_some_and(|d| d <= span)
+}
+
+/// Whether any stamp the stall exemptions read stands later than `now`: a CI call, a background CI or build task, a call in flight, the
+/// CPU move or the quiet-window and repeat-line starts. They are ignored (never exempt, restart their window), and a tick that met one is
+/// counted `future_ts_ignored`.
+fn future_stamp(a: &Agent, now: u64) -> bool {
+    let mut tasks = a.bg_ci.iter().chain(a.bg_builds.iter()).filter_map(|id| a.bg_ids.get(id));
+    a.recent.iter().any(|r| r.3 > now)
+        || tasks.any(|t| *t > now)
+        || a.pending.values().any(|p| p.ts > now)
+        || a.stall_cpu_at > now
+        || a.stall_since > now
+        || a.said_since > now
+}
+
+/// Whether the agent waits on CI NOW (the stall exemption, #518 review round): a background command that checks or watches CI and has
+/// no end notice yet (`bg_ci`), started within `ci_wait_max_ms`; or a CI command issued within `ci_wait_fresh_ms`, where CI calls no
+/// further apart than that make one wait and the wait began within `ci_wait_max_ms`. A CI command in the call history is no wait. The
+/// ring of recent calls is bounded: when it holds the whole window before the wait's first call it proves the start, and when it is
+/// full and does not, the start was cut off, so the wait counts as past the longest (it errs toward flagging). A window or a longest
+/// wait of 0 turns the exemption off.
+pub(crate) fn ci_wait_current(a: &Agent, now: u64) -> bool {
+    let c = defaults::raw("nudges.stall_limits");
+    let (fresh, max) = (num(c, "ci_wait_fresh_ms"), num(c, "ci_wait_max_ms"));
+    if fresh == 0 || max == 0 {
+        return false;
+    }
+    if a.bg_ci.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| age_within(now, *t, max))) {
+        return true;
+    }
+    let Some(re) = defaults::raw("agent_tracker.patterns")
+        .get("ci_wait")
+        .and_then(V::as_str)
+        .and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok())
+    else {
+        return false;
+    };
+    // a stamp later than `now` (clock skew, a rewound clock) has no age: it is no evidence of a wait that is current
+    let mut hits: Vec<u64> = a.recent.iter().filter(|r| r.3 <= now && re.is_match(&r.1)).map(|r| r.3).collect();
+    hits.sort_unstable_by(|x, y| y.cmp(x));
+    let Some(newest) = hits.first().copied() else { return false };
+    if now.saturating_sub(newest) > fresh {
+        return false;
+    }
+    let mut start = newest;
+    for t in hits.iter().skip(1) {
+        if start.saturating_sub(*t) > fresh {
+            break;
+        }
+        start = *t;
+    }
+    let oldest = a.recent.iter().map(|r| r.3).filter(|t| *t <= now).min().unwrap_or(start);
+    let cut = a.recent.len() as u64 >= lim("loop_window") && oldest >= start.saturating_sub(fresh);
+    !cut && now.saturating_sub(start) <= max
+}
+
 /// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
 /// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
 pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
@@ -255,6 +315,15 @@ pub(crate) fn building(a: &Agent, now: u64) -> bool {
     let from = now.saturating_sub(doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64);
     a.pending.values().any(|p| p.ts >= from && classes.iter().any(|c| *c == p.class))
         || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| *t >= from))
+}
+
+/// [`building`] for the stall exemption: the same background build or call in flight, but a stamp later than `now` is no build in flight.
+fn building_now(a: &Agent, now: u64) -> bool {
+    let doubt = defaults::raw("burn.doubt");
+    let classes = doubt.get("classes").map(V::strings).unwrap_or_default();
+    let max = doubt.get("max_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    a.pending.values().any(|p| age_within(now, p.ts, max) && classes.iter().any(|c| *c == p.class))
+        || a.bg_builds.iter().any(|id| a.bg_ids.get(id).is_some_and(|t| age_within(now, *t, max)))
 }
 
 /// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).
@@ -367,6 +436,324 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
     })
 }
 
+// ---- nudge signals (GH #515, #517, #518): every threshold, list and text is in nudges.toml / agent_tracker.toml ----------------
+
+fn num(t: &V, k: &str) -> u64 {
+    t.get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+fn metric(step: &str) {
+    let m = defaults::raw("nudges.metric");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(step))]);
+}
+
+/// Whether the CPU of a process tree moved by at least `step` ms since its baseline (`None`: nothing to compare yet, so no). A
+/// step of 0 turns the term off.
+pub(crate) fn cpu_moved(base: Option<u64>, cur: u64, step: u64) -> bool {
+    step > 0 && base.is_some_and(|b| b.abs_diff(cur) >= step)
+}
+
+fn exempt(reason: &str) {
+    let m = defaults::raw("nudges.stall_exempt");
+    crate::metrics::bump(m.str_field("name"), &[(m.str_field("label"), m.str_field(reason))]);
+}
+
+/// The CPU term of the stall sample (#535): an agent whose process tree below `root` used CPU is working, whatever its transcript
+/// shows. Read only once the agent was quiet for `cpu_probe_pct` percent of `quiet_ms` (a healthy tick never spawns `ps`), and the
+/// table is read at most once per tick (`table`). A rise of `cpu_step_ms` restarts the quiet window.
+///
+/// `shared`: the tree is a parent's, read for an agent with no pid of its own, and another running agent below the same parent reads it
+/// too. Its CPU cannot be told apart, and one agent's work must not restart the quiet window of two, so nobody is credited with it: the
+/// table is not read, the baseline is dropped (a later lone reading seeds a fresh one) and the tick is counted `cpu_shared`.
+pub(crate) fn cpu_probe(env: &Env, a: &mut Agent, root: u32, shared: bool, table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+    if root == 0 || !(super::is_child(a) || a.kind == kind_name("workspace")) {
+        return;
+    }
+    let c = defaults::raw("nudges.stall_limits");
+    let (quiet, step) = (num(c, "quiet_ms"), num(c, "cpu_step_ms"));
+    let after = quiet.saturating_mul(num(c, "cpu_probe_pct")) / fmtn("pct").max(1);
+    if quiet == 0 || step == 0 || now.saturating_sub(a.stall_since) < after {
+        return;
+    }
+    if shared {
+        a.stall_cpu = None;
+        if env.act {
+            metric("cpu_shared");
+        }
+        return;
+    }
+    let t = table.get_or_insert_with(super::procs::snapshot);
+    if t.is_empty() {
+        if env.act {
+            exempt("cpu_unread"); // `ps` gave nothing: the term is silent, the quiet window stands
+        }
+        return;
+    }
+    let kids: Vec<_> = super::procs::tree(t, root).into_iter().filter(|q| q.pid != root).collect();
+    let cur = super::procs::cpu_of(&kids).0;
+    if cpu_moved(a.stall_cpu, cur, step) {
+        (a.stall_cpu, a.stall_cpu_at, a.stall_since) = (Some(cur), now, now);
+        if env.act {
+            exempt("cpu");
+        }
+    } else if a.stall_cpu.is_none() {
+        a.stall_cpu = Some(cur);
+    }
+}
+
+/// Per agent, the pid whose process tree is its CPU (its own session, else its parent's; 0: unknown) and whether that tree is shared:
+/// the agent has no pid of its own and another running child or workspace stands below the same parent, so the parent's tree holds the
+/// work of more than one of them (an agent with a pid of its own sits inside it too). Computed once per tick, before any agent is
+/// evaluated, so the answer does not depend on the order the agents are taken in.
+pub(crate) fn probe_roots(st: &State) -> BTreeMap<String, (u32, bool)> {
+    let parent_pid = |a: &Agent| st.agents.get(&a.parent).map_or(0, |p| p.pid);
+    let live = |a: &Agent| (super::is_child(a) || a.kind == kind_name("workspace")) && running(a);
+    let mut below: BTreeMap<u32, u64> = BTreeMap::new();
+    for a in st.agents.values().filter(|a| live(a)) {
+        *below.entry(parent_pid(a)).or_default() += 1;
+    }
+    st.agents
+        .iter()
+        .map(|(id, a)| {
+            let root = if a.pid != 0 { (a.pid, false) } else { (parent_pid(a), parent_pid(a) != 0 && below.get(&parent_pid(a)).copied().unwrap_or(0) > 1) };
+            (id.clone(), root)
+        })
+        .collect()
+}
+
+/// The stall sample: the observable fingerprint and since when it holds (only while the agent runs). `root` is [`probe_roots`]'s answer.
+fn stall_sample(env: &Env, a: &mut Agent, root: (u32, bool), table: &mut Option<Vec<super::procs::Proc>>, now: u64) {
+    if !env.switch("agent_tracker.stall_sw") || !running(a) {
+        (a.stall_since, a.stall_cpu, a.stall_cpu_at) = (0, None, 0);
+        return;
+    }
+    if future_stamp(a, now) {
+        // a stamp from the future (clock skew, a rewound clock) has no age: the windows it starts restart now, the CPU credit is
+        // dropped, and the exemptions ignore the rest (`ci_wait_current`, `building_now`)
+        if env.act {
+            exempt("future_ts_ignored");
+        }
+        a.stall_since = a.stall_since.min(now);
+        a.said_since = a.said_since.min(now);
+        if a.stall_cpu_at > now {
+            (a.stall_cpu, a.stall_cpu_at) = (None, 0);
+        }
+    }
+    let obs = vec![a.offset, a.tools, a.commits, a.changes, a.progress, a.edits, a.said_since];
+    if a.stall_obs != obs || a.stall_since == 0 {
+        a.stall_obs = obs;
+        a.stall_since = now;
+        (a.stall_cpu, a.stall_cpu_at) = (None, 0); // progress: the CPU used while it worked is no part of the next quiet stretch
+    }
+    cpu_probe(env, a, root.0, root.1, table, now);
+    if env.act {
+        metric("sampled");
+    }
+}
+
+/// A running child agent with no call in flight and not hung, whose observable state did not change for `quiet_ms`, or whose
+/// progress line repeated with no outcome for `repeat_ms`. Evidence: the seconds; text: the nudges.stall_words key.
+fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    if !(super::is_child(a) || a.kind == kind_name("workspace")) || !env.switch("agent_tracker.stall_sw") || !running(a) || !a.pending.is_empty() {
+        return None;
+    }
+    if a.stall_since == 0 || hung(a, now).is_some() {
+        return None;
+    }
+    let c = defaults::raw("nudges.stall_limits");
+    let quiet = now.saturating_sub(a.stall_since);
+    let rep = if a.said_since > 0 && a.progress == a.said_progress { now.saturating_sub(a.said_since) } else { 0 };
+    let (what, idle) = if num(c, "quiet_ms") > 0 && quiet >= num(c, "quiet_ms") {
+        ("quiet", quiet)
+    } else if num(c, "repeat_ms") > 0 && rep >= num(c, "repeat_ms") {
+        ("repeat", rep)
+    } else {
+        return None;
+    };
+    // work the transcript does not show: a build or CI wait in flight, or CPU used within the quiet window (#518 FP rubric)
+    let busy = if building_now(a, now) {
+        Some("building")
+    } else if ci_wait_current(a, now) {
+        Some("ci_wait")
+    } else if a.stall_cpu_at > 0 && now.checked_sub(a.stall_cpu_at).is_some_and(|d| d < num(c, "quiet_ms")) {
+        Some("cpu")
+    } else {
+        None
+    };
+    if let Some(reason) = busy {
+        if env.act {
+            exempt(reason);
+        }
+        return None;
+    }
+    if env.act {
+        metric("stalled");
+    }
+    Some((idle / fmtn("ms_per_s"), what.to_string()))
+}
+
+/// One task of the session's task list.
+struct Task {
+    id: String,
+    subject: String,
+    status: String,
+    owner: String,
+    blocked: Vec<String>,
+}
+
+/// The session's task list (`nudges.idle_wake.tasks_dir`); unreadable files are skipped (no task list is no nudge).
+fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
+    let c = defaults::raw("nudges.idle_wake");
+    let dir = env.home.join(c.str_field("tasks_dir")).join(sinks::key_of(sid));
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        if !e.file_name().to_string_lossy().ends_with(c.str_field("task_ext")) {
+            continue;
+        }
+        let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
+        let s = |k: &str| v.get(c.str_field(k)).map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).unwrap_or_default();
+        let blocked = v
+            .get(c.str_field("f_blocked"))
+            .and_then(serde_json::Value::as_array)
+            .map(|b| b.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect())
+            .unwrap_or_default();
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked });
+    }
+    out.sort_by(|x, y| x.id.cmp(&y.id));
+    out
+}
+
+/// Open (an open status), unassigned (no owner) tasks whose blockers are all closed (or gone).
+fn dispatchable(tasks: &[Task]) -> Vec<&Task> {
+    let c = defaults::raw("nudges.idle_wake");
+    let (open, closed) = (c.get("open_statuses").map(V::strings).unwrap_or_default(), c.get("closed_statuses").map(V::strings).unwrap_or_default());
+    let shut = |id: &String| tasks.iter().find(|t| t.id == *id).is_none_or(|t| closed.contains(&t.status.as_str()));
+    tasks.iter().filter(|t| open.contains(&t.status.as_str()) && t.owner.is_empty() && t.blocked.iter().all(shut)).collect()
+}
+
+fn running_children(st: &State, a: &Agent) -> u64 {
+    st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64
+}
+
+/// A main session idle for `idle_ms` past its turn: the idle time, or None.
+fn main_idle(a: &Agent, now: u64, idle_ms: u64) -> Option<u64> {
+    if a.kind != kind_name("main") || a.gone || a.running || a.last_output_ms == 0 {
+        return None;
+    }
+    let idle = now.saturating_sub(a.last_output_ms);
+    (idle >= idle_ms && idle <= lim("active_window_ms")).then_some(idle)
+}
+
+fn joined(items: &[String], shown: u64, joiner: &str) -> String {
+    items.iter().take(shown as usize).cloned().collect::<Vec<_>>().join(joiner)
+}
+
+/// GH #515: open unblocked unassigned tasks and no agent running for `idle_ms`. Evidence: the task count; text: their subjects.
+fn idle_no_agents(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
+    let c = defaults::raw("nudges.idle_wake");
+    if !env.switch("agent_tracker.idle_wake_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || running_children(st, a) > 0 {
+        return None;
+    }
+    let tasks = session_tasks(env, &a.id);
+    let open: Vec<String> = dispatchable(&tasks).iter().map(|t| t.subject.clone()).collect();
+    if open.is_empty() {
+        return None;
+    }
+    if env.act {
+        metric("idle_wake");
+    }
+    Some((open.len() as u64, joined(&open, num(c, "tasks_shown"), c.str_field("joiner"))))
+}
+
+/// GH #515: an idle child whose last line claims running or background work, with no call in flight, no build or background shell
+/// and no output for `claim_ms`. Evidence: the idle seconds; text: the line.
+fn false_claim(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    if !super::is_child(a) || !env.switch("agent_tracker.idle_wake_sw") || a.running || a.gone || a.last_output_ms == 0 {
+        return None;
+    }
+    let line = a.said.last()?;
+    let low = line.to_lowercase();
+    if !defaults::list("nudges.idle_wake_claims").iter().any(|p| low.contains(&p.to_lowercase())) {
+        return None;
+    }
+    if env.act {
+        metric("claim_checked");
+    }
+    let idle = now.saturating_sub(a.last_output_ms);
+    let shell = a.bg_bash.iter().any(|t| *t >= a.last_output_ms && now.saturating_sub(*t) <= lim("bg_bash_ms"));
+    if idle < num(defaults::raw("nudges.idle_wake"), "claim_ms") || idle > lim("active_window_ms") || !a.pending.is_empty() || building(a, now) || shell {
+        return None;
+    }
+    if env.act {
+        metric("claim_flagged");
+    }
+    Some((idle / fmtn("ms_per_s"), line.clone()))
+}
+
+/// The bullet lines that follow a line holding a gap phrase in `reply` (at most `gap_lines_max`).
+fn gap_items(reply: &str) -> Vec<String> {
+    let c = defaults::raw("nudges.parallel_limits");
+    let phrases = defaults::list("nudges.parallel_gap_phrases");
+    let marks = c.get("number_marks").map(V::strings).unwrap_or_default();
+    let bullet = |t: &str| -> Option<String> {
+        let first = t.chars().next()?;
+        if c.str_field("bullet_chars").contains(first) {
+            return Some(t.get(first.len_utf8()..).unwrap_or("").trim().to_string());
+        }
+        let digits = t.chars().take_while(char::is_ascii_digit).count();
+        (digits > 0).then(|| marks.iter().find_map(|m| t.get(digits..).and_then(|r| r.strip_prefix(*m))).map(|r| r.trim().to_string())).flatten()
+    };
+    let (mut out, mut on) = (Vec::new(), false);
+    for l in reply.lines().map(str::trim) {
+        if phrases.iter().any(|p| l.to_lowercase().contains(&p.to_lowercase())) {
+            on = true;
+            continue;
+        }
+        if !on || l.is_empty() {
+            continue;
+        }
+        match bullet(l) {
+            Some(i) if !i.is_empty() && (out.len() as u64) < num(c, "gap_lines_max") => out.push(i.chars().take(num(c, "item_chars") as usize).collect()),
+            Some(_) => {}
+            None => on = false,
+        }
+    }
+    out
+}
+
+/// GH #517: an idle main session with fewer running agents than the cap and open items: unassigned tasks while an agent runs
+/// (none running is idle_no_agents), or gap lines of its last reply no task subject covers. Text: running, cap and items, tab-joined.
+fn underparallel(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
+    let c = defaults::raw("nudges.parallel_limits");
+    if !env.switch("agent_tracker.parallel_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() {
+        return None;
+    }
+    let cap = crate::checks::guardkit::settings::get_num(&env.settings, defaults::raw("spawn_ceiling.max_concurrent_setting")).max(0.0) as u64;
+    let run = running_children(st, a);
+    if cap > 0 && run >= cap {
+        return None;
+    }
+    let tasks = session_tasks(env, &a.id);
+    let mut items: Vec<String> = if run > 0 { dispatchable(&tasks).iter().map(|t| t.subject.clone()).collect() } else { Vec::new() };
+    let covered = |g: &str| {
+        let g = g.to_lowercase();
+        tasks.iter().any(|t| {
+            let s = t.subject.to_lowercase();
+            !s.is_empty() && (s.contains(&g) || g.contains(&s))
+        })
+    };
+    items.extend(gap_items(&a.last_reply).into_iter().filter(|g| !covered(g)));
+    if items.is_empty() {
+        return None;
+    }
+    if env.act {
+        metric("parallel");
+    }
+    let cap_text = if cap == 0 { c.str_field("no_cap").to_string() } else { cap.to_string() };
+    Some((items.len() as u64, format!("{run}\t{cap_text}\t{}", joined(&items, num(c, "items_shown"), c.str_field("joiner")))))
+}
+
 fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, Raised> {
     let mut out = BTreeMap::new();
     for s in defaults_signals() {
@@ -383,6 +770,10 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "idle_open_task" => idle_open_task(a, now),
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
+            "stalled" => stalled(env, a, now),
+            "idle_no_agents" => idle_no_agents(env, a, st, now),
+            "false_claim" => false_claim(env, a, now),
+            "underparallel" => underparallel(env, a, st, now),
             _ => None,
         };
         if let Some(r) = r {
@@ -482,6 +873,35 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         }
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         "no_work" => defaults::render("msg.agent_no_work", &[("agent", &who), ("kind", &kind), ("tools", &f.evidence)]),
+        "stalled" => {
+            let c = defaults::raw("nudges.stall_limits");
+            let shown: Vec<String> =
+                a.said.iter().rev().take(num(c, "lines_shown") as usize).rev().map(|l| c.str_field("quote").replace("{line}", l)).collect();
+            let lines = if shown.is_empty() { c.str_field("none").to_string() } else { shown.join(c.str_field("joiner")) };
+            defaults::render(
+                "msg.agent_stalled",
+                &[
+                    ("agent", &who),
+                    ("kind", &kind),
+                    ("what", &defaults::raw("nudges.stall_words").str_field(&f.text)),
+                    ("idle", &age(f.evidence * fmtn("ms_per_s"))),
+                    ("age", &age(a.seen.saturating_sub(a.first_seen))),
+                    ("lines", &lines),
+                ],
+            )
+        }
+        "idle_no_agents" => {
+            defaults::render("msg.agent_idle_no_agents", &[("n", &f.evidence), ("idle", &age(f.since.saturating_sub(a.last_output_ms))), ("tasks", &f.text)])
+        }
+        "false_claim" => {
+            let line = defaults::raw("nudges.stall_limits").str_field("quote").replace("{line}", &f.text);
+            defaults::render("msg.agent_false_claim", &[("agent", &who), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("line", &line)])
+        }
+        "underparallel" => {
+            let mut parts = f.text.splitn(3, '\t');
+            let (run, cap, items) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            defaults::render("msg.agent_underparallel", &[("n", &f.evidence), ("items", &items), ("running", &run), ("cap", &cap)])
+        }
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
             defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
@@ -753,11 +1173,15 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     let mut queued = 0;
     let mut judge_budget = super::waste::judge_budget();
     let ids: Vec<String> = st.agents.keys().cloned().collect();
+    let roots = probe_roots(st);
+    let mut procs_table: Option<Vec<super::procs::Proc>> = None; // the process table, read at most once a tick and only when a quiet agent needs it
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         super::waste::note_head(env, &mut a);
         sample(&mut a, now);
+        let root = roots.get(&id).copied().unwrap_or((0, false));
+        stall_sample(env, &mut a, root, &mut procs_table, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
         mark_breaker(env, &a, raised.get("burn_hard"));

@@ -1190,8 +1190,12 @@ mod tests {
         let dir = scratch("settings");
         let ah = dir.join(defaults::text("mesh_write.dir_anti_hall"));
         std::fs::create_dir_all(&ah).unwrap();
-        // a number past the f64 range: JavaScript reads Infinity, serde refuses
+        // a number past the f64 range (JavaScript reads Infinity) invalidates only its own key (#569): the setting beside it still counts
         std::fs::write(ah.join("settings.json"), r#"{"devswarm":{"requiredGates":"only-this"},"big":1e999}"#).unwrap();
+        let got = csv_setting(&inv_in(&dir), &required_gates_keys()).unwrap();
+        assert_eq!(got, "only-this");
+        // a lone surrogate escape: JavaScript reads it, serde refuses
+        std::fs::write(ah.join("settings.json"), r#"{"devswarm":{"requiredGates":"only-this"},"s":"\ud800"}"#).unwrap();
         let got = csv_setting(&inv_in(&dir), &required_gates_keys()).unwrap();
         assert_eq!(got, required_gates_keys().default, "the engine reads the file as holding no devswarm section and says so");
     }

@@ -1467,3 +1467,286 @@ fn any_non_literal_directory_change_in_a_pushing_call_is_refused() {
         assert!(!err.contains("write the repository path literally"), "{cmd}: {err}");
     }
 }
+
+/// GH #506 (live acceptance): a plain `NAME=value` prefix on the push does not change which repository or configuration git reads, so
+/// the push stays narrowed to its own commits (51+ unpushed elsewhere do not hit the cap); a name that can (`GIT_*`, `HOME`, `PATH`,
+/// `XDG_*`) keeps the whole-repository read.
+#[test]
+fn a_plain_env_prefix_on_the_push_keeps_it_scoped_but_a_git_or_home_name_does_not() {
+    let e = Env::scoped("env_prefix");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [
+        format!("cd {w} && PLAIN_PUSH_FLAG=1 git {P} origin feat"),
+        format!("cd {w} && A=1 B=two git {P} origin feat"),
+        format!("PLAIN_PUSH_FLAG=1 git {P} origin feat"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
+    }
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("cd {w} && GIT_DIR={m}/.git git {P} origin feat"),
+        format!("cd {w} && HOME=/x git {P} origin feat"),
+        format!("cd {w} && PATH=/usr/bin:/bin git {P} origin feat"),
+        format!("cd {w} && XDG_CONFIG_HOME=/x git {P} origin feat"),
+        format!("cd {w} && A=$X git {P} origin feat"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, m);
+        if code != 2 {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // a credited commit among the pushed ones still blocks with the prefix
+    let e = Env::scoped("env_prefix_credit");
+    let (_, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && A=1 git {P} origin feat", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code}: {err}");
+}
+
+/// Switch off (the default): the same prefixed push is read whole, as on dev.
+#[test]
+fn switch_off_env_prefixed_push_reads_the_whole_repository() {
+    let e = Env::new("env_prefix_off");
+    let (_, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && A=1 git {P} origin feat", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("more than 50 local commits"), "{code}: {err}");
+}
+
+/// A pushed meta repository with a submodule `sub` (its gitlink commit is on the submodule's remote), then a credited commit in
+/// the submodule that no remote has, and one unpushed meta commit that does not touch the gitlink.
+fn meta_with_credited_submodule_commit(e: &Env) -> std::path::PathBuf {
+    let (work, _) = pushed_repo(e);
+    let sub_origin = e.dir.join("sub.git");
+    let seed = e.dir.join("seed");
+    std::fs::create_dir_all(&sub_origin).unwrap();
+    std::fs::create_dir_all(&seed).unwrap();
+    git_ok(&sub_origin, &["init", "-q", "--bare", "-b", "main"]);
+    git_ok(&seed, &["init", "-q", "-b", "main"]);
+    git_ok(&seed, &["commit", "-q", "--allow-empty", "-m", "sub base"]);
+    git_ok(&seed, &["push", "-q", sub_origin.to_str().unwrap(), "main"]);
+    git_ok(&work, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub_origin.to_str().unwrap(), "sub"]);
+    git_ok(&work, &["commit", "-q", "-m", "add sub"]);
+    git_ok(&work, &["push", "-q", "origin", "main"]);
+    git_ok(&work.join("sub"), &["commit", "-q", "--allow-empty", "-m", CREDITED]);
+    git_ok(&work, &["commit", "-q", "--allow-empty", "-m", "meta change"]);
+    work
+}
+
+/// GH #506 (live acceptance): a scoped, non-recursing push of the meta repository publishes no submodule commit, so a credited
+/// unpushed commit in a submodule the pushed range does not reference neither blocks it nor is read.
+#[test]
+fn a_scoped_push_ignores_a_submodule_the_pushed_range_does_not_reference() {
+    let e = Env::scoped("sub_scoped_ok");
+    let work = meta_with_credited_submodule_commit(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    for cmd in
+        [format!("git -C {w} {P} origin main"), format!("cd {w} && git {P} -u origin main"), format!("git -C {w} {P} --recurse-submodules=no origin main")]
+    {
+        assert_eq!(e.hook_in(&cmd, "/tmp"), (String::new(), String::new(), 0), "{cmd}");
+    }
+}
+
+/// The same fixture with the submodule commit recorded in a pushed meta commit (the gitlink is bumped to it): the push publishes a
+/// gitlink to a credited commit no remote has, so it is refused.
+#[test]
+fn a_scoped_push_that_bumps_the_gitlink_to_a_credited_submodule_commit_blocks() {
+    let e = Env::scoped("sub_scoped_bump");
+    let work = meta_with_credited_submodule_commit(&e);
+    git_ok(&work, &["add", "sub"]);
+    git_ok(&work, &["commit", "-q", "-m", "bump sub"]);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("AI credit"), "{err}");
+}
+
+/// A recursing push (the flag, push.recurseSubmodules or submodule.recurse) can publish submodule commits: they are read.
+#[test]
+fn a_recursing_scoped_push_still_reads_the_submodules() {
+    let e = Env::scoped("sub_scoped_rec");
+    let work = meta_with_credited_submodule_commit(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} --recurse-submodules=on-demand origin main"), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "flag: {code} {out} {err}");
+    // `check` only verifies, but it is read like on-demand and only: the submodules are read
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} --recurse-submodules=check origin main"), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "check: {code} {out} {err}");
+    for (key, val) in [("push.recurseSubmodules", "on-demand"), ("push.recurseSubmodules", "check"), ("submodule.recurse", "true")] {
+        git_ok(&work, &["config", key, val]);
+        let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
+        assert!(code == 2 && err.contains("AI credit"), "{key}: {code} {out} {err}");
+        git_ok(&work, &["config", "--unset", key]);
+    }
+    assert_eq!(e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp"), (String::new(), String::new(), 0));
+}
+
+/// Switch off (the default): the submodule is read for every push, as on dev.
+#[test]
+fn switch_off_reads_the_submodules_for_every_push() {
+    let e = Env::new("sub_off");
+    let work = meta_with_credited_submodule_commit(&e);
+    let w = work.to_str().unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {w} {P} origin main"), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code} {out} {err}");
+}
+
+/// Switch off: the submodule is named as on dev when the repository is reached through a symlink (the path git prints is
+/// not under the symlinked top directory, so the text is cut to its marker); the real-path normalisation applies only with the switch on.
+#[test]
+fn switch_off_names_the_submodule_as_dev_does_through_a_symlinked_repository() {
+    let e = Env::new("sub_off_link");
+    let work = meta_with_credited_submodule_commit(&e);
+    let link = e.dir.join("link");
+    std::os::unix::fs::symlink(&work, &link).unwrap();
+    let _ = e.hook("echo warm");
+    let (out, err, code) = e.hook_in(&format!("git -C {} {P} origin main", link.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code} {out} {err}");
+    // an absolute path is not shortened to the submodule name: the where-text is cut to its marker, as on dev
+    assert!(err.contains("in submodule…"), "{err}");
+}
+
+/// Agents append `2>&1 | tail -5` to a push by habit: that output tail changes nothing the push publishes, so a proven push keeps its
+/// scope with it (51+ unpushed elsewhere do not hit the cap). Any other pipe or redirect leaves the push unproven.
+#[test]
+fn a_harmless_output_tail_on_a_proven_push_keeps_it_scoped() {
+    let e = Env::scoped("out_tail");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [
+        format!("cd {w} && git {P} origin feat 2>&1 | tail -5"),
+        format!("cd {w} && git {P} origin feat | tail -n 5"),
+        format!("cd {w} && git {P} origin feat 2>&1"),
+        format!("cd {w} && git {P} origin feat 2>&1 | head -20"),
+        format!("cd {w} && git {P} origin feat | cat"),
+        format!("cd {w} && A=1 git {P} origin feat 2>&1 | tail -3"),
+        format!("git -C {w} {P} origin feat 2>&1 | tail"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
+    }
+    let mut missed = Vec::new();
+    for cmd in [
+        format!("cd {w} && git {P} origin feat | tee x"),
+        format!("cd {w} && git {P} origin feat > out.txt"),
+        format!("cd {w} && git {P} origin feat 2>&1 | sh"),
+        format!("cd {w} && git {P} origin feat | tail -5 | tee x"),
+        format!("cd {w} && git {P} origin feat < in.txt"),
+        format!("cd {w} && git {P} origin feat 2>&1 | tail -5; echo done"),
+        format!("cd {w} && git status | tail -5 && git {P} origin feat"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, m);
+        if code != 2 || !err.contains("more than 50 local commits") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+    // a credited commit in the pushed range still blocks with the tail
+    let e = Env::scoped("out_tail_credit");
+    let (_, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && git {P} origin feat 2>&1 | tail -5", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("AI credit"), "{code}: {err}");
+}
+
+/// Switch off: the same push with an output tail is read whole, as on dev.
+#[test]
+fn switch_off_an_output_tail_push_reads_the_whole_repository() {
+    let e = Env::new("out_tail_off");
+    let (_, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (_, err, code) = e.hook_in(&format!("cd {} && git {P} origin feat 2>&1 | tail -5", wt.to_str().unwrap()), "/tmp");
+    assert!(code == 2 && err.contains("more than 50 local commits"), "{code}: {err}");
+}
+
+/// GH #591: shell comment text is no command. A wrapper script whose comments mention `git commit -F ... && git push` (and a call
+/// that passes `$(cat file)` as data) is not a commit plus a push; the same words as live commands in the same call still are.
+#[test]
+fn comment_text_naming_a_commit_and_a_push_is_not_a_commit_and_a_push() {
+    let e = Env::new("comment591");
+    let (work, _) = pushed_repo(&e);
+    let w = work.to_str().unwrap();
+    std::fs::write(work.join("msg.txt"), "summary\n").unwrap();
+    // the wrapper only reports: its comments and its usage text name the commands
+    let wrapper =
+        format!("#!/bin/bash\n# e.g. the lane ran `git add x && git commit -F f` and then git {P} -q origin main\n# it's a report only\necho \"$1 $2\"\n");
+    std::fs::write(work.join("done.sh"), wrapper).unwrap();
+    // the same wrapper with a live commit plus a push after its comment lines
+    let live = format!("#!/bin/bash\n# note: it's real\ngit commit -q --allow-empty -F msg.txt\ngit {P} -q origin main\n");
+    std::fs::write(work.join("live.sh"), live).unwrap();
+    let _ = e.hook("echo warm");
+    let mut wrong = Vec::new();
+    for cmd in [
+        "bash done.sh --summary \"$(cat msg.txt)\"".to_string(),
+        format!("echo hi # ran git add x && git commit -F f && git {P} origin main"),
+        format!("# ran git add x && git commit -F f && git {P} origin main\necho hi"),
+    ] {
+        let r = e.hook_in(&cmd, w);
+        if r.2 == 2 {
+            wrong.push(format!("blocked: {cmd}: {r:?}"));
+        }
+    }
+    for cmd in [
+        "bash live.sh --summary \"$(cat msg.txt)\"".to_string(),
+        format!("git commit -q --allow-empty -m \"$(cat msg.txt)\" && git {P} origin main"),
+        format!("# a note\ngit commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("git commit -q --allow-empty -F msg.txt # note\ngit {P} origin main"),
+        // a `#` glued to the previous word is text, not a comment: the commit and push after it stay live
+        format!("echo $(true)# ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        // a `#` inside quotes is text
+        format!("git commit -q --allow-empty -F \"a # b.txt\" && git {P} origin main"),
+        format!("echo \"x # y\" ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo 'x # y' ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        // `$#`, `${{#var}}` and a mid-word `#` are not comments
+        format!("echo $# ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo ${{#PATH}} ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo a#b ; git commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        // a trailing comment after the real commit and push changes nothing
+        format!("git commit -q --allow-empty -F msg.txt && git {P} origin main # trailing"),
+        // a heredoc body with a `#` line, and a `$(...)` body after a `#` in quotes, hide nothing that follows
+        format!("cat <<'EOF' > /dev/null\n# body line\nEOF\ngit commit -q --allow-empty -F msg.txt && git {P} origin main"),
+        format!("echo '#' $(git commit -q --allow-empty -F msg.txt) ; git {P} origin main"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("separate") {
+            wrong.push(format!("block expected: {cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// GH #591 class fix: comment detection follows bash's lexical rules. The guard's `splitSegments` is run against REAL bash over
+/// 350+ generated snippets (escaped space/tab/vertical tab/semicolon/ampersand/pipe/paren, continuation lines, quotes, `$'..'`,
+/// `${..}`, `$#`, backticks, heredocs, CRLF, nested shells); `git` is a stub that logs its argv. Every call bash executed must be a
+/// live segment (a hidden one is a guard bypass) and comment text bash skips must not be (the false block).
+#[test]
+fn segmentation_matches_real_bash_on_comment_and_escape_snippets() {
+    for tool in ["node", "bash"] {
+        assert!(Command::new(tool).arg("--version").output().is_ok(), "{tool} is required for the differential segmentation test");
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new("node").arg(root.join("tests/fixtures/segdiff/segdiff.cjs")).arg(root.join("../plugins/anti-hall")).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+    let cases: usize = text.split("cases=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(cases >= 150, "too few differential cases ran: {text}");
+}
+
+/// GH #591 fail-safe: ~55 hand-picked snippets under real `bash -c` with a stub `git`; every git call bash executed must be held by a
+/// live segment (comment text kept live when the lexer is unsure is allowed, a hidden executed call is not).
+#[test]
+fn every_git_call_real_bash_executes_is_a_live_segment() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new("node").arg(root.join("tests/fixtures/segdiff/bashdiff.cjs")).arg(root.join("../plugins/anti-hall")).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+    let n: usize = text.split("snippets=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(n >= 40, "too few bashdiff snippets ran: {text}");
+}

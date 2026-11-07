@@ -1,5 +1,7 @@
 # KB.md — Canonical Knowledge Base for anti-hall
 
+> **Historical (pre-engine).** This knowledge base describes the Node-hook era. Since release 0.301.1 the Rust engine is the only runtime and no Node hooks ship; see [AH-ENGINE.md](AH-ENGINE.md) for the current design. Entries naming `.js` hooks refer to checks the engine now runs.
+
 > **Source of truth for developing and maintaining the anti-hall plugin.**
 > This is the map. The deep research lives in the section docs linked below; this
 > file is the authoritative index, the *current-plugin ground truth*, and the
@@ -54,9 +56,9 @@ debates reference the living docs for evidence; the *current* state and the
 > `hooks.json`, 44 of them also in `codex/hooks/hooks.json`). New hooks this release:
 > `auto-handover.js` (UserPromptSubmit), `auto-handover-pause-nag.js` (Stop),
 > `repair-on-reload.js` (SessionStart + UserPromptSubmit); unreleased on top of that
-> (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **32** directories under
-> `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill; new: `settings`, `afk`); Codex
-> skills: **35** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`, `anti-hall-afk`).
+> (post-0.108.5): `silent-agent-nudge.js` (Stop). Claude skills: **33** directories under
+> `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill; new: `settings`, `afk`, `engine-replies`); Codex
+> skills: **36** directories under `plugins/anti-hall/codex/skills/` (new: `anti-hall-settings`, `anti-hall-afk`, `anti-hall-engine-replies`).
 > `PostToolUse` wired: 3 Bash-matcher handlers (`output-verify-guard.js`,
 > `devswarm-parent-reply-tracker.js`, `devswarm-child-drain.js`).
 > `PostToolUseFailure` wired: 1 Bash-matcher handler (`failure-root-cause-nudge.js`).
@@ -371,6 +373,16 @@ bumped `2026-08-22` → `2026-09-03`. No routing logic found hardcoding a Fable
 model id; the sole hardcoded-model-id exception repo-wide remains
 `speculation-judge.js`'s direct Anthropic Messages API call
 (`claude-haiku-4-5`, unrelated to Fable, unchanged this pass).
+
+**[APPENDED 2026-11-04] Model-KB re-audit:** lineup moved on again. Claude: Opus 5.5
+(`claude-opus-5-5`, $4/$20), Sonnet 5.5 (`claude-sonnet-5-5`, $2/$10), Haiku 5.5 (`claude-haiku-5-5`,
+1M ctx) are current; Fable 5.1 pricing is now verified ($10/$50). Codex: the installed CLI catalog
+(v0.166.0) lists GPT-6.1 Sol / GPT-6 Astra / GPT-6.1 Terra / GPT-6 Luna above GPT-5.6. Stacked
+`[UPDATE 2026-11-04]` blocks were added to `KB-model-modes.md`, `KB-sonnet-5.md`, `KB-fable-5.md`,
+`KB-token-usage-models.md`, `KB-codex-vs-opus-coding.md` and `KB-gpt-5.6.md`; unverifiable items are marked
+UNVERIFIED in place. `MODEL-POLICY.md` (both variants) needed no change (tier-token routing).
+`session.model_kb_audit_date` bumped `2026-09-03` -> `2026-11-04` (session.toml, defaults.pristine, the
+Node `repo-audit-baseline.js` mirror, REFERENCE.md).
 
 **Historical docs — pre-redesign claims (do NOT fix; they are frozen records):**
 These describe the plugin *before* the cadence redesign and are intentionally

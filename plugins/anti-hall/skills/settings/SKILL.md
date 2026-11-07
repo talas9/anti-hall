@@ -167,6 +167,8 @@ All three stay silent unless the session has the advisor tool, block once per tr
 
 Turn it off with `set guards.advisorRetry false` (likewise `guards.advisorPlan`, `guards.advisorReview`, `guards.advisorThinking`, `guards.advisorSayDo`) or the env `ANTIHALL_ADVISOR_RETRY`, `ANTIHALL_ADVISOR_PLAN`, `ANTIHALL_ADVISOR_REVIEW`, `ANTIHALL_ADVISOR_THINKING`, `ANTIHALL_ADVISOR_SAY_DO` set to `0`.
 
+The plan rule and the retry re-edit rule, in the main session only, are skipped while the main model ranks equal or higher than the advisor model (haiku < sonnet < opus < fable, matched by family name, so a new version needs no edit): an Opus main with an Opus advisor is left alone. A subagent is never exempted, and an unknown main or advisor model keeps the guard on. The review rule and the phase-3 rules are not affected. Switch: `guards.advisorRank` (env `ANTIHALL_ADVISOR_RANK`, default off); counters `advisor_guard.skipped_equal_or_higher`, `applied_lower_model`, `applied_unknown_model`, `applied_subagent_unranked`, and the metric `advisor_rank{result}`.
+
 ## Turning a hook off
 
 "Turn off the task-list nudge", "stop the per-turn verify-first line", "disable the
@@ -249,7 +251,7 @@ turn-ending Stop point (the fire-once or the natural-pause nag in
 `auto-handover-pause-nag`), once this session's `HANDOVER*.md` exists and
 is fresh (no counted file-changing action — including subagent edits and Bash
 writes — happened after it was written; the same shared detector
-`tasklist-guard.js` uses), the directive tells the agent to END its
+`tasklist-guard` uses), the directive tells the agent to END its
 reply with one prominent, glyph-led line naming the exact command: `🟢 **GOOD POINT
 TO /compact NOW**: handover saved at <path>. /compact keeps working on the same
 task; /clear if the next task is different.` — or, when the handover's own "Open
@@ -308,14 +310,14 @@ a transcript estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` overrides the window siz
 estimate with an unknown window gets only a soft advisory from the percent path (the
 token ceiling still fires the directive). If a long autonomous turn never reaches a
 new prompt, the Stop hook delivers the directive once instead. Before every compaction
-`precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
+`precompact-snapshot` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
 next to the handovers (it never blocks compaction). Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 ## Engine settings (`ah-engine`)
 
 The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honoured by the engine and by the Node hooks alike, so
 `set` works the same with or without the engine. The engine's own tunables (limits, texts, rules, dispatch rows, `telemetry.enabled`,
-`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `settings.js` keys: they are plain files in the plugin's
+`telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `ah-engine settings` keys: they are plain files in the plugin's
 `engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
 validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
 to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. The automatic

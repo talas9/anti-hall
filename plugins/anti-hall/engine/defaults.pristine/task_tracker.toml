@@ -450,6 +450,34 @@ value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DI
 doc = "Short reminder speaks only on list change. Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window."
 value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
 
+[task_tracker.terse_setting]
+doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off."
+value = { section = "context", key = "taskTrackerTerse", env = "ANTIHALL_TASK_TRACKER_TERSE", aliases = [], option = "", default = true }
+
+[task_tracker.stock_texts]
+doc = "The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays."
+value = { what_full = "requests need tracking before work starts.", instead_head = "track each request as a priority-sorted task.", non_blocking = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; ", what_short = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.", open_some = "open tasks: {n}{blocked}{tail} — update or close them.", subject_tail = " (oldest in_progress subject: {subject})" }
+
+[task_tracker.terse_texts]
+doc = "The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key."
+value = { what_full = "each user request is tracked as a priority-sorted task before work starts, so none is lost.", instead_head = "create the task before the work and keep its status current.", non_blocking = " delegate heavy or long work to background subagents, so the main thread stays free.", what_short = "this prompt may hold a request that is not in the task list yet; add it as a task, so none is dropped.", open_some = "open tasks: {n}{blocked}{tail}; close the finished ones, so the list stays accurate.", subject_tail = " (oldest in progress: {subject})" }
+
+[task_tracker.event_full]
+doc = "Counter event: the full directive was sent."
+value = "full_emitted"
+
+[task_tracker.event_short]
+doc = "Counter event: the short reminder was sent."
+value = "short_emitted"
+
+[task_tracker.event_short_same]
+doc = "Counter event: the short reminder was withheld because the task list is in the state the agent was already told (unchanged list, or the dedupe store holds the text)."
+value = "short_suppressed_same_state"
+
 [task_tracker.untracked_prompts]
 doc = "Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."
 value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }
+
+[metric.task_tracker_emitted]
+doc = "Task tracker messages, by form (full_emitted: the full directive was sent; short_emitted: the short reminder was sent; short_suppressed_same_state: the short reminder was withheld because the agent was already told this state)."
+value = { kind = "counter", unit = "messages", labels = ["form"] }

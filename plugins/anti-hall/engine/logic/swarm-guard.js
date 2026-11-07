@@ -66,20 +66,85 @@ function swgUnder(abs, dir) {
 
 // True when the brief names its own working tree (a clone, worktree, cd or work-in target) at an absolute or ~ path outside the
 // session's tree: that agent works in another checkout, so it shares nothing with this one.
-function swgNamesOtherTree(t, tree) {
-  if (!tree) return false;
-  var hits = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree'), 'i', t), home = ah.home();
+// The bare fresh-clone matcher (swarm_guard.re_named_tree_bare, guards.sharedTreeBareClone) runs only after the main one found nothing;
+// swgBareHit tells the shared-tree note that the bare matcher alone made the difference, so it can count the exemption once per spawn.
+var swgBareHit = false, swgBareSpans = [], swgBareAvoided = false;
+
+// Fail safe: any negation token ("not", "never", "without", "rather than", "n't" ...) anywhere in the sentence that holds the bare statement,
+// before or after it and with any words between, keeps the shared-tree note. Only an unambiguous affirmative sentence exempts the spawn.
+// Whatever is uncertain WIDENS the sentence, never narrows it: a sentence ends only at a stop, ! or ? before white space and a capital
+// letter (never a semicolon), and never inside brackets, quotes, code ticks, emphasis or dashes (an unclosed one runs to the end), after
+// an abbreviation, a lone letter or digit, or in an ellipsis. A single quote or emphasis mark opens a span only by its place in the text
+// (swarm_guard.bare_mark_groups): an apostrophe in a word opens nothing. The negation test then reads the unmasked sentence, with path
+// words blanked ("~/no-tree" is no negation). The breaks of a text are found once per text (swgBareBreaks), not once per hit.
+function swgBareMask(t) {
+  var m = t.split(''), spans = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_mask'), 'r', t), i, j, k;
+  for (i = 0; i < spans.length; i++) for (k = spans[i][0]; k < spans[i][1] && k < m.length; k++) m[k] = '_';
+  var open = ah.cfg('swarm_guard.bare_nest_open'), close = ah.cfg('swarm_guard.bare_nest_close'), toggle = ah.cfg('swarm_guard.bare_nest_toggle');
+  var groups = ah.cfg('swarm_guard.bare_mark_groups').split(' '), word = new RegExp(ah.cfg('swarm_guard.bare_mark_word'), 'u');
+  var before = new RegExp(ah.cfg('swarm_guard.bare_mark_before'), 'u'), dash = {}, dashes = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_dash'), 'r', t);
+  for (i = 0; i < dashes.length; i++) dash[dashes[i][0] + t.slice(dashes[i][0], dashes[i][1]).indexOf('-')] = true;
+  var pairs = ah.cfg('swarm_guard.bare_nest_toggle_pairs').split(' '), stack = [], tog = {}, togOpen = 0;
+  for (i = 0; i < m.length; i++) {
+    var c = t.charAt(i), o = open.indexOf(c), inside = stack.length > 0 || togOpen > 0, g = -1;
+    for (j = 0; j < groups.length; j++) if (groups[j].indexOf(c) >= 0) g = j;
+    if (pairs.indexOf(t.substr(i, 2)) >= 0 && (i === 0 || t.charAt(i - 1) !== c)) {
+      inside = true; if (tog[c + c]) { tog[c + c] = false; togOpen--; } else { tog[c + c] = true; togOpen++; }
+      m[i++] = '_';
+    } else if (dash[i]) { inside = true; if (tog['-']) { tog['-'] = false; togOpen--; } else { tog['-'] = true; togOpen++; } }
+    else if (stack.length && c === stack[stack.length - 1]) stack.pop();
+    else if (o >= 0) { inside = true; stack.push(close.charAt(o)); }
+    else if (toggle.indexOf(c) >= 0) { inside = true; if (tog[c]) { tog[c] = false; togOpen--; } else { tog[c] = true; togOpen++; } }
+    else if (g >= 0) {
+      var prev = i > 0 ? t.charAt(i - 1) : '', next = i + 1 < t.length ? t.charAt(i + 1) : '', tok = '\u0001' + g;
+      if (stack.length && stack[stack.length - 1] === tok && prev !== '' && !/\s/.test(prev) && !word.test(next)) stack.pop();
+      else if (before.test(prev) && next !== '' && !/\s/.test(next)) { inside = true; stack.push(tok); }
+    }
+    if (inside) m[i] = '_';
+  }
+  return m.join('');
+}
+
+function swgBareBreaks(t) { return ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_clause_break'), 'r', swgBareMask(t)); }
+
+function swgBareClauseNegated(t, from, to, brk) {
+  var lead = ah.re.find(ah.cfg('swarm_guard.re_named_tree_bare_lead'), '', t.slice(from, to));
+  var at = from + (lead ? lead[1] : 0), start = 0, end = t.length;
+  // a break's own match opens with its stop and ends on the next sentence's first letter: both bounds use its start
+  for (var i = 0; i < brk.length; i++) {
+    if (brk[i][0] < at) start = brk[i][0];
+    else { end = brk[i][0]; break; }
+  }
+  var clause = t.slice(start, end).replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_invisible'), 'g'), '')
+    .replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_pathtok'), 'g'), '$1 ');
+  return ah.re.test(ah.cfg('swarm_guard.re_named_tree_bare_negation'), 'r', clause);
+}
+
+// For the bare matcher every exempting statement is collected (swgBareSpans, offsets into t): the in-place check blanks them all,
+// "use ~/x as the working copy" would otherwise trip the in-place word "working copy".
+function swgNamedTreeOutside(t, tree, key, home, bare) {
+  var hits = ah.re.findAll(ah.cfg(key), 'i', t), found = false, brk = null;
   for (var i = 0; i < hits.length; i++) {
     var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
     if (!at) continue;
+    // a negated bare statement ("do not use ~/x as the working copy") names no tree of this agent's
+    if (bare) { if (brk === null) brk = swgBareBreaks(t); if (swgBareClauseNegated(t, hits[i][0], hits[i][1], brk)) continue; }
     var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
     if (trim) raw = raw.slice(0, trim[0]);
     var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);
     if (tilde) { if (!home) continue; raw = home + raw.slice(tilde[1]); }
     if (!ah.path.isAbsolute(raw)) continue;
     var abs = ah.path.resolveAbs(raw);
-    if (!swgInTree(abs, tree)) return true;
+    if (!swgInTree(abs, tree)) { if (!bare) return true; swgBareSpans.push(hits[i]); found = true; }
   }
+  return found;
+}
+
+function swgNamesOtherTree(t, tree) {
+  if (!tree) return false;
+  var home = ah.home();
+  if (swgNamedTreeOutside(t, tree, 'swarm_guard.re_named_tree', home)) return true;
+  if (ah.settings.bool('swarm_guard.named_tree_bare_setting') && swgNamedTreeOutside(t, tree, 'swarm_guard.re_named_tree_bare', home, true)) { swgBareHit = true; return true; }
   return false;
 }
 
@@ -113,12 +178,16 @@ function swgInScratch(inp, tree) {
   // spans; an independent affirmative clause still cancels the exemption.
   var place = ah.cfg('swarm_guard.re_in_place');
   var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
-  var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
+  swgBareSpans = [];
   // an agent that only writes a report or results under the scratch location touches no checkout, unless it also says it edits repo files
   var scratchOnly = ah.settings.bool('swarm_guard.scratch_only_setting') &&
     ah.re.test(ah.cfg('swarm_guard.re_scratch_only').split('{path}').join(path), 'i', t) && !ah.re.test(ah.cfg('swarm_guard.re_repo_write'), 'i', t);
-  return (scratchOnly || ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
-    !ah.re.test(place, 'i', affirmative);
+  var exempt = scratchOnly || ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree);
+  if (!exempt || ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t)) return false;
+  // blank each exempting bare statement by offset (same length, so the replace below keeps its place)
+  var blanked = t;
+  swgBareSpans.forEach(function (h) { blanked = blanked.slice(0, h[0]) + ' '.repeat(h[1] - h[0]) + blanked.slice(h[1]); });
+  return !ah.re.test(place, 'i', blanked.replace(new RegExp(negated, 'gi'), ' '));
 }
 
 function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
@@ -149,11 +218,18 @@ function swgRepoDocsMatch(dir0, re) {
 
 // The advisory text, '' when silent, null when the answer cannot be reproduced (counted; no note).
 function swgSharedTreeNote(p) {
+  swgBareAvoided = false; // a stale flag from the previous call must never count
   if (!ah.settings.bool('swarm_guard.shared_tree_setting')) return '';
   var inp = swgIsObj(p.tool_input) ? p.tool_input : null;
   var tree = swgTree(p.cwd);
   if (tree === 'unsure') return null;
-  if (!inp || !swgSharesTree(inp, tree)) return '';
+  swgBareHit = false;
+  // exempt only by the bare matcher: flagged below once the warning is known to have been due (the caller counts it only when the spawn is allowed); later scans clobber swgBareHit
+  var bareExempt = false;
+  if (!inp || !swgSharesTree(inp, tree)) {
+    if (!swgBareHit) return '';
+    bareExempt = true;
+  }
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
   var scan = ah.transcript.agentsWindow(tp); // Node's runningAgents: the default window only
@@ -168,6 +244,7 @@ function swgSharedTreeNote(p) {
   if (ah.settings.bool('swarm_guard.quiet_no_worktrees_setting')) { // a rule that says main-only / no worktrees makes the hint moot
     if (noWt || swgMemoryNoWorktrees(String(p.cwd))) return '';
   }
+  if (bareExempt) { swgBareAvoided = true; return ''; }
   return text.message('warn', ah.cfg('swarm_guard.shared_tree_label'), {
     what: ah.cfg('swarm_guard.msg_shared_what'), why: ah.cfg('swarm_guard.msg_shared_why'),
     instead: ah.cfg(noWt ? 'swarm_guard.msg_shared_instead_no_worktrees' : 'swarm_guard.msg_shared_instead'),
@@ -358,7 +435,11 @@ function decide(p) {
     ah.state.writeAtomic(logRel, recent.join('\n') + '\n'); // a failed write allows the spawn unrecorded, as Node
   }
   ah.state.unlock(lock);
-  if (reason === null) return note ? { advisory: text.advisoryJson('PreToolUse', note) } : 'allow';
+  if (reason === null) {
+    // an avoided warning is counted only on an allowed spawn that was recorded: a rate block or an unlocked allow shows no note either way
+    if (swgBareAvoided) { ah.advisory('swarm_guard_fp', 'named_tree_bare'); ah.metric('named_tree_bare', []); }
+    return note ? { advisory: text.advisoryJson('PreToolUse', note) } : 'allow';
+  }
   // telemetry only, after the lock: a trip is observable but never feeds the rate window
   ah.state.appendFile(dir + '/' + ah.cfg('swarm_guard.trip_file'), new Date(now).toISOString() + '\t' + tripped + '\t' + label + '\n');
   return swgBlock(reason);

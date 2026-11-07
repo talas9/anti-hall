@@ -47,13 +47,13 @@ The handover is written **by the agent holding the session context** —
 its reconstruction loses decision/trial fidelity (a field failure: a session
 delegated handover-writing to a subagent even after loading this skill).
 Documented exception to delegation-first/orchestrate-only doctrine. Parity
-note: `edit-guard.js`'s wrong-location redirect and `model-routing-guard.js`'s
+note: `edit-guard`'s wrong-location redirect and `model-routing-guard`'s
 spawn-intent advisory (shared files) carry this rule's logic, but Codex's
 `hooks.json` wires neither onto a Write/Edit or Agent-spawn matcher (it does
-register `tasklist-guard.js` and `handover-resume.js`) — treat this as YOUR
+register `tasklist-guard` and `handover-resume`) — treat this as YOUR
 discipline here, not yet a mechanical rail. Use the Write/Edit tool for
 every file below, never a Bash heredoc (`cat > f <<EOF`) — a heredoc body is
-scanned as shell by `git-guard.js` (shared with Claude Code), and prose that
+scanned as shell by `git-guard` (shared with Claude Code), and prose that
 merely mentions a git command near backticks can trip a block Write/Edit
 never hit in the first place.
 
@@ -167,8 +167,8 @@ consolidated schema):
     After running it, **append** a `resume-verified: <ISO timestamp> --
     <one-line git-status/pwd/smoke summary>` line to this file — this is what
     proves the checklist actually ran, not just that it was written down.
-    `tasklist-guard.js` backs this up mechanically (v0.75.0): when
-    `handover-resume.js` injected a resume pointer this session and this
+    `tasklist-guard` backs this up mechanically (v0.75.0): when
+    `handover-resume` injected a resume pointer this session and this
     session then makes file-changing actions with no `resume-verified:` line
     ever landing in the referenced file, one capped Stop-hook nudge fires.
     Then the **receiver read-back**: before any new work, tell the user in your
@@ -319,7 +319,7 @@ as `.anti-hall/progress/INDEX.md`:
 
 ## Automatic resume
 
-A companion SessionStart hook, `handover-resume.js`, closes the loop: on a
+A companion SessionStart hook, `handover-resume`, closes the loop: on a
 context reset (clear/compaction) or a fresh session start, it scans
 `.anti-hall/handovers/` for the newest `HANDOVER*.md` (preferring the SAME
 session over a merely newer other-session one) and, if ≤7 days old, injects a
@@ -332,7 +332,7 @@ is what the next context actually resumes from.
 `source: "compact"` after it compacts a root session — also when automatic
 compaction happens mid-turn, delivering the hook's context to the immediate
 continuation (official Codex hooks reference, learn.chatgpt.com/docs/hooks).
-`handover-resume.js` is registered on `SessionStart` with no matcher, so it
+`handover-resume` is registered on `SessionStart` with no matcher, so it
 fires there too.
 
 **PreCompact safety net.** `precompact-snapshot` (registered on Codex's
@@ -371,7 +371,7 @@ to compact", or `/compact …` / `/new` offered as advice) ONLY when:
 
 Never declare it within `guards.compactAdviceRecentTurns` (default 10) turns of
 a compaction — context was just reset. Check the actual context % before
-saying it. `compact-advice-guard.js` (Stop, shared and registered in Codex's
+saying it. `compact-advice-guard` (Stop, shared and registered in Codex's
 own `hooks.json`) blocks a violating reply once and names the real %; retract
 with one line — `RETRACT SAFE TO COMPACT — <why>` — and continue or stop.
 
@@ -396,12 +396,12 @@ final message depends on the `Trigger:` line you recorded above:
 
 The declared line is the LAST act of the turn either way; work after it makes
 the handover STALE — refresh (same seq, or seq+1) and re-declare before
-claiming safe/saved again. `compact-declaration-guard.js` (shared; on Codex
+claiming safe/saved again. `compact-declaration-guard` (shared; on Codex
 registered for shell commands only; `guards.compactDeclarationGuard`,
 default ON since 0.117.0) blocks state-changing shell after a SAFE
 declaration in the same turn — regardless of the switch, write
 `RETRACT SAFE TO COMPACT — <why>` first
-if more work is genuinely needed. `tasklist-guard.js` (shared, and registered in
+if more work is genuinely needed. `tasklist-guard` (shared, and registered in
 Codex's own `hooks.json`) backs this up mechanically: file-changing work after
 the newest `HANDOVER*.md`'s mtime gets a capped "handover is STALE" advisory
 on its Stop output (staleness detection is by mtime + section content, not by
@@ -414,7 +414,7 @@ matching either declaration string, so it works the same for both).
    session's directory, if later seqs exist — check its Predecessor chain if
    unsure which is newest).
 3. Run the Resume-verification checklist BEFORE trusting anything else in the
-   file, THEN append the `resume-verified:` line to it — `tasklist-guard.js`
+   file, THEN append the `resume-verified:` line to it — `tasklist-guard`
    nags (once, capped) if file-changing work happens this session without one.
    Then give the user your read-back (goal, next action, active session rules,
    in your own words) before starting any new work.

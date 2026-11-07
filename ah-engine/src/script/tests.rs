@@ -965,6 +965,468 @@ mod swarm {
         assert!(note("fix it", &other).is_none(), "the running agent works in another clone");
     }
 
+    // issue #487: a bare fresh-clone statement ("clone ~/x", "use ~/x as the working copy") names a tree, behind guards.sharedTreeBareClone
+    #[test]
+    fn shared_tree_bare_clone_phrasings_name_their_own_tree_only_when_the_switch_is_on() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        let bare = [
+            "Do the build: clone ~/x and build it, then fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x then test, fix hooks/foo.js and commit.",
+            "Fix hooks/foo.js. clone into ~/x and commit there.",
+            "Use ~/x as the working copy, fix hooks/foo.js and commit.",
+        ];
+        let still = [
+            "git clone ~/src ~/dst, then fix hooks/foo.js and commit.",
+            "Use ~/x/script to fix hooks/foo.js and commit.",
+            "Fix hooks/foo.js and commit; clone ~/proj/sub for reference.",
+            "Use ~/x as the working copy, but edit hooks/foo.js in place and commit.",
+        ];
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":false}}"#).unwrap();
+        for p in bare {
+            assert!(note(p).is_some(), "switch off keeps the note: {p}");
+        }
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        for p in bare {
+            assert!(note(p).is_none(), "switch on exempts: {p}");
+        }
+        for p in still {
+            assert!(note(p).is_some(), "switch on still notes: {p}");
+        }
+        assert!(note("fix hooks/foo.js and commit it.").is_some(), "two spawns on the real session tree still note");
+    }
+
+    // review of #487: a NEGATED bare statement ("do not use ~/x as the working copy") names no tree; the switch must not exempt it
+    #[test]
+    fn shared_tree_bare_clone_negated_phrasings_keep_the_note_with_the_switch_on() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare-neg");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for p in [
+            "Do not use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Don't use ~/x as the working copy, fix hooks/foo.js and commit.",
+            "Please never use ~/x as the clone. Fix hooks/foo.js and commit.",
+            "You must not use ~/x as the checkout; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_some(), "a negated statement keeps the note: {p}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "a kept note is not an avoided warning");
+        assert!(note("Use ~/x as the working copy, fix hooks/foo.js and commit.").is_none(), "the affirmative form still exempts");
+    }
+
+    // class fix of #487: a negation ANYWHERE in the clause that holds the isolation phrase keeps the note (a missed isolation costs one
+    // warning, a missed warning loses work). Each negated brief is paired with its affirmative twin, which the switch must still exempt, so a
+    // brief the bare matcher never reads cannot pass for the wrong reason.
+    #[test]
+    fn shared_tree_bare_clone_a_negation_anywhere_in_the_clause_keeps_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = swarm_home("sw-bare-clause");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str| {
+            n += 1;
+            // dozens of spawns in one test: clear the spawn-rate window so the cap never answers instead of the note
+            crate::discard::harmless(std::fs::remove_file(format!("{h}/.anti-hall/swarm-spawns.log"))); // keep: the log may not exist yet
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        // (negated brief, affirmative twin)
+        let pairs = [
+            ("Do not actually use ~/x as the working copy; fix hooks/foo.js and commit.", "Actually use ~/x as the working copy; fix hooks/foo.js and commit."),
+            (
+                "Do not under any circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Under all circumstances use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Don't, under any circumstances, use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Do, under any circumstances, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "You shouldn\u{2019}t really, honestly use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "You should really, honestly use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Avoid having to use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Plan on having to use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            ("Never: clone into ~/x and build; fix hooks/foo.js and commit.", "Always: clone into ~/x and build; fix hooks/foo.js and commit."),
+            (
+                "Use ~/x as the working copy, not the session tree, then fix hooks/foo.js and commit.",
+                "Use ~/x as the working copy, the private one, then fix hooks/foo.js and commit.",
+            ),
+            (
+                "Use ~/x as the working copy rather than the session tree; fix hooks/foo.js and commit.",
+                "Use ~/x as the working copy, the private one; fix hooks/foo.js and commit.",
+            ),
+            (
+                "Clone fresh into ~/x except for the lockfile; fix hooks/foo.js and commit.",
+                "Clone fresh into ~/x including the lockfile; fix hooks/foo.js and commit.",
+            ),
+            ("Clone ~/x without the history; fix hooks/foo.js and commit.", "Clone ~/x with the history; fix hooks/foo.js and commit."),
+            ("You cannot use ~/x as the working copy; fix hooks/foo.js and commit.", "You can use ~/x as the working copy; fix hooks/foo.js and commit."),
+            ("DO NOT use ~/x as the working copy; fix hooks/foo.js and commit.", "DO use ~/x as the working copy; fix hooks/foo.js and commit."),
+            ("Fix hooks/foo.js. Do not ever use ~/x as the working copy. Commit it.", "Fix hooks/foo.js. Do always use ~/x as the working copy. Commit it."),
+            (
+                "Instead of that, use ~/x as the working copy; fix hooks/foo.js and commit.",
+                "Beyond that, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+            (
+                "It is wrong to use ~/x as the working copy, nor should you; fix hooks/foo.js and commit.",
+                "It is right to use ~/x as the working copy; fix hooks/foo.js and commit.",
+            ),
+        ];
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        for (neg, _) in pairs {
+            assert!(note(neg).is_some(), "a negation in the clause keeps the note: {neg}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        for (_, yes) in pairs {
+            assert!(note(yes).is_none(), "the affirmative twin is exempted: {yes}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), pairs.len() as u64, "one avoided warning per twin");
+        // the check is per clause, not per brief: a negation in ANOTHER sentence, bullet or paragraph leaves the affirmative clause exempt
+        for p in [
+            "Fix hooks/foo.js and do not push. Use ~/x as the working copy and commit.",
+            "Do not touch main. Clone ~/x and build; fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x. Don't edit the session repo; fix hooks/foo.js and commit.",
+            "No pushes today.\n\nClone ~/x and build; fix hooks/foo.js and commit.",
+            "Use ~/no-tree/x as the working copy; fix hooks/foo.js and commit.",
+            "Do the note-taking first, then use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_none(), "an affirmative clause stays exempt: {p}");
+        }
+        // switch off: the first negated briefs keep the note, and so do their twins (each call waits out the script fingerprint cadence, so only a few)
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":false}}"#).unwrap();
+        for (neg, yes) in pairs.iter().take(3) {
+            assert!(note(neg).is_some() && note(yes).is_some(), "switch off keeps every note: {neg} / {yes}");
+        }
+    }
+
+    // Shared harness of the class tests below: a project with another writer running, the bare switch on, the spawn log cleared per call.
+    fn bare_class_note(tag: &str, switch: bool) -> (String, impl FnMut(&str) -> Option<String>) {
+        let h = swarm_home(tag);
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), format!(r#"{{"guards":{{"maxConcurrentAgents":0,"sharedTreeBareClone":{switch}}}}}"#)).unwrap();
+        let hh = h.clone();
+        let mut n = 0u64;
+        (h, move |prompt: &str| {
+            n += 1;
+            crate::discard::harmless(std::fs::remove_file(format!("{hh}/.anti-hall/swarm-spawns.log"))); // keep: the log may not exist yet
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": busy, "cwd": proj});
+            advisory(call(&hh, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        })
+    }
+
+    // class fix of #487 (round 2 review): the exact inputs the review reported, each ending "; fix hooks/foo.js and commit."
+    const BARE_TAIL: &str = "; fix hooks/foo.js and commit.";
+
+    #[test]
+    fn shared_tree_bare_clone_every_reviewed_negated_input_keeps_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-rev", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let fragments = [
+            "Do not, even after carefully checking every setting, use ~/x as the working copy",
+            "Do not (e.g. after testing) use ~/x as the working copy",
+            "Do not, e.g. when rushed, use ~/x as the working copy",
+            "Do not (really! ever) use ~/x as the working copy",
+            "Please never (why? because it is shared) use ~/x as the working copy",
+            "Do not/never use ~/x as the working copy",
+            "Please don't/ever use ~/x as the working copy",
+            "Use ~/x as the working copy, not/never the shared checkout",
+            "Do NOT\u{a0}under any conceivable scenario\u{a0}use ~/x as the working copy",
+            "You mustn\u{2019}t, even (once), use ~/x as the working copy",
+            "Without\n\tany exceptions at all, use ~/x as the working copy",
+            "Rather\tthan blindly agreeing, use ~/x as the working copy",
+            "Use ~/x as the working copy, except when prohibited, use ~/x as the working copy",
+            "Do not (item 1. ever) use ~/x as the working copy",
+            "Do not/use ~/x as the working copy",
+            "Use ~/x as the working copy, avoiding further shared writes",
+            "Do not (e.g.\nany more) use ~/x as the working copy",
+            "Use ~/x as the working copy\n- not even temporarily",
+            "Clone fresh into ~/x, never under the current constraints",
+            "Use ~/x as the working copy, with no possibility of isolation",
+            "Don\u{2bc}t use ~/x as the working copy",
+            "Use ~/x as the working copy\u{2014}avoid/work around shared state",
+        ];
+        for f in fragments {
+            let prompt = format!("{f}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "a negation in the clause keeps the note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+    }
+
+    // siblings of the same class: whatever is ambiguous widens the clause (brackets, quotes, abbreviations, ellipses, lists, every
+    // apostrophe) and a negation inside it still keeps the note
+    #[test]
+    fn shared_tree_bare_clone_sibling_negation_forms_keep_the_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-sib", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let fragments = [
+            "Do not [see item 2.] use ~/x as the working copy",
+            "Do not see v 2. Use ~/x as the working copy",
+            "Never -- really! -- use ~/x as the working copy",
+            "Do not, e.g. When rushed, use ~/x as the working copy",
+            "Do not, per Dr. Smith, use ~/x as the working copy",
+            "Do not... Use ~/x as the working copy",
+            "Do not \u{2026} Use ~/x as the working copy",
+            "Do not (use ~/x as the working copy",
+            "Do not \"really; ever\" use ~/x as the working copy",
+            "Do not `a; b. C` use ~/x as the working copy",
+            "Do not \u{201c}ever. Really.\u{201d} use ~/x as the working copy",
+            "Don\u{b4}t use ~/x as the working copy",
+            "Don`t use ~/x as the working copy",
+            "Don\u{ff07}t use ~/x as the working copy",
+            "Don\u{2032}t use ~/x as the working copy",
+            "Don\u{2b9}t use ~/x as the working copy",
+            "Won\u{2018}t you use ~/x as the working copy",
+            "Do not:\n- use ~/x as the working copy",
+            "Do not:\n1. use ~/x as the working copy",
+            "Use ~/x as the working copy, see no-op/x.js",
+            "Use ~/x as the working copy (don't/won't share it)",
+            "Use ~/x as the working copy and/or not the shared one",
+            "Forbidden: use ~/x as the working copy",
+            "Do not push, nor use ~/x as the working copy",
+            "Refrain, and use ~/x as the working copy",
+            "Clone fresh into ~/x(not the session tree)",
+            "Clone fresh into ~/x\u{2014}not the shared tree",
+            "Do not:\n\n- use ~/x as the working copy",
+            "Please never \u{2014} why? Because it is shared \u{2014} use ~/x as the working copy",
+            "Please never \u{2013} why. Because it is shared \u{2013} use ~/x as the working copy",
+            "Use ~/x as the working copy; not even temporarily",
+            "Use ~/x as the working copy; do not push",
+            "Do not, per Prof. Smith, use ~/x as the working copy",
+            "Do not, per the U.S. Department, use ~/x as the working copy",
+            "Do not, at 5 p.m. Monday, use ~/x as the working copy",
+            "Do not, said the Ph.D. Student, use ~/x as the working copy",
+            "Please ne\u{200b}ver use ~/x as the working copy",
+            "Please do n't use ~/x as the working copy",
+            "Please refuse to use ~/x as the working copy",
+            "Please do n\u{ad}ot use ~/x as the working copy",
+            "Use ~/x as the working copy w/o sharing it",
+            "Use ~/x as the working copy, excluding the shared checkout",
+        ];
+        for f in fragments {
+            let prompt = format!("{f}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "a negation in the clause keeps the note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        // the masks must not widen a clause past a real sentence end: these stay exempt
+        for p in [
+            "Do not push (e.g. now). Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy, e.g. the cleaner one; fix hooks/foo.js and commit.",
+            "Never push to main! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Why share it? Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Rules:\n\nNo pushes.\n\nUse ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/no-tree/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy. Never push. Fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x. Do not touch main; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy. Never edit the session repo.",
+        ] {
+            assert!(note(p).is_none(), "an affirmative clause stays exempt: {p:?}");
+        }
+        // a list heading negation reaches its bullets; a negation in an earlier bullet reaches the next (fail safe)
+        let rules = "Rules:\n- never push\n- use ~/x as the working copy\n- fix hooks/foo.js and commit";
+        assert!(note(rules).is_some(), "bullets share one clause: {rules:?}");
+    }
+
+    // class fix of #487 (round 3): a sentence boundary is certain only at a stop, ! or ? followed by white space and a capital, outside
+    // every quote, bracket, dash and emphasis mark and not after an abbreviation. A semicolon is never one. Whatever is uncertain keeps the
+    // text one sentence, so a negation earlier in it keeps the note. Each negated brief has an affirmative twin the switch must exempt.
+    #[test]
+    fn shared_tree_bare_clone_an_uncertain_sentence_boundary_keeps_the_negated_note() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (_h, mut note) = bare_class_note("sw-bare-bound", true);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let pairs = [
+            // the reported input: a single-quoted span holds the stop, the clause is still negated
+            ("Do not 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+            ("Do not \u{2018}especially! Really\u{2019} use ~/x as the working copy", "Do \u{2018}especially! Really\u{2019} use ~/x as the working copy"),
+            ("Do not 'why? Because it is shared' use ~/x as the working copy", "Do 'why? Because it is shared' use ~/x as the working copy"),
+            ("Do not 'really. Truly' use ~/x as the working copy", "Do 'really. Truly' use ~/x as the working copy"),
+            // an apostrophe earlier in the sentence is no quote and must not shift which span is quoted
+            (
+                "Do not say users' things 'especially! Really' and use ~/x as the working copy",
+                "Do say users' things 'especially! Really' and use ~/x as the working copy",
+            ),
+            ("Don't 'especially! Really' use ~/x as the working copy", "Do 'especially! Really' use ~/x as the working copy"),
+            // emphasis marks
+            ("Do not **especially! Really** use ~/x as the working copy", "Do **especially! Really** use ~/x as the working copy"),
+            ("Do not *especially? Really* use ~/x as the working copy", "Do *especially? Really* use ~/x as the working copy"),
+            ("Do not _especially! Really_ use ~/x as the working copy", "Do _especially! Really_ use ~/x as the working copy"),
+            // other brackets and quotes
+            ("Do not <especially! Really> use ~/x as the working copy", "Do <especially! Really> use ~/x as the working copy"),
+            ("Do not \u{3010}especially! Really\u{3011} use ~/x as the working copy", "Do \u{3010}especially! Really\u{3011} use ~/x as the working copy"),
+            ("Do not \u{300c}especially! Really\u{300d} use ~/x as the working copy", "Do \u{300c}especially! Really\u{300d} use ~/x as the working copy"),
+            ("Do not \u{201e}especially! Really\u{201c} use ~/x as the working copy", "Do \u{201e}especially! Really\u{201c} use ~/x as the working copy"),
+            // dashes written as hyphens
+            ("Do not - especially! Really - use ~/x as the working copy", "Do - especially! Really - use ~/x as the working copy"),
+            ("Do not -- especially! Really -- use ~/x as the working copy", "Do -- especially! Really -- use ~/x as the working copy"),
+            ("Do not \u{201a}especially! Really\u{2018} use ~/x as the working copy", "Do \u{201a}especially! Really\u{2018} use ~/x as the working copy"),
+            ("Do not ~~especially! Really~~ use ~/x as the working copy", "Do ~~especially! Really~~ use ~/x as the working copy"),
+            ("Do not \u{2015} especially! Really \u{2015} use ~/x as the working copy", "Do \u{2015} especially! Really \u{2015} use ~/x as the working copy"),
+            // an abbreviation before a capital is no sure sentence end
+            ("Do not do it on Sat. Really use ~/x as the working copy", "Do it on Sat. Really use ~/x as the working copy"),
+            // a spaced ellipsis is no stop
+            ("Do not . . . Really use ~/x as the working copy", "Do . . . Really use ~/x as the working copy"),
+            // a semicolon is never a certain boundary
+            ("Do not; Really use ~/x as the working copy", "Do; Really use ~/x as the working copy"),
+            ("Never push to main; Clone fresh into ~/x", "Always push to main; Clone fresh into ~/x"),
+        ];
+        for (neg, _) in pairs {
+            let prompt = format!("{neg}{BARE_TAIL}");
+            assert!(note(&prompt).is_some(), "an uncertain boundary keeps the negated note: {prompt:?}");
+        }
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("named_tree_bare", &[]), 0, "kept notes are not avoided warnings");
+        for (_, yes) in pairs {
+            let prompt = format!("{yes}{BARE_TAIL}");
+            assert!(note(&prompt).is_none(), "the affirmative twin is exempted: {prompt:?}");
+        }
+        // a certain boundary still separates the sentences, so the marks above do not widen every clause
+        let certain = [
+            "Do not especially! Really use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push 'x'. Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push the **big** button! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push - ever - ok. Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push. It's the user's call! Really, use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Never push to main! Use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Do not push (ask 'why? Because'). Use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ];
+        for p in certain {
+            assert!(note(p).is_none(), "a certain boundary leaves the affirmative sentence exempt: {p:?}");
+        }
+    }
+
+    // review round 2 (P2): two affirmative statements are both blanked from the in-place check, whatever their case
+    #[test]
+    fn shared_tree_bare_clone_a_repeated_affirmative_statement_stays_exempt() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (h, mut note) = bare_class_note("sw-bare-dup", true);
+        for p in [
+            "Use ~/x as the working copy; use ~/x as the working copy; fix hooks/foo.js and commit.",
+            "Use ~/x as the working copy. USE ~/y AS THE WORKING COPY. Fix hooks/foo.js and commit.",
+            "Clone fresh into ~/x, and use ~/x as the working copy; fix hooks/foo.js and commit.",
+        ] {
+            assert!(note(p).is_none(), "every affirmative statement is blanked: {p:?}");
+        }
+        // a repeat that names the session tree itself still notes
+        let proj = format!("{h}/proj");
+        let p = format!("Use ~/x as the working copy; use {proj} as the working copy; fix hooks/foo.js and commit.");
+        assert!(note(&p).is_some(), "an in-tree statement keeps the note: {p:?}");
+    }
+
+    // review round 2 (P2): named_tree_bare counts the warning only when the spawn is allowed; a rate block shows no note on any path
+    #[test]
+    fn named_tree_bare_is_not_counted_on_a_rate_blocked_spawn() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("named_tree_bare", &[])
+        };
+        let h = swarm_home("sw-bare-rate");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let log = format!("{h}/.anti-hall/swarm-spawns.log");
+        // the window is full: twenty spawns a moment ago
+        std::fs::write(&log, (0..20).map(|i| (T0 + i).to_string() + "\n").collect::<String>()).unwrap();
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": "Use ~/x as the working copy; fix hooks/foo.js and commit."},
+            "transcript_path": busy, "cwd": proj});
+        count();
+        for i in 0..5 {
+            let v = call(&h, &p, T0 + 100 + i, Some(8.0 * GB), 16.0 * GB);
+            assert!(text_of(&v).contains("spawn limit reached"), "blocked by the rate cap: {v:?}");
+        }
+        assert_eq!(count(), 0, "five blocked attempts avoided no warning");
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 20, "a block is not recorded");
+        // a minute later the window has moved on: the same spawn is allowed and the avoided warning counts once
+        assert!(advisory(call(&h, &p, T0 + 70_000, Some(8.0 * GB), 16.0 * GB)).is_none());
+        assert_eq!(count(), 1, "an allowed spawn counts its avoided warning");
+    }
+
+    // review of #487: named_tree_bare counts only warnings the switch really avoided (another writer active, no quiet rule)
+    #[test]
+    fn named_tree_bare_counts_only_the_warnings_the_switch_avoided() {
+        let _excl = super::claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let count = || {
+            let mut m = crate::metrics::Metrics::default();
+            crate::metrics::drain_pending(&mut m);
+            m.counter("named_tree_bare", &[])
+        };
+        let h = swarm_home("sw-bare-cnt");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), r#"{"guards":{"maxConcurrentAgents":0,"sharedTreeBareClone":true}}"#).unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut run = |prompt: &str, tp: Option<&str>| {
+            n += 1;
+            let mut p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "cwd": proj});
+            if let Some(tp) = tp {
+                p["transcript_path"] = json!(tp);
+            }
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        let bare = "clone ~/x and fix hooks/foo.js and commit.";
+        count();
+        assert!(run(bare, None).is_none());
+        assert_eq!(count(), 0, "no transcript: nothing was running, no warning was avoided");
+        let idle = format!("{h}/idle.jsonl");
+        std::fs::write(&idle, "").unwrap();
+        assert!(run(bare, Some(&idle)).is_none());
+        assert_eq!(count(), 0, "no other writer running: no warning was avoided");
+        assert!(run(bare, Some(&busy)).is_none());
+        assert_eq!(count(), 1, "another writer is active: the switch avoided one warning");
+        std::fs::write(format!("{proj}/CLAUDE.md"), "Rules: no worktrees here.\n").unwrap();
+        assert!(run(bare, Some(&busy)).is_none());
+        assert_eq!(count(), 0, "a no-worktrees rule already silenced the warning");
+    }
+
     #[test]
     fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
         let h = swarm_home("sw-defer");
@@ -4057,7 +4519,13 @@ fn the_banner_is_one_user_visible_line_and_its_switch_turns_it_off() {
     let h = home("banner");
     let Some(Some(Verdict::Advisory(a))) = run_event("session-banner", "SessionStart", &[], &h) else { panic!("banner on must speak") };
     let m = serde_json::from_str::<Value>(&a).unwrap()["systemMessage"].as_str().unwrap().to_string();
-    assert!(m.starts_with("anti-hall ") && m.contains("active") && !m.contains('\n'), "{m}");
+    // the wording lives in the TOML (#402): the host prefixes it "SessionStart says:", so it names anti-hall and says it is info/OK
+    let text = defaults::text("guard_rules.banner_text");
+    let (lead, rest) = text.split_once("{version}").expect("banner_text carries {version}");
+    let mid = rest.split_once("{rules}").expect("banner_text carries {rules}").0.trim();
+    assert!(m.starts_with(lead) && m.contains(mid) && !mid.is_empty(), "{m}");
+    assert!(m.contains("anti-hall") && m.contains("OK") && m.contains("info"), "{m}");
+    assert!(!m.contains('\n') && !m.contains('{'), "{m}");
     assert_eq!(run_event("session-banner", "SessionStart", &[("ANTIHALL_UI_BANNER", "false")], &h), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
@@ -4070,4 +4538,1456 @@ fn the_session_summary_speaks_at_the_end_and_off_is_silent() {
     assert!(m.starts_with("anti-hall this session"), "{m}");
     assert_eq!(run_event("session-summary", "SessionEnd", &[("ANTIHALL_UI_SESSION_SUMMARY", "off")], &h), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+// ---- R-inline (guards.inlineRule): the stand-down of the Bash write-parity block, the window text and the block counters ----
+
+mod inline_rule_counters {
+    use super::*;
+
+    const CACHE: &str = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json";
+
+    /// A main-thread session of a DevSwarm checkout (the context in which the edit and heavy-command gates block); `on` sets the switch.
+    fn env_of(h: &str, on: bool) -> RequestEnv {
+        let mut pairs = vec![
+            ("HOME", h),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("DEVSWARM_REPO_ID", "r1"),
+            ("DEVSWARM_SOURCE_BRANCH", "feat"),
+            ("ANTIHALL_INGEST_DRY_RUN", "1"),
+        ];
+        if on {
+            pairs.push(("ANTIHALL_INLINE_RULE", "1"));
+        }
+        RequestEnv::from_pairs(pairs)
+    }
+
+    fn project(h: &str) -> String {
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+        std::fs::create_dir_all(format!("{proj}/src")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        proj
+    }
+
+    fn bash(proj: &str, sid: &str, command: &str) -> Value {
+        json!({"tool_name": "Bash", "session_id": sid, "cwd": proj, "tool_input": {"command": command}})
+    }
+
+    /// The usage hard stop: the weekly bucket is full, so nobody can be handed the work.
+    fn stop_spawning(h: &str) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let body = json!({"timestamp": now, "data": {"fiveHourPercent": 10.0, "weeklyPercent": 95.0,
+            "fiveHourResetsAt": "2099-01-01T05:00:00.000Z", "weeklyResetsAt": "2099-01-02T00:00:00.000Z"}});
+        let p = format!("{h}/{CACHE}");
+        std::fs::create_dir_all(std::path::Path::new(&p).parent().unwrap()).unwrap();
+        std::fs::write(p, body.to_string()).unwrap();
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn blocked(m: &crate::metrics::Metrics, guard: &str, kind: &str) -> u64 {
+        m.counter("inline_rule_blocked", &[("guard", guard), ("kind", kind)])
+    }
+
+    fn standdown(m: &crate::metrics::Metrics) -> u64 {
+        m.counter("inline_rule_standdown", &[("guard", defaults::text("inline_rule.guard_parity"))])
+    }
+
+    const WRITE: &str = "sed -i 's/a/b/' src/x.rs";
+
+    #[test]
+    fn a_blocked_heavy_command_and_a_blocked_write_are_counted_by_kind_and_off_counts_nothing() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let (cmd, kind_write) = (defaults::text("inline_rule.guard_command"), defaults::text("inline_rule.kind_write"));
+        for on in [false, true] {
+            let h = home(&format!("ir-blk-{on}"));
+            let proj = project(&h);
+            let e = env_of(&h, on);
+            drained();
+            for (i, c) in ["npm test", WRITE].iter().enumerate() {
+                match run_forced("command", &bash(&proj, "s", c), &e) {
+                    Some(Some(Verdict::Exact(x))) => assert_eq!(x.code, 2, "on={on}: {c} is blocked"),
+                    other => panic!("on={on}: {c} is blocked, got {other:?} (case {i})"),
+                }
+            }
+            let m = drained();
+            let heavy: u64 =
+                ["inline_rule.kind_remote", "inline_rule.kind_verb", "inline_rule.kind_category"].iter().map(|k| blocked(&m, cmd, defaults::text(k))).sum();
+            if on {
+                assert_eq!(heavy, 1, "one heavy-command block counted");
+                assert_eq!(blocked(&m, cmd, kind_write), 1, "one write block counted");
+            } else {
+                assert_eq!((heavy, blocked(&m, cmd, kind_write), standdown(&m)), (0, 0, 0), "off: nothing is counted");
+            }
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+    }
+
+    #[test]
+    fn a_bash_write_stands_down_while_spawning_is_stopped_with_one_note_and_only_with_the_switch_on() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        // off: the write is blocked whatever the usage is (the older answer)
+        let h = home("ir-sd-off");
+        let proj = project(&h);
+        stop_spawning(&h);
+        drained();
+        let v = run_forced("command", &bash(&proj, "s-off", WRITE), &env_of(&h, false));
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "off: still blocked: {v:?}");
+        assert_eq!(standdown(&drained()), 0);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        // on, spawning allowed: still blocked (and counted as a block, not a stand-down)
+        let h = home("ir-sd-free");
+        let proj = project(&h);
+        drained();
+        let v = run_forced("command", &bash(&proj, "s-free", WRITE), &env_of(&h, true));
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "spawning allowed: blocked: {v:?}");
+        let m = drained();
+        assert_eq!((standdown(&m), blocked(&m, defaults::text("inline_rule.guard_command"), defaults::text("inline_rule.kind_write"))), (0, 1));
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        // on, spawning stopped: allowed with the stand-down note once, then allowed quietly
+        let h = home("ir-sd-on");
+        let proj = project(&h);
+        stop_spawning(&h);
+        drained();
+        let e = env_of(&h, true);
+        // a write that is also heavy with unbounded output is still stopped by the heavy-command block: it neither counts as a stand-down
+        // nor uses up the session's note
+        let both = run_forced("command", &bash(&proj, "s-on", &format!("{WRITE} && npm test")), &e);
+        assert!(matches!(both, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "a heavy write is still stopped: {both:?}");
+        assert_eq!(standdown(&drained()), 0, "a blocked call is not a stand-down");
+        // the same session's plain write: allowed with the note (still unspent), then quietly
+        let first = run_forced("command", &bash(&proj, "s-on", WRITE), &e);
+        let Some(Some(Verdict::Advisory(a))) = first else { panic!("stopped: allowed with the stand-down note, got {first:?}") };
+        assert!(a.contains("PreToolUse") && a.contains("weekly"), "the note says why: {a}");
+        assert_eq!(run_forced("command", &bash(&proj, "s-on", WRITE), &e), Some(Some(Verdict::Allow)), "the note is told once per session");
+        let m = drained();
+        assert_eq!(
+            (standdown(&m), blocked(&m, defaults::text("inline_rule.guard_command"), defaults::text("inline_rule.kind_write"))),
+            (2, 0),
+            "both plain writes stood down"
+        );
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// The window file of a session that already holds `n` steps, all in the last minute.
+    fn seed_window(h: &str, sid: &str, n: usize) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let ts: Vec<u64> = (0..n as u64).map(|i| now - 60_000 + i).collect();
+        let body = json!({"v": 1, "version": "t", "firstTs": now - 60_000, "ts": ts, "armed": true, "calls": n, "work": n, "blocks": 0, "lastBlockAt": 0, "skippedWouldBlock": 0, "pre": []});
+        std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/coordinator-work-session-{sid}.json"), body.to_string()).unwrap();
+    }
+
+    #[test]
+    fn the_window_block_names_the_count_and_the_limit_only_with_the_switch_on_and_is_counted() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let at = defaults::raw("coordinator_work.block_setting").get("default").and_then(|v| v.as_integer()).unwrap() as usize;
+        let mut texts = Vec::new();
+        for on in [false, true] {
+            let h = home(&format!("ir-win-{on}"));
+            let proj = project(&h);
+            seed_window(&h, "sw", at - 1);
+            drained();
+            let v = run_forced("coordinator-work-guard", &bash(&proj, "sw", "git commit --allow-empty -m x"), &env_of(&h, on));
+            let Some(Some(Verdict::Exact(x))) = v else { panic!("on={on}: the step is stopped, got {v:?}") };
+            assert_eq!(x.code, 2);
+            texts.push(x.out);
+            let n = drained()
+                .counter("inline_rule_blocked", &[("guard", defaults::text("inline_rule.guard_cwork")), ("kind", defaults::text("inline_rule.kind_window"))]);
+            assert_eq!(n, u64::from(on), "on={on}: the window block is counted only with the switch on");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+        let old = defaults::text("coordinator_work.block_what");
+        let [off, on] = texts.as_slice() else { panic!("one block text per switch state") };
+        assert!(off.contains(old) && !off.contains("the limit is"), "off: the older headline: {off}");
+        let want = format!("{at} file-changing steps in the main thread within 10 min, this one included; the limit is {at}.");
+        assert!(on.contains(&want) && !on.contains(old), "on: the headline names the count and the limit: {on}");
+        assert!(on.contains(defaults::text("coordinator_work.block_instead")), "on: the step that clears it stays: {on}");
+    }
+}
+
+// ---- task-guard R-idle (guards.idleRule): its counters ----
+
+mod idle_rule_counters {
+    use super::*;
+
+    fn lines(tasks: &[(u32, &str, &str, &str)]) -> String {
+        let ts = "2026-11-01T00:00:00.000Z";
+        let mut out = String::new();
+        for (n, subject, description, status) in tasks {
+            let c = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": subject, "description": description}}]}, "timestamp": ts});
+            let r = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: {subject}")}]}, "timestamp": ts});
+            let u = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": status}}]}, "timestamp": ts});
+            out.push_str(&format!("{c}\n{r}\n{u}\n"));
+        }
+        out
+    }
+
+    fn stop(tag: &str, body: &str, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        if on {
+            pairs.push(("ANTIHALL_IDLE_RULE".into(), "1".into()));
+        }
+        let p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": tag, "cwd": h});
+        super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs))
+    }
+
+    #[test]
+    fn a_delivered_block_counts_fired_listed_suppressed_and_the_idle_slot_proxy_and_off_counts_nothing() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let body = lines(&[
+            (1, "[P1] idle one", "", "in_progress"),
+            (2, "[P1] idle two", "", "in_progress"),
+            (3, "[P1] parked", "PARKED: waiting for the owner", "in_progress"),
+        ]);
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let v = stop("ir-cnt-off", &body, false);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"")), "{v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        for name in ["idle_rule_fired", "idle_rule_listed", "idle_rule_suppressed", "idle_slot_minutes", "idle_rule_age_unknown"] {
+            assert_eq!(m.counter(name, &[("kind", "open")]) + m.counter(name, &[("reason", "parked")]), 0, "off: {name} is not counted");
+        }
+        let v = stop("ir-cnt-on", &body, true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"")), "{v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("idle_rule_fired", &[("kind", "open")]), 1, "one generic block delivered");
+        assert_eq!(m.counter("idle_rule_listed", &[("kind", "open")]), 2, "two idle tasks listed");
+        assert_eq!(m.counter("idle_rule_suppressed", &[("reason", "parked")]), 1, "the parked task was kept out");
+        // the tasks were created in 2026 (long ago): the proxy adds the cap, and no start time was missing
+        assert_eq!(m.counter("idle_slot_minutes", &[("kind", "open")]), defaults::num("idle_rule.minutes_cap"), "the proxy is capped");
+        assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
+    }
+}
+
+// ---- reply-length-guard R-style (guards.styleRule): its counters, the repeat marker and the message text ----
+
+mod r_style_counters {
+    use super::*;
+
+    fn long() -> String {
+        (0..40).map(|i| format!("Line {i}: the change is in place and the tests around it pass.")).collect::<Vec<_>>().join("\n")
+    }
+
+    fn prompt(t: &str) -> String {
+        json!({"type": "user", "uuid": "u1", "origin": {"kind": "human"}, "promptSource": "typed", "message": {"role": "user", "content": t}}).to_string()
+    }
+
+    /// One Stop of the guard: the answer, with the switch on or off, over a transcript of these lines.
+    fn stop(tag: &str, lines: &[String], reply: Option<&str>, extra: Value, on: bool) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), format!("{}\n", lines.join("\n"))).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        // the switch is forced either way, so these tests hold whatever the shipped default is
+        pairs.push(("ANTIHALL_STYLE_RULE".into(), if on { "1" } else { "0" }.into()));
+        let mut p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": tag, "cwd": h});
+        if let Some(r) = reply {
+            p["last_assistant_message"] = json!(r);
+        }
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            p[k] = v;
+        }
+        let v = super::super::run_forced("reply-length-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        v
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn held(v: &Option<Option<Verdict>>) -> bool {
+        matches!(v, Some(Some(Verdict::Exact(x))) if x.out.contains("\"decision\":\"block\""))
+    }
+
+    #[test]
+    fn every_main_session_stop_is_observed_whatever_the_switch_and_only_the_switch_on_fires() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let obs = |m: &crate::metrics::Metrics, result: &str, reason: &str| m.counter("reply_style_observed", &[("result", result), ("reason", reason)]);
+        let lines = [prompt("fix the failing test")];
+        drained();
+        // switch off: the answer is empty (allow), the long reply is still counted as over, and nothing fires or is suppressed
+        let v = stop("rs-off", &lines, Some(&long()), json!({}), false);
+        assert_eq!(v, Some(Some(Verdict::Allow)), "off: no answer");
+        let m = drained();
+        assert_eq!(obs(&m, "over", "none"), 1, "off: the long reply is observed");
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 0);
+        assert_eq!(m.counter("reply_style_suppressed", &[("reason", "short")]), 0, "off: suppressed is not counted");
+        // a short reply: ok
+        stop("rs-ok", &lines, Some("Done."), json!({}), false);
+        assert_eq!(obs(&drained(), "ok", "none"), 1);
+        // the exempt reasons, each counted once under result=exempt
+        stop("rs-asked", &[prompt("please explain this")], Some(&long()), json!({}), false);
+        assert_eq!(obs(&drained(), "exempt", "asked"), 1);
+        stop("rs-plan", &lines, Some(&long()), json!({"permission_mode": "plan"}), false);
+        assert_eq!(obs(&drained(), "exempt", "plan_mode"), 1);
+        stop("rs-sub", &lines, Some(&long()), json!({"agent_id": "a1"}), false);
+        assert_eq!(obs(&drained(), "exempt", "subagent"), 1);
+        stop("rs-hook", &lines, Some(&long()), json!({"stop_hook_active": true}), false);
+        assert_eq!(obs(&drained(), "exempt", "stop_hook_active"), 1);
+        stop("rs-none", &lines, None, json!({}), false);
+        assert_eq!(obs(&drained(), "exempt", "no_reply_text"), 1, "a payload with no reply text is allowed and counted");
+        // switch on: held, observed as over, fired once (first hit), and a pass is counted as suppressed
+        let v = stop("rs-on", &lines, Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        let m = drained();
+        assert_eq!(obs(&m, "over", "none"), 1);
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+        stop("rs-on-short", &lines, Some("Done."), json!({}), true);
+        assert_eq!(drained().counter("reply_style_suppressed", &[("reason", "short")]), 1);
+        stop("rs-on-asked", &[prompt("give me the design")], Some(&long()), json!({}), true);
+        assert_eq!(drained().counter("reply_style_suppressed", &[("reason", "asked")]), 1);
+    }
+
+    #[test]
+    fn a_repeat_after_the_hold_is_counted_as_again_but_a_quoted_marker_is_not() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let marker = defaults::text("reply_length.marker");
+        let fb = json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": format!("Stop hook feedback:\n{marker} 40 chars")}}).to_string();
+        let quoted = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": format!("I will not repeat: {marker} Stop hook feedback")}]}}).to_string();
+        drained();
+        // the hook feedback of an earlier hit of this owner turn stands after the prompt: again=true
+        let v = stop("rs-again", &[prompt("fix the failing test"), fb.clone()], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        let m = drained();
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "true")]), 1);
+        assert_eq!(m.counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 0);
+        // an assistant message that quotes the marker is not hook feedback
+        let v = stop("rs-quote", &[prompt("fix the failing test"), quoted], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        assert_eq!(drained().counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+        // feedback that belongs to an earlier prompt does not count for the new one
+        let v = stop("rs-old", &[prompt("first"), fb, prompt("fix the failing test")], Some(&long()), json!({}), true);
+        assert!(held(&v), "{v:?}");
+        assert_eq!(drained().counter("reply_style_fired", &[("form", "block"), ("again", "false")]), 1);
+    }
+
+    #[test]
+    fn the_marker_is_a_literal_part_of_the_headline() {
+        assert!(
+            defaults::text("reply_length.msg_what").contains(defaults::text("reply_length.marker")),
+            "again detection looks for the marker in the delivered text"
+        );
+    }
+
+    // ---- the block classifier: CommonMark fences and GFM tables, on a corpus of exact inputs ----
+
+    fn rows(n: usize, f: impl Fn(usize) -> String) -> String {
+        (0..n).map(f).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `n` one-letter lines: 40 of them are over the line limit as prose and inside the code allowance as code.
+    fn a(n: usize) -> String {
+        rows(n, |_| "a".into())
+    }
+
+    /// Whether the guard holds `reply` for a user who typed `ask` (the switch on).
+    fn is_held(tag: &str, ask: &str, reply: &str) -> bool {
+        held(&stop(tag, &[prompt(ask)], Some(reply), json!({}), true))
+    }
+
+    /// The corpus: (name, reply, held). Each exempt row is over the limits when read as prose and inside the allowances when read as the
+    /// block it is; each held row is the sibling that must still count (a near miss of the same shape).
+    fn corpus() -> Vec<(&'static str, String, bool)> {
+        let prose = long();
+        let grid = |head: &str, delim: &str, n: usize, row: &dyn Fn(usize) -> String| format!("{head}\n{delim}\n{}", rows(n, row));
+        let wide = |i: usize| format!("row {i:02} description | {}", "a".repeat(45));
+        let nest = |open: &str, inner: &str, close: &str, body: String| format!("{open}\n{inner}\n{body}\n{inner}\n{close}");
+        let base = vec![
+            // ---- GFM tables ----
+            ("table without outer pipes (the reported input)", grid("name | value", "--- | ---", 25, &wide), false),
+            ("table with outer pipes", grid("| name | n |", "|---|---|", 30, &|i| format!("| row {i} | {i} |")), false),
+            ("alignment colons, no outer pipes", grid("a | b | c", ":--- | ---: | :---:", 30, &|i| format!("{i} | x | y")), false),
+            ("alignment colons, outer pipes", grid("| a | b |", "|:--|--:|", 30, &|i| format!("| {i} | x |")), false),
+            ("leading pipe only", grid("| a | b", "|--- | ---", 30, &|i| format!("| {i} | x")), false),
+            ("trailing pipe only", grid("a | b |", "--- | ---|", 30, &|i| format!("{i} | x |")), false),
+            ("spaced delimiter row", grid("| a | b |", "| --- | --- |", 30, &|i| format!("| {i} | x |")), false),
+            ("one column table", grid("| a |", "|---|", 30, &|i| format!("| r{i} |")), false),
+            ("body rows without a pipe are rows (GFM)", grid("| a | b |", "|---|---|", 30, &|i| format!("r{i}")), false),
+            ("escaped pipe in the header", grid("a \\| b | c", "--- | ---", 30, &|i| format!("{i} | x")), false),
+            ("table in a blockquote", grid("> a | b", "> --- | ---", 30, &|i| format!("> {i} | x")), false),
+            ("table with CRLF line ends", grid("a | b", "--- | ---", 30, &|i| format!("{i} | x")).replace('\n', "\r\n"), false),
+            ("table after a paragraph line", format!("Results:\n{}", grid("k | v", "- | -", 30, &|i| format!("{i} | x"))), false),
+            ("header and delimiter cell counts differ", grid("a | b | c", "--- | ---", 30, &|i| format!("{i} | x")), true),
+            ("pipes without a delimiter row", rows(30, |i| format!("{i} | x")), true),
+            ("setext heading is not a table", format!("Title\n---\n{prose}"), true),
+            ("a thematic break is not a table", format!("a | b\n---\n{prose}"), true),
+            ("table excess over its allowance", grid("| a | b |", "|---|---|", 70, &|i| format!("| {i} | x |")), true),
+            ("prose after a table is counted", format!("{}\n\n{prose}", grid("a | b", "--- | ---", 5, &|i| format!("{i} | x"))), true),
+            ("a heading ends the table", format!("{}\n## Next\n{prose}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x"))), true),
+            ("list items end the table", format!("{}\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("- item {i}"))), true),
+            (
+                "quote lines end an unquoted table",
+                format!("{}\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("> note {i}"))),
+                true,
+            ),
+            (
+                "a blank line ends the table",
+                format!("{}\n\n{}", grid("a | b", "--- | ---", 3, &|i| format!("{i} | x")), rows(25, |i| format!("{i} | x"))),
+                true,
+            ),
+            // ---- CommonMark fences ----
+            ("backtick fence inside a longer backtick fence", nest("````markdown", "```", "````", a(40)), false),
+            ("the reported nested input", format!("````markdown\n```\n```\n{}", a(40)), false),
+            ("tilde fence", format!("~~~\n{}\n~~~", a(40)), false),
+            ("closer longer than the opener", format!("~~~\n{}\n~~~~~~", a(40)), false),
+            ("backtick info string with attributes", format!("```{{r, echo=FALSE}}\n{}\n```", a(40)), false),
+            ("tilde info string may hold a backtick", format!("~~~ a`b\n{}\n~~~", a(40)), false),
+            ("a shorter run does not close", format!("````\n{}\n```\n{}", a(10), a(40)), false),
+            ("a closer with an info string does not close", format!("```\n{}\n```rust\n{}\n```", a(10), a(40)), false),
+            ("a closer of the other character does not close", format!("```\n{}\n~~~\n{}\n```", a(10), a(40)), false),
+            ("tilde run does not close a longer tilde fence", format!("~~~~\n{}\n~~~\n{}", a(10), a(40)), false),
+            ("a closer indented 4 columns is content", format!("```\n{}\n    ```\n{}", a(10), a(40)), false),
+            ("an unclosed fence runs to the end", format!("```\n{prose}"), false),
+            ("closer with trailing spaces and CRLF", format!("```\r\n{}\r\n```  \r\n", a(40).replace('\n', "\r\n")), false),
+            ("fence under a list marker", format!("1. ```js\n{}\n   ```", a(40)), false),
+            ("fence indented under a list item", format!("- step\n  ```bash\n{}\n  ```", rows(40, |_| "  a".into())), false),
+            ("fence in a blockquote", format!("> ```\n{}\n> ```", rows(40, |_| "> a".into())), false),
+            ("a closer indented 3 columns closes", format!("```\n{}\n   ```\n{prose}", a(10)), true),
+            ("two backticks are not a fence", format!("``\n{prose}"), true),
+            ("a backtick info string with a backtick is not a fence", format!("``` a`b\n{prose}"), true),
+            ("prose after the real close is counted", format!("````\n```\n{}\n```\n````\n{prose}", a(10)), true),
+            ("code excess over its allowance", format!("```\n{}\n```", a(90)), true),
+        ];
+        let mut all = base;
+        // ---- the closer must be nothing but a fence: a marker-like line inside a fence is code (round 2: `- ```` closed the fence) ----
+        let inside = |line: &str| format!("```\n{line}\n{}\n```", a(25));
+        let markers = [
+            ("a dash list marker and a run is code", "- ```"),
+            ("a star list marker and a run is code", "* ```"),
+            ("a plus list marker and a run is code", "+ ```"),
+            ("a numbered (dot) list marker and a run is code", "1. ```"),
+            ("a numbered (paren) list marker and a run is code", "2) ```"),
+            ("a quote marker and a run in an unquoted fence is code", "> ```"),
+            ("text before a run is code", "text ```"),
+            ("a tab before a run (4 columns) is code", "\t```"),
+            ("a list marker with an info string is code", "- ```js"),
+        ];
+        for (name, line) in markers {
+            all.push((name, inside(line), false));
+        }
+        all.push(("a list marker and a tilde run inside a tilde fence is code", format!("~~~\n- ~~~\n{}\n~~~", a(25)), false));
+        all.push(("a numbered marker and a longer run inside a fence is code", format!("```\n1) `````\n{}\n```", a(25)), false));
+        let quoted = |line: &str| format!("> ```\n{line}\n{}\n> ```", rows(25, |_| "> a".into()));
+        all.push(("a deeper quote marker and a run in a quoted fence is code", quoted("> > ```"), false));
+        all.push(("a list marker after the quote marker is code", quoted("> - ```"), false));
+        all.push(("an unquoted run after a quoted fence opens a new fence", quoted("```"), false));
+        // an indented opener: the opener's own spaces do not widen the closer's allowance
+        all.push(("3 spaces opener, a 6 space run is code", format!("   ```\n      ```\n{}\n   ```", a(25)), false));
+        all.push(("3 spaces opener, an unindented run closes", format!("   ```\n{}\n```\n{prose}", a(10)), true));
+        // a list opener: the content width of the marker is the base of the closer's indent
+        let item = |close: &str| format!("- ```\n{}\n{close}\n{prose}", rows(10, |_| "  a".into()));
+        all.push(("list opener, a 2 space closer closes", item("  ```"), true));
+        all.push(("list opener, a 5 space closer closes", item("     ```"), true));
+        all.push(("list opener, a 6 space run is code", format!("- ```\n{}\n      ```\n{}", rows(10, |_| "  a".into()), rows(25, |_| "  a".into())), false));
+        // openers behind any mix of quote and list markers
+        all.push(("quote inside a list item opens a fence", format!("- > ```\n{}\n  > ```", rows(40, |_| "  > a".into())), false));
+        all.push(("list marker inside a list marker opens a fence", format!("- - ```\n{}", a(40)), false));
+        all.push(("numbered item with a quote opens a fence", format!("1. > ```\n{}\n   > ```", rows(40, |_| "   > a".into())), false));
+        all.push(("a quote marker then a list marker opens a fence", format!("> - ```\n{}\n>   ```", rows(40, |_| ">   a".into())), false));
+        // controls: a proper closer still closes
+        all.push(("a proper closer after a marker-like line closes", format!("```\n- ```\n{}\n```\n{prose}", a(10)), true));
+        all.push(("a closer indented 3 columns after a quote marker closes", format!("> ```\n{}\n>    ```\n{prose}", rows(10, |_| "> a".into())), true));
+        // ---- round 3, the class: a closer is a fence run and nothing else; only spaces and tabs may follow it (CommonMark) ----
+        // each row is code the closer line must not end (25 lines stay inside the allowance); the control rows close and count the prose
+        let tail = |close: &str| format!("```text\n{close}\n{}\n```", a(25));
+        let after = [
+            ("NBSP after a closer does not close (U+00A0)", "```\u{00a0}"),
+            ("EM SPACE after a closer does not close (U+2003)", "```\u{2003}"),
+            ("IDEOGRAPHIC SPACE after a closer does not close (U+3000)", "```\u{3000}"),
+            ("NARROW NBSP after a closer does not close (U+202F)", "```\u{202f}"),
+            ("a form feed after a closer does not close", "```\u{000c}"),
+            ("a vertical tab after a closer does not close", "```\u{000b}"),
+            ("a next-line char after a closer does not close (U+0085)", "```\u{0085}"),
+            ("a NBSP between spaces after a closer does not close", "``` \u{00a0} "),
+            ("a NBSP before a closer does not close", "\u{00a0}```"),
+            ("an EM SPACE before a closer does not close", "\u{2003}```"),
+            ("a tilde run with a NBSP after it does not close a tilde fence", "~~~\u{00a0}"),
+        ];
+        for (name, line) in after {
+            let reply = if line.starts_with('~') { format!("~~~\n{line}\n{}\n~~~", a(25)) } else { tail(line) };
+            all.push((name, reply, false));
+        }
+        all.push(("a NBSP closer in a quoted fence does not close", format!("> ```\n> ```\u{00a0}\n{}\n> ```", rows(25, |_| "> a".into())), false));
+        all.push(("a NBSP closer in a list-opened fence does not close", format!("- ```\n  ```\u{00a0}\n{}\n  ```", rows(25, |_| "  a".into())), false));
+        all.push(("a NBSP after a longer closer does not close", format!("```\n```````\u{00a0}\n{}\n```", a(25)), false));
+        // controls: spaces, tabs and a mix of them after a closer do close
+        for (name, close) in [
+            ("a space after a closer closes", "``` "),
+            ("two tabs after a closer close", "```\t\t"),
+            ("spaces and tabs after a closer close", "```  \t "),
+            ("a CR after a closer closes", "```\r"),
+        ] {
+            all.push((name, format!("```\n{}\n{close}\n{prose}", a(10)), true));
+        }
+        // ---- round 3: a container that ends takes its fence with it (CommonMark: a line without the quote marker is not in the quote) ----
+        let quote_end = |between: &str| format!("> ```\n{}\n{between}", rows(5, |_| "> a".into()));
+        all.push(("a prose run after a quoted fence is counted (no closer)", quote_end(&prose), true));
+        all.push(("a blank line then prose ends a quoted fence", quote_end(&format!("\n{prose}")), true));
+        all.push(("a nested quote ends at its first short line", format!("> > ```\n{}\n> {}\n{prose}", rows(5, |_| "> > a".into()), "text"), true));
+        all.push((
+            "a quoted fence in a nested quote that drops one level ends",
+            format!("> > ```\n{}\n> still the outer quote\n{prose}", rows(5, |_| "> > a".into())),
+            true,
+        ));
+        all.push(("a list-opened fence inside a quote ends with the quote", format!("> - ```\n{}\n{prose}", rows(5, |_| ">   a".into())), true));
+        all.push(("a tilde fence in a quote ends with the quote", format!("> ~~~\n{}\n{prose}", rows(5, |_| "> a".into())), true));
+        all.push(("after the quote ends a new fence is read as a new fence", format!("> ```\n{}\n```\n{}\n```", rows(5, |_| "> a".into()), a(40)), false));
+        all.push(("a quote of the same depth keeps its fence", format!("> ```\n{}\n> ```\n{prose}", rows(10, |_| "> a".into())), true));
+        all.push(("an unquoted code-looking line ends a quoted fence", quote_end(&format!("code\n{prose}")), true));
+        // HTML starts another block: it ends a table (GFM)
+        all.push(("an HTML block ends a table", format!("a | b\n---|---\n<div>\n{prose}"), true));
+        all.push(("an HTML comment ends a table", format!("a | b\n---|---\n<!-- x -->\n{prose}"), true));
+        all.push(("an inline tag in a row is still a row", grid("a | b", "--- | ---", 30, &|i| format!("<b>{i}</b> | x")), false));
+        // the table allowance is the survey's 30 rows
+        let note = rows(18, |i| format!("note {i}"));
+        all.push((
+            "30 table rows leave the 18 prose lines at the limit",
+            format!("{}\n\n{note}", grid("| a | b |", "|---|---|", 28, &|i| format!("| {i} | x |"))),
+            false,
+        ));
+        all.push(("the 31st table row counts as a line", format!("{}\n\n{note}", grid("| a | b |", "|---|---|", 29, &|i| format!("| {i} | x |"))), true));
+        all
+    }
+
+    #[test]
+    fn the_block_corpus_is_classified_by_the_markdown_rules() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let mut wrong = Vec::new();
+        for (name, reply, want) in corpus() {
+            let got = is_held("rs-corpus", "show the change", &reply);
+            if got != want {
+                wrong.push(format!("{name}: held={got}, want {want}"));
+            }
+        }
+        drained();
+        assert!(wrong.is_empty(), "misclassified: {wrong:#?}");
+    }
+
+    #[test]
+    fn every_form_of_explain_and_specify_asks_for_a_long_reply_and_near_words_do_not() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let reply = long();
+        let mut wrong = Vec::new();
+        for (ask, want) in [
+            ("Please explain this", false),
+            ("it explains itself, I want it explained", false),
+            ("keep explaining as you go", false),
+            ("write an explainer", false),
+            ("Give me an Explanation", false),
+            ("a few explanations please", false),
+            ("explanatory notes please", false),
+            ("write the spec", false),
+            ("update the specs", false),
+            ("SPECIFICATION needed", false),
+            ("write the specifications", false),
+            ("specify the API", false),
+            ("as specified earlier", false),
+            ("keep specifying the cases", false),
+            ("fix the specific failing test", true),
+            ("inspect the file", true),
+            ("this is special", true),
+            ("respect the order", true),
+            ("fix the failing test", true),
+        ] {
+            let got = is_held("rs-prompts", ask, &reply);
+            if got != want {
+                wrong.push(format!("{ask:?}: held={got}, want {want}"));
+            }
+        }
+        drained();
+        assert!(wrong.is_empty(), "misjudged prompts: {wrong:#?}");
+    }
+}
+
+// ---- role note and task tracker wording (context.roleNoteShort, context.taskTrackerTerse): their counters ----
+
+mod reword_counters {
+    use super::*;
+
+    fn counted(check: &str, event: &str, payload: Value, pairs: Vec<(String, String)>) -> crate::metrics::Metrics {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let v = super::super::run_forced(check, &payload, &Value::Null, event, &RequestEnv::from_pairs(pairs));
+        assert!(matches!(v, Some(Some(_))), "{check}: {v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    #[test]
+    fn each_role_note_form_is_counted_under_its_own_label() {
+        for (on, form) in [(false, "emitted_full"), (true, "emitted_short")] {
+            let h = home(&format!("rn-cnt-{on}"));
+            // the switch is set explicitly: it ships on
+            let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_ROLE_NOTE_SHORT".to_string(), if on { "1" } else { "0" }.to_string())];
+            let p = json!({"session_id": "s1", "cwd": h, "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"});
+            let m = counted("engine-role-note", "SubagentStart", p, pairs);
+            let other = if on { "emitted_full" } else { "emitted_short" };
+            assert_eq!(m.counter("role_note_emitted", &[("form", form)]), 1, "on={on}: the {form} note is counted");
+            assert_eq!(m.counter("role_note_emitted", &[("form", other)]), 0, "on={on}: the other form is not");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+    }
+
+    #[test]
+    fn the_full_task_directive_is_counted_when_sent() {
+        let h = home("tt-cnt");
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_TASK_TRACKER_TERSE".to_string(), "1".to_string())];
+        let p = json!({"session_id": "tt-cnt", "cwd": h, "hook_event_name": "UserPromptSubmit", "prompt": "do the thing"});
+        let m = counted("task-tracker", "UserPromptSubmit", p, pairs);
+        assert_eq!(m.counter("task_tracker_emitted", &[("form", "full_emitted")]), 1, "the full directive is counted");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+}
+
+// ---- task-pair-guard (R-pair, guards.pairRule): its counters ----
+
+mod pair_rule_counters {
+    use super::*;
+
+    /// A transcript with one in-progress task owned by `owner` and one background `Agent` launch (description "port the wake", launch name `name`).
+    fn transcript(owner: &str, name: Option<&str>) -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let create = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "[P1] one", "description": ""}}]}, "timestamp": ts});
+        let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: one"}]}, "timestamp": ts});
+        let update = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress", "owner": owner}}]}, "timestamp": ts});
+        let mut input = json!({"description": "port the wake", "prompt": "p", "run_in_background": true});
+        if let Some(n) = name {
+            input["name"] = json!(n);
+        }
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ag0", "name": "Agent", "input": input}]}, "timestamp": ts});
+        let text = "Async agent launched successfully. (internal metadata)\nagentId: a000000000000001 (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/a000000000000001.output\n";
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_ag0", "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        format!("{create}\n{result}\n{update}\n{launch}\n{res}\n")
+    }
+
+    /// The tracker's proof that the one agent of `transcript` is live (a fresh subagent transcript and a retained tracker row).
+    fn track(h: &str, tag: &str) {
+        let id = "a000000000000001";
+        let rel = format!("{h}/.claude/projects/p/{tag}/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+        std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let mut st = crate::agents::State::default();
+        st.agents.insert(
+            id.into(),
+            crate::agents::Agent {
+                id: id.into(),
+                kind: "subagent".into(),
+                parent: tag.into(),
+                name: "port the wake".into(),
+                cwd: h.into(),
+                path: rel,
+                ..Default::default()
+            },
+        );
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    fn run(tag: &str, body: &str, event: &str, p: Value, on: bool) -> Option<Option<Verdict>> {
+        run_with(tag, body, event, p, on, &[])
+    }
+
+    /// `run` with extra environment pairs (a test forces the spawn-by-task-id switch off with `ANTIHALL_PAIR_RULE_BY_TASK_ID=0`).
+    fn run_with(tag: &str, body: &str, event: &str, mut p: Value, on: bool, extra: &[(&str, &str)]) -> Option<Option<Verdict>> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), body).unwrap();
+        if !tag.starts_with("pr-unk") {
+            track(&h, tag);
+        }
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        // the switch defaults to on: an "off" case forces it off explicitly
+        pairs.push(("ANTIHALL_PAIR_RULE".into(), if on { "1" } else { "0" }.into()));
+        pairs.extend(extra.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())));
+        p["hook_event_name"] = json!(event);
+        p["session_id"] = json!(tag);
+        p["cwd"] = json!(h);
+        if p.get("transcript_path").is_none() {
+            p["transcript_path"] = json!(format!("{h}/t.jsonl"));
+        }
+        super::super::run_forced("task-pair-guard", &p, &Value::Null, event, &RequestEnv::from_pairs(pairs))
+    }
+
+    fn drain() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn unnamed_spawn() -> Value {
+        json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p"}})
+    }
+
+    #[test]
+    fn pre_switch_off_counts_unnamed_and_prints_nothing_and_on_counts_fired() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        drain();
+        let off_id = [("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0")];
+        let v = run_with("pr-pre-off", "", "PreToolUse", unnamed_spawn(), false, &off_id);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 0, "off: nothing fired");
+        let named = json!({"tool_name": "Agent", "tool_input": {"description": "d", "prompt": "p", "name": "wake-worker"}});
+        run("pr-pre-named", "", "PreToolUse", named, false);
+        assert_eq!(drain().counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "named")]), 1);
+        let v = run_with("pr-pre-on", "", "PreToolUse", unnamed_spawn(), true, &off_id);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("has no name")), "{v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 1);
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed")]), 1);
+    }
+
+    #[test]
+    fn stop_switch_off_counts_observed_and_on_counts_fired_and_a_step_aside_counts_its_reason() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let unpaired = transcript("someone-else", Some("wake-worker"));
+        drain();
+        let v = run("pr-stop-off", &unpaired, "Stop", json!({}), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "off: nothing printed: {v:?}");
+        let m = drain();
+        assert_eq!(
+            m.counter("pair_rule_observed", &[("event", "Stop"), ("result", "agent_without_task")]),
+            1,
+            "{:?}",
+            m.counter("pair_rule_suppressed", &[("reason", "liveness_unknown")])
+        );
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0);
+        let v = run("pr-stop-on", &unpaired, "Stop", json!({}), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("\"decision\":\"block\"") && x.out.contains("wake-worker")), "{v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 1);
+        // the loose owner: the task is owned by the agent's description, not its launch name
+        run("pr-stop-loose", &transcript("port the wake", Some("wake-worker")), "Stop", json!({}), true);
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "Stop"), ("result", "inexact_owner")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "inexact_owner")]), 1);
+        // paired
+        run("pr-stop-clean", &transcript("wake-worker", Some("wake-worker")), "Stop", json!({}), true);
+        assert_eq!(drain().counter("pair_rule_observed", &[("event", "Stop"), ("result", "clean")]), 1);
+        // liveness no source tells (no tracker row): never a block, counted per agent
+        let v = run("pr-unk-live", &unpaired, "Stop", json!({}), true);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "unknown liveness never blocks: {v:?}");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_suppressed", &[("reason", "liveness_unknown")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0);
+        // steps aside, each counted under its reason
+        run("pr-sub", &unpaired, "Stop", json!({"agent_id": "ag-1"}), true);
+        run("pr-plan", &unpaired, "Stop", json!({"permission_mode": "plan"}), true);
+        run("pr-active", &unpaired, "Stop", json!({"stop_hook_active": true}), true);
+        run("pr-norows", &unpaired, "Stop", json!({"transcript_path": "/nonexistent/t.jsonl"}), true);
+        let m = drain();
+        for reason in ["subagent", "plan_mode", "stop_hook_active", "no_rows"] {
+            assert_eq!(m.counter("pair_rule_suppressed", &[("reason", reason)]), 1, "{reason}");
+        }
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "Stop"), ("kind", "agent_without_task")]), 0, "a step aside fires nothing");
+    }
+
+    /// A transcript whose task list is #400 in progress and #401 completed (and no agent).
+    fn tasks_400_401() -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let mut out = String::new();
+        for (n, st) in [(400, "in_progress"), (401, "completed")] {
+            let create = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("[P1] t{n}"), "description": ""}}]}, "timestamp": ts});
+            let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}, "timestamp": ts});
+            let update = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": st}}]}, "timestamp": ts});
+            out.push_str(&format!("{create}\n{result}\n{update}\n"));
+        }
+        out
+    }
+
+    fn spawn_described(d: &str) -> Value {
+        json!({"tool_name": "Agent", "tool_input": {"description": d, "prompt": "p"}})
+    }
+
+    /// The by-id path fails CLOSED: a throw inside it (a fault injected by a logic override that makes the task reader throw, so the real
+    /// try/catch of the shipped script runs) denies the spawn and is counted `by_id_failed`; it is never an accept.
+    #[test]
+    fn pre_by_task_id_failure_denies_and_counts_by_id_failed() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        crate::discard::harmless(std::fs::create_dir_all(crate::paths::dir())); // keep: the scratch state dir of this test run
+        let list = tasks_400_401();
+        let tag = "pr-id-throw";
+        let h = home(tag);
+        let shipped = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall/engine/logic/task-pair-guard.js")).unwrap();
+        std::fs::write(
+            format!("{h}/.anti-hall/logic/task-pair-guard.js"),
+            format!("{shipped}\ntk.tasksOf = function () {{ throw new Error('injected'); }};\n"),
+        )
+        .unwrap();
+        std::fs::write(format!("{h}/t.jsonl"), &list).unwrap();
+        let mut p = spawn_described("#400 gate");
+        p["hook_event_name"] = json!("PreToolUse");
+        p["session_id"] = json!(tag);
+        p["cwd"] = json!(h);
+        p["transcript_path"] = json!(format!("{h}/t.jsonl"));
+        let site = format!("{}task-pair-guard:by_id_failed", defaults::text("script.unable_prefix"));
+        let before = handbacks("stand_in", &site);
+        drain();
+        let e = RequestEnv::from_pairs([("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())]);
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "PreToolUse", &e);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("has no name")), "a throw denies: {v:?}");
+        assert_eq!(handbacks("stand_in", &site), before + 1, "by_id_failed is counted");
+        let m = drain();
+        assert_eq!(m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", "unnamed_unverified")]), 1);
+        assert_eq!(m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]), 1);
+    }
+
+    #[test]
+    fn pre_by_task_id_counts_its_result_and_fires_only_on_a_denial() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let list = tasks_400_401();
+        let obs = |m: &crate::metrics::Metrics, r: &str| m.counter("pair_rule_observed", &[("event", "PreToolUse"), ("result", r)]);
+        let fired = |m: &crate::metrics::Metrics| m.counter("pair_rule_fired", &[("event", "PreToolUse"), ("kind", "unnamed")]);
+        drain();
+        let v = run("pr-id-ok", &list, "PreToolUse", spawn_described("#400 gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "an open task id pairs the spawn: {v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "paired_by_task_id"), obs(&m, "unnamed"), fired(&m)), (1, 0, 0));
+        let v = run("pr-id-none", &list, "PreToolUse", spawn_described("gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && x.out.contains("#<open task id>")), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_no_task"), fired(&m)), (1, 1));
+        let v = run("pr-id-missing", &list, "PreToolUse", spawn_described("#999 gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_no_task"), fired(&m)), (1, 1), "a missing task is no task");
+        let v = run("pr-id-closed", &list, "PreToolUse", spawn_described("#401 gate"), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_closed_task"), obs(&m, "unnamed_no_task"), fired(&m)), (1, 0, 1));
+        // unreadable evidence with a ref is no proof: denied and counted
+        let mut p = spawn_described("#400 gate");
+        p["transcript_path"] = json!("/nonexistent/t.jsonl");
+        let v = run("pr-id-unread", &list, "PreToolUse", p, true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_unverified"), obs(&m, "paired_by_task_id"), fired(&m)), (1, 0, 1));
+        // an unclear reference (the digits touch the scan window) is denied and counted
+        let v = run("pr-id-unclear", &list, "PreToolUse", spawn_described(&format!("#{}", "4".repeat(600))), true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_ref_unclear"), fired(&m)), (1, 1));
+        // pairRule off: the facts are counted, nothing is fired or printed
+        let v = run("pr-id-off", &list, "PreToolUse", spawn_described("#401 gate"), false);
+        assert!(matches!(v, Some(Some(Verdict::Allow))), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed_closed_task"), fired(&m)), (1, 0));
+        // by-id switch off: the base result label, whatever the description
+        let off_id = [("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0")];
+        let v = run_with("pr-id-sw-off", &list, "PreToolUse", spawn_described("#400 gate"), true, &off_id);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2 && !x.out.contains("#<open task id>")), "{v:?}");
+        let m = drain();
+        assert_eq!((obs(&m, "unnamed"), obs(&m, "paired_by_task_id"), fired(&m)), (1, 0, 1));
+    }
+}
+
+// ---- task-pair-guard (R-pair): the pairing is by agent NAME as a multiset (GH #589) ----
+// Every case is a (tasks, live agents) pair read through the real Stop path; a block is parsed back into the steps it states and those
+// steps are applied: the next Stop over the fixed list must be clean (a block whose stated step cannot clear it is the defect).
+
+mod pair_rule_pairing {
+    use super::*;
+
+    /// An agent of a case: (description, launch name, tracked live).
+    type Ag = (&'static str, &'static str, bool);
+
+    /// One case: (tag, tasks (owner, status), agents, the answer wanted).
+    type Case = (&'static str, Vec<(String, &'static str)>, Vec<Ag>, Out);
+
+    /// What the Stop answered: the F2 items `(name, n)` and the F3 items `(task id, owner, agent name)`; empty both = no block.
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    struct Out {
+        f2: Vec<(String, usize)>,
+        f3: Vec<(String, String)>,
+    }
+
+    fn transcript(tasks: &[(String, &str)], agents: &[Ag]) -> String {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let mut out = String::new();
+        for (i, (owner, status)) in tasks.iter().enumerate() {
+            let n = i + 1;
+            let create = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("[P1] task {n}"), "description": ""}}]}, "timestamp": ts});
+            let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: task {n}")}]}, "timestamp": ts});
+            let mut input = json!({"taskId": n.to_string(), "status": status});
+            if !owner.is_empty() {
+                input["owner"] = json!(owner);
+            }
+            let update = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": input}]}, "timestamp": ts});
+            out.push_str(&format!("{create}\n{result}\n{update}\n"));
+        }
+        for (i, (description, name, _)) in agents.iter().enumerate() {
+            let agent = format!("a{:015x}", i + 1);
+            let mut input = json!({"description": description, "prompt": "p", "run_in_background": true});
+            if !name.is_empty() {
+                input["name"] = json!(name);
+            }
+            let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_ag{i}"), "name": "Agent", "input": input}]}, "timestamp": ts});
+            let text = format!(
+                "Async agent launched successfully. (internal metadata)\nagentId: {agent} (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/{agent}.output\n"
+            );
+            let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": format!("toolu_ag{i}"), "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+            out.push_str(&format!("{launch}\n{res}\n"));
+        }
+        out
+    }
+
+    /// The tracker's proof that the `live` agents are live (a fresh subagent transcript and a retained row each); the others stay unknown.
+    fn track(h: &str, agents: &[Ag]) {
+        let mut st = crate::agents::State::default();
+        for (i, (description, _, live)) in agents.iter().enumerate() {
+            if !live {
+                continue;
+            }
+            let id = format!("a{:015x}", i + 1);
+            let rel = format!("{h}/.claude/projects/p/s1/subagents/agent-{id}.jsonl");
+            std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+            std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+            st.agents.insert(
+                id.clone(),
+                crate::agents::Agent {
+                    id,
+                    kind: "subagent".into(),
+                    parent: "s1".into(),
+                    name: (*description).into(),
+                    cwd: h.into(),
+                    path: rel,
+                    ..Default::default()
+                },
+            );
+        }
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    /// One Stop over `tasks` (owner, status) and `agents`, the switch on or off: what it asked for and the whole text it said (visible line,
+    /// steps and saved details; empty when it printed nothing).
+    fn stop_with(tag: &str, tasks: &[(String, &str)], agents: &[Ag], on: bool) -> (Out, String) {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), transcript(tasks, agents)).unwrap();
+        track(&h, agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        pairs.push(("ANTIHALL_PAIR_RULE".to_string(), if on { "1" } else { "0" }.to_string()));
+        // this domain names its agents with one character, below pair_rule.name_min_chars: the by-task-id switch (which reads such a name as no
+        // name) is pinned off so the multiset pairing itself is what is measured
+        pairs.push(("ANTIHALL_PAIR_RULE_BY_TASK_ID".to_string(), "0".to_string()));
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        // the saved details hold the whole list (the visible line may leave items out and says so)
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        match v {
+            Some(Some(Verdict::Allow)) => (Out { f2: vec![], f3: vec![] }, String::new()),
+            Some(Some(Verdict::Exact(x))) => {
+                let reason = serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string() + "\n" + &saved;
+                let many = regex::Regex::new(r#"(\d+) (?:live )?agents named "([^"]*)" own no (?:open )?task"#).unwrap();
+                let share = regex::Regex::new(r#"(\d+) of the (?:\d+ live )?agents (?:named|called) "([^"]*)" own no (?:open )?task"#).unwrap();
+                let one = regex::Regex::new(r#"agent "([^"]*)" owns no (?:open )?task"#).unwrap();
+                let task = regex::Regex::new(r#"#(\d+) owner "([^"]*)"(?: -> | is agent )"([^"]*)""#).unwrap();
+                let mut f2: Vec<(String, usize)> = many.captures_iter(&reason).map(|c| (c[2].to_string(), c[1].parse().unwrap())).collect();
+                f2.extend(share.captures_iter(&reason).map(|c| (c[2].to_string(), c[1].parse().unwrap())));
+                f2.extend(one.captures_iter(&reason).map(|c| (c[1].to_string(), 1)));
+                f2.sort();
+                f2.dedup();
+                let mut f3: Vec<(String, String)> = task.captures_iter(&reason).map(|c| (c[1].to_string(), c[3].to_string())).collect();
+                f3.sort();
+                f3.dedup();
+                (Out { f2, f3 }, reason)
+            }
+            // a guard that could not run is the defect: no verdict at all, or an error
+            other => panic!("{tag}: unexpected verdict {other:?}"),
+        }
+    }
+
+    /// One Stop (switch on).
+    fn stop(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Out {
+        stop_with(tag, tasks, agents, true).0
+    }
+
+    /// The saved-details file(s) of the guard (its name carries the session, which the check does not pass), concatenated.
+    fn saved_details(h: &str) -> String {
+        let dir = format!("{h}/.anti-hall/block-details");
+        let mut out = String::new();
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().starts_with("task-pair-guard") {
+                out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+            }
+        }
+        out
+    }
+
+    fn owned(rows: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
+        rows.iter().map(|(o, s)| (o.to_string(), *s)).collect()
+    }
+
+    fn wk(desc: &'static str, name: &'static str) -> Ag {
+        (desc, name, true)
+    }
+
+    fn clean() -> Out {
+        Out { f2: vec![], f3: vec![] }
+    }
+
+    /// Apply the stated steps: an F3 item sets that task's owner to the agent's name; an F2 item adds one in-progress task per agent left.
+    fn apply(tasks: &[(String, &'static str)], out: &Out) -> Vec<(String, &'static str)> {
+        let mut t = tasks.to_vec();
+        for (id, name) in &out.f3 {
+            t[id.parse::<usize>().unwrap() - 1].0 = name.clone();
+        }
+        for (name, n) in &out.f2 {
+            for _ in 0..*n {
+                t.push((name.clone(), "in_progress"));
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn the_pairing_is_by_name_as_a_multiset() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let two = [wk("first job", "worker"), wk("second job", "worker")];
+        let cases: Vec<Case> = vec![
+            // the reported finding: two tasks owned by 'worker', two live agents named 'worker'
+            ("two-two", owned(&[("worker", ip), ("worker", ip)]), two.to_vec(), clean()),
+            // siblings
+            ("two-agents-one-task", owned(&[("worker", ip)]), two.to_vec(), Out { f2: vec![("worker".into(), 1)], f3: vec![] }),
+            (
+                "three-agents-one-task",
+                owned(&[("worker", ip)]),
+                vec![wk("a job", "worker"), wk("b job", "worker"), wk("c job", "worker")],
+                Out { f2: vec![("worker".into(), 2)], f3: vec![] },
+            ),
+            ("one-agent-two-tasks", owned(&[("worker", ip), ("worker", ip)]), vec![wk("a job", "worker")], clean()),
+            ("case-and-space", owned(&[("Worker", ip), ("  worker ", ip)]), two.to_vec(), clean()),
+            ("inner-space-runs", owned(&[("wake worker", ip)]), vec![wk("job", "wake   worker")], clean()),
+            ("pending-pairs", owned(&[("worker", "pending"), ("worker", "pending")]), two.to_vec(), clean()),
+            ("two-names", owned(&[("worker", ip), ("other", ip)]), vec![wk("a job", "worker"), wk("b job", "other")], clean()),
+            (
+                "one-name-short",
+                owned(&[("worker", ip), ("worker", ip)]),
+                vec![wk("a job", "worker"), wk("b job", "worker"), wk("c job", "other")],
+                Out { f2: vec![("other".into(), 1)], f3: vec![] },
+            ),
+            ("coordinator-named-agents", owned(&[("main", ip), ("main", ip)]), vec![wk("a job", "main"), wk("b job", "main")], clean()),
+            ("no-owner-task-pairs-nobody", owned(&[("", ip), ("", ip)]), two.to_vec(), Out { f2: vec![("worker".into(), 2)], f3: vec![] }),
+            ("completed-task-pairs-nobody", owned(&[("worker", "completed")]), vec![wk("a job", "worker")], Out { f2: vec![("worker".into(), 1)], f3: vec![] }),
+            // the loose owners: never a bypass, never a false block
+            (
+                "loose-in-progress-attends-the-second-agent",
+                owned(&[("worker", ip), ("second job", ip)]),
+                two.to_vec(),
+                Out { f2: vec![], f3: vec![("2".into(), "worker".into())] },
+            ),
+            (
+                "loose-pending-is-no-bypass",
+                owned(&[("worker", ip), ("second job", "pending")]),
+                two.to_vec(),
+                Out { f2: vec![("worker".into(), 1)], f3: vec![] },
+            ),
+            (
+                "loose-attending-needs-a-maximum-matching",
+                // owner "beta" names both agents, owner "alpha" only the first: a greedy first-fit leaves the second agent unattended
+                owned(&[("beta", ip), ("alpha", ip)]),
+                vec![wk("alpha beta", "a-agent"), wk("beta gamma", "b-agent")],
+                Out { f2: vec![], f3: vec![("1".into(), "b-agent".into()), ("2".into(), "a-agent".into())] },
+            ),
+            (
+                "loose-owner-that-is-an-unknown-agents-name",
+                // "beta" is the launch name of an agent whose liveness is unknown: a name owner, not a description owner of the live one
+                owned(&[("beta", ip)]),
+                vec![wk("the beta port", "a-agent"), ("elsewhere", "beta", false)],
+                Out { f2: vec![("a-agent".into(), 1)], f3: vec![] },
+            ),
+            (
+                "loose-owner-already-paired-agent",
+                owned(&[("worker", ip), ("first job", ip)]),
+                vec![wk("first job", "worker")],
+                Out { f2: vec![], f3: vec![("2".into(), "worker".into())] },
+            ),
+            ("unknown-liveness-never-blocks", owned(&[("other", ip)]), vec![("a job", "worker", false)], clean()),
+        ];
+        for (tag, tasks, agents, want) in cases {
+            let got = stop(&format!("pp-{tag}"), &tasks, &agents);
+            assert_eq!(got, want, "{tag}");
+            let again = stop(&format!("pp-{tag}-fixed"), &apply(&tasks, &got), &agents);
+            assert_eq!(again, clean(), "{tag}: the stated steps must clear the block");
+        }
+    }
+
+    /// A deterministic generator (an LCG): the cases below are a fixed sample of the whole input space, so a failure reproduces.
+    struct Lcg(u64);
+    impl Lcg {
+        fn pick(&mut self, n: usize) -> usize {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % n
+        }
+    }
+
+    #[test]
+    fn a_block_is_never_one_its_own_steps_cannot_clear_and_a_surplus_of_tasks_never_blocks() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let owners = ["worker", "Worker ", "other", "", "alpha job", "beta job", "ALPHA", "main", "a000000000000002", "__proto__", "constructor"];
+        let statuses = ["in_progress", "pending", "completed"];
+        let names = [
+            ("alpha job", "worker"),
+            ("beta job", "worker"),
+            ("beta job", "other"),
+            ("alpha job", "main"),
+            ("gamma", "other"),
+            ("gamma", "__proto__"),
+            ("gamma", "constructor"),
+        ];
+        let mut g = Lcg(0x5eed);
+        let mut blocked = 0;
+        for case in 0..160 {
+            let tasks: Vec<(String, &str)> = (0..g.pick(5)).map(|_| (owners[g.pick(owners.len())].to_string(), statuses[g.pick(statuses.len())])).collect();
+            let agents: Vec<Ag> = (0..1 + g.pick(4))
+                .map(|_| {
+                    let (d, n) = names[g.pick(names.len())];
+                    (d, n, g.pick(5) != 0)
+                })
+                .collect();
+            let got = stop(&format!("pp-rand-{case}"), &tasks, &agents);
+            // an agent name with at least as many open tasks of that name as live agents is never reported
+            let open = |o: &str| tasks.iter().filter(|(t, s)| *s != "completed" && t.trim().eq_ignore_ascii_case(o)).count();
+            for (name, _) in &got.f2 {
+                let live = agents.iter().filter(|(_, n, l)| *l && n == name).count();
+                assert!(
+                    open(name) < live,
+                    "case {case}: {name} has {} tasks for {live} live agents but was reported: {got:?} {tasks:?} {agents:?}",
+                    open(name)
+                );
+            }
+            if got != clean() {
+                blocked += 1;
+            }
+            let again = stop(&format!("pp-rand-{case}-fixed"), &apply(&tasks, &got), &agents);
+            assert_eq!(again, clean(), "case {case}: the stated steps must clear the block: {got:?} tasks={tasks:?} agents={agents:?}");
+        }
+        assert!(blocked > 20 && blocked < 150, "the sample exercises both sides: {blocked} blocked of 160");
+    }
+
+    /// Names that are inherited keys of a plain object, and that case-folds onto one (`__PROTO__`): a name is data, never a key of the code.
+    const OBJECT_KEY_NAMES: [&str; 12] = [
+        "__proto__",
+        "constructor",
+        "toString",
+        "hasOwnProperty",
+        "valueOf",
+        "__defineGetter__",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "__lookupSetter__",
+        "prototype",
+        "__PROTO__",
+        "Constructor",
+    ];
+
+    #[test]
+    fn an_agent_name_that_is_an_object_key_pairs_like_any_other_name() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        for (i, name) in OBJECT_KEY_NAMES.iter().enumerate() {
+            let tag = |k: &str| format!("pp-key{i}-{k}");
+            let agent = |d: &'static str| (d, *name, true);
+            // the reviewed failing input: one live agent, no task (the guard used to throw, with the switch off too)
+            let (got, _) = stop_with(&tag("none"), &[], &[agent("a job")], true);
+            assert_eq!(got.f2, vec![(name.to_string(), 1)], "{name}: no task");
+            assert_eq!(stop_with(&tag("none-off"), &[], &[agent("a job")], false).0, clean(), "{name}: switch off prints nothing");
+            // the reviewed failing input: the task owner is that name
+            assert_eq!(stop(&tag("paired"), &owned(&[(name, ip)]), &[agent("a job")]), clean(), "{name}: paired");
+            assert_eq!(stop_with(&tag("paired-off"), &owned(&[(name, ip)]), &[agent("a job")], false).0, clean(), "{name}: paired, switch off");
+            // a multiset of that name: three agents, one task
+            let three = [agent("a job"), agent("b job"), agent("c job")];
+            assert_eq!(stop(&tag("three"), &owned(&[(name, ip)]), &three).f2, vec![(name.to_string(), 2)], "{name}: three agents, one task");
+            assert_eq!(stop(&tag("three-ok"), &owned(&[(name, ip), (name, ip), (name, "pending")]), &three), clean(), "{name}: three and three");
+            // a task of another name does not pair it, and the name does not pair another agent
+            let mixed = [agent("a job"), wk("b job", "worker")];
+            assert_eq!(stop(&tag("mixed"), &owned(&[("worker", ip)]), &mixed).f2, vec![(name.to_string(), 1)], "{name}: beside a plain name");
+            // a loose owner (the agent's description) is told the launch name, whatever the name is
+            let loose = stop(&tag("loose"), &owned(&[("the long job", ip)]), &[("the long job", *name, true)]);
+            assert_eq!(loose.f3, vec![("1".to_string(), name.to_string())], "{name}: loose owner");
+        }
+    }
+
+    #[test]
+    fn a_name_is_compared_the_way_it_is_shown_so_a_block_can_always_be_cleared() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        // a name of nothing but control characters or white space is no name: it can never be set as an owner, so it is never a block
+        for (i, name) in ["\u{1}\u{1}", "\t\t", "  ", "\n\n", "\u{7f}\u{1b}", "\u{1}"].iter().enumerate() {
+            let got = stop_with(&format!("pp-ctl{i}-none"), &[], &[("a job", *name, true)], true);
+            assert_eq!(got.0, clean(), "{name:?}: an unnamed agent is not a pairing fact: {}", got.1);
+        }
+        // control characters and white space inside a name read as one space: the owner a block quotes is the owner that pairs
+        for (i, name) in ["wake\u{1}worker", "wake\tworker", "wake \n worker", " Wake  Worker ", "wake\u{7f}worker"].iter().enumerate() {
+            let none = stop_with(&format!("pp-ctl-in{i}-none"), &[], &[("a job", *name, true)], true);
+            assert_eq!(none.0.f2.len(), 1, "{name:?}: blocks: {}", none.1);
+            assert!(none.0.f2[0].0.eq_ignore_ascii_case("wake worker"), "{name:?}: the block quotes the name as it pairs: {:?}", none.0);
+            let fixed = stop(&format!("pp-ctl-in{i}-fixed"), &apply(&[], &none.0), &[("a job", *name, true)]);
+            assert_eq!(fixed, clean(), "{name:?}: the quoted owner clears it");
+            assert_eq!(stop(&format!("pp-ctl-in{i}-owned"), &owned(&[("wake worker", ip)]), &[("a job", *name, true)]), clean(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn two_object_key_names_never_pair_each_other() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let agents = [wk("a job", "__proto__"), wk("b job", "constructor")];
+        assert_eq!(stop("pp-key-two-a", &owned(&[("__proto__", ip), ("constructor", ip)]), &agents), clean());
+        let got = stop("pp-key-two-b", &owned(&[("__proto__", ip)]), &agents);
+        assert_eq!(got.f2, vec![("constructor".to_string(), 1)]);
+        let got = stop("pp-key-two-c", &owned(&[("toString", ip)]), &agents);
+        assert_eq!(got.f2, vec![("__proto__".to_string(), 1), ("constructor".to_string(), 1)]);
+    }
+
+    /// One missing-slot case: (tag, tasks (owner, status), agents).
+    type SlotCase = (&'static str, Vec<(String, &'static str)>, Vec<Ag>);
+
+    #[test]
+    fn a_missing_task_slot_is_cleared_by_creating_a_task_and_the_block_says_so() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let two = [wk("job 1", "reviewer-2"), wk("job 2", "reviewer-2")];
+        // the reviewed failing inputs: the owner is already set on the one task (TaskUpdate owner cannot add a task), and no task at all
+        let cases: Vec<SlotCase> = vec![
+            ("owner-already-set", owned(&[("reviewer-2", ip)]), two.to_vec()),
+            ("no-task-at-all", vec![], vec![wk("a job", "fresh-worker")]),
+            ("two-agents-no-task", vec![], two.to_vec()),
+            ("other-owner-only", owned(&[("someone", ip)]), vec![wk("a job", "fresh-worker")]),
+            ("completed-task-only", owned(&[("fresh-worker", "completed")]), vec![wk("a job", "fresh-worker")]),
+            (
+                "three-agents-two-tasks",
+                owned(&[("reviewer-2", ip), ("reviewer-2", "pending")]),
+                vec![wk("a", "reviewer-2"), wk("b", "reviewer-2"), wk("c", "reviewer-2")],
+            ),
+        ];
+        for (tag, tasks, agents) in cases {
+            let (got, reason) = stop_with(&format!("pp-slot-{tag}"), &tasks, &agents, true);
+            assert!(!got.f2.is_empty(), "{tag}: blocks: {reason}");
+            assert!(
+                reason.contains("TaskCreate") && reason.contains("TaskUpdate"),
+                "{tag}: a missing task slot is cleared by creating a task and then setting its owner, so the block names both: {reason}"
+            );
+            let fixed = apply(&tasks, &got);
+            assert_eq!(fixed.len(), tasks.len() + got.f2.iter().map(|(_, n)| n).sum::<usize>(), "{tag}: the step adds one task per agent left");
+            assert_eq!(stop(&format!("pp-slot-{tag}-fixed"), &fixed, &agents), clean(), "{tag}: the stated step clears it");
+        }
+        // an owner fix alone never clears a missing slot: setting the owner of the one task again changes nothing
+        let tasks = owned(&[("reviewer-2", ip)]);
+        let again = stop("pp-slot-owner-only", &tasks, &two);
+        assert_eq!(again.f2, vec![("reviewer-2".to_string(), 1)], "the same owner again does not clear it");
+        // a task-owner step (f3 only) says TaskUpdate and no agent is named as task-less
+        let (got, reason) = stop_with("pp-slot-f3", &owned(&[("the long job", ip)]), &[("the long job", "worker", true)], true);
+        assert!(got.f2.is_empty() && !got.f3.is_empty() && reason.contains("TaskUpdate"), "{reason}");
+    }
+
+    /// Every ordered list of up to 3 agents over two names and up to 3 open tasks over two owners and "no owner", checked against the multiset
+    /// oracle: per name, the agents left over are `max(0, agents of the name - open tasks owned by it)`; nothing else is ever reported.
+    #[test]
+    fn the_whole_small_domain_agrees_with_the_multiset_oracle_and_every_block_clears() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let names = ["a", "__proto__"];
+        let owners = ["a", "__proto__", ""];
+        fn lists<T: Copy>(items: &[T], max: usize) -> Vec<Vec<T>> {
+            let mut all: Vec<Vec<T>> = vec![vec![]];
+            let mut layer: Vec<Vec<T>> = vec![vec![]];
+            for _ in 0..max {
+                layer = layer.iter().flat_map(|l| items.iter().map(move |i| l.iter().copied().chain([*i]).collect())).collect();
+                all.extend(layer.clone());
+            }
+            all
+        }
+        let mut checked = 0;
+        let mut blocked = 0;
+        for (ai, ag) in lists(&names, 3).iter().enumerate() {
+            let agents: Vec<Ag> = ag.iter().map(|n| ("a job", *n, true)).collect();
+            for (ti, tk) in lists(&owners, 3).iter().enumerate() {
+                let tasks: Vec<(String, &str)> = tk.iter().map(|o| (o.to_string(), "in_progress")).collect();
+                let mut want: Vec<(String, usize)> = names
+                    .iter()
+                    .filter_map(|n| {
+                        let live = ag.iter().filter(|x| *x == n).count();
+                        let open = tk.iter().filter(|o| *o == n).count();
+                        (live > open).then(|| (n.to_string(), live - open))
+                    })
+                    .collect();
+                want.sort();
+                let (got, reason) = stop_with(&format!("pp-dom-{ai}-{ti}"), &tasks, &agents, true);
+                assert_eq!(got, Out { f2: want.clone(), f3: vec![] }, "agents {ag:?} tasks {tk:?}: {reason}");
+                if !want.is_empty() {
+                    blocked += 1;
+                    assert!(reason.contains("TaskCreate"), "agents {ag:?} tasks {tk:?}: {reason}");
+                    assert_eq!(stop(&format!("pp-dom-{ai}-{ti}-fixed"), &apply(&tasks, &got), &agents), clean(), "agents {ag:?} tasks {tk:?} must clear");
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 15 * 40, "the whole domain");
+        assert!(blocked > 100, "{blocked} blocked");
+    }
+
+    #[test]
+    fn every_visible_step_leaves_room_on_the_line_for_the_tail() {
+        // The block is cut at 250 units: icon and name (19), the saved-details link (66), the label "Do instead: " and its newline (13) leave
+        // 152 minus the step for the visible line. The shortest line that keeps the `(+n more)` tail (one item with a name cut at
+        // pair_rule.name_max) is 85 units, so a step used with an agent item (an agent short of a task) is at most 66.
+        for key in ["pair_rule.msg_stop_instead_create", "pair_rule.msg_stop_instead_create_full", "pair_rule.msg_stop_instead_mixed"] {
+            let step = crate::defaults::text(key);
+            assert!(step.encode_utf16().count() <= 66, "{key} is {} units, over 66: {step}", step.encode_utf16().count());
+        }
+    }
+
+    #[test]
+    fn a_long_list_never_hides_its_tail_and_links_the_whole_list() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let agents: Vec<Ag> =
+            ["alpha-worker", "beta-worker", "gamma-worker", "delta-worker", "epsilon-worker", "zeta-worker"].iter().map(|n| ("job", *n, true)).collect();
+        let h = home("pp-long");
+        std::fs::write(format!("{h}/t.jsonl"), transcript(&[], &agents)).unwrap();
+        track(&h, &agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        let Some(Some(Verdict::Exact(x))) = v else { panic!("{v:?}") };
+        let reason = serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string();
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        assert!(reason.contains("6 agent/task pairs are off") && reason.contains("more)"), "the tail count is visible: {reason}");
+        assert!(reason.contains("details:"), "the whole list is linked: {reason}");
+        for n in ["alpha-worker", "zeta-worker"] {
+            assert!(saved.contains(&format!("agent \"{n}\" owns no open task")), "{n} is in the saved details: {saved}");
+        }
+    }
+    /// One Stop (switch on): the visible block (no saved details) and the saved details apart; `None` when it printed nothing.
+    fn stop_split(tag: &str, tasks: &[(String, &str)], agents: &[Ag]) -> Option<(String, String)> {
+        let h = home(tag);
+        std::fs::write(format!("{h}/t.jsonl"), transcript(tasks, agents)).unwrap();
+        track(&h, agents);
+        let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": h, "transcript_path": format!("{h}/t.jsonl")});
+        let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string())];
+        let v = super::super::run_forced("task-pair-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        let saved = saved_details(&h);
+        crate::discard::harmless(std::fs::remove_dir_all(&h));
+        match v {
+            Some(Some(Verdict::Allow)) => None,
+            Some(Some(Verdict::Exact(x))) => Some((serde_json::from_str::<Value>(&x.out).unwrap()["reason"].as_str().unwrap().to_string(), saved)),
+            other => panic!("{tag}: unexpected verdict {other:?}"),
+        }
+    }
+
+    const LONG: &str = "delta-diagnostics-maintainer-omega";
+
+    /// The class: a step is only as good as the name it carries. The visible line shows a name cut (longer than pair_rule.name_max) or cleaned
+    /// (backticks, emoji and symbols are dropped by the message cleaning), so such a name must never be the owner a step asks for. The steps
+    /// and the saved details hold it whole, the visible step points at them, and doing what they say clears the block. A name the line shows
+    /// exactly needs no pointer.
+    #[test]
+    fn a_step_never_asks_for_a_name_the_visible_line_shows_inexactly() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ip = "in_progress";
+        let exact24 = "abcdefghijklmnopqrstuvwx";
+        let exact25 = "abcdefghijklmnopqrstuvwxy";
+        // (tag, tasks, agents, the tasks the stated steps leave, the names that must be whole in the saved details, the line is exact)
+        type NameCase = (&'static str, Vec<(String, &'static str)>, Vec<Ag>, Vec<(String, &'static str)>, Vec<&'static str>, bool);
+        let two_long = vec![wk("first job", LONG), wk("second job", LONG)];
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        let huge = leak("x".repeat(5000));
+        let pair_cut = leak(format!("{}\u{1F600}\u{1F600}tail", "a".repeat(23))); // the cut at 24 units falls inside a surrogate pair
+        let cases: Vec<NameCase> = vec![
+            // the reviewed failing input: a loose owner, a long launch name
+            ("f3-reviewed", owned(&[("inspect module", ip)]), vec![wk("inspect module delta-diagnostics", LONG)], owned(&[(LONG, ip)]), vec![LONG], false),
+            ("f2-long-none", vec![], vec![wk("a job", LONG)], owned(&[(LONG, ip)]), vec![LONG], false),
+            ("f2-25-chars", vec![], vec![wk("a job", exact25)], owned(&[(exact25, ip)]), vec![exact25], false),
+            ("f2-24-chars-is-exact", vec![], vec![wk("a job", exact24)], owned(&[(exact24, ip)]), vec![exact24], true),
+            ("f2-long-many", vec![], two_long.clone(), owned(&[(LONG, ip), (LONG, ip)]), vec![LONG], false),
+            ("f2-long-share", owned(&[(LONG, ip)]), two_long, owned(&[(LONG, ip), (LONG, ip)]), vec![LONG], false),
+            ("f2-backtick", vec![], vec![wk("a job", "wake`worker")], owned(&[("wake`worker", ip)]), vec!["wake`worker"], false),
+            ("f2-emoji", vec![], vec![wk("a job", "build\u{1F680}bot")], owned(&[("build\u{1F680}bot", ip)]), vec!["build\u{1F680}bot"], false),
+            ("f2-symbol", vec![], vec![wk("a job", "\u{2705}checker")], owned(&[("\u{2705}checker", ip)]), vec!["\u{2705}checker"], false),
+            ("f2-very-long", vec![], vec![wk("a job", huge)], owned(&[(huge, ip)]), vec![huge], false),
+            ("f2-cut-inside-a-surrogate-pair", vec![], vec![wk("a job", pair_cut)], owned(&[(pair_cut, ip)]), vec![pair_cut], false),
+            ("f2-plain-is-exact", vec![], vec![wk("a job", "wake-worker")], owned(&[("wake-worker", ip)]), vec!["wake-worker"], true),
+            (
+                "f3-long-owner-short-name",
+                owned(&[("implement the extremely long running migration job", ip)]),
+                vec![wk("implement the extremely long running migration job", "migrator")],
+                owned(&[("migrator", ip)]),
+                vec!["migrator", "implement the extremely long running migration job"],
+                false,
+            ),
+            (
+                "mixed-short-and-long",
+                vec![],
+                vec![wk("a job", "short-one"), wk("b job", LONG)],
+                owned(&[("short-one", ip), (LONG, ip)]),
+                vec!["short-one", LONG],
+                false,
+            ),
+        ];
+        for (tag, tasks, agents, fixed, names, exact) in cases {
+            let (vis, saved) = stop_split(&format!("pp-name-{tag}"), &tasks, &agents).unwrap_or_else(|| panic!("{tag}: no block"));
+            for n in &names {
+                assert!(saved.contains(&format!("\"{n}\"")), "{tag}: the saved details hold {n:?} whole: {saved}");
+            }
+            let instead = vis.lines().find(|l| l.contains("Do instead:")).unwrap_or_else(|| panic!("{tag}: no step line: {vis}"));
+            assert!(!instead.contains('\u{2026}'), "{tag}: the step carries no cut name: {instead}");
+            if exact {
+                assert!(vis.contains(&format!("\"{}\"", names[0])), "{tag}: an exact name is on the visible line whole: {vis}");
+                assert!(!vis.contains("details:"), "{tag}: an exact name needs no pointer: {vis}");
+            } else {
+                assert!(vis.contains("details:") && instead.contains("saved details"), "{tag}: the step points at the whole names: {vis}");
+            }
+            // the step, done with the whole names the saved details hold, clears the block
+            assert!(stop_split(&format!("pp-name-{tag}-fixed"), &fixed, &agents).is_none(), "{tag}: the stated step clears it");
+            // and the same input with the switch off prints nothing
+            assert_eq!(stop_with(&format!("pp-name-{tag}-off"), &tasks, &agents, false).1, "", "{tag}: switch off is silent");
+        }
+    }
+
+    #[test]
+    fn a_long_list_of_long_names_is_linked_and_whole_in_the_details() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let names: Vec<String> = (0..9).map(|i| format!("long-launch-name-number-{i}-worker")).collect();
+        let agents: Vec<Ag> = names.iter().map(|n| ("job", Box::leak(n.clone().into_boxed_str()) as &'static str, true)).collect();
+        let (vis, saved) = stop_split("pp-name-nine", &[], &agents).unwrap();
+        assert!(vis.contains("9 agent/task pairs are off") && vis.contains("more)") && vis.contains("details:"), "{vis}");
+        for n in &names {
+            assert!(saved.contains(&format!("agent \"{n}\" owns no open task")), "{n}: {saved}");
+        }
+        let fixed: Vec<(String, &str)> = names.iter().map(|n| (n.clone(), "in_progress")).collect();
+        assert!(stop_split("pp-name-nine-fixed", &fixed, &agents).is_none(), "the whole list clears it");
+    }
+}
+
+/// `rangeSha1Hex` is exactly the SHA-1 of the hex text `readRangeHex` returned (so a stored transcript fingerprint stays valid), and
+/// is `null` wherever the hex route came up short or empty-handed.
+#[test]
+fn range_sha1_hex_equals_sha1_of_range_hex() {
+    let h = home("range-sha1");
+    let p = format!("{h}/t.bin");
+    let bytes: Vec<u8> = (0..5000u32).map(|i| (i * 7 + 3) as u8).collect();
+    std::fs::write(&p, &bytes).unwrap();
+    for (from, n) in [(0.0, 4096.0), (100.0, 4096.0), (904.0, 4096.0), (0.0, 1.0), (4999.0, 1.0), (0.0, 0.0), (5000.0, 0.0), (0.0, 511.0), (0.0, 513.0)] {
+        let hex = host::read_range_hex(&p, from, n).unwrap();
+        assert_eq!(hex.len() as f64, n * 2.0, "fixture: {from}+{n} lies inside the file");
+        assert_eq!(host::range_sha1_hex(&p, from, n), Some(crate::checks::replykit::io::sha1_hex(&hex)), "from {from} n {n}");
+    }
+    assert_eq!(host::range_sha1_hex(&p, 905.0, 4096.0), None, "fewer than n bytes: null, as the length check on the hex was");
+    assert_eq!(host::range_sha1_hex(&p, 9000.0, 1.0), None);
+    assert_eq!(host::range_sha1_hex(&format!("{h}/absent"), 0.0, 1.0), None);
+    assert_eq!(host::range_sha1_hex(&h, 0.0, 1.0), None, "a directory is not a file");
 }

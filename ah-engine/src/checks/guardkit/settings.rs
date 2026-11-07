@@ -58,18 +58,43 @@ pub(crate) fn read_object(st: &Settings, rel: &str) -> Option<serde_json::Map<St
     }
     // Node reads the file as UTF-8 with replacement characters, so invalid bytes do not make it unreadable there.
     let txt = String::from_utf8_lossy(&std::fs::read(format!("{}/{rel}", st.home)).ok()?).into_owned();
-    match serde_json::from_str::<Value>(&txt) {
-        Ok(Value::Object(o)) => Some(o),
+    // read the way JavaScript reads it: a number outside the f64 range (`1e400`) invalidates that one key (it reads as `null`), never the file
+    match super::jsdiff::parse_settings_as_js(&txt) {
+        Some((Value::Object(o), _)) => Some(o),
         _ => None,
     }
 }
 
+/// The files whose out-of-range numbers were found since the last drain (a file name from the `guardkit` keys, so the set is bounded by
+/// the five files); the daemon adds them to the `settings_value_invalid` counter.
+static INVALID_SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Add the out-of-range settings values found so far to the `settings_value_invalid{file}` counter, one count per value.
+pub fn drain_invalid_into(t: &crate::telemetry::Telemetry) {
+    let batch = std::mem::take(&mut *INVALID_SEEN.lock().unwrap_or_else(|e| e.into_inner()));
+    if !batch.is_empty() {
+        t.with_metrics(|m| {
+            for file in &batch {
+                m.inc("settings_value_invalid", &[("file", file)]);
+            }
+        });
+    }
+}
+
+fn note_invalid(file: &str, count: usize) {
+    let mut g = INVALID_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let room = (defaults::num("guardkit.settings_invalid_pending_max") as usize).saturating_sub(g.len());
+    g.extend(std::iter::repeat_n(file.to_string(), count.min(room)));
+}
+
 type FileVerdicts = std::collections::HashMap<String, (std::time::SystemTime, u64, bool)>;
 
-/// D74: a settings file that EXISTS but that `serde_json` cannot parse while JavaScript could (a number outside the f64 range, nesting past serde's limit, a lone surrogate escape) must
-/// not be read as missing: the opt-in modes it carries (a block mode, say) would be ignored and the engine would allow what Node
-/// blocks. True when any of the files the switch chain reads is such a file; every check then defers to Node (the dispatcher asks
-/// before it runs a check). Cached per file by modification time and length, so a request costs one `stat` per file.
+/// D74: a settings file that EXISTS but that `serde_json` cannot parse while JavaScript could (nesting past serde's limit, a lone surrogate escape)
+/// must not be read as missing: the opt-in modes it carries (a block mode, say) would be ignored and the engine would allow what Node
+/// blocks. [`read_object`] reads every such file the way JavaScript does, so this is true only for a file even that cannot read (nesting
+/// past `taskstate.js_parse_max_depth`); every check then takes its failure policy (the dispatcher asks before it runs a check). A number outside
+/// the f64 range (`1e400`) is NOT such a file (#569): it invalidates its own key only, counted once per file change as `settings_value_invalid`.
+/// Cached per file by modification time and length, so a request costs one `stat` per file.
 pub fn unreadable_settings_file(home: &str) -> bool {
     static SEEN: std::sync::Mutex<Option<FileVerdicts>> = std::sync::Mutex::new(None);
     if home.is_empty() {
@@ -92,7 +117,16 @@ pub fn unreadable_settings_file(home: &str) -> bool {
             continue;
         }
         drop(g);
-        let bad = std::fs::read(&path).ok().is_some_and(|b| crate::checks::guardkit::jsdiff::js_reads_differently(&b));
+        let bad = std::fs::read(&path).ok().is_some_and(|b| {
+            let txt = String::from_utf8_lossy(&b);
+            match crate::checks::guardkit::jsdiff::parse_settings_as_js(&txt) {
+                Some((_, replaced)) => {
+                    note_invalid(key, replaced);
+                    false
+                }
+                None => crate::checks::guardkit::jsdiff::js_reads_differently_str(&txt),
+            }
+        });
         let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
         let seen = g.get_or_insert_with(Default::default);
         if seen.len() > defaults::num("guardkit.settings_seen_max") as usize {
@@ -516,4 +550,29 @@ pub fn plugin_root(opts: &Value, env: &crate::reqenv::RequestEnv) -> String {
         .map(str::to_string)
         .or_else(|| env.get(defaults::env_name("plugin_root")).map(str::to_string))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_overflowing_number_is_counted_once_and_does_not_make_the_file_unreadable() {
+        let home = std::env::temp_dir().join(format!("ah-ovf-count-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        let file = format!("{}/{}", home.display(), defaults::text("guardkit.settings_file"));
+        std::fs::write(&file, r#"{"a":{"x":1e400,"y":-1e400},"ok":true}"#).unwrap();
+        let h = home.to_str().unwrap();
+        let before = INVALID_SEEN.lock().unwrap().iter().filter(|f| *f == "guardkit.settings_file").count();
+        assert!(!unreadable_settings_file(h), "an out-of-range number must not reject the file");
+        let after = INVALID_SEEN.lock().unwrap().iter().filter(|f| *f == "guardkit.settings_file").count();
+        assert!(after >= before + 2, "two values counted: {before} -> {after}");
+        assert!(!unreadable_settings_file(h));
+        assert_eq!(INVALID_SEEN.lock().unwrap().iter().filter(|f| *f == "guardkit.settings_file").count(), after, "cached: not counted again");
+        let st = Settings { home: h.to_string(), env: Default::default() };
+        let o = read_object(&st, defaults::text("guardkit.settings_file")).unwrap();
+        assert_eq!(o["ok"], Value::Bool(true));
+        assert_eq!(o["a"]["x"], Value::Null);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 }

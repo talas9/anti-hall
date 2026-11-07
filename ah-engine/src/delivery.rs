@@ -411,6 +411,55 @@ mod tests {
         assert_eq!(funnel_count(&t, "task-tracker", &opus, "delivery.stage_lost"), 0, "the other model's loss is not this one's");
     }
 
+    /// R-inline (plan v3 L04): the funnel counts a check under the name its dispatch entry gives it (`Entry::check`), which for the
+    /// command-guard hook is `command`, not `command-guard`. The `delivery.act` rows of the three main-thread guards must be keyed by
+    /// those names, or their blocks reach `decided` but never `acted_on` or `ignored`.
+    #[test]
+    fn the_act_rows_of_the_main_thread_guards_are_keyed_by_their_dispatch_check_and_a_block_reaches_decided_then_acted_on() {
+        for (hook, tool, event) in
+            [("command-guard", "Bash", "PreToolUse"), ("coordinator-work-guard", "Bash", "PreToolUse"), ("edit-guard", "Write", "PreToolUse")]
+        {
+            let payload = serde_json::json!({"hook_event_name": event, "tool_name": tool});
+            let entry = crate::dispatch::table::select("claude", event, &payload, Some(tool))
+                .into_iter()
+                .find(|e| e.id == hook)
+                .unwrap_or_else(|| panic!("the claude {event} table has a {hook} entry for {tool}"));
+            let check = entry.check.as_deref().unwrap_or_else(|| panic!("{hook} is answered by a built-in check"));
+            assert!(defaults::raw("delivery.act").get(check).is_some(), "{hook}: delivery.act has a row for its check `{check}`");
+            let t = Telemetry::new();
+            let session = format!("s-{hook}");
+            deliver(&t, &session, check);
+            assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_decided"), 1, "{hook}: a block is decided under `{check}`");
+            observe_tool(&t, &session, "Agent");
+            assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "{hook}: a spawn after the block is acted on");
+        }
+    }
+
+    /// R-pair (plan v3 L11): the funnel counts `task-pair-guard` under its dispatch check name, and a task change or an agent spawn after its
+    /// block is acted on (the owner it asks for, or the named respawn).
+    #[test]
+    fn funnel_row_counts_task_pair_guard() {
+        let check = "task-pair-guard";
+        for (event, tool) in [("PreToolUse", "Agent"), ("PostToolUse", "Agent"), ("Stop", "")] {
+            let payload = serde_json::json!({"hook_event_name": event, "tool_name": tool});
+            let found = crate::dispatch::table::select("claude", event, &payload, if tool.is_empty() { None } else { Some(tool) })
+                .into_iter()
+                .any(|e| e.check.as_deref() == Some(check));
+            assert!(found, "the claude {event} table has a {check} entry");
+        }
+        assert!(defaults::raw("delivery.act").get(check).is_some(), "delivery.act has a row for `{check}`");
+        let t = Telemetry::new();
+        deliver(&t, "s-pair", check);
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_decided"), 1);
+        observe_tool(&t, "s-pair", "TaskUpdate");
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "a TaskUpdate after the block is acted on");
+        deliver(&t, "s-pair2", check);
+        for _ in 0..3 {
+            observe(&t, "s-pair2", defaults::text("delivery.react_event"), "Read");
+        }
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_ignored"), 1, "three other tool calls end the window unmet");
+    }
+
     #[test]
     fn the_essential_reminders_are_never_shed_and_their_grace_stays_under_the_cap() {
         for c in ["task-tracker", "tasklist-guard", "devswarm-parent-inbox", "devswarm-child-gate", "verify-first"] {

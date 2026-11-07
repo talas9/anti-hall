@@ -23,8 +23,8 @@ workspace too. What follows is what a Codex user needs to know about the four ad
 | Addon | Status | Where |
 |---|---|---|
 | **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` in the anti-hall source repository — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the parent/child async message-passing model. Includes a parallel OMC/OMX table for the workspace tier (§8.4 of the KB): the workspace-create/merge surface is CLI-identical either way; only the in-workspace fan-out engine differs (Workflow tool + subagents for Claude, `omx team`/workers for Codex). Repo-clone-only — does not ship with a plugin install. |
-| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-orch.js` rule W, `verify-first.js`, `task-tracker.js`) and `command-guard.js` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard.js` carries the same redirect and is registered for Codex on `apply_patch` edits only.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
-| **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | the engine supervisor duty (`ah-engine devswarm supervisor`). The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. (`devswarm-detect`/`devswarm-role` are shared env-detection helpers, not supervisor-only — `devswarm-child-role`, the SessionStart child self-report hook, is now registered for **both** agents; see below.) |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-orch` rule W, `verify-first`, `task-tracker`) and `command-guard` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard` carries the same redirect and is registered for Codex on `apply_patch` edits only.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
+| **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | the engine supervisor duty (`ah-engine devswarm supervisor`). The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. (`devswarm-detect`/`devswarm-role` are Node-era module names; the originals are in the retired Node backup directory, and they are shared env-detection helpers, not supervisor-only — `devswarm-child-role`, the SessionStart child self-report hook, is now registered for **both** agents; see below.) |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped — targets `claude` processes only** | `ah-engine devswarm recover`, invoked explicitly per workspace id. Still Claude-only in what it targets (see below), but a Codex-side operator can run it. |
 
 ## Meeseeks supervision — step plans, straying warnings, token burn (v0.117.0; applies to Codex too)
@@ -35,12 +35,12 @@ A child workspace is supervised against the brief it was given, not only for liv
 - **Straying signals** (supervisor sweep, plan rows only, advisory, never a kill): `stall` — busy with no step progress for `devswarm.stepStallMin` (30) minutes; `off-scope` — `ready-check --allow <scope ∪ extras>` finds committed files outside the plan's scope; `idle` — the liveness verdict is stale/nudged/escalated; `burn` — more than `devswarm.burnTokensWarn` (2M) weighted tokens since the step last moved (input + output + cache writes + `devswarm.burnCacheReadPct`% of cache reads, 10% by default, read incrementally from the child's own session transcript). Each episode warns once; new episodes on the same step repeat up to `devswarm.strayWarnMax` (2; 0 = off).
 - **What the Primary sees.** One capped advisory `DEVSWARM STRAYING: <title>: step N <reason> (Jev: <verdict> <confidence>)` line on its Stop (shown once per warning per session, stable alert kind `devswarm-straying`, never a block), `STRAYING: <signals>` and `+N extras` on the table's finish cell, and `plan.straying` / `plan.tokens` / `plan.extras` on the roster row.
 - **Correction.** `correct <id> [--dry-run]` (Primary, seat-gated) sends "step N '<text>': <reasons>. Return to step N or reply BLOCKED <why>" as a mesh direct and records `warned_at` (the stall clock restarts from it) only after the send succeeds. Never automatic.
-- **Respawn (Primary-run, never automatic).** `respawn <id> [--dry-run]` refuses unless the caller holds the Primary seat, the plan has `warned_at` (a `correct` was sent) and `devswarm.respawnGraceMin` (20) minutes have passed since it. Then: (a) it asks the child to commit and push its WIP and waits up to `devswarm.respawnWipWaitSec` (120 s); (b) anything still dirty or unpushed is committed through a private index onto a new `park/<branch>-<ts>` branch and pushed — the child's worktree, index and branch are untouched, nothing is stashed or discarded, and a failed park or push aborts the respawn; (c) it writes `plans/<id>.handover.md` (steps done, remaining steps, last summary, scope, extras, park branch); (d) it spawns `<branch>-r<N>` with `-s <default branch>` (never `-s <old branch>`, which would make the old branch the merge target), step 1 merging the old or park branch, then the remaining steps, carrying scope and extras; (e) it archives the old id and asks the owner to close its app tab. `--dry-run` prints the plan and changes nothing. Respawn never kills; `devswarm-recover.js` stays the only kill path. Plan-file writes (child verbs, `correct`, `respawn`, the sweep) are serialized under one lock, so no step update is lost.
+- **Respawn (Primary-run, never automatic).** `respawn <id> [--dry-run]` refuses unless the caller holds the Primary seat, the plan has `warned_at` (a `correct` was sent) and `devswarm.respawnGraceMin` (20) minutes have passed since it. Then: (a) it asks the child to commit and push its WIP and waits up to `devswarm.respawnWipWaitSec` (120 s); (b) anything still dirty or unpushed is committed through a private index onto a new `park/<branch>-<ts>` branch and pushed — the child's worktree, index and branch are untouched, nothing is stashed or discarded, and a failed park or push aborts the respawn; (c) it writes `plans/<id>.handover.md` (steps done, remaining steps, last summary, scope, extras, park branch); (d) it spawns `<branch>-r<N>` with `-s <default branch>` (never `-s <old branch>`, which would make the old branch the merge target), step 1 merging the old or park branch, then the remaining steps, carrying scope and extras; (e) it archives the old id and asks the owner to close its app tab. `--dry-run` prints the plan and changes nothing. Respawn never kills; `ah-engine devswarm recover` stays the only kill path. Plan-file writes (child verbs, `correct`, `respawn`, the sweep) are serialized under one lock, so no step update is lost.
 - **Extra work the user asked for.** The child records it with `scope add <id> --glob '<paths>' --note '<what the user asked>'` (idempotent; the child-turn hook tells a planned child to do this). Tagged globs stop counting as off-scope; the Primary sees the note and can challenge it.
 - **Jev recommendations** (`jevIntegrations.devswarmOnBrief`, `devswarmExtraSanctioned`, `devswarmWaitKind`, `devswarmLoop`, `devswarmStepMap`; default `on` = recommendation, `shadow` = logged only, `off`): asked detached from the sweep only when a deterministic precondition fires, answer read from the cache on the next sweep. The verdict and confidence ride on the warning as a recommendation; Jev never suppresses a warning, never blocks, never kills. The Primary makes the final call.
 - **Effectiveness.** `~/.anti-hall/logs/devswarm-supervision.ndjson` (bounded, 1 MB × 5, daily rollups in `devswarm-supervision-daily/`): warnings by signal, repeats, corrections followed by step progress within `stepStallMin`, extras tagged, time-to-done and steps done vs planned, tokens per workspace and per step, burn warnings and their corrected rate, per Jev integration its agreement with the deterministic signal plus how often the Primary followed or overrode it, and respawns (WIP parked or not, aborted, time to first step progress in the new workspace, finished). `supervision-report [--days N] [--json]` prints it; `doctor` adds a one-line 7-day summary.
 
-Codex parity: the same hooks (`devswarm-child-turn.js`, `devswarm-parent-inbox.js`, `devswarm-parent-gate.js`) are registered in `codex/hooks/hooks.json`, so a Codex Primary sees the same STRAYING line and table cell, and a Codex child gets the same `scope add` instruction. The token-burn signal reads Claude session transcripts; a Codex child has none there, so it gets no `burn` warning and no token figure.
+Codex parity: the same hooks (`devswarm-child-turn`, `devswarm-parent-inbox`, `devswarm-parent-gate`) are registered in `codex/hooks/hooks.json`, so a Codex Primary sees the same STRAYING line and table cell, and a Codex child gets the same `scope add` instruction. The token-burn signal reads Claude session transcripts; a Codex child has none there, so it gets no `burn` warning and no token figure.
 
 ## The layered recovery model, for Codex users
 
@@ -64,8 +64,8 @@ automatic path handles this in three escalating layers and **never kills anythin
 3. **Escalate-to-parent** — once the poke budget is exhausted, the sweep persists verdict
    `escalated` (terminal — never re-targeted) and fires an optional `escalateCommand`.
 
-**Archived child can't re-register (design B, both agents)** — `devswarm-child-turn.js`
-(per-turn descriptor register/refresh) and `devswarm-child-gate.js` (Stop-hook forced
+**Archived child can't re-register (design B, both agents)** — `devswarm-child-turn`
+(per-turn descriptor register/refresh) and `devswarm-child-gate` (Stop-hook forced
 report) are the SAME files registered in `codex/hooks/hooks.json` as in the Claude
 hooks.json, so this applies identically to a Codex child workspace. Before either hook
 rewrites/forces anything, it asks `row-state` (the one read-side
@@ -86,7 +86,7 @@ target surface; nothing here signals or resumes a Codex process.
 
 ## command-guard's destructive-read redirect (shipped v0.53.0, later hardened — applies to Codex too)
 
-Unlike the recovery model above, this one is **not** Claude-only: `command-guard.js` is
+Unlike the recovery model above, this one is **not** Claude-only: `command-guard` is
 a single file registered in both `codex/hooks/hooks.json` and the Claude hooks.json, so
 its DevSwarm branch fires identically for a Codex workspace. Under a DevSwarm-active
 session it redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts
@@ -105,7 +105,7 @@ skip-guard's `DESTRUCTIVE` set — a blanket `all` skip does not cover it). Full
 A second guard closes the RAW-file-read hole (`cat`/`head`/`grep`/… of the durable
 inbox/store — doesn't drain the native queue, but desyncs the durable cursor and
 violates the store's write/derive layering). The shell-verb form is caught by
-`command-guard.js` itself — **shared, so this fires on Codex too.** The dedicated
+`command-guard` itself — **shared, so this fires on Codex too.** The dedicated
 `Read`-tool guard (`inbox-read-guard`) is **Claude-only** (not registered in
 `codex/hooks/hooks.json` — it guards Claude's own `Read` tool specifically). Full
 taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
@@ -115,7 +115,7 @@ taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
 A SEPARATE, newer guard branch from the destructive-read redirect above, but with the
 **same shared-file mechanics**: `hivecontrol workspace message-child` and `hivecontrol
 workspace message-parent` — the two native SEND subcommands — are now guard-blocked
-UNCONDITIONALLY whenever DevSwarm is active, in ALL contexts. `command-guard.js` is the
+UNCONDITIONALLY whenever DevSwarm is active, in ALL contexts. `command-guard` is the
 single file registered on both platforms and the DevSwarm-active gate it depends on
 (`devswarm-detect`) keys off `DEVSWARM_REPO_ID`, which hivecontrol sets
 per-workspace regardless of which agent runs there — **so this block fires identically
@@ -129,25 +129,25 @@ reason redirects to the mesh CLI: `~/.anti-hall/ah-engine/bin/ah-engine mesh sen
 "<text>"`.
 
 **Now carries over to Codex too (corrected):** the PROACTIVE per-turn reminder that keeps
-the mesh top-of-mind (injected by `devswarm-child-role.js`/`devswarm-child-turn.js`/
-`devswarm-parent-inbox.js`) was previously undocumented for Codex on the premise that these
+the mesh top-of-mind (injected by `devswarm-child-role`/`devswarm-child-turn`/
+`devswarm-parent-inbox`) was previously undocumented for Codex on the premise that these
 hooks' gating `DEVSWARM_*` env vars were Claude-only. That premise was wrong —
 `docs/KB-devswarm-hivecontrol.md` §6/§8.7 (live-verified env fingerprint) states
 `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set by hivecontrol
 per-workspace regardless of agent — `DEVSWARM_AI_AGENT` is the separate var naming
-claude vs codex — the same fact §8.5/§8.7 already established for `command-guard.js`'s own
-DevSwarm gate above. All three hooks (plus the SessionStart `devswarm-child-role.js` and
-the Stop-side `devswarm-parent-gate.js`/`devswarm-child-gate.js`) are now registered in
+claude vs codex — the same fact §8.5/§8.7 already established for `command-guard`'s own
+DevSwarm gate above. All three hooks (plus the SessionStart `devswarm-child-role` and
+the Stop-side `devswarm-parent-gate`/`devswarm-child-gate`) are now registered in
 `codex/hooks/hooks.json`, unmodified, alongside the guard-block. A Codex agent inside an
 active DevSwarm workspace is therefore mechanically PREVENTED from sending a native message
 AND gets the same proactive mesh reminder every turn that a Claude session gets — see
 "Always-listening reception" below. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.5's
 v0.58 bullet and §8.7's "v0.58 mesh-only messaging" note.
 
-**Parent Stop-gate: count parity + busy-vs-neglect (v0.109.0).** `devswarm-parent-gate.js`
+**Parent Stop-gate: count parity + busy-vs-neglect (v0.109.0).** `devswarm-parent-gate`
 is the SAME file for both agents (no Codex-side fork), so this applies identically here. Two
 field fixes: (1) the gate's unread count for a child no longer excludes rows the Primary sent
-itself — that exclusion made the gate disagree with the roster/`devswarm-parent-inbox.js`
+itself — that exclusion made the gate disagree with the roster/`devswarm-parent-inbox`
 count (`devswarm-store`'s `unionUnreadFor`), which never applied it; both now
 read through the same `unionUnread` primitive. (2) a family whose only reason to block is a
 plain real-unread backlog is downgraded to a non-blocking advisory when the child is provably
@@ -184,7 +184,7 @@ the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivec
 main thread may run `inbox pull`/`ack`/`read`/`read-primary`/`tick`/`reap-orphans`,
 `heartbeat`, `inbox messages --ack`/`--ack-as-owner`, `mesh read` (without `--peek`/`--seq`),
 or `roster --ack` — a subagent that does advances the shared cursor and the main thread
-silently misses mail. The guard is registered in the shared `command-guard.js` hook
+silently misses mail. The guard is registered in the shared `command-guard` hook
 (`devswarm-subagent-mailbox-guard`), identically in `codex/hooks/hooks.json` — no separate
 Codex code path. Its deny behavior depends on the harness supplying subagent markers
 (`agent_id`/`agent_type`) in the hook payload, which has been verified on Claude Code only.
@@ -264,7 +264,7 @@ Two v0.56.0 additions:
   `<childId>`'s own mesh store partition (zero `hivecontrol` calls; `--child-branch` is
   gone). **Caveat — this now depends on the same repoKey mesh store the v0.57 mesh note
   below still describes as not yet officially Codex-documented:** the script itself has no
-  agent affinity (plain Node, no Claude-specific API) and nothing stops a Codex session
+  agent affinity (engine verbs, no Claude-specific API) and nothing stops a Codex session
   from invoking it directly, but treat it with the same "not yet promoted for Codex"
   posture as `send`/`roster`/`mesh read` below until that status changes. CHILD role: on
   seeing that marker in an unread message, confirm with YOUR user, then run
@@ -273,7 +273,7 @@ Two v0.56.0 additions:
   same short form shown in the roster/injection table — so the id displayed there is
   directly archivable; an ambiguous prefix archives nothing and lists the candidates instead.
   (The CHILD side's automatic marker-detection/surfacing, above, runs via
-  `devswarm-child-turn.js`, now registered for both agents — no manual scan needed on Codex
+  `devswarm-child-turn`, now registered for both agents — no manual scan needed on Codex
   either.)
 
 **(v0.93.0) App-side archive vs. informational-vs-blocking.** hivecontrol's `workspace list all`
@@ -474,7 +474,7 @@ If parent↔child messages seem to vanish or the durable inbox disagrees with wh
 sent, the likely cause is a **second process** — outside anti-hall entirely — also calling
 `hivecontrol workspace monitor`/`read-messages` against the same queue (a leftover cron job,
 `launchd`/`systemd`/`pm2` unit, shell loop, or `package.json` script). This is agent-agnostic:
-neither the Claude nor the Codex side of `command-guard.js` can see or block a process outside
+neither the Claude nor the Codex side of `command-guard` can see or block a process outside
 its own tool-call surface. **anti-hall CANNOT mechanically detect or kill an external
 non-tool-call consumer — identification + your own cleanup are the only levers.** Full
 identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (`ps aux | grep
@@ -498,9 +498,9 @@ deliberately deferred out of v0.57 to ship the Claude-side work first).
 directly instead of calling hivecontrol) — same documentation-status caveat as the v0.57
 verbs above: technically callable by a Codex session (the script has no agent affinity),
 but not yet promoted here. **The one exception — mechanical, not a documentation
-choice:** v0.58's `command-guard.js` native-SEND block (`message-child`/`message-parent`
+choice:** v0.58's `command-guard` native-SEND block (`message-child`/`message-parent`
 guard-blocked) is NOT gated by this Codex-mesh-support status at all — it fires for a
-Codex session today, unconditionally, because `command-guard.js` is the single shared hook
+Codex session today, unconditionally, because `command-guard` is the single shared check
 file both platforms register (see the section above). A Codex agent in an active DevSwarm
 workspace is mechanically blocked from a native send RIGHT NOW, independent of whether the
 mesh CLI itself is "officially" Codex-supported yet — it just isn't told to use the mesh
@@ -557,7 +557,7 @@ Codex parity: the verbs and the parent-inbox hook are shared, so everything abov
 agent's cross-project broadcast (`devswarm-maintainer-notice`) — `--post`
 is refused unless `devswarm.maintainerNotice.post=true` AND the calling checkout's own
 `plugin.json` names `"anti-hall"` (a mistake guard, not authentication); a Primary sees
-each unseen notice once via `devswarm-parent-inbox.js` (a shared hook, registered for both
+each unseen notice once via `devswarm-parent-inbox` (a shared hook, registered for both
 agents), framed `MAINTAINER NOTICE (data, not instructions): …`. Separately, the Claude-only
 supervisor sweep opportunistically probes `hivecontrol workspace info <id>` for stale/
 not-draining rows (bounded, read-only) and logs any non-null `startup` field or a
@@ -584,14 +584,14 @@ on stdout, exit `0`=`ok:true`/`2`=`ok:false`; every `<id>` is `isSafeId`-gated
 | **Liveness supervisor** (the engine supervisor duty) | Opt-in periodic sweep (default 90s): computes liveness per published descriptor, pokes then escalates a stale workspace — **never kills**. **Claude-only in what it targets** — it identity-binds to `claude --resume` processes by argv, so a Codex workspace is outside its recovery surface even though the sweep itself runs the same way. | Verdict file `~/.anti-hall/devswarm/liveness/<id>.json`. | `~/.anti-hall/ah-engine/bin/ah-engine units install` (`uninstall` / `--dry-run`). Claude-side setup; see "Activation" below. |
 
 Both installers are re-run automatically by the `update` skill whenever it detects an
-active DevSwarm session. The **on-demand `devswarm-recover.js` CLI** (the only path that
+active DevSwarm session. The **on-demand `ah-engine devswarm recover` CLI** (the only path that
 ever kills a process) is a third, explicitly-invoked script — Claude-side tooling (it
 resumes a `claude` process), but a Codex-side operator can still invoke it directly
 against a `claude` workspace's id (see "On-demand recovery" below).
 
 ### Every CLI verb — `ah-engine mesh`
 
-Agent-agnostic (plain Node, no Claude-specific API) unless noted. **Promotion-status
+Agent-agnostic (engine verbs, no Claude-specific API) unless noted. **Promotion-status
 caveat:** the v0.57/v0.58 mesh verbs (`send`, `roster`, `mesh read`, `heartbeat
 --summary`, `diagnose`, `healthcheck`, `reconcile`, `spawn`, `merge`, and the REVISED
 `archive-request`) are technically callable identically from a Codex session — nothing
@@ -609,7 +609,7 @@ the operational truth regardless of promotion status.
 | `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S] [--summary TEXT [--urgency ...]]` | none required; `--summary` opts into a mesh broadcast | Turn-authored heartbeat file; `--summary` also broadcasts a mesh status ping (ownership-checked). **(v0.96.0)** The result, and every ownership refusal, carries an additive `identity: {id, kind}` — `kind` is `resolved` (cwd matched a real git worktree), `declared` (`DEVSWARM_BUILDER_ID` trusted, no worktree ground truth), or `unresolvable` (raw-cwd-hash fallback). **(v0.109.1)** When the app DB reports this row app-archived, the base heartbeat file still writes, but the alive-verdict clear and the `--summary` mesh broadcast are both skipped (`appArchived:true`; `meshBroadcast.dropped:true`). | Every turn, self-reported status. | **Writes.** |
 | `done [<id>] [--summary TEXT]` **(0.108.3)** | none required | CHILD-side structured done-report: sets the `done` gate on the caller's OWN id (resolved from cwd; an explicit `<id>` must match) and sends the Primary ONE `[[ANTIHALL_DONE]]` direct message (`kind:'done'`). Idempotent per HEAD; never sets `merged`/`tests_passed` (auto-archive proves the merge); refused from the Primary checkout. The roster then shows `done` + `archive-pending`. | Once, when the child's work is merged/finished — the workspace is then auto-archived, no user step. | **Writes.** |
 | `inbox pull <id> [--session S]` | none required | CHILD-side: auto-ensures the descriptor, ONE bounded guard-safe native-queue drain (count-gate → at-most-one `read-messages`, never `monitor`) into the durable inbox + store. Runs send-time daemon self-heal first. | Every child turn — the sanctioned way to receive. | **Writes.** |
-| `inbox tick <id> [--child]` **(v0.97.0, D13)** | none required | The mailbox-wake polling loop's one-command drain: with `--child` runs `inbox pull` first, then reports the SAME shape `inbox count` does, PLUS writes a `wake-tick/<id>.json` liveness marker (`devswarm-child-gate.js`'s Stop hook reads it to skip a redundant forced heartbeat), refreshes `heartbeats/<id>.json`'s `ts` (cheap, never fabricates progress/phase/wip/blockers), and — only when unread>0 AND a Monitor watcher lock exists for `id` — appends one measurement line to `cron-found-mail.jsonl` (capped, `doctor --check` reports the count; a Codex workspace has no Monitor lock, so this side effect is a Claude-side no-op for it, harmlessly). Also reports `watcherArmed:true\|false\|'idle-skip'` (a live-Monitor-lock check) — Codex has no Monitor tool, so this always reads `false` for a Codex workspace (never `idle-skip`, since a Codex workspace never has a watcher to skip arming); harmless, nothing in the Codex polling loop acts on it. `'idle-skip'` only ever appears for a Claude-side Primary with 0 live (non-archived) child workspaces (`devswarm.wakeWatchIdleSkip`, default true, #39) — it is a deliberate non-arm, not a lapse. Likewise `'archived-skip'` (a `--child` caller whose own workspace is archived; `devswarm.archivedChildStop`) is never `false` — do not re-arm on it. | The mailbox-poll's own drain step — one command instead of pull+count. | **Writes.** |
+| `inbox tick <id> [--child]` **(v0.97.0, D13)** | none required | The mailbox-wake polling loop's one-command drain: with `--child` runs `inbox pull` first, then reports the SAME shape `inbox count` does, PLUS writes a `wake-tick/<id>.json` liveness marker (`devswarm-child-gate`'s Stop hook reads it to skip a redundant forced heartbeat), refreshes `heartbeats/<id>.json`'s `ts` (cheap, never fabricates progress/phase/wip/blockers), and — only when unread>0 AND a Monitor watcher lock exists for `id` — appends one measurement line to `cron-found-mail.jsonl` (capped, `doctor --check` reports the count; a Codex workspace has no Monitor lock, so this side effect is a Claude-side no-op for it, harmlessly). Also reports `watcherArmed:true\|false\|'idle-skip'` (a live-Monitor-lock check) — Codex has no Monitor tool, so this always reads `false` for a Codex workspace (never `idle-skip`, since a Codex workspace never has a watcher to skip arming); harmless, nothing in the Codex polling loop acts on it. `'idle-skip'` only ever appears for a Claude-side Primary with 0 live (non-archived) child workspaces (`devswarm.wakeWatchIdleSkip`, default true, #39) — it is a deliberate non-arm, not a lapse. Likewise `'archived-skip'` (a `--child` caller whose own workspace is archived; `devswarm.archivedChildStop`) is never `false` — do not re-arm on it. | The mailbox-poll's own drain step — one command instead of pull+count. | **Writes.** |
 | `inbox read <id>` | none **(v0.84.0)** Partition resolution follows the WORKSPACE's registered project, not the caller's cwd. If they differ, the result is `known:false` with the NAMED reason/`registeredRepoKey`/`callerRepoKey` under `storeUnavailableDetail`, and a top-level `storeUnavailableReason` sibling to `storeUnavailable` (`storeUnavailable`/`storeUnavailableReason` stay `false`/`null` — a project-context-mismatch is not a genuine store-unavailable condition) — an honest "I cannot read this from here", NOT a zero meaning "no mail". | Durable-inbox cursor read, no ack. | Check what's pending without consuming it. | Read-only. |
 | `inbox count <id>` | none **(v0.84.0)** Partition resolution follows the WORKSPACE's registered project, not the caller's cwd. If they differ, the result is `known:false` with the NAMED reason/`registeredRepoKey`/`callerRepoKey` under `storeUnavailableDetail`, and a top-level `storeUnavailableReason` sibling to `storeUnavailable` (`storeUnavailable`/`storeUnavailableReason` stay `false`/`null` — a project-context-mismatch is not a genuine store-unavailable condition) — an honest "I cannot read this from here", NOT a zero meaning "no mail". | Durable-inbox unread count only. | Cheap pre-check before `inbox read`. | Read-only. |
 | `inbox ack <id> [--to N] [--ack-as-owner]` | `--to` = ack to absolute count; omitted = ack-all **(v0.84.0)** A refused read may not acknowledge: `ack` on a workspace the caller does not own no longer advances the cursor (it used to, permanently skipping that workspace's mail). **(v0.96.0, D11-C)** `ack` also now refuses the WHOLE verb on a POSITIVE, resolvable ownership mismatch (the caller's own cwd/env resolves to a REAL, different registered row) instead of the previous half-ack (NDJSON drained, store cursor silently skipped, `ok:true`). `--ack-as-owner` still overrides; an unresolvable-caller-identity or unregistered-caller shape still fails open (ack proceeds) exactly as before. | Advance the durable-inbox cursor. | After processing durable-inbox messages. | **Writes.** |
@@ -634,8 +634,8 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `archive-ignore <id>` / `archive-unignore <id>` | none | Mute/unmute the archive-ready reminder. | Suppress a nag already triaged. | **Writes.** |
 | `archive-request <childId> [--reason TEXT]` | none required | Direct STORE WRITE (v0.58, zero `hivecontrol` calls): posts `[[ANTIHALL_ARCHIVE_REQUEST]]` straight into `childId`'s own partition. Never verifies merged/tested/deployed itself. | PARENT asking a child to archive, after verifying per your own policy. | **Writes.** |
 | `migrate` | none | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks imported backlog as already-read. | Upgrading from a pre-store install, or recovering a stranded legacy inbox. | **Writes.** |
-| `migrate-owner-keys` | none | **Forward-migration (v0.62.0), idempotent/fail-open/no-delete.** Scans every active + archived descriptor: backfills a missing `ownerKey`, and re-homes an ACTIVE descriptor still stranded under a stale hash-keyed store bucket into its fresh `repoKey`-keyed bucket. Wired into both `update.js` (post-update) and `doctor`'s auto-safe repair. | Manually forcing the ownerKey backfill/re-home, or auditing a store's ownerKey health. | **Writes.** |
-| `send --to <meshId-or-id>[,<id2>…]\|--to-primary\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent] [--question] [--answers]` | exactly one of `--to`/`--to-primary`/`--broadcast`; `--message` required | Daemon-independent direct write into the shared store — the mesh's SOLE agent-initiated messaging transport. **`--to` accepts EITHER a roster row's `meshId` OR its `id`** (v0.62 fix — copying either field off a `roster` row now resolves; before, an `id` copy failed closed as `unregistered-recipient`). Fail-closed on an unregistered target; `--from` must match derived identity if given. `--question` marks this message as a blocking decision-request — only valid on a direct send (`--to`/`--to-primary`), rejected on `--broadcast`. The blocking/reply-tracking guarantee is enforced when the recipient is the Primary (`devswarm-parent-gate.js` Stop-gate + `devswarm-parent-reply-tracker.js`); a peer child→child `--question` is delivered and flagged (`needs_reply`) but is NOT gate-enforced on the recipient. **`--answers`** marks THIS send as a reply that answers the recipient's OWN pending question (only valid alongside `--question`, rejected on `--broadcast`) — without it, a `--question` send that also answers something is delivered but NOT credited as a reply against the recipient's pending question (only logged as a hint). **(v0.96.0)** The result carries an additive `identity: {id, kind}` alongside the existing `from` — see the `heartbeat` row above for the `kind` values. **`--quiet`** (peer request) prints one line (`sent seq N -> X, B bytes, ok`) instead of the full JSON; a failed send still prints a loud `ok:false ...` line and keeps the non-zero exit code (an explicit `--json` always overrides `--quiet` back to the raw object). **`--cc-primary`** (peer request, direct `--to` sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result's `ccPrimary`, never flips the primary send's own `ok`/exit code. **Several recipients (0.112)**: `--to <id1>,<id2>[,…]` or a repeated `--to` sends the same body to each recipient (duplicates dropped) with no shell `for` loop. Every recipient is attempted even after one fails. The result lists `recipients: [{to, ok, seq, bytes}]`, and the exit is non-zero if any failed. With `--quiet` it prints one line per recipient. `--broadcast`, `--to-primary` and `--cc-primary` do not combine with a list; add the Primary's id to the list instead. Setting `devswarm.sendMultiRecipient`. | Any agent-to-agent or agent-to-Primary message — see "Addressing & identity" below for exactly which roster field to copy. | **Writes.** |
+| `migrate-owner-keys` | none | **Forward-migration (v0.62.0), idempotent/fail-open/no-delete.** Scans every active + archived descriptor: backfills a missing `ownerKey`, and re-homes an ACTIVE descriptor still stranded under a stale hash-keyed store bucket into its fresh `repoKey`-keyed bucket. Wired into both `ah-engine update` (post-update) and `doctor`'s auto-safe repair. | Manually forcing the ownerKey backfill/re-home, or auditing a store's ownerKey health. | **Writes.** |
+| `send --to <meshId-or-id>[,<id2>…]\|--to-primary\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent] [--question] [--answers]` | exactly one of `--to`/`--to-primary`/`--broadcast`; `--message` required | Daemon-independent direct write into the shared store — the mesh's SOLE agent-initiated messaging transport. **`--to` accepts EITHER a roster row's `meshId` OR its `id`** (v0.62 fix — copying either field off a `roster` row now resolves; before, an `id` copy failed closed as `unregistered-recipient`). Fail-closed on an unregistered target; `--from` must match derived identity if given. `--question` marks this message as a blocking decision-request — only valid on a direct send (`--to`/`--to-primary`), rejected on `--broadcast`. The blocking/reply-tracking guarantee is enforced when the recipient is the Primary (`devswarm-parent-gate` Stop-gate + `devswarm-parent-reply-tracker`); a peer child→child `--question` is delivered and flagged (`needs_reply`) but is NOT gate-enforced on the recipient. **`--answers`** marks THIS send as a reply that answers the recipient's OWN pending question (only valid alongside `--question`, rejected on `--broadcast`) — without it, a `--question` send that also answers something is delivered but NOT credited as a reply against the recipient's pending question (only logged as a hint). **(v0.96.0)** The result carries an additive `identity: {id, kind}` alongside the existing `from` — see the `heartbeat` row above for the `kind` values. **`--quiet`** (peer request) prints one line (`sent seq N -> X, B bytes, ok`) instead of the full JSON; a failed send still prints a loud `ok:false ...` line and keeps the non-zero exit code (an explicit `--json` always overrides `--quiet` back to the raw object). **`--cc-primary`** (peer request, direct `--to` sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result's `ccPrimary`, never flips the primary send's own `ok`/exit code. **Several recipients (0.112)**: `--to <id1>,<id2>[,…]` or a repeated `--to` sends the same body to each recipient (duplicates dropped) with no shell `for` loop. Every recipient is attempted even after one fails. The result lists `recipients: [{to, ok, seq, bytes}]`, and the exit is non-zero if any failed. With `--quiet` it prints one line per recipient. `--broadcast`, `--to-primary` and `--cc-primary` do not combine with a list; add the Primary's id to the list instead. Setting `devswarm.sendMultiRecipient`. | Any agent-to-agent or agent-to-Primary message — see "Addressing & identity" below for exactly which roster field to copy. | **Writes.** |
 | `relay <seq\|receipt> --to <id> [--note-file <path>]` | `--to <id>` required | (peer request) Forwards a message THIS caller already received (its OWN inbox partition) to `<id>`, VERBATIM, prefixed with a provenance header (`relayed from X, seq N, M bytes`). `<seq>` is the row's own `seq` (from `inbox messages`/`read-primary`); `<receipt>` is a `read-primary` `readReceiptId` and resolves only when it covers exactly one message (ambiguous otherwise — use the exact `<seq>` instead). `relay` never acks: the read still needs its own `inbox ack-primary --receipt <receipt>`. `--note-file <path>` appends the file's contents verbatim after the relayed body. Verifies the relayed byte length against the source and refuses (`ok:false`) on a mismatch or an empty source body — never a silent partial relay. Runs under the same Primary-seat gate as `send` (it calls `send` internally). | Forward mail received by one lane to a sibling/child, without a manual copy-paste round trip. | **Writes** (one mesh message, via `send`). |
 | `roster [--ack] [--all] [--json]` | none | **Plain `roster` prints a compact table of LIVE workspaces (workspace, status, finish, unread, last) plus one `+N archived` line; `--all` (or `ANTIHALL_ROSTER_HIDE_ARCHIVED=0`) adds archived rows; `--json` prints the full data described next — use it when you need `id`/`meshId`/hints.** This project's registry + `working_on` + a `recent[]` broadcast digest, folded with a read-only native-children view. Every `--json` row has BOTH `id` and `meshId` — either one addresses it via `send --to`. A row whose Claude transcript is paused on an unresolved `AskUserQuestion`/`ExitPlanMode` gets a `waiting-on-human` hint (same `childBusyState` detector the parent gate reuses) — a Codex workspace has no such transcript shape to classify, so this hint simply never fires for a Codex row, harmlessly (`known:false`, same fail-open posture as every other liveness signal here). Pure `computeSummary` read (always LIVE — see the edge-case table below for what that means when the ingest daemon is stale). | Get the current mesh state / who's doing what, and the addressing fields to copy into `send --to`. | **Read-only** (plain); **writes** the broadcast cursor with `--ack`. |
 | `mesh read [--peek] [--seq N] [--last N] [--since <iso\|30m\|2h\|1d>]` | none | Alias of `roster --ack`. `--peek` reads without advancing the cursor; `--last N` (newest N unseen rows) and `--since` (rows at/after that time) are PEEK-ONLY filters, refused without `--peek`; `--seq N` reads from an explicit historical seq instead of the caller's cursor and always implies peek. Neither flag changes the default (no-flag) behavior. | Same as `roster --ack`, named for discovery; `--peek`/`--seq` for re-inspecting history without consuming it. | **Writes** unless `--peek`/`--seq`, then **read-only.** |
@@ -658,7 +658,7 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 verbs — reach for these together for mesh state without touching anything.
 
 **`reconcile`/fold auto-heal — a separate, ALREADY-shared code path, not a mesh
-promotion.** `doctor.js` and `update.js` are the SAME scripts on both platforms (see
+promotion.** `ah-engine doctor` and `ah-engine update` are the SAME commands on both platforms (see
 `anti-hall-doctor`/`anti-hall-update`), so their `reconcile` + `foldMeshDuplicates`
 auto-heal wiring runs identically for a Codex session — subject to the SAME "DevSwarm
 gate is effectively always closed for gpt-5.x Codex/OMX sessions" caveat as every other
@@ -707,7 +707,7 @@ the sqlite/NDJSON store files directly (`cat`/`grep`/a raw file read against
 cursor/derive layering the CLI's own read verbs keep consistent, and the store may
 literally be the append-only journal backend that only `devswarm-store`
 knows how to interpret correctly. Mechanically enforced on both platforms:
-`command-guard.js` blocks raw shell reads of these paths (shared hook, fires identically
+`command-guard` blocks raw shell reads of these paths (shared hook, fires identically
 for a Codex Bash call); the Claude-only `inbox-read-guard` additionally blocks
 Claude's own `Read` tool. This is a real-incident lesson, not a hypothetical: a real
 DevSwarm Primary fell back to querying raw sqlite because the CLI hadn't yet surfaced
@@ -756,7 +756,7 @@ hand.
 
 The mesh is the **ONLY** agent-initiated messaging channel on either platform. Native
 `hivecontrol workspace message-child`/`message-parent` are guard-blocked unconditionally
-whenever DevSwarm is active (`command-guard.js`, shared — fires identically for Codex).
+whenever DevSwarm is active (`command-guard`, shared — fires identically for Codex).
 Report via `heartbeat <id> --summary TEXT`; direct-message via `send --to-primary`/`send
 --to <meshId>`; broadcast via `send --broadcast`; check mesh state via
 `roster`/`diagnose`/`healthcheck`/`inbox read-primary <id>` — subject to the promotion-
@@ -839,7 +839,7 @@ registration one); use `doctor --repair-ingest-orphans` (dry-run, prints the unl
 plist AND no live heartbeat/lock for its project (`orphan-path-gone`/`duplicate-label-
 same-project` are always report-only — a plist exists on disk for both).
 `--repair-ingest-orphans` runs ONLY this section, never doctor's unrelated full
-auto-repair pass. `doctor.js`/`install-devswarm-ingest.js` are shared, unforked files,
+auto-repair pass. `ah-engine doctor` and the DevSwarm ingest daemon (`ah-engine devswarm ingest`) are shared, not forked per platform,
 so this applies identically to Codex sessions.
 **(mesh redesign Phase 4)** A plain `doctor` is READ-ONLY (no repair pass — use
 `doctor --repair` / `--fix` to apply repairs), and every run ALSO prints a report-only
@@ -885,11 +885,11 @@ tighter loop), not a genuine event-driven wake.
   for lookups, single commands, scoped investigations and review passes. CLI-identical
   between agents (`… -a codex` vs `… -a claude`); only the in-workspace fan-out differs
   (`omx team`/workers vs Workflow tool + subagents). The injected doctrine + the
-  `command-guard.js` redirect that name this fire for a Codex Primary too (shared hook
+  `command-guard` redirect that name this fire for a Codex Primary too (shared hook
   files); see `anti-hall-orchestration` for the choice rule.
-- Mechanical per-turn override/reassert hooks (`devswarm-child-role.js`,
-  `devswarm-child-turn.js`, `devswarm-parent-inbox.js`, `devswarm-parent-gate.js`,
-  `devswarm-child-gate.js`): registered for **both** agents (corrected — see "The layered
+- Mechanical per-turn override/reassert hooks (`devswarm-child-role`,
+  `devswarm-child-turn`, `devswarm-parent-inbox`, `devswarm-parent-gate`,
+  `devswarm-child-gate`): registered for **both** agents (corrected — see "The layered
   recovery model, for Codex users" above).
 - Liveness supervisor + on-demand recovery CLI: still Claude-only in what they target — the
   supervisor identity-binds to `claude --resume` processes specifically. No Codex-side

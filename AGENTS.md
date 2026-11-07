@@ -10,13 +10,13 @@ Treat Codex hooks as guardrails, not airtight gates.
 Budget: soft cap 30,000 B, hard Codex cap 32 KiB. Reference detail goes in `docs/GUIDE.md` (link it);
 only behavioural rules stay inline. The catalog at the end is generated (`node tools/gen-agents-catalog.js`).
 
-**Session hygiene (v0.108.0, hooks shared with Codex).** When `auto-handover.js` says
+**Session hygiene (v0.108.0, hooks shared with Codex).** When `auto-handover` says
 context crossed the threshold (default 85%; on Codex the real window comes from the
 rollout's `model_context_window`), write the handover yourself right away (the
 `anti-hall-handover` skill; never delegate it), tell the user and list the saved paths,
-then suggest starting a fresh session. When `version-alert.js` says a newer anti-hall is
+then suggest starting a fresh session. When `version-alert` says a newer anti-hall is
 available or already installed, tell the user (update via the `anti-hall-update` skill,
-then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
+then restart Codex). Repairs run by themselves after an update (`repair-on-reload`).
 Every setting lives in `~/.anti-hall/settings.json`; change it only through the
 `anti-hall-settings` skill / `ah-hook settings`, never by hand (Codex has no
 `/config` settings UI). Every feature has a settings key in ~/.anti-hall/settings.json, reachable through /anti-hall:settings and grouped by category. Claude Code's plugin options show only the headline switches and the safety guards.
@@ -141,7 +141,7 @@ reproduce/validate/lint steps and run them before claiming success.
   "Running" in an agent list is not progress: verify with process or output evidence
   before reporting status. Never wait forever — bound every brief's time/scope.
 - UPDATE THE PHASE STATUSLINE as phases progress: from the main coordinator (not from
-  inside subagents), call `statusline/phase.js set/advance/step/agents/clear` so the
+  inside subagents), run `ah-engine phase set|advance|step|agents|clear` so the
   terminal bar reflects the real run state. Subagents report back; the coordinator writes
   phase state to ~/.anti-hall/phase-state.json.
 - AFK MODE (only when the user has explicitly authorized full/autonomous "AFK" operation):
@@ -168,19 +168,19 @@ reproduce/validate/lint steps and run them before claiming success.
 
 The plugin enforces no-speculation discipline at three layers:
 
-**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart; a compact core pointing at the generated `PROTOCOL.md` by default, today's full text under `context.protocolLevel=full`),
-`verify-first-subagent.js` (SubagentStart — re-injects the Iron Law into every spawned
-subagent without the orchestration block, so workers don't recurse), and `verify-first.js` (per-turn) inject the Iron Law,
+**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full` (SessionStart; a compact core pointing at the generated `PROTOCOL.md` by default, today's full text under `context.protocolLevel=full`),
+`verify-first-subagent` (SubagentStart — re-injects the Iron Law into every spawned
+subagent without the orchestration block, so workers don't recurse), and `verify-first` (per-turn) inject the Iron Law,
 banning both confident inference-as-fact and hedge-word speculation.
 
-**Tier 2 — Lexical guard (on by default, zero cost):** `speculation-guard.js` (Stop)
+**Tier 2 — Lexical guard (on by default, zero cost):** `speculation-guard` (Stop)
 scans the last assistant message for hedge-word markers and blocks once if none of the
 evidence/uncertainty acknowledgments are present.
 
-**Tier 3 — Semantic judge (OPT-IN, LLM cost):** `speculation-judge.js` (Stop) calls an LLM
+**Tier 3 — Semantic judge (OPT-IN, LLM cost):** `speculation-judge` (Stop) calls an LLM
 judge to catch confident inference-as-fact with no hedge word. Off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`, and requires `ANTHROPIC_API_KEY`.
 
-**Tier 2.5 — Claim ledger (deterministic, LEDGER-ONLY):** `claim-ledger.js` (Stop) cross-checks
+**Tier 2.5 — Claim ledger (deterministic, LEDGER-ONLY):** `claim-ledger` (Stop) cross-checks
 checkable tokens in the last message (counts, SHAs, `task N of`, `N days ago`, no-tool "still
 running") against the session's evidence and records would-be flags to
 `~/.anti-hall/claim-ledger/<session>.jsonl` (`hard`/`soft`). It NEVER blocks; detail in `docs/GUIDE.md`.

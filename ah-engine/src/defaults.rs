@@ -201,6 +201,12 @@ pub fn write_cache_on_load() {
     CACHE_WRITES.store(true, Ordering::SeqCst);
 }
 
+/// True when a snapshot is already active in this process. Unlike every typed getter it never loads one (and so can never abort on a
+/// missing plugin root): code on a process's exit path asks this before it reads any setting.
+pub fn is_loaded() -> bool {
+    CUR.load().is_some()
+}
+
 fn current() -> Option<Arc<Backend>> {
     CUR.load_full()
 }

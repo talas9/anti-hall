@@ -11,10 +11,10 @@ tasks and that a **live progress file** stays fresh — so work isn't silently
 forgotten, left half-done, or "declared done" by a later agent that just sees
 changes lying around:
 
-- **`tasklist-guard.js`** — a **Stop** hook. When you finish a turn after doing real
+- **`tasklist-guard`** — a **Stop** hook. When you finish a turn after doing real
   file-changing work, it checks whether that work was captured as tasks and whether
   progress is fresh. If not, it blocks the stop with a specific instruction.
-- **per-turn freshness note** (in `task-tracker.js`, a **UserPromptSubmit** hook) —
+- **per-turn freshness note** (in `task-tracker`, a **UserPromptSubmit** hook) —
   when open/stale tasks exist, it injects a one-line reminder at the top of each
   turn so the list never drifts out of mind.
 
@@ -173,7 +173,7 @@ appear when the discipline has slipped.
 Claude Code's own TaskCreate reminder re-prints the **whole** task list — completed
 tasks included — every few turns; that cost grows with the session's completed-task
 count for no benefit. Once completed/cancelled tasks exceed
-`guards.pruneCompletedTasksAfter` (default **3**), `task-guard.js` emits a **one-line
+`guards.pruneCompletedTasksAfter` (default **3**), `task-guard` emits a **one-line
 advisory** at Stop (never a block): after recording them in the session's
 `.anti-hall/history/<date>/<session-id>.md` ledger (step 4 above), prune them with
 `TaskUpdate status=deleted` so the harness reminder stops re-printing them. This is

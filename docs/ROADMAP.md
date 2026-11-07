@@ -7,14 +7,14 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 ## Decisions that shape the plan
 
 - Features ship **between v0.301 and v1.0**, not after it.
-- Node is removed in **v0.301** (ahead of 1.0). With no Node and a missing or broken engine, the hooks **pass through and print one notice** instead of blocking the session.
+- Node is removed in **v0.301** (ahead of 1.0). With no Node and a missing or unreachable engine, the hooks **pass through and print one notice** instead of blocking the session.
 - Native Windows support (#28) is **parked in Later**. It is not a promise.
 - "Engine-only" means Rust primitives plus the QuickJS logic files in `plugins/anti-hall/engine/logic/` plus TOML values. Nothing tunable is compiled into the engine binary.
 - Branches proven merged are deleted at the end of R1. Old GitHub release pages are deleted at 1.0; git tags are always kept.
 
-## Status as of 2026-10-28
+## Status
 
-Engine **0.2.1** and plugin **0.301.1** are released. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+Engine **0.3.0** and plugin **0.302.0** are the next release; engine 0.2.1 and plugin 0.301.1 are the last tagged ones. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
 
 **Shipped to `dev` since the audit:** #372 (hardening bar: parent binding only for a hand-started serve), #373 (flip-parity and fail-closed bars follow the no-Node fail-open contract; closed guards proven to block by mutation), #374 (breaker and corrupt-socket bars rewritten for the down-marker contract; stronger prune wording), #375 (capped prune Stop-block and a P0-P3 priority tag check in the task-list guard; first instance of [#377](https://github.com/talas9/anti-hall/issues/377)).
 

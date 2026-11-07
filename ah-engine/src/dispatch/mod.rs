@@ -24,10 +24,13 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod combine;
+pub mod ctxkeep;
 pub mod digest;
 pub mod inject;
+pub mod ladder;
 pub mod native;
 pub mod node;
+pub mod notice;
 pub mod plan;
 pub mod shrink;
 pub mod spill;
@@ -687,6 +690,7 @@ fn cold_start_kick(args: &Args) -> Option<Outcome> {
         cfg: String::new(),
         payload_sha1: None,
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        notice: None,
     };
     ask_daemon(&meta, "{}", false); // keep: the answer is empty by construction; the call is for the daemon start
     Some(Outcome { out: String::new(), code: 0, err: String::new() })
@@ -733,6 +737,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     let dplan = plan::build(&args.event, entries, &cfg, &occurrence);
     tele.cfg_hash = dplan.cfg_hash.clone();
     tele.outcomes = dplan.outcomes();
+    tele.notice = dplan.notice.clone();
     let budget = dplan.budget;
     if dplan.event_off || dplan.items.is_empty() {
         return Outcome { out: String::new(), code: 0, err: String::new() };
@@ -804,6 +809,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         },
         // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        notice: tele.notice.clone(),
     };
     let session_id = parsed.as_ref().and_then(|p| p.get("session_id")).and_then(Value::as_str).unwrap_or_default().to_string();
     let answers = match (&parsed, complete) {
@@ -959,6 +965,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     }
     crate::nodeback::shadow::note(&entries, &results, &shadow); // what the engine decided per check (a no-op unless the shadow follows this call)
     let mut results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    // #516: the ladder reads the advisories before the token cuts below blank the repeated ones; its block is added after them
+    let ladder_block = parsed.as_ref().and_then(|_| ladder::apply(&args.event, &p, &req_env, &results));
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
@@ -966,15 +974,18 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
     }
     shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
+    ctxkeep::apply(&args.event, &req_env, &mut results); // context.injectGateNoSpill: over the event budget the lowest-priority contexts are dropped, never filed
     if let Some(pl) = parsed.as_ref() {
         stopchan::apply(&args.host, &args.event, pl, &req_env, &mut results); // GH #540: the Stop note's channel (stateless bounds)
     }
+    results.extend(ladder_block);
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
     if !guard {
         spill::order_by_priority(&mut results); // #311: blocks and decisions are never reordered below advisories; context is highest priority first
     }
-    match combine::combine_for(&results, keep_advisories) {
+    let fold = keep_advisories && ladder::enabled(&req_env); // #516: a Stop block also carries the other hooks' advisories, only with the ladder on
+    match combine::combine_with(&results, keep_advisories, fold) {
         combine::Combined::Answer(mut o) => {
             o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper
@@ -990,6 +1001,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 return combine::sequential(&results, &args.event);
             }
             if defaults::num("dispatch.spill_over_cap") == 1
+                && !ctxkeep::covers(&args.event, &req_env)
                 && let Some(s) = spill::apply(&args.event, &results, &o.out, cap)
             {
                 o.out = s.out;

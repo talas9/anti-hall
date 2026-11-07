@@ -156,8 +156,10 @@ function decide(p) {
 }
 
 function text_message(hedge) {
+  var v2 = ah.settings.bool('merge_gate.clear_step_setting'); // guards.mergeGateClearStep (#538): the block names the fact and the step that clears it
   return text.message('block', ah.cfg('merge_gate.guard_name'), {
-    what: text.render(ah.cfg('merge_gate.msg_what'), { hedge: hedge }), why: ah.cfg('merge_gate.msg_why'),
-    instead: ah.cfg('merge_gate.msg_instead'), override: ah.cfg('merge_gate.msg_override'),
+    what: text.render(ah.cfg(v2 ? 'merge_gate.msg_what_v2' : 'merge_gate.msg_what'), { hedge: hedge }), why: ah.cfg('merge_gate.msg_why'),
+    instead: v2 ? text.render(ah.cfg('merge_gate.msg_instead_v2'), { resolutions: ah.cfg('merge_gate.resolutions').join(', ') }) : ah.cfg('merge_gate.msg_instead'),
+    override: ah.cfg('merge_gate.msg_override'),
   });
 }
