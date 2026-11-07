@@ -637,3 +637,21 @@ fn a_partly_written_newest_codex_dir_falls_back_to_the_newest_complete_one() {
     let (_, out) = k.doctor(&[]);
     assert!(!out.contains(NODE_FAIL), "{out}");
 }
+
+#[test]
+fn a_semver_named_symlink_to_a_hash_named_codex_dir_takes_part_by_its_own_name() {
+    // the cache holds the content under a hash name and a semver-named link to it: the version is the link's own name
+    let (k, cache) = codex_cache(
+        "dr-cx-hashlink",
+        &[
+            ("77c10e110b37", Some(CODEX_NODE_HOOKS)),
+            ("0.1.0", Some(CODEX_DIRECT_HOOKS)),
+        ],
+    );
+    std::os::unix::fs::symlink(cache.join("77c10e110b37"), cache.join("0.9.0")).unwrap();
+    let (_, out) = k.doctor(&[]);
+    assert!(
+        out.contains(NODE_FAIL),
+        "0.9.0 (-> the Node hash dir) is the newest and judged: {out}"
+    );
+}

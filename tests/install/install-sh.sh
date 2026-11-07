@@ -153,26 +153,53 @@ t_a_client_object_without_additional_context_gets_it_added() {
   isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"anti-hall' "$tmp/out" && grep -q '"hookEventName":"SessionStart"' "$tmp/out" || return 1
   [ -s "$st/install-json.notice" ]
 }
+# a TOML value from the scratch plugin's own defaults (the budget and the allowance are settings, not numbers in this file)
+tv() { awk -v k="[install.$1]" '$0 == k { f = 1; next } f && $1 == "value" { print $3; exit }' "$plug/engine/defaults/engine.toml"; }
 t_a_probe_that_ignores_term_is_killed_after_the_grace() {
   newhome kill1; write_lock "$good"; fake_client ''
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
   mkdir -p "$st/bin"; printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
-  t0=$(now_ms); hook s1 SessionStart >/dev/null; t1=$(now_ms)
-  # the real budget: defaults_probe_ms + defaults_probe_grace_ms (600 + 250) keeps SessionStart under 1 s (plus 400 ms of slack for
-  # the script's own work), not bound by the engine; a probe cut off by us is not a failure; no sleep helper is left behind
-  [ $((t1 - t0)) -lt 1400 ] && [ ! -s "$tmp/out" ] && [ ! -e "$st/defaults-probe.watchdog" ]
+  budget=$(tv hook_budget_ms)
+  # the WHOLE hook (not only the probe) stays under the budget with a TERM-ignoring probe; a probe cut off by us is not a failure;
+  # no watchdog file is left behind
+  i=0; while [ $i -lt 3 ]; do
+    t0=$(now_ms); hook s1 SessionStart >/dev/null; t1=$(now_ms)
+    [ $((t1 - t0)) -lt "$budget" ] && [ ! -s "$tmp/out" ] || { echo "run $i: $((t1 - t0)) ms (budget $budget)" >&2; return 1; }
+    i=$((i + 1))
+  done
+  [ -z "$(ls "$st" | grep 'defaults-probe.watchdog')" ]
 }
-t_a_hanging_probe_leaves_no_orphan_sleep_helper() {
+t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget() {
+  [ $(( $(tv defaults_probe_ms) + $(tv defaults_probe_grace_ms) + $(tv hook_overhead_allowance_ms) )) -lt "$(tv hook_budget_ms)" ]
+}
+t_a_failing_probe_leaves_no_orphan_sleep_helper() {
   newhome kill2; write_lock "$good"; fake_client ''
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
-  mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 5\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
-  # the TERM-stage helper is `sleep 0.600`: none may outlive the hook call
-  before=$(ps -axo command | grep -c '[s]leep 0.600')
+  # the probe exits at once; the TERM-stage helper (`sleep 0.<defaults_probe_ms>`) must not outlive the hook call
+  pat="[s]leep 0.$(tv defaults_probe_ms)"
+  before=$(ps -axo command | grep -c "$pat")
   hook s1 SessionStart >/dev/null
-  after=$(ps -axo command | grep -c '[s]leep 0.600')
-  [ "$after" -le "$before" ]
+  grep -q 'cannot load' "$tmp/out" || return 1
+  after=$(ps -axo command | grep -c "$pat")
+  [ "$after" -le "$before" ] && [ -z "$(ls "$st" | grep 'defaults-probe.watchdog')" ]
+}
+t_parallel_sessions_in_one_home_each_get_their_notice() {
+  newhome conc; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 0.2\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  k=0; while [ $k -lt 5 ]; do
+    rm -f "$st/install-json.notice" "$st/install-stale.notice" 2>/dev/null
+    ( printf '{"session_id":"a","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/oa" 2>/dev/null ) &
+    pa=$!; sleep 0.1
+    ( printf '{"session_id":"b","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/ob" 2>/dev/null ) &
+    pb=$!; wait $pa $pb
+    grep -q 'cannot load' "$tmp/oa" && grep -q 'cannot load' "$tmp/ob" || { echo "round $k: a=$(grep -c 'cannot load' "$tmp/oa") b=$(grep -c 'cannot load' "$tmp/ob")" >&2; return 1; }
+    k=$((k + 1))
+  done
 }
 t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing() {
   newhome em; write_lock "$good"; fake_client ''
@@ -270,7 +297,9 @@ check t_other_events_and_a_current_engine_leave_the_clients_output_alone t_other
 check t_a_client_that_already_set_a_system_message_gets_the_notice_appended t_a_client_that_already_set_a_system_message_gets_the_notice_appended
 check t_a_client_object_without_additional_context_gets_it_added t_a_client_object_without_additional_context_gets_it_added
 check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignores_term_is_killed_after_the_grace
-check t_a_hanging_probe_leaves_no_orphan_sleep_helper t_a_hanging_probe_leaves_no_orphan_sleep_helper
+check t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget
+check t_a_failing_probe_leaves_no_orphan_sleep_helper t_a_failing_probe_leaves_no_orphan_sleep_helper
+check t_parallel_sessions_in_one_home_each_get_their_notice t_parallel_sessions_in_one_home_each_get_their_notice
 check t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing
 check t_a_client_with_leading_whitespace_json_still_gets_the_notice t_a_client_with_leading_whitespace_json_still_gets_the_notice
 check t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown

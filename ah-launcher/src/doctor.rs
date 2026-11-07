@@ -1059,6 +1059,11 @@ impl Doc<'_> {
         let mut seen: Vec<PathBuf> = Vec::new();
         let mut cands: Vec<(SemVer, Option<std::time::SystemTime>, PathBuf)> = Vec::new();
         for e in rd.flatten() {
+            // the version comes from the entry's OWN name (a semver-named symlink to a hash-named dir counts); the canonical
+            // target is only for telling two names for one directory apart
+            let Some(v) = SemVer::parse(&e.file_name().to_string_lossy()) else {
+                continue;
+            };
             let Ok(real) = fs::canonicalize(e.path()) else {
                 continue;
             };
@@ -1066,12 +1071,6 @@ impl Doc<'_> {
                 continue;
             }
             seen.push(real.clone());
-            let Some(v) = real
-                .file_name()
-                .and_then(|n| SemVer::parse(&n.to_string_lossy()))
-            else {
-                continue;
-            };
             // complete = a hooks.json exists in one of the two places the doctor reads (the newest of them stamps the dir)
             let stamp = ["hooks/hooks.json", "codex/hooks/hooks.json"]
                 .iter()

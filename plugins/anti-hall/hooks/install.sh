@@ -139,7 +139,10 @@ stale_notice() {
     # watchdog: TERM after defaults_probe_ms, KILL after a further defaults_probe_grace_ms (an engine that ignores TERM must not hold
     # SessionStart); the whole probe is bounded by the two settings (under 1 s together by default: every hook fails open in under 1 s).
     # Each sleep helper records its own pid so it can be killed by that pid (no pgrep needed).
-    wdp=$state/$(c install.file_probe_watchdog)
+    # per-invocation file (the setting is the prefix): parallel sessions in one HOME never share it, and only this run's own
+    # pid file is ever read; cleaned on every exit path
+    wdp=$state/$(c install.file_probe_watchdog).$$
+    trap 'rm -f "$wdp" 2>/dev/null; exit 0' HUP INT TERM
     t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
     t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
     ( sleep "$t1" & echo $! >"$wdp"; wait $!; kill "$pp"; sleep "$t2" & echo $! >"$wdp"; wait $!; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
@@ -150,6 +153,7 @@ stale_notice() {
     sp=$(cat "$wdp" 2>/dev/null)
     case "$sp" in ""|*[!0-9]*) ;; *) kill "$sp" 2>/dev/null ;; esac
     rm -f "$wdp" 2>/dev/null
+    trap - HUP INT TERM
     # exit 0 = loads fine; 143 / 137 = our own TERM / KILL (not proof of failure); anything else = it cannot load them now
     if [ "$prc" -eq 0 ] || [ "$prc" -eq 143 ] || [ "$prc" -eq 137 ]; then dfail=0; fi
   fi
