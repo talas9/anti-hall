@@ -82,7 +82,10 @@ fn pct(v: &mut [u128], p: usize) -> u128 {
     v[((v.len() - 1) * p) / 100]
 }
 
+// A benchmark that builds a 200 MB transcript and asserts nothing about cost: it never runs in a default or gate run. On demand:
+// `cargo nextest run --release --run-ignored only -E 'binary(task_stop_cost)' --no-capture` (test.sh does so after its timed pass).
 #[test]
+#[ignore = "benchmark: builds a 200 MB transcript; run on demand with --run-ignored"]
 fn task_stop_cost_is_measured() {
     // AH_TSCOST_ROOT picks the scratch dir (to keep the output); without it the test makes its own, so the pack runs it anywhere
     // an explicit AH_TSCOST_ROOT is kept (the caller owns it); otherwise the scratch dir is removed when the test ends
@@ -118,8 +121,6 @@ fn task_stop_cost_is_measured() {
             i += 20_000;
         }
     }
-    let rows = std::fs::read_to_string(&tp).map(|_| 0).unwrap_or(0);
-    let _ = rows;
     let size = std::fs::metadata(&tp).unwrap().len();
     let mut next = size / 1100;
     let env = RequestEnv::from_pairs(vec![("HOME".to_string(), home.to_string_lossy().into_owned()), ("ANTIHALL_MAX_PARALLEL_DISPATCH".into(), "4".into())]);

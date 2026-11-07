@@ -28,7 +28,7 @@ if cargo nextest --version >/dev/null 2>&1; then
   # each failed once on a loaded runner for a different reason (the schedule tests assert a 250 ms start latency), so they run alone as well.
   # The memory soak is in the `soak` test group, which the default profile leaves out (its default-filter): locally it runs
   # with `--profile soak` once per release train; CI runs it (and the benches) in the nightly profile, not the PR gate.
-  timed='binary(telemetry_overhead) | binary(script_latency) | binary(task_stop_cost) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/) | test(/^schedule::/)'
+  timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/) | test(/^schedule::/)'
   # AH_TEST_CARGO_PROFILE=<cargo profile> (CI's full macOS pack sets `ci-test`) builds and runs the bulk of the suite on that profile
   # (Cargo.toml: release speed, no fat LTO, 16 codegen units), because LTO-linking ~36 test binaries took 106-111 min on the macOS
   # runner. The wall-clock tests (`$timed`, the benches and the DevSwarm scale budget) run alone with their budgets unchanged, on
@@ -47,10 +47,15 @@ if cargo nextest --version >/dev/null 2>&1; then
     # shellcheck disable=SC2086 # timed_flag is deliberately split into its two words
     cargo nextest run $timed_flag --profile "$profile" -j 1 --no-tests=pass --lib --test it --test script_latency \
       --test telemetry_overhead --test watch_bench -E "$timed" "$@" || rc=1
+    # the task_stop_cost bench is #[ignore]d (it builds a 200 MB transcript): named here, so only this timed pass runs it
+    # shellcheck disable=SC2086
+    cargo nextest run $timed_flag --profile "$profile" -j 1 --no-tests=pass --test task_stop_cost --run-ignored only "$@" || rc=1
   else
     cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
     rc=$?
     cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
+    # the task_stop_cost bench is #[ignore]d (it builds a 200 MB transcript): named here, so only this timed pass runs it
+    cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass --test task_stop_cost --run-ignored only "$@" || rc=1
   fi
   if [ "$rc" -eq 0 ]; then
     cargo test --release --doc

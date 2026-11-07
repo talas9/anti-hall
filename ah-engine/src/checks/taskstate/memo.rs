@@ -46,8 +46,10 @@ struct Key {
 
 type Slot = Arc<OnceLock<Box<dyn Any + Send + Sync>>>;
 
-fn memo() -> &'static Mutex<VecDeque<(Key, Slot)>> {
-    static MEMO: Mutex<VecDeque<(Key, Slot)>> = Mutex::new(VecDeque::new());
+type Memo = Mutex<VecDeque<(Key, Slot)>>;
+
+fn memo() -> &'static Memo {
+    static MEMO: Memo = Mutex::new(VecDeque::new());
     &MEMO
 }
 
@@ -96,7 +98,22 @@ fn key_of(path: &str, tag: Tag, window: u64, sig: &str, ty: TypeId) -> Option<Ke
 /// computed by another caller), else a fresh one. `tag` names the reconstruction (a variant), `window` its window and `sig` whatever else the answer depends on besides the file.
 /// An answer `keep` rejects is returned but not remembered. A file that cannot be read is never memoized.
 pub fn memoized<V: Clone + Send + Sync + 'static>(path: &str, tag: Tag, window: u64, sig: &str, compute: impl Fn() -> V, keep: impl Fn(&V) -> bool) -> V {
-    let cap = defaults::num("taskstate.memo_entries") as usize;
+    memoized_in(memo(), defaults::num("taskstate.memo_entries") as usize, path, tag, window, sig, compute, keep)
+}
+
+/// [`memoized`] over a given memo of at most `cap` keys (the process-wide one in production; a test's own, so that parallel tests
+/// cannot evict each other's keys).
+#[allow(clippy::too_many_arguments)]
+fn memoized_in<V: Clone + Send + Sync + 'static>(
+    memo: &Memo,
+    cap: usize,
+    path: &str,
+    tag: Tag,
+    window: u64,
+    sig: &str,
+    compute: impl Fn() -> V,
+    keep: impl Fn(&V) -> bool,
+) -> V {
     if cap == 0 {
         crate::load::note_count("taskstate_memo", "result", "off");
         return compute();
@@ -104,7 +121,7 @@ pub fn memoized<V: Clone + Send + Sync + 'static>(path: &str, tag: Tag, window: 
     let ty = TypeId::of::<V>();
     let Some(key) = key_of(path, tag, window, sig, ty) else { return compute() };
     let slot: Slot = {
-        let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut m = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(i) = m.iter().position(|(k, _)| *k == key) {
             let hit = m.remove(i).unwrap_or_else(|| (key.clone(), Slot::default()));
             let s = hit.1.clone();
@@ -129,7 +146,7 @@ pub fn memoized<V: Clone + Send + Sync + 'static>(path: &str, tag: Tag, window: 
     crate::load::note_count("taskstate_memo", "result", if ran { "miss" } else { "hit" });
     // an answer not worth remembering, or computed while the file changed under it, is dropped from the memo
     if ran && (!keep(&v) || key_of(path, tag, window, sig, ty).as_ref() != Some(&key)) {
-        let mut m = memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut m = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         m.retain(|(_, s)| !Arc::ptr_eq(s, &slot));
     }
     v
@@ -139,18 +156,40 @@ pub fn memoized<V: Clone + Send + Sync + 'static>(path: &str, tag: Tag, window: 
 mod tests {
     use super::*;
 
-    fn file(tag: &str, body: &str) -> String {
-        let p = std::env::temp_dir().join(format!("ah-memo-{tag}-{}", std::process::id()));
-        std::fs::write(&p, body).unwrap();
-        p.to_string_lossy().into_owned()
+    /// A scratch file removed on drop, so a test leaves nothing in the temp dir.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str, body: &str) -> Scratch {
+            let p = std::env::temp_dir().join(format!("ah-memo-{tag}-{}", std::process::id()));
+            std::fs::write(&p, body).unwrap();
+            Scratch(p)
+        }
+        fn path(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            crate::discard::harmless(std::fs::remove_file(&self.0)); // keep: cleanup of a scratch file
+        }
+    }
+
+    /// Each test asks its own memo, so a parallel test cannot evict its keys.
+    fn own() -> Memo {
+        Mutex::new(VecDeque::new())
     }
 
     #[test]
     fn taskstate_memo_serves_an_unchanged_file_once_and_a_changed_one_afresh() {
-        let p = file("a", "one");
+        let f = Scratch::new("a", "one");
+        let (p, m) = (f.path(), own());
         let n = std::cell::Cell::new(0u32);
         let ask = |tag: u8| {
-            memoized(
+            memoized_in(
+                &m,
+                8,
                 &p,
                 if tag == 1 { Tag::Guard } else { Tag::State },
                 10,
@@ -171,10 +210,13 @@ mod tests {
 
     #[test]
     fn taskstate_memo_does_not_remember_a_rejected_answer() {
-        let p = file("b", "x");
+        let f = Scratch::new("b", "x");
+        let (p, m) = (f.path(), own());
         let n = std::cell::Cell::new(0u32);
         let ask = || {
-            memoized(
+            memoized_in(
+                &m,
+                8,
                 &p,
                 Tag::Scan,
                 10,
@@ -188,5 +230,33 @@ mod tests {
         };
         assert_eq!(ask(), 1);
         assert_eq!(ask(), 2);
+    }
+
+    #[test]
+    fn taskstate_memo_does_not_remember_an_error_and_recovers_when_the_read_works() {
+        let f = Scratch::new("c", "x");
+        let (p, m) = (f.path(), own());
+        let fail = std::cell::Cell::new(true);
+        let n = std::cell::Cell::new(0u32);
+        let ask = || {
+            memoized_in(
+                &m,
+                8,
+                &p,
+                Tag::Backfill,
+                10,
+                "",
+                || {
+                    n.set(n.get() + 1);
+                    if fail.get() { Err(n.get()) } else { Ok(n.get()) }
+                },
+                |r: &Result<u32, u32>| r.is_ok(),
+            )
+        };
+        assert_eq!(ask(), Err(1));
+        assert_eq!(ask(), Err(2), "an error is computed afresh each time");
+        fail.set(false);
+        assert_eq!(ask(), Ok(3), "the first good answer is computed, not the old error served");
+        assert_eq!(ask(), Ok(3), "and is then kept");
     }
 }

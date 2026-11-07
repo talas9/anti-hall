@@ -544,7 +544,7 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
             .collect::<Vec<_>>()
             .join(",")
     );
-    let mut recs = super::memo::memoized(path, super::memo::Tag::Backfill, window, &sig, || scan_back(path, size, window, &wanted, first), |_| true)?;
+    let mut recs = super::memo::memoized(path, super::memo::Tag::Backfill, window, &sig, || scan_back(path, size, window, &wanted, first), |r| r.is_ok())?;
     for (id, need) in &wanted {
         let rec = recs.remove(&key(id)).unwrap_or_else(|| Rec::new(need.status));
         if let Some(t) = facts.tasks.get_mut(id) {
