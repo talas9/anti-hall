@@ -6,9 +6,9 @@
 'use strict';
 
 function arSafe(id) {
-  var max = ah.cfg('agent_reminders.key_max'), out = '';
-  for (var i = 0; i < id.length && i < max; i++) out += /[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_';
-  return out;
+  var max = ah.cfg('agent_reminders.key_max'), out = [];
+  for (var i = 0; i < id.length && i < max; i++) out.push(/[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_');
+  return out.join('');
 }
 
 function decide(p) {

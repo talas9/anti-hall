@@ -205,9 +205,10 @@ function tokenizeUncached(segment) {
 }
 
 // true when the `{`/`}` at the current scan position is the reserved word (see hooks/git-guard.js isBraceGroupWord)
-function isBraceGroupWord(cur, c, c2) {
-  if (c2 !== '' && !/\s/.test(c2)) return c === '}' && cur.trim() === '' && /[;&|<>)]/.test(c2);
-  return c === '}' ? cur.trim() === '' : (cur === '' || /\s$/.test(cur));
+function isBraceGroupWord(blank, empty, endsWs, c, c2) {
+  // blank: the segment so far is empty or only whitespace; empty: it is empty; endsWs: its last character is whitespace
+  if (c2 !== '' && !/\s/.test(c2)) return c === '}' && blank && /[;&|<>)]/.test(c2);
+  return c === '}' ? blank : (empty || endsWs);
 }
 
 function splitSegments(cmd) {
@@ -217,7 +218,7 @@ function splitSegments(cmd) {
 }
 function splitSegmentsUncached(cmd) {
   const segments = [];
-  let cp = [], i = 0, inSingle = false, inDouble = false;
+  let cp = [], curLen = 0, curBlank = true, lastCh = '', run = 0, bsBefore = 0, i = 0, inSingle = false, inDouble = false;
   const n = cmd.length;
   // GH #591 comment lexing. A `#` is a shell comment only at the start of a word: `lastBreak` is the index just past the last
   // UNESCAPED, UNQUOTED word break (space, tab, newline, `;` `&` `|` `(`) the scan consumed, so an escaped break (`a\ #`, `a\;#`)
@@ -228,10 +229,20 @@ function splitSegmentsUncached(cmd) {
   let lastBreak = 0, ansi = false, dollarEnd = -1, braceDepth = 0, btOpen = false, unsure = false, arithDepth = 0;
   // `arithDepth`: open parens of an unquoted `((..))` / `$((..))` (bash reads its body as arithmetic text, never as a comment). `unsure`
   // is dropped at an unquoted newline once nothing is open, so one `"${x}"` earlier in a wrapper does not keep every later comment live.
-  // `cur` is built as chunks (`cp`) and joined only when read: appending to one growing string reallocates it for every character
-  function cs() { if (cp.length > 1) cp = [cp.join('')]; return cp.length ? cp[0] : ''; }
-  function flush() { const cur = cs(); if (cur.trim().length) segments.push(cur); cp = []; }
-  function flushWithSubst() { cp.push(' ' + CMDSUBST_SENTINEL + ' '); flush(); }
+  // `cur` is built as chunks (`cp`), joined once per segment in flush(): appending to one growing string reallocates it for every
+  // character, and joining at every read (`{`, `}`, `|`, `&`) brings the cost back. The reads need only a few facts about the text so
+  // far, kept up to date by put(): its length, whether it is blank, its last character and the backslash run before that character.
+  function put(s) {
+    cp.push(s);
+    for (let q = 0; q < s.length; q++) {
+      const ch = s[q];
+      bsBefore = run; run = ch === '\\' ? run + 1 : 0; lastCh = ch;
+      if (curBlank && !/\s/.test(ch)) curBlank = false;
+    }
+    curLen += s.length;
+  }
+  function flush() { const cur = cp.join(''); if (cur.trim().length) segments.push(cur); cp = []; curLen = 0; curBlank = true; lastCh = ''; run = 0; bsBefore = 0; }
+  function flushWithSubst() { put(' ' + CMDSUBST_SENTINEL + ' '); flush(); }
   // the pending heredoc whose body starts after its opener line: the body is text for its consumer, never a command of this chain
   // (a shell reading it is scanned by stdinScriptVerdict, a git message by the heredoc-body scans); same walk as the command check
   let heredoc = null;
@@ -248,23 +259,23 @@ function splitSegmentsUncached(cmd) {
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
     if (inSingle) {
-      if (ansi && c === '\\' && c2) { cp.push(c + c2); i += 2; continue; }
-      cp.push(c);
+      if (ansi && c === '\\' && c2) { put(c + c2); i += 2; continue; }
+      put(c);
       if (c === "'") inSingle = false;
       i++;
       continue;
     }
     if (inDouble) {
-      if (c === '\\' && c2) { cp.push(c + c2); i += 2; continue; }
+      if (c === '\\' && c2) { put(c + c2); i += 2; continue; }
       if ((c === '$' && c2 === '(') || c === '`' || (c === '$' && c2 === '{')) unsure = true;
-      if ((c === '$' && c2 === '(') || c === '`') { cp.push(' ' + CMDSUBST_SENTINEL + ' '); i += (c === '$') ? 2 : 1; continue; }
-      cp.push(c);
+      if ((c === '$' && c2 === '(') || c === '`') { put(' ' + CMDSUBST_SENTINEL + ' '); i += (c === '$') ? 2 : 1; continue; }
+      put(c);
       if (c === '"') inDouble = false;
       i++;
       continue;
     }
-    if (c === "'") { inSingle = true; ansi = dollarEnd === i; cp.push(c); i++; continue; }
-    if (c === '"') { inDouble = true; cp.push(c); i++; continue; }
+    if (c === "'") { inSingle = true; ansi = dollarEnd === i; put(c); i++; continue; }
+    if (c === '"') { inDouble = true; put(c); i++; continue; }
     // GH #591: a `#` at the start of a word (lastBreak: right after an unescaped unquoted break) comments out the rest of its line, so an
     // operator or quote inside the comment never opens a segment or quote. Any other `#` (`a#b`, `$#`, `a\ #`, `)#`, `>#`) stays text.
     if (c === '#' && i === lastBreak && !unsure && !btOpen && braceDepth === 0 && arithDepth === 0) {
@@ -272,23 +283,23 @@ function splitSegmentsUncached(cmd) {
       i = nl < 0 ? n : nl;
       continue;
     }
-    if (c === ' ' || c === '\t') { cp.push(c); i++; lastBreak = i; continue; }
+    if (c === ' ' || c === '\t') { put(c); i++; lastBreak = i; continue; }
     // backslash-newline line continuation outside quotes: one logical command (a break before it stays a break after it)
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
       const wasBreak = lastBreak === i;
-      cp.push(' ');
+      put(' ');
       i += (c2 === '\r') ? 3 : 2;
       if (wasBreak) lastBreak = i;
       continue;
     }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary
-    if (c === '\\' && c2) { cp.push(c + c2); i += 2; continue; }
+    if (c === '\\' && c2) { put(c + c2); i += 2; continue; }
     // the operator word stays on the current segment and the rest of the opener line is split as usual (`cat <<EOF | git commit -F -`
     // is two segments); a second `<<` on the same line is left as text, so its body is still scanned
     if (c === '<' && c2 === '<' && !heredoc) {
       const parsed = shellScan.parseHeredocAt(cmd, i);
       if (parsed) {
-        cp.push(cmd.slice(i, parsed.openerEnd));
+        put(cmd.slice(i, parsed.openerEnd));
         i = parsed.openerEnd;
         if (parsed.lineEnd !== undefined) heredoc = parsed;
         continue;
@@ -297,25 +308,23 @@ function splitSegmentsUncached(cmd) {
     if (c === '&' && c2 === '&') { flush(); i += 2; lastBreak = i; continue; }
     if (c === '|' && c2 === '|') { flush(); i += 2; lastBreak = i; continue; }
     if (c === '|') {
-      const cur = cs(); const prev = cur.length ? cur[cur.length - 1] : '';
-      let precedingBackslashes = 0;
-      if (prev === '>') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
-      if (prev === '>' && precedingBackslashes % 2 === 0) { cp.push(c); i++; continue; } // `>|` clobber redirect
+      const prev = lastCh;
+      const precedingBackslashes = prev === '>' ? bsBefore : 0;
+      if (prev === '>' && precedingBackslashes % 2 === 0) { put(c); i++; continue; } // `>|` clobber redirect
       flush(); i++; lastBreak = i; continue;
     }
     if (c === ';') { flush(); i++; lastBreak = i; continue; }
-    if (c === '&' && c2 === '>') { cp.push(c); i++; continue; } // `&>` redirect-both
+    if (c === '&' && c2 === '>') { put(c); i++; continue; } // `&>` redirect-both
     if (c === '&') {
-      const cur = cs(); const prev = cur.length ? cur[cur.length - 1] : '';
-      let precedingBackslashes = 0;
-      if (prev === '>' || prev === '<') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
-      if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { cp.push(c); i++; continue; } // `2>&1`, `>&2`
+      const prev = lastCh;
+      const precedingBackslashes = prev === '>' || prev === '<' ? bsBefore : 0;
+      if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { put(c); i++; continue; } // `2>&1`, `>&2`
       flush(); i++; lastBreak = i; continue;
     }
     if (c === '\n') { flush(); i++; lastBreak = i; if (arithDepth === 0 && !btOpen && braceDepth === 0) unsure = false; continue; }
     if (c === ')') { if (arithDepth > 0) arithDepth--; flush(); i++; continue; }
-    if (c === '}' && braceDepth > 0) { braceDepth--; cp.push(c); i++; continue; }
-    if ((c === '{' || c === '}') && isBraceGroupWord(cs(), c, c2)) { flush(); i++; continue; }
+    if (c === '}' && braceDepth > 0) { braceDepth--; put(c); i++; continue; }
+    if ((c === '{' || c === '}') && isBraceGroupWord(curBlank, curLen === 0, lastCh !== '' && /\s/.test(lastCh), c, c2)) { flush(); i++; continue; }
     if (c === '(') {
       if (arithDepth > 0) arithDepth++;
       else if (c2 === '(') { arithDepth = 2; flush(); i += 2; continue; }
@@ -326,11 +335,11 @@ function splitSegmentsUncached(cmd) {
       else if (cmd[i + 2] === '(') { arithDepth = 2; flushWithSubst(); i += 3; continue; }
       flushWithSubst(); i += 2; continue;
     }
-    if (c === '$' && c2 === '$') { cp.push('$$'); i += 2; continue; } // the pid parameter: its 2nd `$` must not arm an ANSI-C `$'`
-    if (c === '$' && c2 === '{') { braceDepth++; cp.push('${'); i += 2; continue; }
+    if (c === '$' && c2 === '$') { put('$$'); i += 2; continue; } // the pid parameter: its 2nd `$` must not arm an ANSI-C `$'`
+    if (c === '$' && c2 === '{') { braceDepth++; put('${'); i += 2; continue; }
     if (c === '`') { btOpen = !btOpen; flushWithSubst(); i++; continue; }
     if (c === '$') dollarEnd = i + 1;
-    cp.push(c);
+    put(c);
     i++;
   }
   flush();
@@ -1791,22 +1800,22 @@ function globCouldHitLauncher(p, cdDir) {
   const segs = norm.split('/').filter(Boolean);
   if (segs.length <= want.length) return false;
   return want.every((w, i) => {
-    let re = '';
+    let re = [];
     const g = segs[i];
     for (let k = 0; k < g.length; k++) {
       const c = g[k];
-      if (c === '*') re += '[^/]*';
-      else if (c === '?') re += '[^/]';
+      if (c === '*') re.push('[^/]*');
+      else if (c === '?') re.push('[^/]');
       else if (c === '[') {
         const end = g.indexOf(']', k + 2);
-        if (end < 0) { re += '\\['; continue; }
+        if (end < 0) { re.push('\\['); continue; }
         let cls = g.slice(k + 1, end).replace(/\\/g, '\\\\');
         if (cls[0] === '!') cls = '^' + cls.slice(1);
-        re += '[' + cls + ']';
+        re.push('[' + cls + ']');
         k = end;
-      } else re += c.replace(/[.+^${}()|\\\]]/g, '\\$&');
+      } else re.push(c.replace(/[.+^${}()|\\\]]/g, '\\$&'));
     }
-    try { return new RegExp('^' + re + '$', 'i').test(w); } catch (e) { return true; }
+    try { return new RegExp('^' + re.join('') + '$', 'i').test(w); } catch (e) { return true; }
   });
 }
 

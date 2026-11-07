@@ -59,12 +59,22 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
     let body = vec![plain; 15 * 1024 / (plain.len() + 1)].join("\n");
     let unquoted = format!("git commit -m \"$(cat <<EOF\n{body}\nEOF\n)\"");
     let many = "cat <<A\nx\nA\n".repeat(15 * 1024 / 14);
+    // text that makes the segment scanner look at the segment so far at every `}` / `>|` / `&`: joining at each read would bring the cost back
+    let braces = format!("echo {}", "a} ".repeat(5000));
+    let redirects = format!("echo {}", "a>|b ".repeat(3000));
 
     let home = std::env::temp_dir().join(format!("ah-alloc-budget-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let home = std::fs::canonicalize(&home).unwrap();
     let mut over = Vec::new();
-    for (table, command) in [("echo_mib", &echo), ("heredoc_mib", &heredoc), ("unquoted_heredoc_mib", &unquoted), ("many_heredocs_mib", &many)] {
+    for (table, command) in [
+        ("echo_mib", &echo),
+        ("heredoc_mib", &heredoc),
+        ("braces_mib", &braces),
+        ("redirects_mib", &redirects),
+        ("unquoted_heredoc_mib", &unquoted),
+        ("many_heredocs_mib", &many),
+    ] {
         for (check, limit) in b[table].as_table().unwrap() {
             let limit = limit.as_integer().unwrap() as u64 * MIB;
             let (got, ms) = alloc_of(check, command, &home);
