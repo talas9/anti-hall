@@ -136,15 +136,20 @@ stale_notice() {
   if [ "$dfail" = 1 ] && [ -x "$bindir/$engine_name" ]; then
     env "$(c env.plugin_root)=$root" "$bindir/$engine_name" "$(c install.defaults_probe_verb)" >/dev/null 2>&1 </dev/null &
     pp=$!
-    # watchdog: TERM after defaults_probe_s, KILL after a further defaults_probe_grace_s (an engine that ignores TERM must not hold
-    # SessionStart); the whole probe is bounded by the two settings
-    ( sleep "$(c install.defaults_probe_s)"; kill "$pp"; sleep "$(c install.defaults_probe_grace_s)"; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
+    # watchdog: TERM after defaults_probe_ms, KILL after a further defaults_probe_grace_ms (an engine that ignores TERM must not hold
+    # SessionStart); the whole probe is bounded by the two settings (under 1 s together by default: every hook fails open in under 1 s).
+    # Each sleep helper records its own pid so it can be killed by that pid (no pgrep needed).
+    wdp=$state/$(c install.file_probe_watchdog)
+    t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
+    t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
+    ( sleep "$t1" & echo $! >"$wdp"; wait $!; kill "$pp"; sleep "$t2" & echo $! >"$wdp"; wait $!; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
     wd=$!
     wait "$pp" 2>/dev/null; prc=$?
-    # stop the watchdog and its sleep helper (the helper is read first: once the subshell is gone it has no parent to ask for)
-    kids=$(pgrep -P "$wd" 2>/dev/null)
+    # stop the watchdog and its current sleep helper (the helper's own recorded pid)
     kill "$wd" 2>/dev/null
-    [ -n "$kids" ] && kill $kids 2>/dev/null
+    sp=$(cat "$wdp" 2>/dev/null)
+    case "$sp" in ""|*[!0-9]*) ;; *) kill "$sp" 2>/dev/null ;; esac
+    rm -f "$wdp" 2>/dev/null
     # exit 0 = loads fine; 143 / 137 = our own TERM / KILL (not proof of failure); anything else = it cannot load them now
     if [ "$prc" -eq 0 ] || [ "$prc" -eq 143 ] || [ "$prc" -eq 137 ]; then dfail=0; fi
   fi
@@ -173,7 +178,9 @@ stale_notice() {
   [ "$older" = 1 ] || [ "$dfail" = 1 ] || return 0
   knob=$(c launcher.knob_stale_noticed)
   case "$knob" in ""|*[!A-Za-z0-9_]*) ;; *) eval "export $knob=1" ;; esac
-  if [ "$dfail" = 1 ]; then key=msg.install_defaults_failed; else key=msg.launcher_stale_engine; fi
+  if [ "$dfail" = 1 ] && [ ! -e "$bindir/$engine_name" ]; then key=msg.install_engine_missing
+  elif [ "$dfail" = 1 ]; then key=msg.install_defaults_failed
+  else key=msg.launcher_stale_engine; fi
   [ -n "$have" ] || have=unknown
   [ -n "$want" ] || want=unknown
   text=$(m "$key" | sed "s|{have}|$have|g; s|{want}|$want|g")
@@ -186,7 +193,8 @@ stale_notice() {
   jseen=$state/$(c install.file_json_notice)
   if [ "${host:-claude}" = claude ] && [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$PPID" ]; then
     notice_text=$text
-    notice_kind=$([ "$dfail" = 1 ] && echo defaults_failed || echo stale_engine)
+    notice_kind=stale_engine
+    if [ "$dfail" = 1 ]; then notice_kind=defaults_failed; [ -e "$bindir/$engine_name" ] || notice_kind=engine_missing; fi
   fi
 }
 # one record per JSON notice for the counters (hook mode has no -v and no `say`)

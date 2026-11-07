@@ -1429,17 +1429,21 @@ value = "defaults.error"
 doc = "The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults and exits non-zero only when they cannot be loaded. It is not read-only: a load that fails rewrites defaults.error (the note it reads). A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing."
 value = "config"
 
-[install.defaults_probe_s]
-doc = "Seconds the defaults probe may run. A probe that does not finish in time is not taken as a failure: the notice stays silent."
-value = 3
-min = 1
-max = 30
+[install.defaults_probe_ms]
+doc = "Milliseconds the defaults probe may run before it is sent TERM. A probe that does not finish in time is not taken as a failure: the notice stays silent. Together with defaults_probe_grace_ms it must stay under 1000 (every hook fails open in under 1 s)."
+value = 600
+min = 100
+max = 5000
 
-[install.defaults_probe_grace_s]
-doc = "Seconds the defaults probe gets, after the TERM sent at defaults_probe_s, before it is killed (KILL). The probe is bounded by defaults_probe_s plus this, so an engine that ignores TERM cannot hold SessionStart."
-value = 1
+[install.defaults_probe_grace_ms]
+doc = "Milliseconds the defaults probe gets, after the TERM sent at defaults_probe_ms, before it is killed (KILL). The probe is bounded by defaults_probe_ms plus this (850 ms by default), so an engine that ignores TERM cannot hold SessionStart."
+value = 250
 min = 0
-max = 10
+max = 5000
+
+[install.file_probe_watchdog]
+doc = "Scratch file (in the state directory) in which the defaults-probe watchdog records the pid of its current sleep helper, so hooks/install.sh can stop that helper by pid. Removed when the probe ends."
+value = "defaults-probe.watchdog"
 
 [install.file_notice_log]
 doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read."

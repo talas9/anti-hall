@@ -1019,8 +1019,12 @@ impl Doc<'_> {
         out
     }
 
-    /// Whether the hooks file `f` sits in the newest version dir (by semver) of its plugin in a Codex cache
-    /// (`<mark><marketplace>/<plugin>/<version>/...`). A path of any other shape counts as newest (judged).
+    /// Whether the hooks file `f` sits in the newest COMPLETE version dir (by semver) of its plugin in a Codex cache
+    /// (`<mark><marketplace>/<plugin>/<version>/...`). A path of any other shape, or a version name that is not semver,
+    /// counts as newest (judged). Rules: only dirs whose name is semver take part (`latest`, a SHA prefix and the like do not);
+    /// a symlink counts as the dir it points to, once; a dir with no hooks.json (partly written) is skipped, so the newest
+    /// complete one is judged (a dir with a non-semver name is judged only when no semver dir exists); equal-version siblings (same precedence, e.g. differing only in build metadata) are ordered by the
+    /// modified time of their hooks.json (newer wins), then by name.
     fn newest_cache_version(f: &Path, marks: &[String]) -> bool {
         let full = f.display().to_string();
         let Some((m, at)) = marks
@@ -1038,32 +1042,56 @@ impl Doc<'_> {
         let plugin_dir = PathBuf::from(&full[..at + m.len()])
             .join(segs[0])
             .join(segs[1]);
-        let mine = segs[2];
-        let Ok(rd) = fs::read_dir(&plugin_dir) else {
+        let Some(mine) = fs::canonicalize(plugin_dir.join(segs[2])).ok() else {
             return true;
         };
-        rd.flatten()
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .all(|v| Self::semver_cmp(&v, mine) != std::cmp::Ordering::Greater)
+        // no semver sibling at all: nothing to compare against, the file is judged; with one, a dir whose name is not semver
+        // (`latest`, a SHA prefix) cannot be the newest and is not judged
+        let Some(newest) = Self::newest_complete_version_dir(&plugin_dir) else {
+            return true;
+        };
+        newest == mine
     }
 
-    /// Orders two version names by their dotted numeric parts (a pre-release/build suffix is dropped; a missing part is 0).
-    fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-        let parts = |v: &str| -> Vec<u64> {
-            v.trim_start_matches('v')
-                .split(['-', '+'])
-                .next()
-                .unwrap_or("")
-                .split('.')
-                .map(|p| p.parse::<u64>().unwrap_or(0))
-                .collect()
-        };
-        let (mut x, mut y) = (parts(a), parts(b));
-        let n = x.len().max(y.len());
-        x.resize(n, 0);
-        y.resize(n, 0);
-        x.cmp(&y)
+    /// The newest complete version dir under `plugin_dir` (canonical path), by the rules of `newest_cache_version`.
+    fn newest_complete_version_dir(plugin_dir: &Path) -> Option<PathBuf> {
+        let rd = fs::read_dir(plugin_dir).ok()?;
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut cands: Vec<(SemVer, Option<std::time::SystemTime>, PathBuf)> = Vec::new();
+        for e in rd.flatten() {
+            let Ok(real) = fs::canonicalize(e.path()) else {
+                continue;
+            };
+            if !real.is_dir() || seen.contains(&real) {
+                continue;
+            }
+            seen.push(real.clone());
+            let Some(v) = real
+                .file_name()
+                .and_then(|n| SemVer::parse(&n.to_string_lossy()))
+            else {
+                continue;
+            };
+            // complete = a hooks.json exists in one of the two places the doctor reads (the newest of them stamps the dir)
+            let stamp = ["hooks/hooks.json", "codex/hooks/hooks.json"]
+                .iter()
+                .filter_map(|r| fs::metadata(real.join(r)).ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.modified().ok())
+                .max();
+            let Some(stamp) = stamp else {
+                continue;
+            };
+            cands.push((v, stamp, real));
+        }
+        cands
+            .into_iter()
+            .max_by(|a, b| {
+                a.0.cmp_precedence(&b.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| a.2.file_name().cmp(&b.2.file_name()))
+            })
+            .map(|c| c.2)
     }
 
     fn install_health(&mut self) {
@@ -1897,4 +1925,146 @@ fn print_out(t: &str) {
 /// not older.
 fn older_than(floor: &str, have: &str, want: &str) -> bool {
     crate::compat::component_cmp(floor, have, want) == Some(std::cmp::Ordering::Less)
+}
+
+/// A semantic version (semver.org 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`, with an optional leading `v`. Only what the
+/// doctor needs: parse and precedence. Build metadata is kept out of the precedence, as the spec says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemVer {
+    core: [u64; 3],
+    pre: Vec<String>,
+}
+
+impl SemVer {
+    fn parse(name: &str) -> Option<SemVer> {
+        let v = name.strip_prefix('v').unwrap_or(name);
+        let (v, build) = match v.split_once('+') {
+            Some((a, b)) => (a, Some(b)),
+            None => (v, None),
+        };
+        let ident =
+            |i: &str| !i.is_empty() && i.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if build.is_some_and(|b| !b.split('.').all(ident)) {
+            return None;
+        }
+        let (core, pre) = match v.split_once('-') {
+            Some((a, b)) => (a, Some(b)),
+            None => (v, None),
+        };
+        let nums: Vec<&str> = core.split('.').collect();
+        if nums.len() != 3 {
+            return None;
+        }
+        let mut c = [0u64; 3];
+        for (i, n) in nums.iter().enumerate() {
+            // numeric, no leading zero (except "0" itself)
+            if n.is_empty()
+                || !n.bytes().all(|b| b.is_ascii_digit())
+                || (n.len() > 1 && n.starts_with('0'))
+            {
+                return None;
+            }
+            c[i] = n.parse().ok()?;
+        }
+        let pre = match pre {
+            None => Vec::new(),
+            Some(p) => {
+                let ids: Vec<&str> = p.split('.').collect();
+                if !ids.iter().all(|i| ident(i)) {
+                    return None;
+                }
+                // a numeric identifier has no leading zero
+                if ids.iter().any(|i| {
+                    i.len() > 1 && i.starts_with('0') && i.bytes().all(|b| b.is_ascii_digit())
+                }) {
+                    return None;
+                }
+                ids.iter().map(|i| i.to_string()).collect()
+            }
+        };
+        Some(SemVer { core: c, pre })
+    }
+
+    /// semver.org precedence: the core numbers, then a version with a pre-release is lower than the same without; pre-release
+    /// identifiers compare left to right (numeric by value, below alphanumeric; alphanumeric in ASCII order); the longer set wins
+    /// when all earlier ones are equal.
+    fn cmp_precedence(&self, o: &SemVer) -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        match self.core.cmp(&o.core) {
+            Equal => {}
+            x => return x,
+        }
+        match (self.pre.is_empty(), o.pre.is_empty()) {
+            (true, true) => return Equal,
+            (true, false) => return Greater,
+            (false, true) => return Less,
+            _ => {}
+        }
+        for (a, b) in self.pre.iter().zip(&o.pre) {
+            let (na, nb) = (
+                a.bytes().all(|c| c.is_ascii_digit()),
+                b.bytes().all(|c| c.is_ascii_digit()),
+            );
+            let r = match (na, nb) {
+                (true, true) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+                (true, false) => Less,
+                (false, true) => Greater,
+                (false, false) => a.cmp(b),
+            };
+            if r != Equal {
+                return r;
+            }
+        }
+        self.pre.len().cmp(&o.pre.len())
+    }
+}
+
+#[cfg(test)]
+mod semver_tests {
+    use super::*;
+    use std::cmp::Ordering::*;
+
+    fn v(s: &str) -> SemVer {
+        SemVer::parse(s).unwrap_or_else(|| panic!("{s} must parse"))
+    }
+
+    #[test]
+    fn real_codex_dir_names_parse_and_order_by_semver() {
+        assert!(
+            v("0.1.13-77c10e110b37").cmp_precedence(&v("0.1.13")) == Less,
+            "a pre-release is below its release"
+        );
+        assert!(v("0.1.14-aaaa").cmp_precedence(&v("0.1.13-zzzz")) == Greater);
+        assert!(
+            v("0.10.0").cmp_precedence(&v("0.9.0")) == Greater,
+            "by number, not text"
+        );
+        assert!(v("1.0.0-alpha.1").cmp_precedence(&v("1.0.0-alpha.beta")) == Less);
+        assert!(v("1.0.0-alpha.2").cmp_precedence(&v("1.0.0-alpha.10")) == Less);
+        assert!(v("1.0.0-alpha").cmp_precedence(&v("1.0.0-alpha.1")) == Less);
+        assert!(v("v1.2.3").cmp_precedence(&v("1.2.3")) == Equal);
+        assert!(
+            v("1.2.3+b1").cmp_precedence(&v("1.2.3+b2")) == Equal,
+            "build metadata is not part of precedence"
+        );
+    }
+
+    #[test]
+    fn names_that_are_not_semver_do_not_parse() {
+        for n in [
+            "latest",
+            "77c10e110b37",
+            "1234567",
+            "1.2",
+            "1.2.3.4",
+            "01.2.3",
+            "1.2.x",
+            "",
+            "1.2.3-",
+            "1.2.3-a..b",
+            "1.2.3-01",
+        ] {
+            assert!(SemVer::parse(n).is_none(), "{n} must not parse");
+        }
+    }
 }

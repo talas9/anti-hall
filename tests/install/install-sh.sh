@@ -30,6 +30,7 @@ write_lock() { # write_lock SHA
 }
 newhome() { HOME=$tmp/home.$1; export HOME; rm -rf "$HOME"; mkdir -p "$HOME"; st=$HOME/.anti-hall/ah-engine; }
 env_t() { AH_ENGINE_RELEASE_BASE=file://$tmp/www AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=x86_64 AH_BOOTSTRAP_LIBC=gnu "$@"; }
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
 logf() { cat "$st/bootstrap.log" 2>/dev/null || true; }
 hook() { # hook SESSION [EVENT]: one hook call; prints "<stdout-bytes> <rc>", stderr to $tmp/err
   printf '{"session_id":"%s","hook_event_name":"%s"}' "$1" "${2:-PreToolUse}" | sh "$plug/hooks/install.sh" "${2:-PreToolUse}" >"$tmp/out" 2>"$tmp/err"
@@ -157,9 +158,28 @@ t_a_probe_that_ignores_term_is_killed_after_the_grace() {
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
   mkdir -p "$st/bin"; printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
-  t0=$(date +%s); hook s1 SessionStart >/dev/null; t1=$(date +%s)
-  # bounded by defaults_probe_s + defaults_probe_grace_s (3 + 1), not by the engine; a probe cut off by us is not a failure
-  [ $((t1 - t0)) -le 7 ] && [ ! -s "$tmp/out" ]
+  t0=$(now_ms); hook s1 SessionStart >/dev/null; t1=$(now_ms)
+  # the real budget: defaults_probe_ms + defaults_probe_grace_ms (600 + 250) keeps SessionStart under 1 s (plus 400 ms of slack for
+  # the script's own work), not bound by the engine; a probe cut off by us is not a failure; no sleep helper is left behind
+  [ $((t1 - t0)) -lt 1400 ] && [ ! -s "$tmp/out" ] && [ ! -e "$st/defaults-probe.watchdog" ]
+}
+t_a_hanging_probe_leaves_no_orphan_sleep_helper() {
+  newhome kill2; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 5\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  # the TERM-stage helper is `sleep 0.600`: none may outlive the hook call
+  before=$(ps -axo command | grep -c '[s]leep 0.600')
+  hook s1 SessionStart >/dev/null
+  after=$(ps -axo command | grep -c '[s]leep 0.600')
+  [ "$after" -le "$before" ]
+}
+t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing() {
+  newhome em; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  rm -f "$st/bin/ah-engine"; sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q 'engine binary is missing' "$tmp/out" && ! grep -q 'cannot load' "$tmp/out"
 }
 t_a_client_with_leading_whitespace_json_still_gets_the_notice() {
   newhome st5; write_lock "$good"; fake_client '
@@ -250,6 +270,8 @@ check t_other_events_and_a_current_engine_leave_the_clients_output_alone t_other
 check t_a_client_that_already_set_a_system_message_gets_the_notice_appended t_a_client_that_already_set_a_system_message_gets_the_notice_appended
 check t_a_client_object_without_additional_context_gets_it_added t_a_client_object_without_additional_context_gets_it_added
 check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignores_term_is_killed_after_the_grace
+check t_a_hanging_probe_leaves_no_orphan_sleep_helper t_a_hanging_probe_leaves_no_orphan_sleep_helper
+check t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing
 check t_a_client_with_leading_whitespace_json_still_gets_the_notice t_a_client_with_leading_whitespace_json_still_gets_the_notice
 check t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown
 check t_codex_keeps_stdout_clean t_codex_keeps_stdout_clean

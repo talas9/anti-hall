@@ -244,7 +244,10 @@ fn only_the_newest_codex_cache_version_dir_is_judged() {
     }
     let (_, out) = k.doctor(&[]);
     assert!(!out.contains("runs Node on an entry path"), "{out}");
-    assert!(out.contains("in the Codex plugin cache are not judged"), "{out}");
+    assert!(
+        out.contains("in the Codex plugin cache are not judged"),
+        "{out}"
+    );
     // the newest version dir running Node is still a failure
     std::fs::write(cur.join("hooks/hooks.json"), NODE_HOOKS).unwrap();
     let (_, out) = k.doctor(&[]);
@@ -498,4 +501,139 @@ fn a_repair_that_has_nothing_to_do_prints_no_block_before_the_engine_report() {
     let (_, out) = k.doctor(&["--repair"]);
     assert!(!out.contains("nothing to repair"), "{out}");
     assert!(out.contains("ENGINE doctor"), "{out}");
+}
+
+const CODEX_NODE_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node \"${CLAUDE_PLUGIN_ROOT}/hooks/x.js\""}]}]}}"#;
+const CODEX_DIRECT_HOOKS: &str = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop"}]}]}}"#;
+const NODE_FAIL: &str = "runs Node on an entry path";
+
+/// A Codex cache with the given `(version dir, hooks body)` pairs (a `None` body is a dir with no hooks.json); returns the kit
+/// and the plugin dir.
+fn codex_cache(tag: &str, dirs: &[(&str, Option<&str>)]) -> (Kit, std::path::PathBuf) {
+    let k = Kit::new(tag);
+    k.engine(GOOD_ENGINE);
+    exe(&k.e.state.join("bin/ah-hook"), "#!/bin/sh\nexit 0\n");
+    let cache = k.e.home.join(".codex/plugins/cache/m/anti-hall");
+    for (d, body) in dirs {
+        std::fs::create_dir_all(cache.join(d).join("hooks")).unwrap();
+        if let Some(b) = body {
+            std::fs::write(cache.join(d).join("hooks/hooks.json"), b).unwrap();
+        }
+    }
+    (k, cache)
+}
+
+#[test]
+fn a_codex_prerelease_dir_is_below_its_release_and_a_suffix_is_not_dropped() {
+    // real Codex dirs look like 0.1.13-77c10e110b37: that is a pre-release of 0.1.13, below the plain 0.1.13
+    let (k, _) = codex_cache(
+        "dr-cx-pre-a",
+        &[
+            ("0.1.13-77c10e110b37", Some(CODEX_NODE_HOOKS)),
+            ("0.1.13", Some(CODEX_DIRECT_HOOKS)),
+        ],
+    );
+    let (_, out) = k.doctor(&[]);
+    assert!(
+        !out.contains(NODE_FAIL),
+        "the older pre-release is not judged: {out}"
+    );
+    // and the other way round: the pre-release of a NEWER version is the newest and is judged
+    let (k, _) = codex_cache(
+        "dr-cx-pre-b",
+        &[
+            ("0.1.14-77c10e110b37", Some(CODEX_NODE_HOOKS)),
+            ("0.1.13", Some(CODEX_DIRECT_HOOKS)),
+        ],
+    );
+    let (_, out) = k.doctor(&[]);
+    assert!(out.contains(NODE_FAIL), "{out}");
+}
+
+#[test]
+fn equal_version_codex_siblings_are_ordered_by_hooks_json_mtime() {
+    // 0.1.13+a and 0.1.13+b have the same precedence: the one whose hooks.json is newer is judged
+    let (k, cache) = codex_cache(
+        "dr-cx-tie",
+        &[
+            ("0.1.13+a", Some(CODEX_NODE_HOOKS)),
+            ("0.1.13+b", Some(CODEX_DIRECT_HOOKS)),
+        ],
+    );
+    let t = |secs: u64| std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    let set = |d: &str, secs: u64| {
+        std::fs::File::options()
+            .write(true)
+            .open(cache.join(d).join("hooks/hooks.json"))
+            .unwrap()
+            .set_modified(t(secs))
+            .unwrap();
+    };
+    set("0.1.13+a", 1_000_000);
+    set("0.1.13+b", 2_000_000);
+    let (_, out) = k.doctor(&[]);
+    assert!(
+        !out.contains(NODE_FAIL),
+        "+b is newer, +a is not judged: {out}"
+    );
+    set("0.1.13+a", 3_000_000);
+    let (_, out) = k.doctor(&[]);
+    assert!(out.contains(NODE_FAIL), "+a is now newer and judged: {out}");
+}
+
+#[test]
+fn non_semver_and_symlink_codex_dirs_do_not_take_part() {
+    // a digit-only SHA-like dir is not a huge major version; `latest` is the dir it points to, not 0.0.0 and not a second copy
+    let (k, cache) = codex_cache(
+        "dr-cx-names",
+        &[
+            ("0.2.0", Some(CODEX_DIRECT_HOOKS)),
+            ("0.1.0", Some(CODEX_NODE_HOOKS)),
+            ("1234567890", Some(CODEX_NODE_HOOKS)),
+        ],
+    );
+    std::os::unix::fs::symlink(cache.join("0.2.0"), cache.join("latest")).unwrap();
+    let (_, out) = k.doctor(&[]);
+    assert!(
+        !out.contains(NODE_FAIL),
+        "0.2.0 is the newest; the SHA dir and the old one are not judged: {out}"
+    );
+    // the symlink to an OLD dir does not make that dir newer: 0.2.0 stays the newest and is judged
+    std::fs::remove_file(cache.join("latest")).unwrap();
+    std::os::unix::fs::symlink(cache.join("0.1.0"), cache.join("latest")).unwrap();
+    std::fs::write(cache.join("0.2.0/hooks/hooks.json"), CODEX_NODE_HOOKS).unwrap();
+    std::fs::write(cache.join("0.1.0/hooks/hooks.json"), CODEX_DIRECT_HOOKS).unwrap();
+    let (_, out) = k.doctor(&[]);
+    assert!(
+        out.contains(NODE_FAIL),
+        "0.2.0 (Node) is the newest and judged: {out}"
+    );
+}
+
+#[test]
+fn a_partly_written_newest_codex_dir_falls_back_to_the_newest_complete_one() {
+    // 0.3.0 has no hooks.json yet (the cache is being written): 0.2.0 is the newest complete dir and is judged
+    let (k, _) = codex_cache(
+        "dr-cx-partial",
+        &[
+            ("0.3.0", None),
+            ("0.2.0", Some(CODEX_NODE_HOOKS)),
+            ("0.1.0", Some(CODEX_DIRECT_HOOKS)),
+        ],
+    );
+    let (_, out) = k.doctor(&[]);
+    assert!(
+        out.contains(NODE_FAIL),
+        "0.2.0 is judged while 0.3.0 is incomplete: {out}"
+    );
+    let (k, _) = codex_cache(
+        "dr-cx-partial-b",
+        &[
+            ("0.3.0", None),
+            ("0.2.0", Some(CODEX_DIRECT_HOOKS)),
+            ("0.1.0", Some(CODEX_NODE_HOOKS)),
+        ],
+    );
+    let (_, out) = k.doctor(&[]);
+    assert!(!out.contains(NODE_FAIL), "{out}");
 }
