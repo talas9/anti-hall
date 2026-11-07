@@ -1478,9 +1478,9 @@ fn a_plain_env_prefix_on_the_push_keeps_it_scoped_but_a_git_or_home_name_does_no
     let _ = e.hook("echo warm");
     let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
     for cmd in [
-        format!("cd {w} && SKYCREW_TRIVIAL_PUSH=1 git {P} origin feat"),
+        format!("cd {w} && PLAIN_PUSH_FLAG=1 git {P} origin feat"),
         format!("cd {w} && A=1 B=two git {P} origin feat"),
-        format!("SKYCREW_TRIVIAL_PUSH=1 git {P} origin feat"),
+        format!("PLAIN_PUSH_FLAG=1 git {P} origin feat"),
     ] {
         assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
     }
