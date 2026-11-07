@@ -7,4 +7,5 @@ doc = "The published plugin, relative to the repository root."
 [limits]
 max_files = 512
 max_non_image_bytes = 262144
+min_headroom_bytes = 3072
 image_extensions = "png jpg jpeg gif svg webp ico"
