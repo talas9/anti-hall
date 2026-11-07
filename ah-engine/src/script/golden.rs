@@ -39,9 +39,13 @@ fn plugin() -> String {
 
 /// The version the plugin root declares (`{PLUGIN_VERSION}`); read from the shipped `plugin.json`, never written into the corpus.
 fn plugin_version() -> String {
-    let raw = std::fs::read_to_string(Path::new(&plugin()).join(".claude-plugin/plugin.json")).expect("plugin.json");
-    let v: Value = serde_json::from_str(&raw).expect("plugin.json parses");
-    v["version"].as_str().expect("plugin.json version").to_string()
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        let raw = std::fs::read_to_string(Path::new(&plugin()).join(".claude-plugin/plugin.json")).expect("plugin.json");
+        let v: Value = serde_json::from_str(&raw).expect("plugin.json parses");
+        v["version"].as_str().expect("plugin.json version").to_string()
+    })
+    .clone()
 }
 
 /// The pinned clock a golden case with `{MS:..}`/`{ISO:..}`/`{HM:..}` tokens or an `age_ms` file runs at.
