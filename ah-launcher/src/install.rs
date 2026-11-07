@@ -909,25 +909,6 @@ impl Drop for Unlock<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arguments() {
-        let a = parse(&[
-            "--lock".into(),
-            "/x".into(),
-            "--auto".into(),
-            "-v".into(),
-            "--print-target".into(),
-        ]);
-        assert_eq!(a.lock.as_deref(), Some(Path::new("/x")));
-        assert!(a.auto && a.verbose && a.print_target);
-        assert!(parse(&[]).lock.is_none());
-    }
-}
-
 /// True when an executable file `prog` is in a directory of the search path.
 pub fn on_path(prog: &str) -> bool {
     find_on_path(prog).is_some()
@@ -976,4 +957,23 @@ pub fn platform_triple(s: &Settings, test: bool) -> String {
         matches!(r, Ran::Done(_)).then_some(out).flatten()
     };
     detect(&c, &knob, &probe).map_or_else(|_| s.text("msg.install_unsupported"), |p| p.triple)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arguments() {
+        let a = parse(&[
+            "--lock".into(),
+            "/x".into(),
+            "--auto".into(),
+            "-v".into(),
+            "--print-target".into(),
+        ]);
+        assert_eq!(a.lock.as_deref(), Some(Path::new("/x")));
+        assert!(a.auto && a.verbose && a.print_target);
+        assert!(parse(&[]).lock.is_none());
+    }
 }
