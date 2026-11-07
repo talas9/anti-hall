@@ -43,7 +43,7 @@ Where each is declared:
 
 - Day-to-day work reaches `dev` through pull requests (the `dev` ruleset requires `tests-passed` and `privacy-scan`). A push to `dev` or `main` also runs the full pack of `ah-engine.yml`; a pull request into `dev` runs its quick gate (`fmt`, `lint`, `quick`) unless it carries the label `full-ci`.
 - `main` changes only through a pull request from `dev`. A repository ruleset blocks direct pushes, force pushes and deletion of `main`.
-- A pull request to `main` runs the engine workflow (`ah-engine.yml`: the full pack, jobs `rust`, `no-node`, `ah-hook`, `doc-check`, `supply-chain`) and `.github/workflows/pr-source.yml`. Required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, `privacy-scan`, and `tests-passed`, the always-running aggregator job of `ah-engine.yml`, which fails unless every job of the full pack succeeded.
+- A pull request to `main` runs the engine workflow (`ah-engine.yml`: the full pack, jobs `rust`, `no-node`, `ah-hook`, `doc-check`, `supply-chain`) and `.github/workflows/pr-source.yml`. Required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, `privacy-scan`, and `tests-passed`, the always-running aggregator job of `ah-engine.yml`, which fails when any job failed or was cancelled, or when a job that the full tier should have run (`fmt`, `launcher`, `rust`, `no-node`, `supply-chain`) did not succeed.
 - `main` is what users and the plugin directory install from, so every merge to `main` is a release-quality event.
 
 ## Checklist (in order)
@@ -57,7 +57,7 @@ Where each is declared:
    - [ ] relevant other `docs/*.md` (and `docs/KB.md` topic map).
 4. - [ ] Verify: `cargo check` and a release build, then `~/.anti-hall/ah-engine/bin/ah-hook doctor --check` (a check of the local install: anti-hall ACTIVE). Never claim done without these THIS change.
 5. - [ ] Commit on the release branch (NO AI-credit / Co-Authored-By trailer — git-guard blocks them), open a pull request into `dev` and merge it once `tests-passed` and `privacy-scan` are green (`gh pr merge --merge`, never `--auto` or `--admin`).
-6. - [ ] **Optional full gate on `dev`.** `ah-engine.yml` runs on pushes to `dev` and `main`, on pull requests, and among tags only on `v*` (full tier, nightly test profile); an `rc-v*` tag triggers nothing. For a candidate gate, label the pull request into `dev` `full-ci` or dispatch `ah-engine.yml` on the branch. The older candidate-tag recipe below does NOT start CI and is kept only for naming:
+6. - [ ] **Optional full gate on `dev`.** `ah-engine.yml` runs on pushes to `engine-proto`, `dev` and `main`, on pull requests, on the nightly and weekly schedules, on manual dispatch, and among tags only on `v*` (full tier, nightly test profile); an `rc-v*` tag triggers nothing. A push to `dev` already runs the full pack, so this optional gate is mostly redundant once the pull request has merged. For a candidate gate, label the pull request into `dev` `full-ci` or dispatch `ah-engine.yml` on the branch. The older candidate-tag recipe below does NOT start CI and is kept only for naming:
    - `git tag rc-v<version>` then `git push origin rc-v<version>`
    - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → every job of the run (every engine job) `success`.
    - Red → fix on `dev`, push, tag the new commit `rc-v<version>.2`, and repeat.
