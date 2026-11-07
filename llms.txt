@@ -165,6 +165,7 @@ Shared libraries (historical, Node era; no Node hook ships and each is now an en
 | doctor | Health check and `--repair` (hooks present, guards fire, companions, DevSwarm, split stores). |
 | update | Self-update, changelog delta, repairs, then `/reload-plugins` (restart only if a hook or skill path still shows the old version). |
 | activate | One-shot first-run setup. |
+| afk | AFK mode: agents work silently and log a milestone digest while you are away; `back`, `progress`, `afk status`. |
 | install-statusline | Installs the two-line statusline. |
 | settings | Show/change any setting (`~/.anti-hall/settings.json`), including auto-handover. |
 | system-briefing | The operator guide: glossary, hard rules, every skill/CLI verb/setting with defaults, plus a live inventory of what is installed. SessionStart points agents at it. |
@@ -179,6 +180,7 @@ Shared libraries (historical, Node era; no Node hook ships and each is now an en
 | Codex skill | Claude counterpart / purpose |
 |---|---|
 | anti-hall-activate | activate |
+| anti-hall-afk | afk |
 | anti-hall-context-conserve | no Claude skill — Codex form of limit conservation (`limit-conserve-inject.js`, a Node-era script kept only in the Node backup, `plugins/anti-hall-node/`) |
 | anti-hall-deadly-loop | deadly-loop |
 | anti-hall-debt | debt |

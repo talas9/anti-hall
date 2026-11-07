@@ -8,9 +8,9 @@ Four components, each with its own semver. Versions read from `origin/dev`.
 
 | Component | What it is | Single file that sets the version | Current | Tag / release |
 |---|---|---|---|---|
-| plugin | The Claude plugin and its Codex port (hooks config, skills, docs, engine defaults) | `plugins/anti-hall/.claude-plugin/plugin.json`; the Codex manifest `plugins/anti-hall/.codex-plugin/plugin.json`, root `package.json` and both fields in `package-lock.json` track it | 0.301.1 (all four files) | `v<ver>` (latest pushed tag: `v0.300.2`; 0.301.1 not tagged yet) |
-| engine (`ah-engine`) | The Rust daemon that decides every hook | `ah-engine/Cargo.toml` (the binary reads `CARGO_PKG_VERSION`) | 0.2.0 | `ah-engine-v<ver>` (latest: `ah-engine-v0.2.0`); pinned by `ah-engine.lock` |
-| hook client (`ah-hook`) | The thin client every hook entry runs | `ah-launcher/Cargo.toml` | 0.2.0 | no tag of its own; ships inside the engine release archive |
+| plugin | The Claude plugin and its Codex port (hooks config, skills, docs, engine defaults) | `plugins/anti-hall/.claude-plugin/plugin.json`; the Codex manifest `plugins/anti-hall/.codex-plugin/plugin.json`, root `package.json` and both fields in `package-lock.json` track it | 0.302.0 (all four files) | `v<ver>` (latest pushed tag before this release: `v0.301.1`) |
+| engine (`ah-engine`) | The Rust daemon that decides every hook | `ah-engine/Cargo.toml` (the binary reads `CARGO_PKG_VERSION`) | 0.3.0 | `ah-engine-v<ver>` (latest before this release: `ah-engine-v0.2.1`); pinned by `ah-engine.lock` |
+| hook client (`ah-hook`) | The thin client every hook entry runs | `ah-launcher/Cargo.toml` | 0.3.0 | no tag of its own; ships inside the engine release archive |
 | dashboard (`ah-web`) | The local web dashboard | `ah-web/Cargo.toml` | 0.2.0 | no tag of its own; ships inside the engine release archive |
 
 Because the hook client and the dashboard ship inside the engine archive, a change to either needs an engine release (new `ah-engine-v<ver>`) to reach users.
@@ -41,7 +41,7 @@ Where each is declared:
 
 ## Branch flow
 
-- Day-to-day work is committed and pushed to `dev`. Pushes to `dev` run no CI, so `cargo check` and a release build of what changed before pushing.
+- Day-to-day work reaches `dev` through pull requests (the `dev` ruleset requires `tests-passed` and `privacy-scan`). A push to `dev` or `main` also runs the full pack of `ah-engine.yml`; a pull request into `dev` runs its quick gate (`fmt`, `lint`, `quick`) unless it carries the label `full-ci`.
 - `main` changes only through a pull request from `dev`. A repository ruleset blocks direct pushes, force pushes and deletion of `main`.
 - A pull request to `main` runs the engine workflow (`ah-engine.yml`: the full pack, jobs `rust`, `no-node`, `ah-hook`, `doc-check`, `supply-chain`) and `.github/workflows/pr-source.yml`. Required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, `privacy-scan`, and `tests-passed`, the always-running aggregator job of `ah-engine.yml`, which fails unless every job of the full pack succeeded.
 - `main` is what users and the plugin directory install from, so every merge to `main` is a release-quality event.
@@ -56,8 +56,8 @@ Where each is declared:
    - [ ] `README.md` (root) and `plugins/anti-hall/README.md` — only if the change touches what they cover (overview, privacy/network table, escape hatch).
    - [ ] relevant other `docs/*.md` (and `docs/KB.md` topic map).
 4. - [ ] Verify: `cargo check` and a release build, then `~/.anti-hall/ah-engine/bin/ah-hook doctor --check` (a check of the local install: anti-hall ACTIVE). Never claim done without these THIS change.
-5. - [ ] Commit on `dev` (NO AI-credit / Co-Authored-By trailer — git-guard blocks them) and push `dev`. Pushes to `dev` run no CI.
-6. - [ ] **Optional full gate on `dev`.** For a release that needs the engine workflow on a candidate, push a candidate tag at the `dev` commit:
+5. - [ ] Commit on the release branch (NO AI-credit / Co-Authored-By trailer — git-guard blocks them), open a pull request into `dev` and merge it once `tests-passed` and `privacy-scan` are green (`gh pr merge --merge`, never `--auto` or `--admin`).
+6. - [ ] **Optional full gate on `dev`.** `ah-engine.yml` runs on tags `v*` only (full tier, nightly test profile); an `rc-v*` tag triggers nothing. For a candidate gate, label the pull request into `dev` `full-ci` or dispatch `ah-engine.yml` on the branch. The older candidate-tag recipe below does NOT start CI and is kept only for naming:
    - `git tag rc-v<version>` then `git push origin rc-v<version>`
    - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → every job of the run (every engine job) `success`.
    - Red → fix on `dev`, push, tag the new commit `rc-v<version>.2`, and repeat.
@@ -65,7 +65,7 @@ Where each is declared:
 7. - [ ] **Pull request `dev` → `main`.** If this release ships a new or changed `ah-engine.lock`, the lock PR must already be merged into `dev` (see "Engine release" below). Open it with `gh pr create --base main --head dev`. The required `tests-passed` and `dev-only` checks must be green. Merging IS the release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Never merge on a red run. Merge with a merge commit or fast-forward, never squash: `dev` and `main` must stay in step.
    - The docs site (built by `tools/site_gen.py`, run from `.github/workflows/pages.yml`) deploys automatically when a release merges to `main`. One-time repo setting: Settings → Pages → Source: GitHub Actions (or `gh api -X POST repos/{owner}/{repo}/pages -f build_type=workflow`).
 8. - [ ] After the merge: pull `main`, then (if the release ships an engine lock) FIRST push the engine tag `ah-engine-v<engine version>` on the merge commit (see "Engine release"), then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
-9. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
+9. - [ ] Deploy the released head into the live engine roots with the deploy routine (the engine-live plugin root and the installed engine). Do NOT overwrite version-pinned `cache/.../<ver>/` snapshots, and check that the live `plugin.json` shows the released version.
 10. - [ ] Consider publish venues (see below) for notable releases.
 
 ## Engine release
@@ -77,7 +77,7 @@ The plugin pins one exact engine build in `ah-engine.lock` (root) and its byte-i
 3. Continue the normal checklist through the `dev` → `main` pull request and its merge.
 4. **Tag `ah-engine-v<engine version>` on the merge commit right after the merge and push it.** The publish job checks the tagged commit is on `main`, so it cannot run earlier; until the Release exists, users who updated get a 404, the bootstrap logs a failure, retries after 6 hours and the `ah-hook` client has no engine to talk to, so hooks pass through (harmless, so keep the window short).
 5. Wait for the publish run to go green and the GitHub Release to list the archives, `SHA256SUMS` and the attestation. Only then push `v<version>` and create the plugin's GitHub Release.
-6. Smoke test on a clean HOME: SessionStart installs `~/.anti-hall/ah-engine/bin/ah-engine` and `bootstrap.log` shows `ok:`; with the network off (no engine) every hook passes through with one notice per session.
+6. Smoke test on a clean HOME: SessionStart installs `~/.anti-hall/ah-engine/bin/ah-engine` and `bootstrap.log` shows `event=installed` (the download is opt-in: run it with `AH_ENGINE_BOOTSTRAP=1` set); with the network off (no engine) every hook passes through with one notice per session.
 
 Rules learned the hard way:
 
@@ -85,7 +85,7 @@ Rules learned the hard way:
 - Prepare refuses if the tag `ah-engine-v<ver>` already exists, so a pushed but failed tag means bumping the engine version.
 - The release smoke check compares only the semver part of `version`, because the build adds `+branch.sha`.
 
-The engine's `Cargo.toml` version changes only when engine source changes (the lock's fingerprint must match the source at the tag); a plugin-only release does not touch it.
+The engine's `Cargo.toml` version changes only when a fingerprint input changes (the lock's fingerprint must match the source at the tag; the inputs are listed in `ah-engine/scripts/fingerprint.sh` and include the hook client's source and manifests); a plugin-only release does not touch it. The dashboard (`ah-web`) is not a fingerprint input but ships in the archive.
 
 ## Doc-currency rule
 

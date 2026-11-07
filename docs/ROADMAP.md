@@ -14,7 +14,7 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 
 ## Status as of 2026-10-28
 
-Engine **0.2.1** and plugin **0.301.1** are released. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+Engine **0.3.0** and plugin **0.302.0** are the next release; engine 0.2.1 and plugin 0.301.1 are the last tagged ones. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
 
 **Shipped to `dev` since the audit:** #372 (hardening bar: parent binding only for a hand-started serve), #373 (flip-parity and fail-closed bars follow the no-Node fail-open contract; closed guards proven to block by mutation), #374 (breaker and corrupt-socket bars rewritten for the down-marker contract; stronger prune wording), #375 (capped prune Stop-block and a P0-P3 priority tag check in the task-list guard; first instance of [#377](https://github.com/talas9/anti-hall/issues/377)).
 

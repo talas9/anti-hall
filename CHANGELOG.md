@@ -6,6 +6,54 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.302.0
+
+### Summary
+
+- Components: this release ships engine 0.3.0, hook client 0.3.0 and dashboard 0.2.0 (plugin 0.302.0). The dashboard is unchanged. Minimum versions each component declares of the others are unchanged.
+- Task guards read tasks more reliably: a per-session task snapshot keeps tasks whose creates left the transcript tail, replayed API rows no longer create ghost tasks, and the task reader has a golden open-set gate with mutation proofs for every consumer.
+- Agents and nudges: a nudge escalation ladder with severity classes, stalled-agent / idle-wake / parallelism signals, a cap on concurrent background agents, and task-agent pairing (on), new opt-in rules (idle tasks, inline work, reply style, advisor rank) and AFK mode.
+- Safety and speed: the git guard lexes shell comments and arithmetic by bash rules, the snapshot lock is a kernel flock, and several hot paths (config reads, transcript fingerprinting, Stop scans) cost less per call.
+
+### Added
+
+- **Task snapshot (#390).** The engine keeps one snapshot of each session's rebuilt task list, tied to its session and file generation, so task guards see tasks whose creates lie beyond the transcript tail. A completion in the gap after the snapshot is read, a renumbered list is followed, and a deleted task is dropped.
+- **Nudge escalation ladder** (`nudges.enabled`, off). Severity classes and Stop-block advisories as an explicit state machine (a guard's pass is absolute; a resolved fact clears its entry), with idle-wake (`nudges.idleWake`) and parallelism (`nudges.parallel`) signals, both off.
+- **Stalled-agent accounting** (`nudges.stall`, on). Stalled agents count CPU and skip builds and CI waits; the stalled block is capped per episode and names the worker and how it stalled.
+- **Agent cap** (`guards.maxConcurrentAgents`, default 6). A spawn over the cap is denied (#484).
+- **R-pair task-agent pairing** (`guards.pairRule`, on): every task is paired with the named agent working on it; `guards.pairRuleByTaskId` (on) accepts an unnamed spawn whose description starts with the id of an open task, on positive proof only.
+- **Opt-in guards (default off):** R-idle (`guards.idleRule`), R-inline (`guards.inlineRule`), R-style reply length (`guards.styleRule`, with `guards.replyMaxChars` 1200 and `guards.replyMaxLines` 18), the advisor rank exemption (`guards.advisorRank`) and a merge-gate clearing step (`guards.mergeGateClearStep`).
+- **AFK mode (#425):** a read-only `afk status`, a question prohibition and ExitPlanMode auto-approval.
+- **Advisor mode:** hard decisions (review, plan, retry) stay on the advisor; adherence monitoring; enforcement when the main model is not a flagship; the transcript read is capped and a short read stays silent and counted.
+- **Rule digests (#462):** an agent-visible digest generated from the enforced TOML, per host.
+- **Context budget:** a per-event budget that drops low-priority model text instead of spilling it (`context.injectGateNoSpill`, off), pure per-prompt reminders skipped on notice turns (`context.injectGateNoticeTurns`, off), a one-line role note for subagents, and a prompt digest of at most three lines.
+- **Stop advice** as `additionalContext`, stateless and bounded by the transcript; Stop channel bounds and whole-number limits (#568, #559).
+- **Tasklist hygiene check:** done tasks deleted, subject and open-count limits enforced; the compact or restart-ready declaration is refused while the task list or index is over the handover budgets.
+- **Engine currency report:** the engine reports when it lags the source checkout (#541).
+- **Hook client:** the thin client says once, on stderr, when the installed engine is older than the version the plugin pins (`launcher.stale_notice_on`, on).
+- **Statusline:** a version chip and the weekly and 5h usage before the context percentage.
+- **Telemetry:** per-rule delivery funnel by model and project, nudge scope counters, counters for the config memo, tail reads, served requests and launcher notices; guard blocks keep their full text up to `telemetry.block_reason_chars` (default 2048); a child process's counts reach the daemon on exit without waiting on a lock.
+- **Doctor:** a plugin-name clash check.
+- **Test gates:** a reader open-set gate (golden property test, adapter section, mutation patches M1-M13) and a consumers axis covering the task-pair, tasklist, tracker, hygiene and compact-advice guards and the ladder.
+
+### Changed
+
+- **Nudge wording:** the tracker wording and the one-line role note ship on (kill switches kept); the tracker speaks on change, and DISPATCH NOW skips held tasks. Orchestration rules are sent whole once per session, short after compaction or resume.
+- **Performance:** `ah.cfg` / `ah.settings` reads cost one host call per check call; the snapshot fingerprint hashes the transcript range in the engine; the snapshot lock is a persistent kernel `flock` (the lock-file protocol stays as kill switch and fallback); git spawns skip the macOS developer-tools shim; the Stop scan keeps its windows.
+- The SessionStart line states it is information, not an error (#597).
+- Docs are aligned with the engine-only runtime: stale Node script names replaced in guides and skills, backup directory mentions reworded, model KB re-audited.
+- Dependencies: `ureq` 3.5.0, `notify` 8.2.1, `arc-swap` 1.9.3.
+
+### Fixed
+
+- **Task guards:** only conversation rows feed the task model, so replayed API rows no longer make ghost tasks (#599); the ladder reads the open-task fact from the list task-guard reads; R-pair pairs by agent name as a multiset, reads only an explicit leading task reference, and an unreadable or other-owner task denies.
+- **Git guard:** shell comments are no command, an escaped break cannot hide a live command, arithmetic parentheses and `$$` are tracked, a harmless output tail or plain env assignment keeps a push scoped (#506, #591).
+- **Swarm guard:** a bare fresh-clone statement fails safe, and any negation keeps the shared-tree note (#487).
+- **Style guard:** fenced code and tables follow CommonMark and GFM block rules.
+- **Settings:** a number outside the f64 range invalidates its own key, not the whole file (#569); a key registered on both stores with the same type and default is one setting.
+- **Engine:** the event-log exit flush never blocks (#572); a snapshot write needs a positively held lock on every path; telemetry exit paths are inert unless a marked scheduled child; archived DevSwarm children stay quiet.
+- **Tests:** deflaked agent-cli snapshot-kill, scheduler idle-gate and golden-harness clock and temp-root drift.
+
 ## 0.301.1
 
 ### Summary
