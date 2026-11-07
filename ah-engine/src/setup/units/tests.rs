@@ -382,3 +382,61 @@ fn with_no_unit_file_there_is_nothing_to_repair() {
     assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Launchd, &d.join("home")), None);
     assert_eq!(crate::setup::supervise::unsupervised_file(Manager::Systemd, &d.join("home")), None);
 }
+
+/// True when `prog` runs (`--version` exits 0).
+fn have(prog: &str, args: &[&str]) -> bool {
+    std::process::Command::new(prog).args(args).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success())
+}
+
+/// The rendered systemd units load clean: `systemd-analyze verify --user` finds no unknown key, section or bad value. Linux CI only
+/// (skips with a printed reason elsewhere or without the tool).
+#[test]
+fn the_rendered_systemd_units_pass_systemd_analyze_verify() {
+    if !cfg!(target_os = "linux") || !have("systemd-analyze", &["--version"]) {
+        println!("skipped: needs Linux with systemd-analyze");
+        return;
+    }
+    let d = scratch("sd-verify");
+    let exe = d.join("ah-engine");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let files = engine_files_with(Manager::Systemd, &d.join("home"), &exe.display().to_string(), true);
+    let mut paths = Vec::new();
+    for (p, text) in &files {
+        let to = d.join(p.file_name().unwrap());
+        std::fs::write(&to, text).unwrap();
+        paths.push(to);
+    }
+    let out = std::process::Command::new("systemd-analyze").arg("verify").arg("--user").args(&paths).output().unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    for bad in ["Unknown key", "Unknown section", "Unknown lvalue", "Invalid", "Failed to parse", "Assignment outside"] {
+        assert!(!said.contains(bad), "systemd-analyze verify said {bad:?}:\n{said}");
+    }
+}
+
+/// The restart properties of the supervised service behave as designed under a real user manager: a stub that exits 75 (the
+/// daemon's status after an outside SIGTERM) is started again, and one that exits 0 ends the unit. Linux CI only; skips without
+/// a user bus.
+#[test]
+fn a_transient_unit_with_the_supervised_properties_restarts_after_75_and_stops_after_0() {
+    if !cfg!(target_os = "linux") || !have("systemd-run", &["--version"]) || !have("systemctl", &["--user", "show-environment"]) {
+        println!("skipped: needs Linux with systemd-run and a user manager bus");
+        return;
+    }
+    let d = scratch("sd-run");
+    let count = d.join("count");
+    let stub = d.join("stub.sh");
+    std::fs::write(&stub, format!("#!/bin/sh\necho x >> '{c}'\n[ \"$(wc -l < '{c}')\" -ge 2 ] && exit 0\nexit 75\n", c = count.display())).unwrap();
+    let mut cmd = std::process::Command::new("systemd-run");
+    cmd.args(["--user", "--wait", "--collect", "--quiet", "-p", "RuntimeMaxSec=60"]);
+    // the properties are the ones the unit template carries, with a short wait before the restart
+    for line in defaults::text("units.service_supervise_service").replace("{restart_sec}", "1").lines() {
+        cmd.arg("-p").arg(line);
+    }
+    let out = cmd.arg("/bin/sh").arg(&stub).output().unwrap();
+    assert!(out.status.success(), "systemd-run: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2, "started again once after 75, not after 0");
+}
