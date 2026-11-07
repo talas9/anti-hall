@@ -82,7 +82,10 @@ fn pct(v: &mut [u128], p: usize) -> u128 {
 
 #[test]
 fn task_stop_cost_is_measured() {
-    let root = std::env::var("AH_TSCOST_ROOT").expect("AH_TSCOST_ROOT: a scratch dir");
+    // AH_TSCOST_ROOT picks the scratch dir (to keep the output); without it the test makes its own, so the pack runs it anywhere
+    let root =
+        std::env::var_os("AH_TSCOST_ROOT").map_or_else(|| std::env::temp_dir().join(format!("ah-tscost-{}", std::process::id())), std::path::PathBuf::from);
+    std::fs::create_dir_all(&root).unwrap();
     let root = std::fs::canonicalize(&root).unwrap();
     // AH_TSCOST_STORE=0: the session has no store of its own (a named task list), so the guards read the transcript
     let n_store = if std::env::var("AH_TSCOST_STORE").is_ok_and(|v| v == "0") { 0 } else { 25 };

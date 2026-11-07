@@ -536,7 +536,14 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
     }
     let key = |id: &str| number_of_digits(id) as u64;
     // the wanted set names the scan: the same tasks wanted of the same file state are scanned for once, whichever reconstruction asks
-    let sig = format!("{first}|{}", wanted.iter().map(|(id, n)| format!("{id}:{}{}{}{}{}", n.subject as u8, n.status as u8, n.owner as u8, n.blocked_by as u8, n.blocked_on as u8)).collect::<Vec<_>>().join(","));
+    let sig = format!(
+        "{first}|{}",
+        wanted
+            .iter()
+            .map(|(id, n)| format!("{id}:{}{}{}{}{}", n.subject as u8, n.status as u8, n.owner as u8, n.blocked_by as u8, n.blocked_on as u8))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     let mut recs = super::memo::memoized(path, super::memo::Tag::Backfill, window, &sig, || scan_back(path, size, window, &wanted, first), |_| true)?;
     for (id, need) in &wanted {
         let rec = recs.remove(&key(id)).unwrap_or_else(|| Rec::new(need.status));
