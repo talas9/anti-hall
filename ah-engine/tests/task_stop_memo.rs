@@ -5,6 +5,8 @@
 //! session on a named task list has none, so the guards read the transcript.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+mod common;
+
 use ah_engine::checks::taskstate::memo::computes;
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
@@ -67,7 +69,7 @@ const STOP_CHECKS: [&str; 4] = ["task-guard", "task-pair-guard", "tasklist-guard
 
 #[test]
 fn a_stop_reconstructs_the_task_list_once_per_variant() {
-    let root = std::env::temp_dir().join(format!("ah-stopmemo-{}", std::process::id()));
+    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-stopmemo-{}", std::process::id())));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let home = std::fs::canonicalize(&home).unwrap();

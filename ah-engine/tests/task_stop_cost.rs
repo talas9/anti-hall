@@ -4,6 +4,8 @@
 //! Knobs: AH_TSCOST_MB (transcript size, default 200), AH_TSCOST_ROOT (scratch dir; the HOME is made under it), AH_TSCOST_RUNS.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+mod common;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::io::Write;
@@ -83,8 +85,10 @@ fn pct(v: &mut [u128], p: usize) -> u128 {
 #[test]
 fn task_stop_cost_is_measured() {
     // AH_TSCOST_ROOT picks the scratch dir (to keep the output); without it the test makes its own, so the pack runs it anywhere
-    let root =
-        std::env::var_os("AH_TSCOST_ROOT").map_or_else(|| std::env::temp_dir().join(format!("ah-tscost-{}", std::process::id())), std::path::PathBuf::from);
+    // an explicit AH_TSCOST_ROOT is kept (the caller owns it); otherwise the scratch dir is removed when the test ends
+    let keep = std::env::var_os("AH_TSCOST_ROOT").map(std::path::PathBuf::from);
+    let guard = keep.is_none().then(|| common::TempDir::at(std::env::temp_dir().join(format!("ah-tscost-{}", std::process::id()))));
+    let root = keep.unwrap_or_else(|| guard.as_ref().unwrap().path().to_path_buf());
     std::fs::create_dir_all(&root).unwrap();
     let root = std::fs::canonicalize(&root).unwrap();
     // AH_TSCOST_STORE=0: the session has no store of its own (a named task list), so the guards read the transcript
