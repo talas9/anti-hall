@@ -108,6 +108,10 @@ fn fetch(source: &str, rest: &[String], params: &[&str], need: usize) -> Value {
             crate::client::ctl_json(&verb).unwrap_or_else(not_running)
         }
         "guard_blocks" => guard_blocks(rest, need),
+        "spans" => {
+            let verb = defaults::render("webapi.spans_verb", &[("need", &need), ("event", &flag(rest, "event"))]);
+            crate::client::ctl_json(&verb).unwrap_or_else(not_running)
+        }
         "agents" => agents_doc(),
         "nudges" => agents::nudge_document(),
         "status" => crate::client::status_value(),

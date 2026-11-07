@@ -42,6 +42,12 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "static REQUEST",
         "an empty thread-local slot naming the session and project of the request this thread serves, cleared when the request guard drops: state, not a tunable",
     ),
+    (
+        "src/obs/spans.rs",
+        "static LIVE",
+        "an empty thread-local slot holding the span of the request this thread serves until its end stores it: state, not a tunable",
+    ),
+    ("src/obs/spans.rs", "static TIMING", "a thread-local flag, false outside a recorded check, that the host-call timer reads: state, not a tunable"),
     ("src/delivery.rs", "static DECIDED", "an empty thread-local list of the answers one request produced until its end settles them: state, not a tunable"),
     ("src/learn.rs", "static LAST_REPEAT", "a thread-local counter slot that starts at zero and is set per block: an initial value, not a tunable"),
     (

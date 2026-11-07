@@ -8694,6 +8694,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `webapi.source_nudge_rollup` | `4 entries` |  |  | Nudge roll-ups for the Impact screen, one row per window (today, this daemon): sent by trigger, acted / said_not_done / snoozed / other / ignored / escalated percentages, median time to answer and to act, tokens spent after the nudge (acted vs not), and the parents that ignore most. |
 | `webapi.source_nudges` | `4 entries` |  |  | Every kept nudge to a parent about an unhealthy child (open first, then the closed log): child, direct parent, trigger, evidence, delivery, answer, reason, snoozes, verified outcome and timings (task #207). |
 | `webapi.source_outcomes` | `4 entries` |  |  | Telemetry totals by decision outcome over a window. |
+| `webapi.source_stop_spans` | `4 entries` |  |  | The slowest recent request spans (largest request total first; needs a running daemon with spans.enabled): per request the queue wait, the pre-check gap split into its phases, every check in order with its wall, CPU, off-CPU wait, script-pool acquire time, host-call time by kind and cut or deferral reason, the reply tail and the outcome. `--event <name>` keeps one event; `--limit` bounds the rows. |
+| `webapi.spans_verb` | `spans n={need} event={event}` |  |  | The control verb `query stop_spans` sends the daemon, with the page size and the event filter filled in. |
 | `webapi.switch_key_suffix` | `setting` |  |  | A shipped setting whose key name ends with this suffix and whose value names a settings.json key (section, key, env, default) is a feature switch. |
 
 ### operator.toml / defect
@@ -14324,6 +14326,40 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_events.msg_no_id` | `mesh-msg needs id=<message id>` |  |  | Said when `mesh-msg` names no message id. |
 | `mesh_events.msg_unreadable` | `the mesh store could not be opened` |  |  | Said when the mesh store cannot be opened read-only. |
 
+### spans.toml / spans
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spans.enabled` | `1` |  |  | 1 (shipped): the daemon records a span for each request of the events in spans.events - the time before the first check (queue wait, config snapshot, read, ack, context, parse, plan, table select), then per check its wall, CPU, script-pool acquire time, host-call time by kind (spans.kinds) and why it was cut or deferred, then the reply tail (encode, settle, write). 0 (kill switch): no span is recorded and no host function is timed; a script context built while it was 0 stays unwrapped until the plugin's scripts reload. |
+| `spans.events` | `Stop` |  |  | The hook events whose requests get a span; an empty list records every dispatched event. Stop is the one with the long, serial check list. |
+| `spans.kind_prefixes` | `7 entries` |  |  | Per kind (spans.kinds), the name prefixes of the `ahHost` functions that count toward it. store: the state/lock files; exec: child processes (git runs here); mesh: the mesh store; sqlite: the DevSwarm app and mesh databases; jev: the Jev classifier (its synchronous wait on a Stop); fs: plain file reads and stats; transcript: transcript scans. |
+| `spans.kinds` | `7 items` |  |  | The host-call kinds a span times, in report order (at most 8). A host function belongs to the kind whose spans.kind_prefixes entry holds its longest matching name prefix; a function no prefix matches is not timed. |
+| `spans.outcome_cut` | `cut` |  |  | A span outcome: the request passed the hard deadline (daemon.request_hard_ms) and a check was cut or its answer dropped. |
+| `spans.outcome_delivered` | `delivered` |  |  | A span outcome: the reply was written to the client and the client was still waiting inside the hard deadline. |
+| `spans.outcome_late` | `late` |  |  | A span outcome: the reply was written after the client's fail-fast wait (client.deadline_ms) had passed. |
+| `spans.outcome_undelivered` | `undelivered` |  |  | A span outcome: the reply could not be written (the client had gone). |
+| `spans.phase_ack` | `ack` |  |  | Span phase: the wire acknowledgement and the peer watch. |
+| `spans.phase_config` | `config` |  |  | Span phase: from the worker taking the request to the start of its deadline clock - the config snapshot, the hang-up probe and the request counter. |
+| `spans.phase_context` | `context` |  |  | Span phase: request context, crash breadcrumb, staging and the memory probe before the handler runs. |
+| `spans.phase_encode` | `encode` |  |  | Span phase: encoding the checks' answers into the reply and the dispatch counters. |
+| `spans.phase_finish` | `finish` |  |  | Span phase: the delivery books, the wire result wait and the counters after the reply. |
+| `spans.phase_handle` | `handle` |  |  | Span phase: the handler's own start (request counters, environment split, the version note) before the dispatch body is parsed. |
+| `spans.phase_parse` | `parse` |  |  | Span phase: parsing the dispatch metadata and the hook payload. |
+| `spans.phase_plan` | `plan` |  |  | Span phase: the dispatch's work before its first check - rate limit, project key, spawn and plan counters, transcript size, the delivery observer. |
+| `spans.phase_post_checks` | `post_checks` |  |  | Span phase: what follows the last check - the upfront notice, the budget and CPU books. |
+| `spans.phase_read` | `read` |  |  | Span phase: reading the request from the socket. |
+| `spans.phase_select` | `select` |  |  | Span phase: the dispatch table lookup and the start of the first check. |
+| `spans.phase_settle` | `settle` |  |  | Span phase: from the handler's return to the reply write - the failure notes, the late flag. |
+| `spans.phase_write` | `write` |  |  | Span phase: writing the reply to the client. |
+| `spans.query_default` | `10` |  |  | Rows `query stop_spans` and `CTL spans` list when no n is given. |
+| `spans.query_max` | `200` |  |  | Most spans one `CTL spans` call returns. |
+| `spans.raw_global` | `ahHostRaw` |  |  | The script global that holds the original of every `ahHost` function the host-call timer wrapped (the wrapper looks the original up here at each call). |
+| `spans.reason_ran` | `ran` |  |  | The reason a span shows for a check that ran and answered. |
+| `spans.ring_max` | `512` |  |  | Most recent spans kept (the oldest is dropped first, counted as span_dropped reason `evicted`). |
+| `spans.ring_max_bytes` | `1048576` |  |  | Estimated bytes the recent-span ring may hold; the oldest spans are dropped past it, so a long check list cannot grow the ring without bound. |
+| `spans.slow_keep` | `64` |  |  | Slowest spans (by request total) kept apart from the recent ring, so a rare multi-second request is not pushed out by the fast ones that follow. 0 keeps none. |
+| `spans.slow_min_us` | `250000` |  |  | A span is a candidate for the slow list only at or above this request total (microseconds). |
+
 ### session_switches.toml / repeat
 
 | Key | Default | Env override | Unit | What it is |
@@ -14995,6 +15031,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `script_soft` | counter | calls |  | Script calls that used more thread CPU than their SOFT limit (script.time_limit_ms); only warned about, the call was not cut. |
 | `settings_value_invalid` | counter | values | file | Settings numbers outside the f64 range (such as 1e400, which JavaScript reads as Infinity) found in a settings file (#569), by file (guardkit.settings_file, guardkit.claude_settings_file, guardkit.skip_file, guardkit.migration_markers_file, guardkit.jev_legacy_file). Each one invalidates only its own key (the next source, then the default, answers); the rest of the file still counts. Counted once per file change. Lifetime. |
 | `slow_replies` | counter | replies |  | Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors. |
+| `span_dropped` | counter | spans | reason | Spans the ring let go, by reason: `evicted` (the oldest recent span, past spans.ring_max or spans.ring_max_bytes) or `slow_evicted` (the fastest of the slow list, past spans.slow_keep). |
+| `span_gap_us` | histogram | us | event | The time from the client's request to the start of its first check (queue wait plus config snapshot, read, ack, context, parse, plan and table select), by hook event; the part of a request that no check accounts for. |
+| `span_host_us` | histogram | us | kind | Time one check spent inside host functions of one kind (spans.kinds: store, exec, mesh, sqlite, jev, fs, transcript), by kind; observed once per check that called any. |
+| `span_recorded` | counter | requests | event | Request spans recorded (spans.enabled; the events in spans.events), by hook event: one per request whose time was broken down into the pre-check gap, per-check wall, CPU and host time, and the reply tail. Read them with `ah-engine query stop_spans`. |
+| `span_slow` | counter | requests | event | Spans at or above spans.slow_min_us of request total that entered the slow list, by hook event. |
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
 | `spool_quarantined` | counter | records |  | Spool records moved to quarantine: damaged, or refused for good by the store (D24). |
 | `stop_channel` | counter | stops | counter, check, model, project | Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime. |

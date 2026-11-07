@@ -7,4 +7,5 @@
 pub mod counters;
 pub mod diagverbs;
 pub mod profile;
+pub mod spans;
 pub mod trace;

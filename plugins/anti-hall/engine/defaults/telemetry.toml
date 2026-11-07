@@ -776,3 +776,23 @@ value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
 [metric.memory_leak_notices]
 doc = "Memory-registry leak notices, by largest holder."
 value = { kind = "counter", unit = "notices", labels = ["top"] }
+
+[metric.span_recorded]
+doc = "Request spans recorded (spans.enabled; the events in spans.events), by hook event: one per request whose time was broken down into the pre-check gap, per-check wall, CPU and host time, and the reply tail. Read them with `ah-engine query stop_spans`."
+value = { kind = "counter", unit = "requests", labels = ["event"] }
+
+[metric.span_dropped]
+doc = "Spans the ring let go, by reason: `evicted` (the oldest recent span, past spans.ring_max or spans.ring_max_bytes) or `slow_evicted` (the fastest of the slow list, past spans.slow_keep)."
+value = { kind = "counter", unit = "spans", labels = ["reason"] }
+
+[metric.span_slow]
+doc = "Spans at or above spans.slow_min_us of request total that entered the slow list, by hook event."
+value = { kind = "counter", unit = "requests", labels = ["event"] }
+
+[metric.span_gap_us]
+doc = "The time from the client's request to the start of its first check (queue wait plus config snapshot, read, ack, context, parse, plan and table select), by hook event; the part of a request that no check accounts for."
+value = { kind = "histogram", unit = "us", labels = ["event"] }
+
+[metric.span_host_us]
+doc = "Time one check spent inside host functions of one kind (spans.kinds: store, exec, mesh, sqlite, jev, fs, transcript), by kind; observed once per check that called any."
+value = { kind = "histogram", unit = "us", labels = ["kind"] }

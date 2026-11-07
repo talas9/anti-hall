@@ -54,6 +54,7 @@ pub mod host_port;
 pub mod host_proc;
 pub(crate) mod host_seat;
 pub mod host_shell;
+pub mod host_spans;
 pub mod host_spawn;
 pub mod host_transcript;
 pub mod host_ts;
@@ -935,6 +936,7 @@ fn script_options(opts: &Value, st: &Settings) -> Value {
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let mut was_cut = false;
     let mut timed_out = false;
+    let acquire_from = Instant::now();
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -945,6 +947,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
         let opts_raw = serde_json::to_string(&script_options(opts, &st)).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, event);
+        crate::obs::spans::note_acquire(acquire_from.elapsed().as_micros() as u64);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
             pool.arm(limit, cut_at_deadline(name, event).then(|| deadline_grace_ms(name)));
@@ -1035,6 +1038,9 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
 
 #[cfg(test)]
 mod golden;
+#[cfg(test)]
+#[path = "host_tests_spans/tests.rs"]
+mod host_tests_spans;
 #[cfg(test)]
 #[path = "ladder_kinds/tests.rs"]
 mod ladder_kinds;

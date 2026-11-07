@@ -1501,6 +1501,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_spawn::install(c, &h)?;
     super::host_ts::install(c, &h)?;
     super::host_transcript::install(c, &h)?;
+    super::host_spans::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
 }

@@ -793,6 +793,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(v) = head.strip_prefix("D ") {
+        crate::obs::spans::mark("spans.phase_handle");
         let reply = dispatch(body, sh, cfg);
         let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
@@ -1126,6 +1127,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         sh.telemetry.fallback("malformed", "");
         return Reply::Err(defaults::text("msg.reply_malformed").into());
     };
+    crate::obs::spans::mark("spans.phase_parse");
     if let Some(root) = meta.root.as_deref() {
         sh.config.offer_root(root);
     }
@@ -1136,6 +1138,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     }
     crate::deadline::set_event(&meta.event);
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
+    crate::obs::spans::set_event(&meta.event, session);
     crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
     crate::memdiag::note_payload(&p);
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
@@ -1227,6 +1230,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     };
     // #312: the agent's reaction to what was delivered; B1: any event can advance an armed window (a turn end, a prompt)
     crate::delivery::observe(&sh.telemetry, session, &meta.event, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""));
+    crate::obs::spans::mark("spans.phase_plan");
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
     if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
@@ -1235,7 +1239,40 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     let wall = started.elapsed().as_micros() as u64;
     sh.telemetry.with_metrics(|m| m.observe("dispatch_overhead_us", &[("event", meta.event.as_str())], wall.saturating_sub(checks_us.get())));
     sh.telemetry.observe_hook(&meta.event, wall);
-    Reply::Ok(crate::dispatch::native::encode(&answers))
+    let body = crate::dispatch::native::encode(&answers);
+    crate::obs::spans::mark("spans.phase_encode");
+    Reply::Ok(body)
+}
+
+/// Close the request's span and count it: the recorded events, the gap before the first check, host time by kind, ring evictions.
+fn finish_span(sh: &Shared, delivered: bool, late: bool) {
+    let outcome = if !delivered {
+        "spans.outcome_undelivered"
+    } else if crate::deadline::past_hard_ms() > 0 {
+        "spans.outcome_cut"
+    } else if late {
+        "spans.outcome_late"
+    } else {
+        "spans.outcome_delivered"
+    };
+    let Some(sum) = crate::obs::spans::finish("spans.phase_finish", outcome, late) else { return };
+    sh.telemetry.with_metrics(|m| {
+        let ev = [("event", sum.event.as_str())];
+        m.inc("span_recorded", &ev);
+        m.observe("span_gap_us", &ev, sum.gap_us);
+        for (k, us) in &sum.host {
+            m.observe("span_host_us", &[("kind", crate::obs::spans::kind_name(*k))], *us);
+        }
+        if sum.pushed.slow_added {
+            m.inc("span_slow", &ev);
+        }
+        if sum.pushed.evicted > 0 {
+            m.add("span_dropped", &[("reason", "evicted")], sum.pushed.evicted);
+        }
+        if sum.pushed.slow_evicted > 0 {
+            m.add("span_dropped", &[("reason", "slow_evicted")], sum.pushed.slow_evicted);
+        }
+    });
 }
 
 /// `G <version>\n{"s":session,"a":agent,"r":reset,"q":[question, ...]}`: the injection gate (`crate::gate`). Each question is
@@ -1584,6 +1621,8 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     }
     // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
     crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
+    crate::obs::spans::begin(started, wait);
+    crate::obs::spans::mark("spans.phase_config");
     let (req, wire) = match read_request(&mut s, &cfg) {
         Ok(r) => r,
         Err(why) => {
@@ -1594,6 +1633,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             return After::Continue;
         }
     };
+    crate::obs::spans::mark("spans.phase_read");
     if req.is_empty() {
         // a connect-only liveness probe (the launcher's gate): the peer is already gone, so there is nothing to dispatch and no
         // reply to write (it used to cost a worker 6-40 ms and log `reply write_failed: Broken pipe`)
@@ -1617,6 +1657,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         crate::deadline::watch_peer(s.as_raw_fd());
     }
     let acked_at = Instant::now();
+    crate::obs::spans::mark("spans.phase_ack");
     REQUEST_PEER.with(|c| c.set(crate::limits::peer_pid(&s)));
     let (request, event) = request_context(&req);
     let _breadcrumb = crate::crash::enter("request", &request, &event, "", "");
@@ -1624,6 +1665,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     telemetry::stage_begin();
     crate::failopen::begin_request();
     let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
+    crate::obs::spans::mark("spans.phase_context");
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
         Err(_) => {
@@ -1672,7 +1714,9 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     }
     let fo_line = wire.then(|| crate::failopen::take_request().map(|(r, c)| crate::wire::fail_open_line(&r, &c))).flatten().unwrap_or_default();
     let late = crate::deadline::soft_remaining() == Some(Duration::ZERO);
+    crate::obs::spans::mark("spans.phase_settle");
     let delivered = write_reply_after(&mut s, &fo_line, &reply, &cfg);
+    crate::obs::spans::mark("spans.phase_write");
     if delivered {
         sh.telemetry.stage_commit();
     } else {
@@ -1681,6 +1725,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     }
     crate::delivery::settle(&sh.telemetry, delivered && crate::deadline::in_time());
     crate::deadline::settle_staged(delivered);
+    finish_span(sh, delivered, late);
     let res = wire.then(|| if delivered { wait_res(&mut s) } else { ResWait::Missing(defaults::text("wire.why_closed")) });
     if late {
         // answered after the client's deadline: slow but healthy, which is not a failure of the engine

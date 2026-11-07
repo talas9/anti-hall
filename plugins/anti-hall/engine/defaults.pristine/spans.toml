@@ -1,0 +1,126 @@
+# Per-request spans (task #595): where the wall time of ONE request went, kept in a bounded in-memory ring and read with
+# `ah-engine query stop_spans` (or `CTL spans`). Every number here is a default read at run time; nothing is compiled in.
+
+[spans.enabled]
+doc = "1 (shipped): the daemon records a span for each request of the events in spans.events - the time before the first check (queue wait, config snapshot, read, ack, context, parse, plan, table select), then per check its wall, CPU, script-pool acquire time, host-call time by kind (spans.kinds) and why it was cut or deferred, then the reply tail (encode, settle, write). 0 (kill switch): no span is recorded and no host function is timed; a script context built while it was 0 stays unwrapped until the plugin's scripts reload."
+value = 1
+min = 0
+max = 1
+
+[spans.events]
+doc = "The hook events whose requests get a span; an empty list records every dispatched event. Stop is the one with the long, serial check list."
+value = ["Stop"]
+
+[spans.ring_max]
+doc = "Most recent spans kept (the oldest is dropped first, counted as span_dropped reason `evicted`)."
+value = 512
+min = 1
+
+[spans.ring_max_bytes]
+doc = "Estimated bytes the recent-span ring may hold; the oldest spans are dropped past it, so a long check list cannot grow the ring without bound."
+value = 1048576
+min = 4096
+
+[spans.slow_keep]
+doc = "Slowest spans (by request total) kept apart from the recent ring, so a rare multi-second request is not pushed out by the fast ones that follow. 0 keeps none."
+value = 64
+min = 0
+
+[spans.slow_min_us]
+doc = "A span is a candidate for the slow list only at or above this request total (microseconds)."
+value = 250000
+min = 0
+
+[spans.query_default]
+doc = "Rows `query stop_spans` and `CTL spans` list when no n is given."
+value = 10
+min = 1
+
+[spans.query_max]
+doc = "Most spans one `CTL spans` call returns."
+value = 200
+min = 1
+
+[spans.kinds]
+doc = "The host-call kinds a span times, in report order (at most 8). A host function belongs to the kind whose spans.kind_prefixes entry holds its longest matching name prefix; a function no prefix matches is not timed."
+value = ["store", "exec", "mesh", "sqlite", "jev", "fs", "transcript"]
+
+[spans.kind_prefixes]
+doc = "Per kind (spans.kinds), the name prefixes of the `ahHost` functions that count toward it. store: the state/lock files; exec: child processes (git runs here); mesh: the mesh store; sqlite: the DevSwarm app and mesh databases; jev: the Jev classifier (its synchronous wait on a Stop); fs: plain file reads and stats; transcript: transcript scans."
+value = { store = ["state", "writeAtomic", "appendFile", "lock", "flock", "fence", "writeFenced", "prune"], exec = ["exec", "fileExec", "spawnProbe", "proc", "repo"], mesh = ["mesh", "ct"], sqlite = ["pi", "meshApp"], jev = ["jev", "judge"], fs = ["read", "tail", "range", "lstat", "file", "is", "realpath", "listDir", "mtime", "turnText", "sha1"], transcript = ["transcript", "agent", "reNumbers"] }
+
+[spans.reason_ran]
+doc = "The reason a span shows for a check that ran and answered."
+value = "ran"
+
+[spans.outcome_delivered]
+doc = "A span outcome: the reply was written to the client and the client was still waiting inside the hard deadline."
+value = "delivered"
+
+[spans.outcome_late]
+doc = "A span outcome: the reply was written after the client's fail-fast wait (client.deadline_ms) had passed."
+value = "late"
+
+[spans.outcome_undelivered]
+doc = "A span outcome: the reply could not be written (the client had gone)."
+value = "undelivered"
+
+[spans.outcome_cut]
+doc = "A span outcome: the request passed the hard deadline (daemon.request_hard_ms) and a check was cut or its answer dropped."
+value = "cut"
+
+[spans.phase_config]
+doc = "Span phase: from the worker taking the request to the start of its deadline clock - the config snapshot, the hang-up probe and the request counter."
+value = "config"
+
+[spans.phase_read]
+doc = "Span phase: reading the request from the socket."
+value = "read"
+
+[spans.phase_ack]
+doc = "Span phase: the wire acknowledgement and the peer watch."
+value = "ack"
+
+[spans.phase_context]
+doc = "Span phase: request context, crash breadcrumb, staging and the memory probe before the handler runs."
+value = "context"
+
+[spans.phase_handle]
+doc = "Span phase: the handler's own start (request counters, environment split, the version note) before the dispatch body is parsed."
+value = "handle"
+
+[spans.phase_parse]
+doc = "Span phase: parsing the dispatch metadata and the hook payload."
+value = "parse"
+
+[spans.phase_plan]
+doc = "Span phase: the dispatch's work before its first check - rate limit, project key, spawn and plan counters, transcript size, the delivery observer."
+value = "plan"
+
+[spans.phase_select]
+doc = "Span phase: the dispatch table lookup and the start of the first check."
+value = "select"
+
+[spans.phase_post_checks]
+doc = "Span phase: what follows the last check - the upfront notice, the budget and CPU books."
+value = "post_checks"
+
+[spans.phase_encode]
+doc = "Span phase: encoding the checks' answers into the reply and the dispatch counters."
+value = "encode"
+
+[spans.phase_settle]
+doc = "Span phase: from the handler's return to the reply write - the failure notes, the late flag."
+value = "settle"
+
+[spans.phase_write]
+doc = "Span phase: writing the reply to the client."
+value = "write"
+
+[spans.phase_finish]
+doc = "Span phase: the delivery books, the wire result wait and the counters after the reply."
+value = "finish"
+
+[spans.raw_global]
+doc = "The script global that holds the original of every `ahHost` function the host-call timer wrapped (the wrapper looks the original up here at each call)."
+value = "ahHostRaw"

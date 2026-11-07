@@ -165,6 +165,7 @@ pub fn dispatch(verb: &str, args: &str) -> Option<String> {
         "mesh-events" => Some(mesh_events::events(args).to_string()),
         "mesh-msg" => Some(mesh_events::message(args).to_string()),
         "decisions" => Some(decisions::snapshot(args).to_string()),
+        "spans" => Some(crate::obs::spans::snapshot(args).to_string()),
         "io" => Some(io::snapshot(args).to_string()),
         "agents" => Some(crate::agents::web_document(want("since=").as_deref(), want("agent=").as_deref()).to_string()),
         _ => None,

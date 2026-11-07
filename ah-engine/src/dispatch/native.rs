@@ -147,6 +147,8 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         let started = std::time::Instant::now();
         crate::deadline::beat();
         let check = e.check.as_deref().unwrap_or("");
+        crate::obs::spans::begin_check(check, "spans.phase_select");
+        let mut why = "";
         crate::jev::assist::set_asking_check(check);
         if crate::deadline::note_soft_overrun() {
             // the client's fail-fast wait was over before any check of this request started (it waited in the queue): this and the later
@@ -166,11 +168,13 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             crate::budget::note_shed_skipped();
             crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
+            why = "shed";
             Answer::Defer
         } else if crate::deadline::client_gone() {
             // the client closed its connection: nobody reads this reply, so the check is not worth running.
             // live19: 478 replies in 1000 s hit a closed pipe after their work was done.
             crate::budget::note_dropped(guard_event, check, &meta.event, "client_gone");
+            why = "client_gone";
             Answer::Defer
         } else if !crate::deadline::in_time()
             && crate::script::cut_at_deadline(check, &meta.event)
@@ -181,6 +185,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             crate::script::set_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default());
             let v = crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
+            why = "hard_deadline";
             answer_of(&e.id, Some(v))
         } else {
             let mark = crate::deadline::staged_mark();
@@ -194,6 +199,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             if matches!(a, Answer::Defer) {
                 crate::deadline::discard_staged_since(mark);
                 crate::budget::note_dropped(guard_event, check, &meta.event, "check_deferred");
+                why = "check_deferred";
                 Answer::Defer
             } else if over_cpu(used) {
                 // this check ran and crossed the budget alone: what it staged must not land for a decision nobody received
@@ -204,6 +210,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
                 );
                 crate::deadline::discard_staged_since(mark);
                 crate::budget::note_dropped(guard_event, check, &meta.event, "cpu_budget");
+                why = "cpu_budget";
                 Answer::Defer
             } else {
                 // a block that keeps coming back from the same guard tells what is allowed and asks for a different approach
@@ -222,11 +229,23 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             );
         }
         crate::load::note_check_cpu(crate::limits::thread_cpu_us().saturating_sub(cpu_before));
+        crate::obs::spans::end_check(span_decision(&a), why);
         observe(&e, &a, started.elapsed().as_micros() as u64);
         out.push((e.id, a));
     }
     crate::learn::upfront_notice(meta, p, &mut out);
+    crate::obs::spans::end_checks("spans.phase_post_checks");
     out
+}
+
+/// What a check answered, as a span records it: `block`, `advisory`, `allow` or `defer`.
+fn span_decision(a: &Answer) -> &'static str {
+    match a {
+        Answer::Defer => "defer",
+        Answer::Decided(r, _) if r.code == Some(2) || (r.code == Some(0) && super::combine::json_blocks(&r.out)) => "block",
+        Answer::Decided(r, _) if !r.out.is_empty() => "advisory",
+        Answer::Decided(..) => "allow",
+    }
 }
 
 /// The daemon's reply body: `[[id, "defer"], [id, code, stdout, stderr], ...]`.

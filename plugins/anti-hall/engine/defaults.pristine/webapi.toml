@@ -162,3 +162,11 @@ value = "takes effect at the next daemon start"
 [webapi.history_actor_env]
 doc = "The environment variable naming who asked for a write (the web server sets it to the screen and user); the history row records its value."
 value = "AH_WEB_ACTOR"
+
+[webapi.source_stop_spans]
+doc = "The slowest recent request spans (largest request total first; needs a running daemon with spans.enabled): per request the queue wait, the pre-check gap split into its phases, every check in order with its wall, CPU, off-CPU wait, script-pool acquire time, host-call time by kind and cut or deferral reason, the reply tail and the outcome. `--event <name>` keeps one event; `--limit` bounds the rows."
+value = { source = "spans", rows = "requests", filters = ["event:event"], params = ["event"] }
+
+[webapi.spans_verb]
+doc = "The control verb `query stop_spans` sends the daemon, with the page size and the event filter filled in."
+value = "spans n={need} event={event}"
