@@ -31,7 +31,7 @@ mod logs;
 mod orphans;
 mod plugin;
 mod render;
-mod runtime;
+pub(crate) mod runtime;
 mod selftest;
 mod stores;
 mod system;

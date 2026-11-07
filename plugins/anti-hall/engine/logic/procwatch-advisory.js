@@ -113,6 +113,17 @@ function pwResource(r, sid, myPid, st, parts) {
   parts.push(pwMsg('warn', text.render(ah.cfg('resource_watch.msg_what'), { list: lines.join('; ') }), ah.cfg('resource_watch.msg_why'), ah.cfg('resource_watch.msg_instead')));
 }
 
+// The P0 census alert (more than one live engine daemon): ONE advisory per cooldown, naming the pids. It reports only; nothing is stopped.
+function pwCensus(r, sid, nowS, st, parts) {
+  var a = r.census_alert;
+  if (a === null || typeof a !== 'object' || a.active !== true) return;
+  if (!pwFire(st, 'census:' + sid, nowS, ah.cfgNum('procwatch.census_cooldown_s'))) return;
+  var d = a.details && typeof a.details === 'object' ? a.details : {}, pids = Array.isArray(d.pids) ? d.pids : [];
+  parts.push(pwMsg('warn',
+    text.render(ah.cfg('procwatch.msg_census_what'), { kind: String(a.kind || ''), n: typeof d.serve === 'number' ? d.serve : pids.length, pids: pids.join(', ') }),
+    ah.cfg('procwatch.msg_census_why'), ah.cfg('procwatch.msg_census_instead')));
+}
+
 function pwDiskLines(low) {
   return low.map(function (v) { return text.render(ah.cfg('disk_watch.msg_vol'), { path: v.path, free: v.free, pct: v.pct, level: v.level }); });
 }
@@ -169,6 +180,7 @@ function decide(p) {
   // ---- orphans, stops and resource warnings from the report ----
   pwOrphans(r, sid, nowS, st, parts, pwProjectRoot(p[ah.cfg('procwatch.f_cwd')] || hookProc.cwd(p)).root);
   pwResource(r, sid, myPid, st, parts);
+  pwCensus(r, sid, nowS, st, parts);
   pwSave(st, nowS);
   return parts.length > 0 ? { advisory: text.advisoryJson(event, parts.join('\n')) } : 'allow';
 }

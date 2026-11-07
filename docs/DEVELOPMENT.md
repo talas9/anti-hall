@@ -289,7 +289,7 @@ roll back the engine on a hunch: roll back only when hooks exceed their timeout 
    log: starts, crashes, breaker changes, failures), `last-crash.json` (the daemon's last panic or abnormal exit, with its
    breadcrumb), `cli-crash.json` (the last panic of a command-line run or hook client; it is not a daemon crash and never counts
    as a restart), `mem.ndjson` (one memory line per request) and `mem-snapshot.json` (written when the memory cap trips).
-   `ah-engine status --json` reads them for you: `health.degraded`, `health.restarts`, `health.last_crash`.
+   `ah-engine status --json` reads them for you: `health.degraded`, `health.restarts`, `health.last_crash`. To gate on daemon restarts read `health.restarts.total` (windowed, crash-kind), never the top-level `restarts` (lifetime `starts - 1`) and never a process count; `census` in the same output counts the engine processes by class.
 3. **Which thread is busy.** `ah-engine status --threads` prints the CPU % of every daemon thread over a short window, with the work
    counters per second behind it. `ah-engine status --memory` prints the heap against RSS, the budget of each cache and the
    sizes of the in-memory structures. Both are described in [CPU and memory profiling](AH-ENGINE.md#cpu-and-memory-profiling).

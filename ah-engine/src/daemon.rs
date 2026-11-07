@@ -303,6 +303,17 @@ impl Shared {
         let check = kv(args, "check");
         let mut gauges =
             vec![("rss_kb", limits::rss_kb() as f64), ("queue_depth", self.depth.load(SeqCst) as f64), ("uptime_s", self.started.elapsed().as_secs() as f64)];
+        if let Some(c) = crate::procwatch::census::latest() {
+            gauges.extend([
+                ("engine_census_serve", c.serve.len() as f64),
+                ("engine_census_serve_nonlive", c.serve_nonlive.len() as f64),
+                ("engine_census_job", c.jobs.len() as f64),
+                ("engine_census_hook_client", c.clients.len() as f64),
+                ("engine_census_stub", c.stubs.len() as f64),
+                ("legacy_watchers", c.legacy.len() as f64),
+                ("stale_binary_procs", c.stale.len() as f64),
+            ]);
+        }
         let gs = crate::gate::global().stats();
         gauges.extend([
             ("inject_gate_sessions", gs.sessions as f64),
@@ -626,6 +637,7 @@ impl Shared {
             "served": self.stats.requests.load(SeqCst).saturating_sub(self.stats.gone_skipped.load(SeqCst)),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
+            "census": crate::procwatch::census::latest().map(|c| c.to_json()),
             "breaker": b.map_or("closed".to_string(), |d| defaults::render("msg.state_open", &[("secs", &(d.as_secs() + 1))])),
             "crashloop": c.map_or("clear".to_string(), |d| defaults::render("msg.state_stopped", &[("secs", &(d.as_secs() + 1))])),
             "rules": {"version": rules.version, "count": rules.rules.len(), "fingerprint": format!("{:016x}", rules.fingerprint())},

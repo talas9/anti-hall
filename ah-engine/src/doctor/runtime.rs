@@ -232,7 +232,7 @@ fn real_home() -> Option<PathBuf> {
     (!dir.is_empty()).then(|| PathBuf::from(dir.as_ref()))
 }
 
-fn live_state_dir(dir: &Path) -> bool {
+pub(crate) fn live_state_dir(dir: &Path) -> bool {
     let Some(home) = real_home() else { return false };
     [
         home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")),
@@ -242,7 +242,7 @@ fn live_state_dir(dir: &Path) -> bool {
     .any(|p| same_path(dir, p))
 }
 
-fn state_from_env(env: &[(String, String)]) -> Option<PathBuf> {
+pub(crate) fn state_from_env(env: &[(String, String)]) -> Option<PathBuf> {
     env_get(env, defaults::env_name("dir")).filter(|d| !d.is_empty()).map(PathBuf::from).or_else(|| {
         env_get(env, defaults::env_name("home"))
             .filter(|h| !h.is_empty())
@@ -270,6 +270,37 @@ pub fn non_live_serve_processes(host: &mut dyn Host) -> Vec<(u32, PathBuf)> {
     out.sort_by_key(|(pid, _)| *pid);
     out.dedup_by_key(|(pid, _)| *pid);
     out
+}
+
+/// The engine process census of this machine: `None` when the census is switched off (`doctor.census_enabled`) or its configuration
+/// does not load. Read-only: nothing is signalled.
+pub fn engine_census(host: &mut dyn Host) -> Option<crate::procwatch::census::Census> {
+    if defaults::num("doctor.census_enabled") == 0 {
+        return None;
+    }
+    let cfg = crate::procwatch::census::Cfg::load()?;
+    Some(crate::procwatch::census::take(host, &cfg))
+}
+
+/// The census as doctor lines: the one census line, then a P0 for more than one `serve`, and a warning per class that is off its
+/// expected count. Legacy watchers are counted and named, never stopped.
+pub fn census_lines(doc: &mut Doc, c: &crate::procwatch::census::Census) {
+    let list = |v: &[u32]| v.iter().take(defaults::num("doctor.census_max_listed") as usize).map(u32::to_string).collect::<Vec<_>>().join(", ");
+    doc.infol(c.line());
+    if c.multi_instance() {
+        doc.bad(defaults::render("doctor.census_msg_p0", &[("n", &c.serve.len()), ("pids", &list(&c.serve))]));
+    } else if c.serve.is_empty() {
+        doc.infol(defaults::text("doctor.census_msg_no_serve").to_string());
+    }
+    if !c.legacy.is_empty() {
+        doc.warnl(defaults::render("doctor.census_msg_legacy", &[("n", &c.legacy.len()), ("pids", &list(&c.legacy))]));
+    }
+    if !c.stale.is_empty() {
+        doc.warnl(defaults::render("doctor.census_msg_stale", &[("n", &c.stale.len()), ("pids", &list(&c.stale))]));
+    }
+    if !c.slow.is_empty() {
+        doc.warnl(defaults::render("doctor.census_msg_slow", &[("n", &c.slow.len()), ("pids", &list(&c.slow))]));
+    }
 }
 
 /// DMN-01..12: the daemon, the pid files, the cooldowns, the recorded failure.
@@ -338,6 +369,9 @@ pub fn daemon_section(doc: &mut Doc) {
     }
     for (pid, socket) in non_live_serve_processes(&mut RealHost::new()) {
         doc.warnl(defaults::render("doctor_msg.daemon_non_live_serve", &[("pid", &pid), ("sock", &socket.display())]));
+    }
+    if let Some(c) = engine_census(&mut RealHost::new()) {
+        census_lines(doc, &c);
     }
     doc.infol(health::starts::doctor_line());
     if let Some(left) = health::crashloop_remaining() {
@@ -432,6 +466,36 @@ mod tests {
         };
         let rows = non_live_serve_processes(&mut host);
         assert_eq!(rows, vec![(4242, paths::socket_in(&state))]);
+    }
+
+    #[test]
+    fn the_doctor_census_prints_one_line_and_a_p0_for_two_daemons_and_warns_for_legacy_watchers() {
+        crate::defaults::init().unwrap();
+        let mut host = FakeHost {
+            rows: vec![
+                ProcRow { pid: 10, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine serve".to_string() },
+                ProcRow { pid: 11, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine serve".to_string() },
+                ProcRow { pid: 12, ppid: 7, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: "/h/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto".to_string() },
+            ],
+            // an unreadable-or-live state: the fake environment names no state directory, so both count as live
+            env: Vec::new(),
+        };
+        let c = engine_census(&mut host).expect("census on by default");
+        let mut doc = Doc::default();
+        doc.head("engine");
+        census_lines(&mut doc, &c);
+        let body = doc.body();
+        assert!(body.contains("engine: serve=2 jobs=0 clients=0 stubs=0/0 legacy=1 stale=0"), "{body}");
+        assert!(body.contains("P0 engine_multi_instance: 2 engine daemons"), "{body}");
+        assert!(body.contains("1 legacy per-session wake watchers"), "{body}");
+        assert_eq!((doc.fail, doc.warn), (1, 1));
+        assert!(!body.contains("ah-engine "), "model-visible text names ah-hook verbs, not ah-engine: {body}");
+        // one daemon: no P0
+        host.rows.remove(1);
+        let mut ok = Doc::default();
+        ok.head("engine");
+        census_lines(&mut ok, &engine_census(&mut host).unwrap());
+        assert_eq!(ok.fail, 0);
     }
 
     #[test]

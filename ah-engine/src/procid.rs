@@ -85,6 +85,69 @@ pub fn exe(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// The file a process is running, as (device, inode): the identity of the binary image the process started from, which a path cannot
+/// give once the file at that path was replaced. Linux: the `/proc/<pid>/exe` link stats the running inode itself, replaced or not.
+/// `None` when the process is gone or the system will not say.
+#[cfg(target_os = "linux")]
+pub fn exe_ident(pid: u32) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+    Some((m.dev(), m.ino()))
+}
+
+/// The memory region of a process with the vnode behind it (`proc_pidinfo(PROC_PIDREGIONPATHINFO)`, layout of `struct
+/// proc_regionwithpathinfo` in the SDK's `sys/proc_info.h`; the libc crate has no binding for it).
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct RegionWithPath {
+    /// `struct proc_regioninfo`: eight header words, the offset, fourteen counters, then address and size.
+    head: [u32; 4],
+    offset: u64,
+    counters: [u32; 14],
+    address: u64,
+    size: u64,
+    vnode: libc::vnode_info_path,
+}
+
+/// The file a process is running, as (device, inode): the vnode of the first file-backed memory region at or above the lowest
+/// address, which for a Mach-O executable is its `__TEXT` mapping, so it names the image the process started from even after the
+/// path was replaced. `None` when the process is gone or the system will not say.
+#[cfg(target_os = "macos")]
+pub fn exe_ident(pid: u32) -> Option<(u64, u64)> {
+    let size = std::mem::size_of::<RegionWithPath>() as libc::c_int;
+    let mut addr: u64 = 0;
+    for _ in 0..crate::defaults::num("doctor.census_region_walk_max") {
+        // SAFETY: a zeroed RegionWithPath is a valid value of this plain C struct.
+        let mut r: RegionWithPath = unsafe { std::mem::zeroed() };
+        // SAFETY: `r` is a live, writable struct of exactly the size passed; the call fails (non-positive) rather than overrun it.
+        let rc = unsafe { libc::proc_pidinfo(pid as libc::c_int, 8, addr, (&mut r as *mut RegionWithPath).cast(), size) };
+        if rc != size || r.size == 0 {
+            return None;
+        }
+        let st = &r.vnode.vip_vi.vi_stat;
+        if st.vst_ino != 0 {
+            return Some((u64::from(st.vst_dev), st.vst_ino));
+        }
+        addr = r.address.checked_add(r.size)?;
+    }
+    None
+}
+
+/// The (device, inode) of the file at `path`, in the same form [`exe_ident`] reports (macOS keeps 32 bits of the device number, as the
+/// vnode record does). `None` when it cannot be read.
+pub fn file_ident(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    let dev = if cfg!(target_os = "macos") { m.dev() & 0xffff_ffff } else { m.dev() };
+    Some((dev, m.ino()))
+}
+
+/// No image identity on other systems.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn exe_ident(_pid: u32) -> Option<(u64, u64)> {
+    None
+}
+
 /// Send `sig` to `pid` only when `verify` (run as late as possible) accepts it; true once delivered. On Linux the process is pinned
 /// by a pidfd before `verify` runs, so the signal reaches the generation `verify` saw or none (`ESRCH` once it exited); on an old
 /// kernel without pidfd (`ENOSYS`, before 5.3) it falls back to the macOS order; any other `pidfd_open` error declines.
@@ -129,6 +192,13 @@ mod tests {
         assert_eq!(start(me), Some(s), "the start time of one generation never changes");
         let exe_os = exe(me).expect("own executable");
         assert_eq!(std::fs::canonicalize(exe_os).unwrap(), std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn the_image_identity_of_this_process_is_its_executable_file() {
+        crate::defaults::init().unwrap();
+        let own = exe_ident(std::process::id()).expect("own image");
+        assert_eq!(Some(own), file_ident(&std::env::current_exe().unwrap()));
     }
 
     #[test]

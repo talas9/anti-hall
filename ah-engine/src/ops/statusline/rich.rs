@@ -362,6 +362,45 @@ fn devswarm_chip(cx: &Ctx, env: &BTreeMap<String, String>, c: &Colors, sep: &str
     if seg.is_empty() { seg } else { format!("{sep}{seg}") }
 }
 
+/// The engine process census chip (`engine: serve=1 jobs=0 ...`): read from the file the daemon's process sweep keeps up to date, never
+/// by scanning processes here. Left out when the switch is off, the file is missing or older than `statusline.census_max_age_s`
+/// (a stale census would claim a state that no longer holds), or, in `anomaly` mode, when nothing is off the design.
+fn census_chip(cx: &Ctx, c: &Colors, sep: &str) -> String {
+    if defaults::num("statusline.census_enabled") == 0 {
+        return String::new();
+    }
+    census_chip_from(&crate::paths::dir().join(defaults::text("procwatch.census_file")), cx.now, c, sep)
+}
+
+/// [`census_chip`] for the census file at `path`, at `now_ms`.
+fn census_chip_from(path: &Path, now_ms: f64, c: &Colors, sep: &str) -> String {
+    let fresh = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|t| now_ms / 1000.0 - t.as_secs_f64() <= defaults::num("statusline.census_max_age_s") as f64);
+    let Some(census) = fresh
+        .then(|| std::fs::read_to_string(&path).ok())
+        .flatten()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| crate::procwatch::census::Census::from_json(&v))
+    else {
+        return String::new();
+    };
+    let off = census.multi_instance() || !census.legacy.is_empty() || !census.stale.is_empty() || !census.slow.is_empty();
+    if !off && defaults::text("statusline.census_mode") == defaults::text("statusline.census_mode_anomaly") {
+        return String::new();
+    }
+    let col = if census.multi_instance() {
+        c.c(defaults::text("statusline.chip_color_bad"))
+    } else if off {
+        c.c(defaults::text("statusline.chip_color_warn"))
+    } else {
+        c.c("dim")
+    };
+    format!("{sep}{col}{}{}", census.line(), c.c("reset"))
+}
+
 /// The subscription usage segment (`wk:65% | 5h:50%`): the weekly and 5-hour rate-limit percentages from the stdin `rate_limits`. Each half is
 /// left out when its window is absent (API-key users, before the first response); the whole segment when both are, or when the setting is off.
 /// The colors follow the same levels as the context percentage.
@@ -520,6 +559,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         h.push_str(&format!("{sep}{}{}{subs}{}", c.c("brightCyan"), defaults::text("statusline.agent_icon"), c.c("reset")));
     }
     h.push_str(&devswarm_chip(cx, env, &c, &sep));
+    h.push_str(&census_chip(cx, &c, &sep));
     if !duration.is_empty() {
         h.push_str(&format!("{sep}{}{}{duration}{}", c.c("cyan"), defaults::text("statusline.clock_icon"), c.c("reset")));
     }
@@ -583,6 +623,30 @@ fn time_clip(x: f64) -> f64 {
 #[cfg(test)]
 mod consistency_tests {
     use super::*;
+
+    fn census_file(tag: &str, c: &crate::procwatch::census::Census) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sl-census-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("engine-census.json");
+        std::fs::write(&f, c.to_json().to_string()).unwrap();
+        f
+    }
+
+    #[test]
+    fn the_census_chip_shows_the_line_from_the_file_and_only_while_it_is_fresh() {
+        crate::defaults::init().unwrap();
+        let plain = Colors { on: false };
+        let one = crate::procwatch::census::Census { serve: vec![7], sessions: 2, ..Default::default() };
+        let f = census_file("fresh", &one);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
+        assert_eq!(census_chip_from(&f, now, &plain, " | "), " | engine: serve=1 jobs=0 clients=0 stubs=0/2 legacy=0 stale=0");
+        let later = now + (defaults::num("statusline.census_max_age_s") as f64 + 60.0) * 1000.0;
+        assert_eq!(census_chip_from(&f, later, &plain, " | "), "", "a stale census is not shown");
+        assert_eq!(census_chip_from(&f.with_file_name("absent.json"), now, &plain, " | "), "");
+        let two = crate::procwatch::census::Census { serve: vec![7, 8], legacy: vec![9], ..Default::default() };
+        let f2 = census_file("two", &two);
+        assert!(census_chip_from(&f2, now, &plain, " | ").contains("serve=2 "));
+    }
 
     #[test]
     fn one_separator_same_padding_both_sides() {

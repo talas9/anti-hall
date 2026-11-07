@@ -232,6 +232,46 @@ fn sweep_once(f: &mut Fake, home: &Path) -> (Value, Vec<(String, String, String)
 }
 
 #[test]
+fn a_second_live_daemon_writes_one_p0_alert_that_aggregates_and_nothing_is_signalled() {
+    crate::defaults::init().unwrap();
+    let h = scratch("census");
+    let mut f = Fake {
+        rows: vec![
+            row(500, 1, 9000, "/x/.anti-hall/ah-engine/bin/ah-engine serve"),
+            row(501, 1, 30, "/x/.anti-hall/ah-engine/bin/ah-engine serve --start-reason hook-client"),
+            row(502, 77, 99_000, "/x/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto"),
+        ],
+        ..Fake::default()
+    };
+    let state = h.join("state");
+    let mut sw = Sweep::default();
+    let run = |f: &mut Fake, sw: &mut Sweep| run_with(f, sw, &state, &h.to_string_lossy(), &|_, _, _| {}).expect("sweep");
+    run(&mut f, &mut sw);
+    let census: Value = serde_json::from_str(&std::fs::read_to_string(state.join("engine-census.json")).expect("census file")).expect("json");
+    assert_eq!(census["counts"]["serve"], 2);
+    assert_eq!(census["counts"]["legacy_watcher"], 1);
+    assert_eq!(census["multi_instance"], true);
+    assert!(census["line"].as_str().unwrap().starts_with("engine: serve=2 "));
+    let alert = |p: &Path| -> Value { serde_json::from_str(&std::fs::read_to_string(p.join("engine-census-alerts.json")).expect("alert file")).expect("json") };
+    let first = alert(&state);
+    assert_eq!((first["kind"].clone(), first["count"].clone(), first["details"]["pids"].clone()), (json!("engine_multi_instance"), json!(1), json!([500, 501])));
+    // the same condition at the next scan aggregates into the same document: no new kind, a bounded occurrences array
+    sw.last_orphan_s = 0;
+    run(&mut f, &mut sw);
+    let again = alert(&state);
+    assert_eq!((again["kind"].clone(), again["count"].clone()), (json!("engine_multi_instance"), json!(2)));
+    assert_eq!(again["occurrences"].as_array().unwrap().len(), 2);
+    let report: Value = serde_json::from_str(&std::fs::read_to_string(state.join("procwatch-report.json")).expect("report")).expect("json");
+    assert_eq!(report["census_alert"]["kind"], "engine_multi_instance");
+    assert!(f.signals.is_empty(), "the census reports only: nothing is signalled");
+    // one daemon again: the alert stays as history, inactive
+    f.rows.remove(1);
+    sw.last_orphan_s = 0;
+    run(&mut f, &mut sw);
+    assert_eq!(alert(&state)["active"], false);
+}
+
+#[test]
 fn report_mode_kills_nothing_and_records_every_candidate() {
     let h = scratch("report");
     let mut f = orphan_fixture();
@@ -575,6 +615,26 @@ fn an_orphan_is_counted_once_per_session_and_a_new_one_still_is() {
     orphan_report(&h, &[(111, "adb server"), (222, "node dev")]);
     let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
     assert!(t.contains("1 processes remain from ended sessions"), "only the new process is reported: {t}");
+}
+
+#[test]
+fn the_census_p0_alert_is_one_advisory_per_cooldown_and_an_inactive_alert_is_silent() {
+    let h = scratch("census-advisory");
+    let env = script_env(&h, None);
+    let p = json!({"session_id": "s1"});
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let dir = h.join(".anti-hall/ah-engine");
+    std::fs::create_dir_all(&dir).unwrap();
+    let report = |active: bool| {
+        let doc = json!({"kind": "engine_multi_instance", "severity": "P0", "active": active, "count": 3, "details": {"serve": 2, "pids": [500, 501]}, "occurrences": []});
+        std::fs::write(dir.join("procwatch-report.json"), json!({"ts_s": now, "modes": {}, "orphans": {"count": 0, "listed": []}, "census_alert": doc}).to_string()).unwrap();
+    };
+    report(false);
+    assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "a cleared alert says nothing");
+    report(true);
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("P0 engine_multi_instance: 2 engine daemons") && t.contains("500, 501") && t.contains("ah-hook doctor"), "{t}");
+    assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "the cooldown holds: one advisory, not one per prompt");
 }
 
 #[test]

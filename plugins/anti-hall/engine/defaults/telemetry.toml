@@ -776,3 +776,41 @@ value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
 [metric.memory_leak_notices]
 doc = "Memory-registry leak notices, by largest holder."
 value = { kind = "counter", unit = "notices", labels = ["top"] }
+
+# ---- engine process census (SE-A) ----
+
+[metric.engine_multi_instance]
+doc = "Process sweeps that found more than one live engine daemon (the one-daemon design is broken). Target 0."
+value = { kind = "counter", unit = "events", labels = [] }
+
+[metric.wake_rebin]
+doc = "Per-session wake watcher hand-overs to a replaced engine binary, by result (exec, exec_failed)."
+value = { kind = "counter", unit = "events", labels = ["result"] }
+
+[metric.engine_census_serve]
+doc = "Live engine daemons counted by the last census (1 is the design)."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.engine_census_serve_nonlive]
+doc = "Engine daemons of another state directory counted by the last census (a test run, a second setup)."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.engine_census_job]
+doc = "Scheduled engine jobs counted by the last census."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.engine_census_hook_client]
+doc = "Short-lived hook or CLI engine processes counted by the last census."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.engine_census_stub]
+doc = "Thin per-session stubs counted by the last census (none ships, expected 0)."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.legacy_watchers]
+doc = "Legacy per-session wake watcher processes counted by the last census (falls to 0 as sessions end)."
+value = { kind = "gauge", unit = "processes", labels = [] }
+
+[metric.stale_binary_procs]
+doc = "Engine processes running a replaced binary image, counted by the last census (falls to 0 after one rebin cycle)."
+value = { kind = "gauge", unit = "processes", labels = [] }

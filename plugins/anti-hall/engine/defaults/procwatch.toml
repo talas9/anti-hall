@@ -249,3 +249,38 @@ value = " (another project: {folder})"
 [procwatch.f_cwd]
 doc = "Payload field of the session directory."
 value = "cwd"
+
+# ---- engine process census (SE-A) ----
+
+[procwatch.census_enabled]
+doc = "1: every orphan scan (procwatch.scan_every_s) also takes the engine process census (doctor.census.*): the counts go to the status, the statusline and the report file, and more than one live daemon writes the P0 alert document. 0: the sweep takes no census. Report only."
+value = 1
+
+[procwatch.census_file]
+doc = "The latest census, relative to the engine state directory (the statusline reads it; never scanned there)."
+value = "engine-census.json"
+
+[procwatch.census_alert_file]
+doc = "The multi-instance alert document, relative to the engine state directory: ONE document with the stable kind doctor.census_p0_kind, the pids in its details and a bounded occurrences array."
+value = "engine-census-alerts.json"
+
+[procwatch.census_max_occurrences]
+doc = "The most occurrences the alert document keeps (the oldest are dropped; the count stays exact)."
+value = 20
+
+[procwatch.census_cooldown_s]
+doc = "Least time between two census P0 advisories to one session (the alert document itself is updated on every scan)."
+value = 1800
+unit = "s"
+
+[procwatch.msg_census_what]
+doc = "The census P0 advisory: more than one live engine daemon. {kind}, {n}, {pids}."
+value = "P0 {kind}: {n} engine daemons are running for this state (pids {pids}); exactly one is the design"
+
+[procwatch.msg_census_why]
+doc = "Why the census P0 matters."
+value = "two daemons can answer hooks with different rules and double every background job; nothing was stopped"
+
+[procwatch.msg_census_instead]
+doc = "What to do about the census P0."
+value = "run `ah-hook doctor` to list them, confirm which one the state directory's lock holds, and end the others by hand"

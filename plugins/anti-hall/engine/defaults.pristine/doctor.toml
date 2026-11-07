@@ -2524,3 +2524,92 @@ value = "stray submodule history: {path} (left unchanged; history belongs at the
 [doctor_msg.witness_live_root]
 doc = "A host hook registration runs from a plugin root other than the deployed one. Placeholders: {live}, {deployed}."
 value = "a live hook runs hooks from {live}, not the deployed plugin {deployed} - Fix: re-register the hooks (codex-install) from the deployed plugin"
+
+# ---- engine process census (SE-A, GH 610): how many engine processes run, and which exceed the one-daemon design ----
+
+[doctor.census_enabled]
+doc = "1: doctor, the process sweep and the statusline count the engine processes by class (serve, job, hook client, legacy wake watcher, stub, stale binary) and print one census line; more than one live `serve` is a P0 report. 0: the census is not taken anywhere. Report only: no process is ever stopped by it."
+value = 1
+
+[doctor.census_classes]
+doc = "Census classes, first match wins; cmd_re is tested against the full command line, anchored at the program. name: the class; stale_check: also compare the running image with the current engine binary (a replaced image counts as stale). serve: the daemon (exactly 1 expected); legacy_watcher: the old per-session wake watchers (warn and count, never stopped); stub: a thin per-session stub (none ships, expected 0); job: a scheduled subprocess job (its parent is the daemon); hook_client: any other engine process (a hook or CLI call, short-lived)."
+value = [
+  { name = "serve", cmd_re = '^(\S*/)?ah-engine\s+serve(\s|$)', stale_check = true },
+  { name = "legacy_watcher", cmd_re = '^(\S*/)?ah-engine\s+(agents|devswarm)\s+wake-watch(\s|$)', stale_check = true },
+  { name = "stub", cmd_re = '^(\S*/)?ah-hook\s+watch(\s|$)', stale_check = false },
+  { name = "job", cmd_re = '^(\S*/)?ah-engine\s+(maintain|backup|jev_sweep|jev\s+arrival|handovers\s+index|agent_tick|gh_poll|refresh|mcp-reaper\s+run|engine-update)(\s|$)', stale_check = true },
+  { name = "hook_client", cmd_re = '^(\S*/)?ah-engine(\s|$)', stale_check = true },
+]
+
+[doctor.census_class_serve]
+doc = "Name of the daemon class in doctor.census_classes."
+value = "serve"
+
+[doctor.census_class_legacy]
+doc = "Name of the legacy per-session wake watcher class in doctor.census_classes."
+value = "legacy_watcher"
+
+[doctor.census_class_stub]
+doc = "Name of the thin per-session stub class in doctor.census_classes."
+value = "stub"
+
+[doctor.census_class_job]
+doc = "Name of the scheduled job class in doctor.census_classes."
+value = "job"
+
+[doctor.census_client_age_mult]
+doc = "A hook or CLI engine process older than client.deadline_ms times this is reported as slow (it should have answered long ago)."
+value = 20
+
+[doctor.census_job_max_age_s]
+doc = "A scheduled job older than this many seconds is reported as slow (the longest job timeout is far below it)."
+value = 3600
+unit = "s"
+
+[doctor.census_max_listed]
+doc = "The most pids one census line, doctor warning, alert document or status field lists (counts stay exact)."
+value = 20
+
+[doctor.census_p0_kind]
+doc = "The stable kind of the multi-instance alert and its log code. Never holds a pid, uid or session id: a repeat of the condition must aggregate into the same alert, not add one."
+value = "engine_multi_instance"
+
+[doctor.census_p0_severity]
+doc = "The severity written into the multi-instance alert document."
+value = "P0"
+
+[doctor.census_current_bin_rel]
+doc = "The current engine binary, relative to the engine state directory: an engine process whose running image differs from the file here is stale."
+value = "bin/ah-engine"
+
+[doctor.census_region_walk_max]
+doc = "macOS: the most memory regions walked to find the file behind a process's executable image (the first file-backed region is the executable, so a handful suffice)."
+value = 64
+
+[doctor.census_line]
+doc = "The one census line (doctor, status, statusline). {serve} live daemons (1 expected), {jobs} scheduled jobs, {clients} hook or CLI calls, {stubs} per-session stubs of {sessions} live sessions, {legacy} legacy wake watchers, {stale} processes on a replaced binary."
+value = "engine: serve={serve} jobs={jobs} clients={clients} stubs={stubs}/{sessions} legacy={legacy} stale={stale}"
+
+[doctor.census_msg_p0]
+doc = "P0: more than one live engine daemon. {n}, {pids}."
+value = "P0 engine_multi_instance: {n} engine daemons run for this state (exactly 1 is the design), pids {pids}. Nothing was stopped; check with `ah-hook doctor`, then end the extra ones by hand"
+
+[doctor.census_msg_no_serve]
+doc = "No live engine daemon was found by the process list (it starts on the next hook call)."
+value = "no engine daemon in the process list; the next hook call starts it"
+
+[doctor.census_msg_legacy]
+doc = "Legacy per-session wake watchers are running. {n}, {pids}."
+value = "{n} legacy per-session wake watchers run (pids {pids}); each ends with its session and none is stopped"
+
+[doctor.census_msg_stale]
+doc = "Engine processes run a replaced binary image. {n}, {pids}."
+value = "{n} engine processes run a replaced binary (pids {pids}); they take the new build when they restart, none is stopped"
+
+[doctor.census_msg_slow]
+doc = "Engine jobs or calls older than their limit. {n}, {pids}."
+value = "{n} engine jobs or calls have run far longer than expected (pids {pids}); `ah-hook doctor` lists them, none is stopped"
+
+[doctor.census_event_detail]
+doc = "The log detail written once when the multi-instance condition starts. {n}, {pids}."
+value = "{n} live daemons, pids {pids}"

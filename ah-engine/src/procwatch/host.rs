@@ -88,6 +88,11 @@ pub trait Host {
     fn renice(&mut self, pid: u32, nice: i32) -> bool;
     /// Wait.
     fn sleep_ms(&mut self, ms: u64);
+    /// The (device, inode) of the executable file a process is running, `None` when the system will not say. The default says
+    /// nothing, so a host without the answer never makes a process look stale.
+    fn exe_ident(&mut self, _pid: u32) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 /// `/proc/<pid>/environ`: NUL-separated `KEY=value` entries (a trailing NUL, empty entries and entries without `=` are skipped).
@@ -234,5 +239,9 @@ impl Host for RealHost {
 
     fn sleep_ms(&mut self, ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+
+    fn exe_ident(&mut self, pid: u32) -> Option<(u64, u64)> {
+        crate::procid::exe_ident(pid)
     }
 }

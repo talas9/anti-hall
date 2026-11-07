@@ -125,7 +125,7 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     let armed = WakeFeed::stamp(&env, &sid);
     // Hold a kernel lock for the whole watcher lifetime: the old check-then-stamp race let two starters both enter pump.
     // The separate stable inode stays locked while the JSON stamp is atomically replaced by each renewal.
-    let Some(_lease) = acquire(&armed) else { return refuse(defaults::text("msg.agent_wake_reason_held")) };
+    let Some(lease) = acquire(&armed) else { return refuse(defaults::text("msg.agent_wake_reason_held")) };
     if held_elsewhere(&env, &armed) {
         return refuse(defaults::text("msg.agent_wake_reason_held"));
     }
@@ -133,8 +133,70 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     let start_ppid = unsafe { libc::getppid() };
     let poll = Duration::from_millis(setting_num("agent_tracker.wake_poll_ms"));
     crate::web::actions::register(&format!("{}-{}", defaults::text("act.watcher_name"), super::sinks::key_of(&sid)), defaults::text("act.watcher_kind"), &[]);
-    pump(&env, &sid, poll, &mut |l| emit(l), &|| parent_gone(start_ppid));
+    // The engine binary this watcher started from: when a deploy or an update replaces it, the watcher hands over to the new one (the
+    // same module and semantics as the DevSwarm watcher), so a long session never pins an old build.
+    let rebin = Rebin::start(crate::health::now_ms());
+    let stop = || parent_gone(start_ppid) || rebin.due_and_changed(crate::health::now_ms());
+    pump(&env, &sid, poll, &mut |l| emit(l), &stop);
+    if rebin.changed.get() && !parent_gone(start_ppid) {
+        return rebin_exec(lease, rebin.path());
+    }
     0
+}
+
+/// The watcher's check that the engine binary it started from was replaced on disk (`agent_tracker.wake_rebin_*`).
+struct Rebin {
+    /// The binary's path and identity at start; `None` when the switch is off or the identity cannot be read (then it never hands over).
+    bin: Option<(std::path::PathBuf, crate::wakew::rebin::Ident)>,
+    every_ms: u64,
+    last_ms: std::cell::Cell<u64>,
+    /// Set once the check saw a replaced binary, so the caller hands over after the loop has flushed.
+    changed: std::cell::Cell<bool>,
+}
+
+impl Rebin {
+    fn start(now_ms: u64) -> Rebin {
+        let bin = (defaults::num("agent_tracker.wake_rebin_enabled") != 0)
+            .then(crate::wakew::rebin::watched_path)
+            .flatten()
+            .and_then(|path| crate::wakew::rebin::ident(&path).map(|i| (path, i)));
+        Rebin { bin, every_ms: setting_num("agent_tracker.wake_rebin_check_ms"), last_ms: std::cell::Cell::new(now_ms), changed: std::cell::Cell::new(false) }
+    }
+
+    fn path(&self) -> &Path {
+        self.bin.as_ref().map_or(Path::new(""), |(p, _)| p)
+    }
+
+    /// True (and remembered) when the check is due at `now_ms` and the binary is a different generation than at start.
+    fn due_and_changed(&self, now_ms: u64) -> bool {
+        let Some((path, start)) = &self.bin else { return false };
+        if now_ms.saturating_sub(self.last_ms.get()) < self.every_ms {
+            return false;
+        }
+        self.last_ms.set(now_ms);
+        let changed = crate::wakew::rebin::changed(path, Some(*start));
+        self.changed.set(changed);
+        changed
+    }
+}
+
+/// Replace this process with the engine binary now at `path`, same arguments, same stdio. The lease is released first (the successor
+/// takes it itself), and the rows the loop held were flushed before the loop returned. When the exec fails a line says so and the
+/// watcher ends: never a silent stale one.
+fn rebin_exec(lease: std::fs::File, path: &Path) -> i32 {
+    use std::os::unix::process::CommandExt;
+    drop(lease);
+    emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
+    crate::metrics::bump_shared("wake_rebin", &[("result", "exec")]);
+    crate::telemetry::emit::flush();
+    let err = std::process::Command::new(path)
+        .args(std::env::args().skip(1))
+        .env(defaults::text("wake_watch.env_rebin"), (crate::health::now_ms() / 1000).to_string())
+        .exec(); // only returns on failure
+    crate::metrics::bump_shared("wake_rebin", &[("result", "exec_failed")]);
+    crate::telemetry::emit::flush();
+    eprint!("{}", defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
+    1
 }
 
 /// The loop of the watcher: renew the stamp, print each new row of the session's feed once, stop when `stop` says so. Rows from before
@@ -235,4 +297,69 @@ fn merged(rows: &[(Value, String, u64)], span_ms: u64) -> String {
 /// Lines in the feed up to `offset` (the cursor file counts rows, like the reminder queue's).
 fn drain_count(feed: &Path, offset: u64) -> u64 {
     std::fs::read(feed).map(|t| t[..(offset as usize).min(t.len())].iter().filter(|b| **b == b'\n').count() as u64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod rebin_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn exe(path: &Path, body: &[u8]) {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A watcher whose binary lives in a HOME-isolated temp directory (never the real HOME or the live engine).
+    fn started(tag: &str, enabled_every: Option<u64>) -> (std::path::PathBuf, Rebin) {
+        crate::defaults::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("wake-rebin-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("ah-engine");
+        exe(&bin, b"one");
+        let mut r = Rebin::start(0);
+        // the unit under test is the check, so it is pointed at the temp binary instead of this test executable
+        r.bin = crate::wakew::rebin::ident(&bin).map(|i| (bin.clone(), i)).filter(|_| enabled_every.is_some());
+        r.every_ms = enabled_every.unwrap_or(1);
+        (bin, r)
+    }
+
+    fn replace(bin: &Path) {
+        let next = bin.with_extension("next");
+        exe(&next, b"two!");
+        std::fs::rename(&next, bin).unwrap();
+    }
+
+    #[test]
+    fn a_stale_watcher_hands_over_and_a_current_one_keeps_running() {
+        let (bin, r) = started("stale", Some(100));
+        assert!(!r.due_and_changed(1_000), "an untouched binary is no change");
+        assert!(!r.changed.get());
+        replace(&bin);
+        assert!(r.due_and_changed(2_000), "a replaced binary is a hand-over");
+        assert!(r.changed.get());
+        assert_eq!(r.path(), bin);
+    }
+
+    #[test]
+    fn the_check_runs_at_its_interval_only() {
+        let (bin, r) = started("interval", Some(5_000));
+        replace(&bin);
+        assert!(!r.due_and_changed(4_999), "not due yet: no stat, no hand-over");
+        assert!(r.due_and_changed(5_000));
+    }
+
+    #[test]
+    fn switched_off_it_never_hands_over() {
+        let (bin, r) = started("off", None);
+        replace(&bin);
+        assert!(!r.due_and_changed(1_000_000));
+        assert!(!r.changed.get());
+    }
+
+    #[test]
+    fn the_shipped_switch_is_on_and_a_zero_turns_it_off() {
+        crate::defaults::init().unwrap();
+        assert_eq!(defaults::num("agent_tracker.wake_rebin_enabled"), 1);
+        assert!(defaults::num("agent_tracker.wake_rebin_check_ms") >= 1);
+    }
 }

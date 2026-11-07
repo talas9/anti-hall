@@ -1117,6 +1117,34 @@ A kill is polite signal, `procwatch.grace_ms`, a fresh re-read of that one pid (
 signal; one pid at a time, never by pattern, at most `procwatch.max_kills_per_run` a sweep. The MCP class reports what the
 SessionEnd MCP reaper (a separate switch) would select, plus more; a test keeps it a superset.
 
+**Engine process census (one daemon).** The design is ONE long-lived engine daemon (`serve`) per state directory; everything else is a
+short-lived job or hook call. Every orphan scan (`procwatch.scan_every_s`) also counts the engine processes by class and
+`doctor`, `status --json` (`census`) and the status line (a chip) print the same line:
+`engine: serve=1 jobs=<n> clients=<n> stubs=<n>/<sessions> legacy=<n> stale=<n>`.
+
+| Class | What it is | Expected | When off |
+|---|---|---|---|
+| `serve` | the daemon of the live state directory | exactly 1 | more than 1 is a **P0** (below); 0 is info (it starts on the next hook call) |
+| `serve_nonlive` | a daemon of another state directory (a test run, a second setup) | 0 | existing warning |
+| `job` | a scheduled subprocess job (its parent is the daemon) | any | warn when older than `doctor.census_job_max_age_s` |
+| `hook_client` | any other engine process (a hook or CLI call) | any, short-lived | warn when older than `client.deadline_ms` x `doctor.census_client_age_mult` |
+| `legacy_watcher` | the old per-session `agents` / `devswarm wake-watch` | 0 over time | warn and count; **never stopped**, each ends with its session |
+| `stub` | a thin per-session stub | 0 (no stub verb ships) | warn; Codex has no wake Monitor, so its sessions are counted as sessions without a stub |
+| `stale_binary` | any engine process whose running image is not the file now at `bin/ah-engine` | 0 | warn; read from the running image (Linux `/proc/<pid>/exe`, macOS the vnode of the executable region), so it holds after the file was replaced |
+
+The classes, patterns, ages and texts are plugin configuration (`doctor.toml`, keys `doctor.census_*`; `procwatch.census_*`,
+`statusline.census_*`); `doctor.census_enabled`, `procwatch.census_enabled` and `statusline.census_enabled` are the off switches
+(1 = on). The census only reports: it never signals a process. More than one live `serve` writes ONE alert document
+(`engine-census-alerts.json`) with the stable kind `engine_multi_instance` (never a pid or session id in the kind), the pids in
+`details` and a bounded occurrences array (`procwatch.census_max_occurrences`), logs once to the event log when it starts, and the
+advisory names it once per `procwatch.census_cooldown_s`. A per-session wake watcher whose binary was replaced hands over to the new
+one (`agent_tracker.wake_rebin_enabled`, check every `agent_tracker.wake_rebin_check_ms`; the same module as the DevSwarm watcher), so
+a long session no longer pins an old build.
+
+**Gate wording: restarts.** A gate on daemon restarts reads `health.restarts.total` (windowed, crash-kind) or the ring's after-crash
+starts. It never reads the top-level `restarts` of `status --json` (that is the lifetime `starts - 1`, benign and large on a long-lived
+install) and never a raw process count.
+
 **Telemetry.** Impact kinds `orphan_candidate`, `orphan_kill`, `resource_warning`, `stuck_agent_warning`, `disk_warning` and the
 counter `procwatch_events` (labels kind and class). The sweep writes `procwatch-report.json` in the state directory (`cost_ms`, process
 count, candidates, kills, recent warnings) which the advisory reads; the sweep's own cost on this Mac is about 50 ms for 990
@@ -1156,7 +1184,7 @@ so setting it in `config.toml`, `settings.json` or the environment takes effect 
 | `backup` | a scrubbed backup (D27) | off (`schedule.backup_ms` = 0) | a subprocess |
 | `metrics_snapshot` | metrics snapshot and rollups (D51) | a minute (`telemetry.snapshot_ms`) | in the daemon |
 | `spool_drain` | applies spooled writes (D24) | a second (`spool.drain_ms`), started only when the spool file is non-empty (`schedule.idle_gate_actions`: an empty spool starts no thread and leaves no record) | in the daemon |
-| `procwatch` | process watch: orphans, resource use, report (see Process watch) | 30 s (`schedule.procwatch_ms`) | in the daemon |
+| `procwatch` | process watch: orphans, resource use, engine census, report (see Process watch) | 30 s (`schedule.procwatch_ms`) | in the daemon |
 | `agent_tick` | one agent-tracker tick (see The agent tracker) | a minute (`schedule.agent_tick_ms`) | a subprocess |
 
 Every finished run records the CPU time of the threads that ran it (`cpu_us`, `cpu_ms` in `schedule list`, and the `schedule_cpu_us` counter (label `job`); a subprocess job's own CPU is not in it), so each job's cost is measurable without a profiler.

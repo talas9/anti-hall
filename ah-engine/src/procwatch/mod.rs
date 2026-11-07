@@ -6,6 +6,7 @@
 //! advisory per event, with cooldowns (and the stuck agents of the current session come from the silent-agent-nudge check). Everything tunable is in `procwatch.toml`, `resource_watch.toml` and
 //! `disk_watch.toml`; nothing here decides a number. Both the orphan sweep and the resource watch use the one process scan.
 
+pub mod census;
 pub mod disk;
 pub mod host;
 pub mod orphan;
@@ -38,6 +39,8 @@ pub struct Sweep {
     growth: Vec<(std::path::PathBuf, u64)>,
     growth_s: u64,
     disk_seen: HashMap<u64, (disk::Level, u64)>,
+    census: Option<census::Census>,
+    census_alert: Value,
 }
 
 /// Where a telemetry record goes: (impact kind, check or class, reason).
@@ -130,6 +133,11 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
         }
     }
 
+    // ---- engine census (shares the orphan scan's cadence) ----
+    if scanned && defaults::num("procwatch.census_enabled") != 0 && defaults::num("doctor.census_enabled") != 0 {
+        census_scan(host, sw, &rows, state_dir);
+    }
+
     // ---- disk watch ----
     let mut disk_json = Value::Null;
     if disk::Floors::enabled(&st) {
@@ -191,6 +199,8 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
         "modes": modes,
         "orphans": {"count": sw.orphans.len(), "listed": listed},
         "kills": sw.kills,
+        "census": sw.census.as_ref().map(census::Census::to_json).unwrap_or(Value::Null),
+        "census_alert": sw.census_alert,
         "resource": warns,
         "disk": disk_json,
     });
@@ -198,6 +208,41 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
     crate::discard::logged("procwatch_report", std::fs::create_dir_all(state_dir));
     crate::discard::logged("procwatch_report", crate::atomic::write(&path, report.to_string()));
     Ok(json!({"procs": rows.len(), "orphans": sw.orphans.len(), "warnings": sw.warns.len(), "cost_ms": cost_ms}).to_string())
+}
+
+/// One census: count the engine processes, remember the result for `CTL status`, write it (and the alert document) for the statusline
+/// and `doctor`. It only reads and reports: nothing is signalled, whatever it finds.
+fn census_scan(host: &mut dyn Host, sw: &mut Sweep, rows: &[host::ProcRow], state_dir: &Path) {
+    let Some(cfg) = census::Cfg::load() else { return };
+    // the sweep runs inside the daemon: the daemon is itself the one `serve` the census counts, so no pid is left out
+    let c = census::classify(host, rows, &cfg, &HashSet::new(), &|state| crate::doctor::runtime::live_state_dir(state));
+    if sw.census_alert.is_null() {
+        sw.census_alert = std::fs::read_to_string(state_dir.join(defaults::text("procwatch.census_alert_file")))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
+    }
+    let was_active = sw.census_alert["active"] == json!(true);
+    sw.census_alert = census::alert_doc(&sw.census_alert, &c);
+    if c.multi_instance() {
+        crate::metrics::bump("engine_multi_instance", &[]);
+        if !was_active {
+            let pids = c.serve.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+            crate::health::log_event(
+                "census",
+                defaults::text("doctor.census_p0_kind"),
+                &defaults::render("doctor.census_event_detail", &[("n", &c.serve.len()), ("pids", &pids)]),
+            );
+        }
+    }
+    census::remember(&c);
+    crate::discard::logged("procwatch_census", std::fs::create_dir_all(state_dir));
+    crate::discard::logged("procwatch_census", crate::atomic::write(state_dir.join(defaults::text("procwatch.census_file")), c.to_json().to_string()));
+    crate::discard::logged(
+        "procwatch_census",
+        crate::atomic::write(state_dir.join(defaults::text("procwatch.census_alert_file")), sw.census_alert.to_string()),
+    );
+    sw.census = Some(c);
 }
 
 static WORKER: Mutex<Option<(RealHost, Sweep)>> = Mutex::new(None);
