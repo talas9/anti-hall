@@ -25,28 +25,28 @@ function segmentMatches(segment, patterns) {
 
 // The command split into simple-command segments (quotes and heredoc bodies skipped).
 function splitSegments(cmd) {
-  var cs = Array.from(cmd), n = cs.length, segs = [], cur = '', inS = false, inD = false, i = 0;
-  var flush = function () { if (cur.trim() !== '') segs.push(cur); cur = ''; };
+  var cs = Array.from(cmd), n = cs.length, segs = [], cur = [], inS = false, inD = false, i = 0;
+  var flush = function () { var t = cur.join(''); if (t.trim() !== '') segs.push(t); cur = []; };
   while (i < n) {
     var c = cs[i], c2 = cs[i + 1];
-    if (inS) { cur += c; if (c === "'") inS = false; i++; continue; }
+    if (inS) { cur.push(c); if (c === "'") inS = false; i++; continue; }
     if (inD) {
-      if (c === '\\' && c2 !== undefined) { cur += c + c2; i += 2; continue; }
-      cur += c;
+      if (c === '\\' && c2 !== undefined) { cur.push(c, c2); i += 2; continue; }
+      cur.push(c);
       if (c === '"') inD = false;
       i++;
       continue;
     }
-    if (c === "'") { inS = true; cur += c; i++; continue; }
-    if (c === '"') { inD = true; cur += c; i++; continue; }
+    if (c === "'") { inS = true; cur.push(c); i++; continue; }
+    if (c === '"') { inD = true; cur.push(c); i++; continue; }
     if (c === '<' && c2 === '<') {
       var h = ah.shell.heredocAt(cmd, i);
-      if (h !== null) { cur += cs.slice(i, i + h.openerLen).join(''); i = h.end; flush(); continue; }
+      if (h !== null) { cur.push(cs.slice(i, i + h.openerLen).join('')); i = h.end; flush(); continue; }
     }
     if ((c === '&' && c2 === '&') || (c === '|' && c2 === '|')) { flush(); i += 2; continue; }
     if ('|;&\n)({}`'.indexOf(c) >= 0) { flush(); i++; continue; }
     if (c === '$' && c2 === '(') { flush(); i += 2; continue; }
-    cur += c;
+    cur.push(c);
     i++;
   }
   flush();
