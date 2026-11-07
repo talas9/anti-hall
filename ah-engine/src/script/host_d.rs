@@ -23,6 +23,7 @@ use crate::checks::agent_scan::{self, Opts};
 use crate::checks::taskstate::{
     Task, Variant,
     backfill::backfill,
+    memo,
     parse::reconstruct,
     scanview,
     tail::{lines_of, read_tail},
@@ -93,7 +94,12 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
             return json!({"unreadable": true}).to_string();
         }
         let wide = if wide.is_finite() && wide > 0.0 { wide as u64 } else { window };
-        let scan = if kept { scanview::scan_tasks(path, window, wide) } else { scanview::scan_tasks_uncached(path, window, wide) };
+        // one reconstruction per state of the file, shared by the Stop checks that ask (taskstate::memo)
+        let scan = if kept {
+            memo::memoized(path, memo::Tag::Scan, window, &wide.to_string(), || scanview::scan_tasks(path, window, wide), |_| true)
+        } else {
+            scanview::scan_tasks_uncached(path, window, wide)
+        };
         return match scan {
             Err(_) => unsure(),
             Ok(None) => json!({"quiet": true}).to_string(),
@@ -127,6 +133,7 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
 }
 
 /// Why a task list could not be rebuilt from a transcript tail.
+#[derive(Clone, Copy)]
 enum Unreadable {
     /// The file cannot be read.
     File,
@@ -138,6 +145,15 @@ enum Unreadable {
 /// window read afresh; a cut tail is completed from before the window. The one read [`tasks_of`] answers from and [`guard_open_tasks`]
 /// reads, so a reader beside task-guard sees the list task-guard sees.
 fn task_facts(path: &str, window: u64, v: Variant, kept: bool) -> Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable> {
+    if !kept {
+        return task_facts_built(path, window, v, false);
+    }
+    // one reconstruction per state of the file and variant, shared by the Stop checks that ask (taskstate::memo)
+    let tag = if v == Variant::State { memo::Tag::State } else { memo::Tag::Guard };
+    memo::memoized(path, tag, window, "", || task_facts_built(path, window, v, true), |r| !matches!(r, Err(Unreadable::File)))
+}
+
+fn task_facts_built(path: &str, window: u64, v: Variant, kept: bool) -> Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable> {
     let kept_facts = if kept { super::tasks_cache::facts(path, window, v) } else { None };
     let (built, truncated) = match kept_facts {
         Some((facts, truncated)) => (facts, truncated),
