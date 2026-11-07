@@ -326,6 +326,7 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "find /private -maxdepth 1 -name x",
         "rg -d 2 foo .",
         "fd -d 3 x .",
+        "fd -d 1 -td x ~", // -td is --type d: the d is a value, the depth is 1
     ];
     let block = [
         "find ~ -iname x",
@@ -349,6 +350,11 @@ fn a_depth_limited_whole_disk_search_is_allowed_and_an_unbounded_one_blocked() {
         "find /private -maxdepth 3 -name x",
         "find / -exec find {} -maxdepth 1 \\;",
         "find / -maxdepth 1 -exec grep -r foo {} +",
+        "rg -e -d 1 ~", // -d is the pattern, 1 and ~ are paths
+        "rg --regexp -d 1 ~",
+        "rg --regexp=-d 1 ~",
+        "rg -e-d 1 ~",
+        "rg -g -d 1 foo ~",           // -d is the glob
         "rg foo ~ -- -d 1",           // nothing after `--` is a flag
         "find / -maxdepth 3 -name x", // a lower limit applies from `/`
         "fd -d 1 x ~ -x grep -r foo",

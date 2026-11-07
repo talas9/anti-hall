@@ -68,10 +68,34 @@ function wsPaths(words, spec) {
 // carries none. The LAST such flag wins, as the tools themselves do. Scanning stops at a spec.depth_stop_flags word (`--`); a
 // spec.depth_void_flags word (-exec, -x) means the command runs more than a bounded walk, so it carries no limit. A word matching spec.depth_like_re that is not parsed above voids the limit. A limit that is not a
 // plain non-negative number is no limit.
+// How word `w` takes a value-taking flag (spec.value_flags / spec.pattern_flags, minus the depth and void flags the depth walk parses itself):
+// 2 = the flag alone (the NEXT word is its value), 1 = the value is attached (`-e-d`, `-td`, `--regexp=-d`), 0 = not such a flag.
+// The same flags wsPaths walks, so a depth-looking word that is some flag's value is never read as a depth flag.
+function wsValueFlag(w, spec) {
+  var depth = (spec.depth_flags || []).concat(spec.depth_void_flags || []), k, c;
+  var vals = (spec.value_flags || []).concat(spec.pattern_flags || []);
+  if (w.charAt(0) !== '-' || w.length < 2) return 0;
+  if (depth.indexOf(w) < 0 && vals.indexOf(w) >= 0) return 2;
+  if (w.charAt(1) === '-') {
+    for (k = 0; k < vals.length; k++) if (vals[k].indexOf('--') === 0 && depth.indexOf(vals[k]) < 0 && w.indexOf(vals[k] + '=') === 0) return 1;
+    return 0;
+  }
+  // a short-flag cluster: scan to the first flag that takes a value; a depth flag reached first is left to the depth walk
+  for (c = 1; c < w.length; c++) {
+    var f = '-' + w.charAt(c);
+    if (depth.indexOf(f) >= 0) return 0;
+    if (vals.indexOf(f) >= 0) return c + 1 < w.length ? 1 : 2;
+  }
+  return 0;
+}
+
 function wsDepth(words, spec) {
   var flags = spec.depth_flags || [], stop = spec.depth_stop_flags || [], voids = spec.depth_void_flags || [], last = null, i, j;
   for (i = 1; i < words.length; i++) {
     if (stop.indexOf(words[i]) >= 0) break;
+    var vf = wsValueFlag(words[i], spec);
+    if (vf === 2) { i++; continue; }
+    if (vf === 1) continue;
     if (voids.indexOf(words[i]) >= 0) return null;
     var like = spec.depth_like_re, matched = false;
     for (j = 0; j < flags.length; j++) {
