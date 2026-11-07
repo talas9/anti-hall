@@ -183,34 +183,7 @@ impl Doc<'_> {
 
     // ---- Engine (the daemon's files; no process is contacted or signalled) ---------------------------------------------------------
     fn socket_path(&self) -> PathBuf {
-        let plain = self.eng_dir.join(self.s.text("paths.socket_file"));
-        let max = self.s.num("paths.socket_max_len") as usize;
-        if plain.as_os_str().len() <= max {
-            return plain;
-        }
-        // inside a private per-user directory named by the FNV-1a hash of the state directory
-        // FNV-1a 64: the hash the engine names the private socket by (ah-engine/src/health.rs); both must agree
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in self.eng_dir.as_os_str().as_encoded_bytes() {
-            h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
-        }
-        let name = format!(
-            "{:012x}{}",
-            h & 0xffff_ffff_ffff,
-            self.s.text("paths.short_socket_ext")
-        );
-        let uid = crate::util::uid();
-        let tmp = env_nonempty(&self.s.text("env.tmpdir"))
-            .unwrap_or_else(|| self.s.text("paths.fallback_tmp"));
-        let dir = format!("{}{uid}", self.s.text("paths.private_dir_prefix"));
-        let p = Path::new(&tmp).join(&dir).join(&name);
-        if p.as_os_str().len() <= max {
-            p
-        } else {
-            Path::new(&self.s.text("paths.fallback_tmp"))
-                .join(dir)
-                .join(name)
-        }
+        crate::util::engine_socket(self.s, &self.eng_dir)
     }
 
     fn stale_pid(&mut self, file: &Path) {

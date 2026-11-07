@@ -85,9 +85,65 @@ pub fn fill(template: &str, subs: &[(&str, &str)]) -> String {
     s
 }
 
+/// The socket path of the daemon whose state directory is `dir`: the plain path while it fits `paths.socket_max_len`, else the
+/// private per-user path named by the FNV-1a hash of the state directory, exactly as the engine names it (`paths::socket_in`).
+pub fn engine_socket(s: &crate::cfg::Settings, dir: &Path) -> std::path::PathBuf {
+    let plain = dir.join(s.text("paths.socket_file"));
+    let max = s.num("paths.socket_max_len") as usize;
+    if plain.as_os_str().len() <= max {
+        return plain;
+    }
+    // FNV-1a 64: the hash the engine names the private socket by (ah-engine/src/health.rs); both must agree
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in dir.as_os_str().as_encoded_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let name = format!(
+        "{:012x}{}",
+        h & 0xffff_ffff_ffff,
+        s.text("paths.short_socket_ext")
+    );
+    let tmp = env_nonempty(&s.text("env.tmpdir")).unwrap_or_else(|| s.text("paths.fallback_tmp"));
+    let private = format!("{}{}", s.text("paths.private_dir_prefix"), uid());
+    let p = Path::new(&tmp).join(&private).join(&name);
+    if p.as_os_str().len() <= max {
+        p
+    } else {
+        Path::new(&s.text("paths.fallback_tmp"))
+            .join(private)
+            .join(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state directory whose plain socket path is over `paths.socket_max_len` gets the engine's private hashed path (the cold-start
+    /// wait watched nothing for such a directory, so the first cold guard call passed unchecked); a short one keeps the plain path.
+    #[test]
+    fn engine_socket_follows_the_engines_long_path_rule() {
+        let s = crate::cfg::Settings::load(Path::new(""));
+        let short = Path::new("/tmp/f8/.anti-hall/ah-engine");
+        assert_eq!(
+            engine_socket(&s, short),
+            short.join(s.text("paths.socket_file"))
+        );
+        let long = Path::new(
+            "/Users/talas9/.anti-hall/work/scratch/deploy-rehearsal-b6668649-133756/home/.anti-hall/ah-engine",
+        );
+        let p = engine_socket(&s, long);
+        assert!(
+            p.as_os_str().len() as u64 <= s.num("paths.socket_max_len"),
+            "{p:?}"
+        );
+        assert!(
+            p.to_string_lossy()
+                .ends_with(&s.text("paths.short_socket_ext")),
+            "{p:?}"
+        );
+        assert_ne!(p, long.join(s.text("paths.socket_file")));
+    }
 
     #[test]
     fn scans_work_on_bytes() {

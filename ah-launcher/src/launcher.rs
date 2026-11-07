@@ -393,7 +393,10 @@ impl L {
         if self.state_dir.as_os_str().is_empty() {
             return None;
         }
-        let sock = self.state_dir.join(sock_name);
+        // a state directory whose plain socket path is too long for sun_path has its socket at the engine's private hashed path
+        // (the same one the engine uses): the cold wait must watch THAT path, not skip the wait (a long HOME let the first
+        // cold guard call through unchecked at the launcher's 560 ms budget)
+        let sock = crate::util::engine_socket(&self.s, &self.state_dir);
         if sock.as_os_str().len() as u64 > sock_max {
             return None;
         }
