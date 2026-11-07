@@ -2629,3 +2629,147 @@ fn sigterm_drains_a_daemon_started_through_the_thin_client() {
     );
     assert!(e.health_log().contains("\trestart\tmanual_kill\t"), "{}", e.health_log());
 }
+
+// ---- SE-A2 fix round 1: breaker exclusions, forced exit, supervisor path, spared kills --------------------------------------
+
+/// Append event lines to the instance's health log (the file the breaker counts from).
+fn append_log(e: &Env, lines: &str) {
+    let log = e.eng().join("ah-engine.log");
+    let mut text = std::fs::read_to_string(&log).unwrap_or_default();
+    text.push_str(lines);
+    std::fs::write(&log, text).unwrap();
+}
+
+/// SE-A2 (f): deliberate ends (a stop, the idle exit, a version takeover) never count toward the restart loop, so a burst of them on a
+/// new binary neither halts respawning nor reaches the binary rollback; the same count of watchdog restarts does.
+#[test]
+fn deliberate_restarts_never_trip_the_restart_loop_or_the_rollback() {
+    for (reason, trips) in [("manual_kill", false), ("idle", false), ("takeover", false), ("watchdog", true)] {
+        let e = Env::new(&format!("loop-{reason}"), &[("AH_ENGINE_RESTART_LOOP_N", "3"), ("AH_ENGINE_CRASH_N", "50")]);
+        e.warm();
+        let old = e.pid().unwrap();
+        signal(old, libc::SIGKILL);
+        assert!(wait_for(|| !alive(old)));
+        let now = ah_engine::health::now_ms();
+        let lines: String = (0..12).map(|i| format!("{}\trestart\t{reason}\trestart ({reason}): test\n", now - 20 + i)).collect();
+        append_log(&e, &lines);
+        let _ = e.hook(DENY_IN, false); // a client asks for a daemon: the loop rule judges before it spawns
+        let halted = e.eng().join("crashloop.until").exists();
+        assert_eq!(halted, trips, "12 `{reason}` restarts: halted={halted}{}", e.diag());
+        if !trips {
+            assert!(!e.eng().join("rollback_request").exists(), "a deliberate burst must not request a rollback{}", e.diag());
+            assert!(!e.health_log().contains("\trollback_request\t"), "{}", e.health_log());
+        }
+    }
+}
+
+/// SE-A2 (c): a daemon whose accept loop stalls drains itself on the watchdog, forced: the log names the stall, the forced exit and the
+/// attributed restart (reason watchdog), never a crash, and the next client starts a new daemon.
+#[test]
+fn a_stalled_loop_ends_in_a_forced_exit_attributed_to_the_watchdog() {
+    let e = Env::new("stall-forced", &[("AH_ENGINE_STALL_MS", "500"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
+    e.warm();
+    let old = e.pid().unwrap();
+    let _ = e.ctl("stall 5000");
+    assert!(wait_for(|| !alive(old)), "the watchdog must end the stalled daemon{}", e.diag());
+    let log = e.health_log();
+    assert!(log.contains("\twatchdog\tstall\t"), "the stall is logged: {log}");
+    assert!(log.contains("\trestart\twatchdog\t"), "the end is an attributed restart: {log}");
+    assert!(log.contains("\texit\tforced\t"), "a stall is a forced exit, not a clean drain: {log}");
+    assert!(!log.contains("\tcrash\t"), "an attributed forced exit is not a crash: {log}");
+    e.warm();
+    assert_ne!(e.pid().unwrap(), old);
+}
+
+/// A second `serve` finds the hook-started daemon wedged (SIGSTOP) holding the lock: the first sight only raises the suspicion; once the
+/// heartbeat has stayed stale for the confirm window, a later start ends it (by = supervisor) and takes over as the daemon.
+#[test]
+fn a_supervisor_side_start_ends_a_confirmed_hung_hook_daemon() {
+    let e = Env::new("sup-kill", &[]);
+    e.warm();
+    let old = e.pid().unwrap();
+    signal(old, libc::SIGSTOP);
+    let mut serves = Serves(Vec::new());
+    let mut fresh = None;
+    for _ in 0..30 {
+        serves.0.push(spawn_serve(&e));
+        std::thread::sleep(Duration::from_millis(600));
+        fresh = e.pid().filter(|p| *p != old);
+        if fresh.is_some() {
+            break;
+        }
+    }
+    let old_alive = alive(old);
+    signal(old, libc::SIGKILL);
+    assert!(fresh.is_some(), "no supervisor-side start took over from the hung daemon{}", e.diag());
+    assert!(!old_alive, "the hung daemon must have been ended");
+    assert!(wait_for(|| e.health_log().contains("ended by supervisor (watchdog)")), "the end is attributed to the supervisor: {}", e.health_log());
+    let log = e.health_log();
+    assert!(log.contains("\tclient_hung_kill\t") && log.contains("\trestart\twatchdog\t") && !log.contains("\tcrash\t"), "{log}");
+}
+
+/// A daemon that is slow but alive keeps its heartbeat fresh: a supervisor-side start finds the lock held and leaves it alone.
+#[test]
+fn a_fresh_heartbeat_is_never_ended_by_a_supervisor_side_start() {
+    let e = Env::new("sup-fresh", &[]);
+    e.warm();
+    let old = e.pid().unwrap();
+    signal(old, libc::SIGSTOP); // answers nothing, but the heartbeat below keeps beating
+    let hb = e.eng().join("daemon.heartbeat");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let beat = {
+        let (hb, stop) = (hb.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Ok(f) = std::fs::File::options().write(true).open(&hb) {
+                    ah_engine::discard::harmless(f.set_modified(std::time::SystemTime::now()));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+    let mut serves = Serves((0..4).map(|_| spawn_serve(&e)).collect());
+    assert!(all_exit_within(&mut serves.0, 20), "the extra starts must give up{}", e.diag());
+    std::thread::sleep(Duration::from_millis(2500)); // longer than the stale and confirm windows together
+    serves.0.push(spawn_serve(&e));
+    assert!(all_exit_within(&mut serves.0, 20), "the late start must give up too{}", e.diag());
+    let survived = alive(old);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    ah_engine::discard::harmless(beat.join());
+    signal(old, libc::SIGKILL);
+    assert!(survived, "a daemon with a fresh heartbeat must not be ended{}", e.diag());
+    assert!(!e.health_log().contains("\tclient_hung_kill\t"), "{}", e.health_log());
+    assert!(!e.eng().join("restart.intent").exists(), "a spared target leaves no restart intent");
+}
+
+/// A heartbeat that names a pid with a different start time (the pid was recycled) never gets a signal, from the client path or the
+/// supervisor path, and no restart intent is left behind.
+#[test]
+fn a_heartbeat_naming_a_recycled_pid_is_spared() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("hbreuse", &[]);
+    e.warm();
+    let old = e.pid().unwrap();
+    signal(old, libc::SIGSTOP);
+    let hb = e.eng().join("daemon.heartbeat");
+    let text = std::fs::read_to_string(&hb).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let start: u64 = lines[1].parse().unwrap();
+    lines[1] = (start + 7).to_string(); // a different start time: another process under the same pid
+    std::fs::write(&hb, lines.join("\n") + "\n").unwrap();
+    std::fs::File::options().write(true).open(&hb).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+    let mut serves = Serves(Vec::new());
+    for i in 0..6 {
+        let _ = e.wrapper_hook(DENY_IN); // client path
+        serves.0.push(spawn_serve(&e)); // supervisor path
+        std::thread::sleep(Duration::from_millis(400));
+        if i == 3 {
+            e.wait_down_marker_expired();
+        }
+    }
+    let survived = alive(old);
+    signal(old, libc::SIGKILL);
+    assert!(survived, "a process the heartbeat does not name must not be signalled{}", e.diag());
+    assert!(!e.health_log().contains("\tclient_hung_kill\t"), "{}", e.health_log());
+    assert!(!e.eng().join("restart.intent").exists(), "a spared target leaves no restart intent");
+}

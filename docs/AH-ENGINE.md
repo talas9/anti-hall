@@ -1592,11 +1592,11 @@ the *why the old process ended*, while `start_reason` says who started the next 
 target is spared; the next start's run-marker reaper turns a matching intent, written after that daemon started and younger than
 `health.restart_intent_ttl_ms`, into a `restart` instead of `crash`). A raw `kill -9` from outside writes no intent and cannot be told
 from an out-of-memory kill, so it still counts as a crash. `restart` events are not in `health.crashy_kinds`; a loop of them is
-stopped by `client.restart_loop_n` within `client.restart_loop_window_s` (the same `crashloop_until` halt). A crash or panic
-event is never reclassified. Counters: `restart{reason}`, `watchdog_trips{kind}`, `watchdog_kill{by,result}`, `serve_refused{reason}`,
+stopped by `client.restart_loop_n` within `client.restart_loop_window_s` (the same `crashloop_until` halt, and the same binary rollback as a crash loop). Only the reasons in `client.restart_loop_reasons` (`watchdog`, `rss_cap`, `recycle`) count toward that loop: a deliberate end (`manual_kill`, `idle`, `takeover`) never halts respawning and never reaches the rollback. SIGHUP is not a stop: it reloads the rules. A `serve` that loses the lock race ends at once on SIGTERM/SIGINT instead of waiting out `daemon.lock_wait_ms`. A crash or panic
+event is never reclassified. Counters: `restart{reason}`, `watchdog_trips{kind}` (`stall`, `start_stall`, `stuck`), `watchdog_kill{by,result}` (`by` is `client` or `supervisor`), `serve_refused{reason}`,
 `sigterm_drains`. A supervisor-side start (the service unit's `serve`) that finds a hook-started fallback daemon silent and hung
 (heartbeat stale for `client.heartbeat_confirm_ms`) ends it by the same verified-pid rules and takes the lock
-(`watchdog.external_enabled`); a daemon the unit itself supervises is judged by the client path only.
+(`watchdog.external_enabled`); a daemon the unit itself supervises (`watchdog.supervised_triggers`) is judged by the client path only.
 
 ## Scripted check logic and the host API (D88)
 

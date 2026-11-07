@@ -931,7 +931,7 @@ pub(crate) fn supervisor_end_hung(cfg: &ClientConfig) -> bool {
     if defaults::num("watchdog.external_enabled") == 0 || defaults::millis("client.heartbeat_stale_ms").is_zero() {
         return false;
     }
-    let supervised = [health::starts::reason("launchd"), health::starts::reason("systemd")];
+    let supervised: Vec<&str> = defaults::list("watchdog.supervised_triggers").into_iter().map(health::starts::reason).collect();
     if health::starts::last_trigger().is_none_or(|t| supervised.contains(&t.as_str())) {
         return false; // a supervised daemon is judged by the client path only
     }

@@ -283,6 +283,17 @@ fn count_recent_after_trip(kinds: &[&str], window: Duration) -> usize {
     all.iter().filter(|e| e.ts >= floor && kinds.contains(&e.kind.as_str())).count()
 }
 
+/// Like [`count_recent_after_trip`] for attributed restarts: only those whose reason is in `client.restart_loop_reasons` count. A
+/// deliberate end (a stop, an idle exit, a version takeover) is the operator or the install doing its job, never a sign the binary
+/// is broken, so a burst of them neither halts respawning nor reaches the rollback.
+fn count_loop_restarts(window: Duration) -> usize {
+    let all = events();
+    let judged = all.iter().filter(|e| defaults::list("health.judged_kinds").contains(&e.kind.as_str())).map(|e| e.ts).max().unwrap_or(0);
+    let floor = now_ms().saturating_sub(window.as_millis() as u64).max(judged.saturating_add(1));
+    let counted = defaults::list("client.restart_loop_reasons");
+    all.iter().filter(|e| e.ts >= floor && e.kind == defaults::text("health.restart_kind") && counted.contains(&e.code.as_str())).count()
+}
+
 // ---- classification ----------------------------------------------------------------------------
 
 /// Who can fix a failure.
@@ -735,7 +746,7 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
     // attributed restarts do not count as crashes; a loop of them is stopped by its own, higher threshold
     let loop_n = defaults::num("client.restart_loop_n") as usize;
     let loop_window = defaults::secs("client.restart_loop_window_s");
-    let restarts = if loop_n > 0 { count_recent_after_trip(&[defaults::text("health.restart_kind")], loop_window) } else { 0 };
+    let restarts = if loop_n > 0 { count_loop_restarts(loop_window) } else { 0 };
     let restart_loop = loop_n > 0 && restarts >= loop_n;
     if n < cfg.crash_n && starts < cfg.spawn_n && !restart_loop {
         return false;

@@ -2087,6 +2087,8 @@ struct LockHolder {
     pid: String,
     live_engine: bool,
     answers: bool,
+    /// SIGTERM/SIGINT arrived while this start waited for the lock: it gives up at once, as a stop request.
+    interrupted: bool,
 }
 
 /// Take the singleton lock. Waits briefly for an outgoing (version-handoff) daemon to release it, but
@@ -2099,8 +2101,12 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Result<std::fs::File, L
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             return Ok(Ok(f));
         }
-        let holder = lock_holder(lock_path, sock);
+        let mut holder = lock_holder(lock_path, sock);
         if holder.answers {
+            return Ok(Err(holder));
+        }
+        if TERM.load(SeqCst) || INT.load(SeqCst) {
+            holder.interrupted = true; // a start that lost the lock has nothing to drain: it ends now instead of waiting out lock_wait_ms
             return Ok(Err(holder));
         }
         if start.elapsed() > defaults::millis("daemon.lock_wait_ms") {
@@ -2120,7 +2126,7 @@ fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Result<std::fs::File, L
 fn lock_holder(lock_path: &Path, sock: &Path) -> LockHolder {
     let pid = std::fs::read_to_string(lock_path).unwrap_or_default().trim().to_string();
     let live_engine = pid.parse::<u32>().is_ok_and(health::pid_is_engine);
-    LockHolder { pid, live_engine, answers: crate::client::ping(sock).is_some() }
+    LockHolder { pid, live_engine, answers: crate::client::ping(sock).is_some(), interrupted: false }
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -2248,6 +2254,7 @@ pub fn serve(start_reason: &str) {
     };
     let lock = match acquire_lock(&lock_path, &sock) {
         Ok(Ok(l)) => l,
+        Ok(Err(holder)) if holder.interrupted => return,
         Ok(Err(holder)) => {
             refused(&holder);
             // a start by a service unit that finds a hook's fallback daemon silent and hung ends it (verified pid, confirmed stale
@@ -2736,6 +2743,27 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SE-A2 (L): a start that lost the lock race and is waiting for the holder gives up on a pending SIGTERM/SIGINT, flagged as
+    /// interrupted (the caller then logs no refusal and tries no takeover); a wait that ran out instead would not carry the flag.
+    #[test]
+    fn a_start_waiting_for_the_lock_gives_up_on_a_stop_signal() {
+        let dir = std::env::temp_dir().join(format!("ah-lockwait-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (lock_path, sock) = (dir.join("e.sock.lock"), dir.join("e.sock"));
+        let holder = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&lock_path).unwrap();
+        // SAFETY: flock on a descriptor this test owns; the second open description below conflicts with it, as another process would.
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        for (flag, name) in [(&TERM, "SIGTERM"), (&INT, "SIGINT")] {
+            flag.store(true, SeqCst);
+            let got = acquire_lock(&lock_path, &sock).unwrap();
+            flag.store(false, SeqCst);
+            let Err(h) = got else { panic!("the lock is held, so the start cannot have taken it") };
+            assert!(h.interrupted, "{name} must end the wait");
+        }
+        drop(holder);
+        std::fs::remove_dir_all(&dir).unwrap(); // this test's own scratch dir
+    }
 
     fn hook(code: i32, out: &str, err: &str) -> crate::dispatch::combine::HookResult {
         crate::dispatch::combine::HookResult { id: "g".into(), code: Some(code), out: out.into(), err: err.into() }

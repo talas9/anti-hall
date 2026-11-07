@@ -1334,7 +1334,7 @@ pub fn unblock_signals() {
 
 /// HUP/INT/TERM to the launcher (the host gave up on the hook): take the child's whole group down, remove the run dir, and
 /// exit 128+signal as the shell wrapper's traps do. The signals are blocked in every thread and taken by one `sigwait` thread;
-/// std's spawn resets the mask in the child, so the engine still gets them.
+/// std's spawn does NOT reset the mask (probed on macOS: plain spawn, pre_exec and process_group all pass it on), so every child must be unblocked before it runs: `run_child` and the exec paths do it.
 pub fn install_signal_thread() {
     let set = hook_signals();
     // SAFETY: pthread_sigmask on the calling (main) thread before the thread below exists.
