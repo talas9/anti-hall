@@ -276,12 +276,19 @@ doc = "Rule 1 advice when the claim row names a check: says what would satisfy i
 value = "show a check that counts ({check}), or say it was not verified."
 
 [claim_evidence.log_read_res]
-doc = "Commands (Rust syntax) that read a log or output file: a read verb (cat, grep, egrep, rg, tail, head, sed -n) followed by an argument. One run this turn, with the claimed figure in the transcript's tool output, backs a claim (claim_evidence.log_read_counts)."
+doc = "Commands (Rust syntax, matched case-sensitively so git's HEAD is not head) that read a log or output file: a read verb (cat, grep, egrep, rg, tail, head, sed -n) followed by an argument. One run this turn, with the claimed figure in the transcript's tool output, backs a claim (claim_evidence.log_read_counts)."
 value = ['\b(?:cat|grep|egrep|rg|tail|head|sed\s+-n)\s+[^|;&\n]*\S']
 
 [claim_evidence.figure_re]
-doc = "A figure inside a claim (Rust syntax): a number, thousands commas allowed. Every figure of the held claim's words must appear in the tool output for a log read to back it (claim_evidence.log_read_counts); a claim with no figure is not backed by a read."
+doc = "A figure inside a claim (Rust syntax): a number, thousands commas allowed. Every figure of the held claim's words must appear as a count in the tool output (claim_evidence.output_figure_res) for a log read to back it (claim_evidence.log_read_counts); a claim with no figure is not backed by a read."
 value = '\d[\d,]*'
+
+[claim_evidence.output_figure_res]
+doc = "Where a figure in tool output counts as a count (Rust syntax, case-insensitive): a whole number next to a pass / fail / test / check word, in either order. A line number, version, hash digit or size is not matched. Each match is read for its number with claim_evidence.figure_re. The claimed figure must be spelled by one of these in the output of a log read for the read to back the claim (claim_evidence.log_read_counts)."
+value = [
+  '\b\d[\d,]*\s+(?:passed|failed|tests?|checks?)\b',
+  '\b(?:passed|failed)[:=]?\s*\d[\d,]*\b',
+]
 
 # ---- rule 2: pushed is not done -----------------------------------------------------------------------------
 

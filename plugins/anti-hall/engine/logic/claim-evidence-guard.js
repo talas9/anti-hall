@@ -15,9 +15,9 @@
 function ceCollapse(s) { return s.normalize('NFC').replace(/\s+/g, ' ').trim(); }
 
 // The first hit [start, end] of any pattern of `list` in `t`, else null.
-function ceAny(list, t) {
+function ceAny(list, t, flags) {
   for (var i = 0; i < list.length; i++) {
-    var r = ah.re.find(list[i], 'i', t);
+    var r = ah.re.find(list[i], flags === undefined ? 'i' : flags, t);
     if (r) return r;
   }
   return null;
@@ -233,18 +233,24 @@ function ceTurnCalls(tp, n) {
 }
 
 // GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn (claim_evidence.log_read_res) and every
-// figure of the claim is a whole number spelled in the output of such reads (1 is not found inside 142; the figure in the prompt, in a
-// command or in an earlier turn does not count). A claim with no figure is never backed by a read alone.
+// figure of the claim is a whole number the output of such reads spells next to a pass / fail / test / check word
+// (claim_evidence.output_figure_res: a line number, a version, a hash digit or a size is no count; 1 is not found inside 142; the figure in
+// the prompt, in a command or in an earlier turn does not count). The read verbs are matched case-sensitively (git's HEAD is not head). A claim with no figure is never backed by a read alone.
 function ceLogReadBacks(claim, tp, tools) {
   if (!ah.settings.bool('claim_evidence.log_read_counts')) return false;
   var re = ah.cfg('claim_evidence.figure_re'), figs = ah.re.findAll(re, 'i', claim.quote);
   if (!figs.length) return false;
-  var calls = ceTurnCalls(tp, tools), reads = ah.cfg('claim_evidence.log_read_res'), have = {};
+  var calls = ceTurnCalls(tp, tools), reads = ah.cfg('claim_evidence.log_read_res'), outRes = ah.cfg('claim_evidence.output_figure_res'), have = {};
   if (calls === null) return false;
   for (var i = 0; i < calls.length; i++) {
-    if (calls[i][0] === '' || ceAny(reads, calls[i][0]) === null) continue;
-    var nums = ah.re.findAll(re, 'i', calls[i][1]);
-    for (var k = 0; k < nums.length; k++) have[Number(calls[i][1].slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;
+    if (calls[i][0] === '' || ceAny(reads, calls[i][0], '') === null) continue;
+    for (var j = 0; j < outRes.length; j++) {
+      var spans = ah.re.findAll(outRes[j], 'i', calls[i][1]);
+      for (var m = 0; m < spans.length; m++) {
+        var piece = calls[i][1].slice(spans[m][0], spans[m][1]), nums = ah.re.findAll(re, 'i', piece);
+        for (var k = 0; k < nums.length; k++) have[Number(piece.slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;
+      }
+    }
   }
   for (var f = 0; f < figs.length; f++) {
     var want = Number(claim.quote.slice(figs[f][0], figs[f][1]).replace(/,/g, ''));

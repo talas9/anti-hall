@@ -1458,7 +1458,7 @@ fn cd_to_clean_absolute_target_from_credited_session_repo_is_allowed() {
 /// literal and stays narrowed, see a_quoted_literal_directory_or_cd_dash_p_keeps_the_push_narrowed; a quote that closes before the path
 /// ends, as in `"dir"/`, is still not proven.)
 #[test]
-fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
+fn bare_relative_cd_quoted_tilde_cd_dash_p_dotdot_and_quoted_c_path_take_the_wide_scan() {
     let e = Env::scoped("unproven");
     let work = clean_main_credited_branch(&e);
     std::fs::create_dir_all(work.join("sub")).unwrap();
@@ -1468,6 +1468,20 @@ fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
     // a bare relative cd name (CDPATH can redirect it) is not a literal target: refused with the literal-path text
     let (_, err, code) = e.hook_in(&format!("cd sub && git {P}"), w);
     assert!(code == 2 && err.contains("write the repository path literally"), "{code}: {err}");
+    // a `~` inside quotes is not expanded by the shell, and `cd -P` with a `..` resolves it physically (symlinks): neither is proven,
+    // so the push reads the whole repository and finds the credited branch
+    for cmd in [
+        format!("cd \"~/x\" && git {P}"),
+        format!("cd '~/x' && git {P}"),
+        format!("cd -P {w}/sub/.. && git {P}"),
+        format!("cd -P ../x && git {P}"),
+        format!("cd -LP ../x && git {P}"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
     for cmd in [format!("git -C '{w}'/ {P}"), format!("git -C \"{w}\"/ {P} origin main")] {
         let (out, err, code) = e.hook_in(&cmd, w);
         if code != 2 || !err.contains("AI credit") {

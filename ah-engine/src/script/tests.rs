@@ -3556,7 +3556,7 @@ mod claim_evidence_guard {
         let ok = after("tail -20 /tmp/test.log", "test result: ok. 142 passed; 0 failed", reply);
         assert_eq!(stop_unlocked("ce-log-ok", &ok, reply, &[], json!({})).0, ALLOW, "a log read showing the figure backs the claim");
         assert_eq!(count("claim_evidence_log_read_ok", &[("claim", "tests pass")]), 1, "the pass is counted");
-        let comma = after("grep -c ok /tmp/t.log", "1234", "1,234 tests passed.");
+        let comma = after("grep -c ok /tmp/t.log", "1,234 passed", "1,234 tests passed.");
         assert_eq!(stop_unlocked("ce-log-comma", &comma, "1,234 tests passed.", &[], json!({})).0, ALLOW, "thousands commas are read as the number");
         let lacks = after("tail /tmp/test.log", "test result: ok. 12 passed", reply);
         assert!(blocked(&stop_unlocked("ce-log-lacks", &lacks, reply, &[], json!({})).0).is_some(), "a log without the figure does not back it");
@@ -3596,6 +3596,20 @@ mod claim_evidence_guard {
             reason.lines().count() <= 2 && reason.contains("a check that counts (") && reason.contains("a log read showing it") && !reason.contains("details:"),
             "{reason}"
         );
+        // a figure backs a claim only as a count next to a pass / fail / test / check word; a hash digit, a line number or a size is no count,
+        // and the read verb is case-sensitive (git's HEAD is not head) (GH #376)
+        let real = after("cargo nextest run 2>&1 | tail -20", "Summary [ 3.1s] 57 tests run: 57 passed, 0 skipped", "57 passed.");
+        assert_eq!(stop_unlocked("ce-fig-real", &real, "57 passed.", &[], json!({})).0, ALLOW, "a real test summary backs 57 passed");
+        let rev = after("tail /tmp/t.log", "result: passed: 57", "57 tests passed.");
+        assert_eq!(stop_unlocked("ce-fig-rev", &rev, "57 tests passed.", &[], json!({})).0, ALLOW, "passed: 57 is a count too");
+        let hash = after("git log HEAD --oneline -5", "a1f57c2 fix the thing", "57 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-fig-hash", &hash, "57 tests passed.", &[], json!({})).0).is_some(), "a hash digit and git's HEAD back nothing");
+        let pr = after("gh pr view 638 | head -80", "title: x\nchecks: 3\nlines 80", "3 checks passed.");
+        assert!(blocked(&stop_unlocked("ce-fig-pr", &pr, "3 checks passed.", &[], json!({})).0).is_some(), "a piped head of a PR view backs no count");
+        let spill = after("tail /tmp/t.log", "Output too large (34KB). Full output saved to /tmp/x", "34 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-fig-spill", &spill, "34 tests passed.", &[], json!({})).0).is_some(), "a size is no count");
+        let upper = after("git log HEAD --oneline", "57 tests passed", "57 tests passed.");
+        assert!(blocked(&stop_unlocked("ce-fig-upper", &upper, "57 tests passed.", &[], json!({})).0).is_some(), "HEAD is not the read verb head");
         // negated and future-tense claims stay unheld even with a tool call this turn
         for r in ["Nothing is merged yet.", "Once PR #405 and #406 are merged the release can start."] {
             let lines = after("ls", "x", r);
