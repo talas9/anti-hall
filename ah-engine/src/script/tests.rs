@@ -3545,13 +3545,10 @@ mod claim_evidence_guard {
             crate::metrics::drain_pending(&mut m);
             m.counter(name, labels)
         };
+        // the result names the call it answers (the tool_use id `assistant` gives its first call)
+        let answer = |out: &str| json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um10", "content": out}]}});
         let after = |cmd: &str, out: &str, reply: &str| {
-            [
-                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
-                assistant("m1", "", &[cmd]),
-                result(out),
-                assistant("m2", reply, &[]),
-            ]
+            [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", "", &[cmd]), answer(out), assistant("m2", reply, &[])]
         };
         crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
         let reply = "142 tests passed.";
@@ -3568,12 +3565,33 @@ mod claim_evidence_guard {
         assert!(blocked(&stop_unlocked("ce-log-bare", &bare, "All tests pass.", &[], json!({})).0).is_some(), "a claim with no figure is not backed by a read");
         let listing = after("ls /tmp", "142", reply);
         assert!(blocked(&stop_unlocked("ce-log-ls", &listing, reply, &[], json!({})).0).is_some(), "a listing is not a read of a log");
+        // the figure must be in the OUTPUT of a read of this turn: not in the command, the prompt, an earlier turn or the agent's own words
+        let in_cmd = after("tail -142 /tmp/test.log", "test result: ok. 12 passed", reply);
+        assert!(blocked(&stop_unlocked("ce-log-incmd", &in_cmd, reply, &[], json!({})).0).is_some(), "a figure in the command is no evidence");
+        let in_prompt = [
+            json!({"type": "user", "message": {"role": "user", "content": "make 142 tests pass"}}),
+            assistant("m1", "", &["tail /tmp/test.log"]),
+            answer("test result: ok. 12 passed"),
+            assistant("m2", reply, &[]),
+        ];
+        assert!(blocked(&stop_unlocked("ce-log-inprompt", &in_prompt, reply, &[], json!({})).0).is_some(), "a figure in the prompt is no evidence");
+        let earlier = [
+            json!({"type": "user", "message": {"role": "user", "content": "first"}}),
+            assistant("m0", "", &["cat /tmp/old.log"]),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um00", "content": "142 passed"}]}}),
+            assistant("m0b", "done", &[]),
+            json!({"type": "user", "message": {"role": "user", "content": "again"}}),
+            assistant("m1", "", &["tail /tmp/test.log"]),
+            answer("test result: ok. 12 passed"),
+            assistant("m2", reply, &[]),
+        ];
+        assert!(blocked(&stop_unlocked("ce-log-earlier", &earlier, reply, &[], json!({})).0).is_some(), "a figure from an earlier turn is no evidence");
         let off = stop_unlocked("ce-log-off", &ok, reply, &[("ANTIHALL_CLAIM_EVIDENCE_LOG_READ", "0")], json!({})).0;
         assert!(blocked(&off).is_some(), "the switch off restores the earlier reading");
         // the hold names the check that would satisfy it, inside two lines and the advice cap (no details file)
         let out = blocked(&off).unwrap_or_default();
         let reason = serde_json::from_str::<Value>(out.trim()).unwrap()["reason"].as_str().unwrap().to_string();
-        assert!(reason.lines().count() <= 2 && reason.contains("a check that counts (") && reason.contains("cat/tail") && !reason.contains("details:"), "{reason}");
+        assert!(reason.lines().count() <= 2 && reason.contains("a check that counts (") && reason.contains("a log read showing it") && !reason.contains("details:"), "{reason}");
         // negated and future-tense claims stay unheld even with a tool call this turn
         for r in ["Nothing is merged yet.", "Once PR #405 and #406 are merged the release can start."] {
             let lines = after("ls", "x", r);

@@ -208,17 +208,47 @@ function ceCountFired(rule) {
   ah.advisory('claim_evidence', 'fired_' + rule);
 }
 
-// GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn and every figure of the claim is
-// one of the numbers the transcript's tool output spells (the evidence walk just taken; a whole number, so 1 is not found inside 142).
-// A claim with no figure is never backed by a read alone.
-function ceLogReadBacks(claim, cmds) {
-  if (!ah.settings.bool('claim_evidence.log_read_counts') || !ceAnyCmd(ah.cfg('claim_evidence.log_read_res'), cmds)) return false;
+// The tool calls of the last `n` of the transcript as [command, output text] (command '' for a call without one, output '' when the
+// result is not in the window), in order: the output a call returned is the tool_result block that names its tool_use id.
+function ceTurnCalls(tp, n) {
+  var lines = ah.fs.tailLines(tp, ah.cfgNum('claim_ledger.window_bytes'), true, ['tool_use', 'tool_result']);
+  if (lines === null) return null;
+  var uses = [], outs = {};
+  for (var i = 0; i < lines.length; i++) {
+    var e;
+    try { e = JSON.parse(lines[i]); } catch (x) { continue; }
+    var c = e && e.message && e.message.content;
+    if (!Array.isArray(c)) continue;
+    for (var j = 0; j < c.length; j++) {
+      var b = c[j];
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'tool_use') uses.push({ id: b.id, cmd: b.input && typeof b.input.command === 'string' ? b.input.command : '' });
+      else if (b.type === 'tool_result') {
+        var t = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(function (x) { return x && typeof x.text === 'string' ? x.text : ''; }).join('\n') : '';
+        outs[b.tool_use_id] = t;
+      }
+    }
+  }
+  return uses.slice(Math.max(0, uses.length - n)).map(function (u) { return [u.cmd, typeof outs[u.id] === 'string' ? outs[u.id] : '']; });
+}
+
+// GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn (claim_evidence.log_read_res) and every
+// figure of the claim is a whole number spelled in the output of such reads (1 is not found inside 142; the figure in the prompt, in a
+// command or in an earlier turn does not count). A claim with no figure is never backed by a read alone.
+function ceLogReadBacks(claim, tp, tools) {
+  if (!ah.settings.bool('claim_evidence.log_read_counts')) return false;
   var re = ah.cfg('claim_evidence.figure_re'), figs = ah.re.findAll(re, 'i', claim.quote);
   if (!figs.length) return false;
-  var nums = ah.transcript.walkNumbers('evidence', re, '', ',');
-  for (var i = 0; i < figs.length; i++) {
-    var want = Number(claim.quote.slice(figs[i][0], figs[i][1]).replace(/,/g, ''));
-    if (!isFinite(want) || nums.indexOf(want) < 0) return false;
+  var calls = ceTurnCalls(tp, tools), reads = ah.cfg('claim_evidence.log_read_res'), have = {};
+  if (calls === null) return false;
+  for (var i = 0; i < calls.length; i++) {
+    if (calls[i][0] === '' || ceAny(reads, calls[i][0]) === null) continue;
+    var nums = ah.re.findAll(re, 'i', calls[i][1]);
+    for (var k = 0; k < nums.length; k++) have[Number(calls[i][1].slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;
+  }
+  for (var f = 0; f < figs.length; f++) {
+    var want = Number(claim.quote.slice(figs[f][0], figs[f][1]).replace(/,/g, ''));
+    if (!isFinite(want) || have[want] !== true) return false;
   }
   return true;
 }
@@ -292,7 +322,7 @@ function decide(p) {
     else if (needs.length > 0) {
       if (cmds === null) cmds = ceCommands(tpOpen, tools);
       if (cmds !== null && !ceAnyCmd(needs, cmds)) {
-        if (ceLogReadBacks(claim, cmds)) {
+        if (ceLogReadBacks(claim, tpOpen, tools)) {
           if (ah.settings.bool('claim_evidence.sw_telemetry')) ah.metric('claim_evidence_log_read_ok', ['claim', claim.row.id]);
         } else what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
       }
