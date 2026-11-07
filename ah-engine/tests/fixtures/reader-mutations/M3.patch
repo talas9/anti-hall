@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/lib/65-d.js b/plugins/anti-hall/engine/logic/lib/65-d.js
+index 239d1aca..ed849f41 100644
+--- a/plugins/anti-hall/engine/logic/lib/65-d.js
++++ b/plugins/anti-hall/engine/logic/lib/65-d.js
+@@ -42,7 +42,7 @@ var taskSnap = {
+     tail.forEach(function (t) { byId[t.id] = t; });
+     deleted.forEach(function (id) { gone[id] = true; });
+     snap.forEach(function (s) {
+-      if (gone[s.id]) return;
++      if (gone[s.id] || /^toolu_/.test(s.id)) return; // MUTATION M3: a snapshot entry with a tool-use-shaped id is dropped without proof
+       seen[s.id] = true;
+       out.push(byId[s.id] ? taskSnap.merge(byId[s.id], s) : s);
+     });
