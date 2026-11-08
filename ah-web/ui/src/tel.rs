@@ -54,12 +54,7 @@ fn ensure_style() {
 
 #[cfg(feature = "full")]
 fn is_dark() -> bool {
-    let attr = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()).and_then(|e| e.get_attribute("data-theme"));
-    match attr.as_deref() {
-        Some("light") => false,
-        Some("dark") => true,
-        _ => web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten()).is_some_and(|m| m.matches()),
-    }
+    ah_web_graph::color::page_dark()
 }
 
 /// Read `path` now and then every `refresh` seconds (the server says how often, after the first read) until the screen is gone.
@@ -386,7 +381,7 @@ fn HeatChart(heat: Heat, day_ms: Vec<u64>, ui: TelUi, texts: BTreeMap<String, St
         "series": series,
         "xaxis": { "type": "datetime" },
         "plotOptions": { "heatmap": { "radius": 3, "enableShades": false, "colorScale": { "ranges": ranges } } },
-        "colors": [cfg["info"]],
+        "colors": [apex::tone(&cfg, is_dark(), "info")],
         "stroke": { "width": 2, "colors": [cfg[if is_dark() { "dark" } else { "light" }]["cell_gap"].clone()] },
         "legend": { "show": false },
     }));
@@ -400,13 +395,13 @@ fn HeatChart(heat: Heat, day_ms: Vec<u64>, ui: TelUi, texts: BTreeMap<String, St
 fn GaugeChart(forecast: Forecast, ui: TelUi, texts: BTreeMap<String, String>) -> impl IntoView {
     use crate::apex;
     let cfg = apex_cfg(&ui);
-    let tone = cfg[forecast.tone.as_str()].clone();
+    let tone = apex::tone(&cfg, is_dark(), forecast.tone.as_str());
     let mut o = apex::base(&cfg, is_dark(), cfg["height_small"].as_u64().unwrap_or(0));
     apex::merge(&mut o, serde_json::json!({
         "chart": { "type": "radialBar", "toolbar": { "show": false } },
         "series": [forecast.used_pct.min(100.0).round()],
         "labels": [tt(&texts, "f_used")],
-        "colors": [if tone.is_null() { cfg["info"].clone() } else { tone }],
+        "colors": [if tone.is_null() { apex::tone(&cfg, is_dark(), "info") } else { tone }],
         "plotOptions": { "radialBar": { "hollow": { "size": "62%" } } },
     }));
     let opts = Memo::new(move |_| o.to_string());
@@ -448,12 +443,14 @@ fn WaterfallChart(steps: Vec<Step>, ui: TelUi, texts: BTreeMap<String, String>) 
     }
     let names = ["", "", "spent_label", "spent_label", "prevented_label", "prevented_label", "net_label", "net_label"];
     let series: Vec<serde_json::Value> = cols.into_iter().zip(names).map(|(d, n)| serde_json::json!({ "name": if n.is_empty() { String::new() } else { tt(&texts, n) }, "data": d })).collect();
-    let mut o = apex::base(&cfg, is_dark(), cfg["height_small"].as_u64().unwrap_or(0));
+    let dark = is_dark();
+    let (bad, ok, info) = (apex::tone(&cfg, dark, "bad"), apex::tone(&cfg, dark, "ok"), apex::tone(&cfg, dark, "info"));
+    let mut o = apex::base(&cfg, dark, cfg["height_small"].as_u64().unwrap_or(0));
     apex::merge(&mut o, serde_json::json!({
         "chart": { "type": "bar", "stacked": true, "toolbar": { "show": false } },
         "series": series,
         "xaxis": { "categories": steps.iter().map(|s| s.label.clone()).collect::<Vec<_>>() },
-        "colors": ["transparent", "transparent", cfg["bad"], cfg["bad"], cfg["ok"], cfg["ok"], cfg["info"], cfg["info"]],
+        "colors": ["transparent", "transparent", bad, bad, ok, ok, info, info],
         "plotOptions": { "bar": { "columnWidth": "55%", "borderRadius": 2 } },
         "legend": { "show": false },
         "tooltip": { "enabledOnSeries": [2, 3, 4, 5, 6, 7] },
@@ -467,7 +464,9 @@ fn WaterfallChart(steps: Vec<Step>, ui: TelUi, texts: BTreeMap<String, String>) 
 /// The screen. Nothing exists, and nothing is read, while it is not shown.
 #[component]
 pub fn TelScreen(active: Signal<bool>) -> impl IntoView {
-    view! { <Show when=move || active.get()><TelBody /></Show> }
+    // rebuilt when the colour scheme changes, so the charts take the new scheme's colours
+    let tick = crate::theme_tick();
+    view! { <Show when=move || active.get()>{move || { tick.track(); view! { <TelBody /> } }}</Show> }
 }
 
 #[component]
@@ -816,7 +815,8 @@ fn filtered(t: &Table, q: &str, sort: (usize, bool)) -> Vec<Vec<Cell>> {
 
 #[component]
 pub fn ImpactScreen(active: Signal<bool>) -> impl IntoView {
-    view! { <Show when=move || active.get()><ImpactBody /></Show> }
+    let tick = crate::theme_tick();
+    view! { <Show when=move || active.get()>{move || { tick.track(); view! { <ImpactBody /> } }}</Show> }
 }
 
 #[component]

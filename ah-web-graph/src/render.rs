@@ -11,6 +11,8 @@ pub struct Palette {
     pub wire: [f32; 4],
     pub hot: [f32; 4],
     pub particle: [f32; 4],
+    /// Background star colour (its alpha is scaled by `fx.star_alpha`).
+    pub star: [f32; 4],
 }
 
 /// One wire to draw: its polyline, whether it is hot, and its width as a multiple of the base width.
@@ -179,10 +181,10 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
                 .ok()?;
             let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default()).await.ok()?;
             let mut conf = surface.get_default_config(&adapter, w, h)?;
-            let caps = surface.get_capabilities(&adapter);
-            if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
-                conf.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
-            }
+            // premultiplied, always: the shader writes premultiplied colour and clears to transparent, so the page's background
+            // shows through. Every WebGPU canvas supports it, but wgpu's browser backend lists only Opaque in its capabilities,
+            // so a capability check never chose it and the canvas painted opaque black over the graph in both colour schemes.
+            conf.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
             surface.configure(&device, &conf);
             let sm = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
             let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

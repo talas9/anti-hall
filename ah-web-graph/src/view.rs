@@ -88,13 +88,22 @@ fn after(ms: u32, f: impl FnOnce() + 'static) {
 }
 
 fn vars_css(cfg: &GraphConfig) -> String {
-    let t = &cfg.theme;
-    let mut s = format!("--ahg-scan-ms:{}ms;--ahg-bg:{};--ahg-grid:{};--ahg-wire:{};--ahg-wire-hot:{};--ahg-particle:{};", cfg.fx.scan_ms, t.bg, t.grid, t.wire, t.wire_hot, t.particle);
+    let (t, l) = (&cfg.theme, cfg.theme_light.as_ref());
+    let v = |d: &String, f: fn(&crate::model::Theme) -> &String| GraphConfig::scheme_css(d, l.map(f));
+    let mut s = format!(
+        "--ahg-scan-ms:{}ms;--ahg-bg:{};--ahg-grid:{};--ahg-wire:{};--ahg-wire-hot:{};--ahg-particle:{};",
+        cfg.fx.scan_ms,
+        v(&t.bg, |x| &x.bg),
+        v(&t.grid, |x| &x.grid),
+        v(&t.wire, |x| &x.wire),
+        v(&t.wire_hot, |x| &x.wire_hot),
+        v(&t.particle, |x| &x.particle)
+    );
     for (k, v) in &t.kinds {
-        s.push_str(&format!("--ahg-k-{k}:{};", v.color));
+        s.push_str(&format!("--ahg-k-{k}:{};", GraphConfig::scheme_css(&v.color, l.and_then(|l| l.kinds.get(k)).map(|x| &x.color))));
     }
     for (k, v) in &t.status {
-        s.push_str(&format!("--ahg-s-{k}:{v};"));
+        s.push_str(&format!("--ahg-s-{k}:{};", GraphConfig::scheme_css(v, l.and_then(|l| l.status.get(k)))));
     }
     s
 }
@@ -501,11 +510,14 @@ pub fn Graph(
         let kick: Shared<Option<Rc<crate::pacer::Pacer>>> = fx_pacer.clone();
         let active = active.clone();
         let be: Shared<Option<Backend>> = shared(None);
-        let pal = Palette {
-            wire: crate::color::parse_oklch(&cfg.theme.wire).unwrap_or([1.0; 4]),
-            hot: crate::color::parse_oklch(&cfg.theme.wire_hot).unwrap_or([1.0; 4]),
-            particle: crate::color::parse_oklch(&cfg.theme.particle).unwrap_or([1.0; 4]),
+        // both schemes' palettes, parsed once; each frame takes the one the page shows (the theme switch and the system setting both apply live)
+        let palette = |t: &crate::model::Theme| Palette {
+            wire: crate::color::parse_oklch(&t.wire).unwrap_or([1.0; 4]),
+            hot: crate::color::parse_oklch(&t.wire_hot).unwrap_or([1.0; 4]),
+            particle: crate::color::parse_oklch(&t.particle).unwrap_or([1.0; 4]),
+            star: crate::color::parse_oklch(&t.star).unwrap_or([1.0; 4]),
         };
+        let pals = [palette(cfg.theme_for(false)), palette(cfg.theme_for(true))];
         let (be2, kick2, cfgc) = (be.clone(), kick.clone(), cfg.clone());
         Effect::new(move |done: Option<bool>| {
             if done == Some(true) {
@@ -522,6 +534,7 @@ pub fn Graph(
                     let ws = wires.get_untracked();
                     let d = data.get_untracked();
                     let fxc = &cfgc.fx;
+                    let pal = pals[usize::from(crate::color::page_dark())];
                     let wl: Vec<render::WireRef> = ws
                         .iter()
                         .map(|g| {
@@ -546,7 +559,7 @@ pub fn Graph(
                             let depth = fxc.star_depth_far + (fxc.star_depth_near - fxc.star_depth_far) * h(3);
                             let (sx, sy) = ((h(1) * w + c.x * depth).rem_euclid(w.max(1.0)), (h(2) * hh_ + c.y * depth).rem_euclid(hh_.max(1.0)));
                             let tw = 0.5 + 0.5 * h(5);
-                            parts.insert(0, geom::Particle { pos: [(sx - c.x) / c.k, (sy - c.y) / c.k], hot: false, col: Some([0.75, 0.85, 1.0, fxc.star_alpha * tw]), r: fxc.star_size / (1.0f32).max(1.0) });
+                            parts.insert(0, geom::Particle { pos: [(sx - c.x) / c.k, (sy - c.y) / c.k], hot: false, col: Some([pal.star[0], pal.star[1], pal.star[2], pal.star[3] * fxc.star_alpha * tw]), r: fxc.star_size / (1.0f32).max(1.0) });
                         }
                     }
                     let more = {

@@ -827,7 +827,7 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
             .iter()
             .map(|ev| {
                 let key = lc.hook_fx.get(ev).unwrap_or(&lc.hook_fx_default);
-                let colour = cfg.fx.colors.get(key).cloned().unwrap_or_default();
+                let colour = cfg.fx_css(key);
                 let (name, number, win) = (ev.clone(), number.clone(), lc.rate_window_s.max(1) as f32);
                 let n2 = name.clone();
                 let n2b = name.clone();
