@@ -494,7 +494,7 @@ reports the captured-sample count as one INFO line.
 ## Primary wake coverage — session crons do not survive a restart
 
 A Primary is woken by the session cron (`7,37 * * * *` running `inbox tick <primary-id> --quiet`)
-and by the `ah-engine devswarm wake-watch --auto` Monitor. A session cron is gone after a harness restart, and the
+and by the `ah-engine agents wake-watch --auto` Monitor (the one merged watcher; `devswarm wake-watch` is its deprecated alias). A session cron is gone after a harness restart, and the
 Monitor exits on purpose when no child is live, so a Primary can end up with neither. When it has
 a live child and either path is missing, anti-hall says so: a `NO MAILBOX WAKE PATH` (or the
 shorter `NO MAILBOX WATCHER` / `NO MAILBOX TICK`) line on each prompt (repeated by the keepalive
