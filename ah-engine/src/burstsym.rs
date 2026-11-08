@@ -189,7 +189,8 @@ fn hex(v: &Value) -> Option<u64> {
     u64::from_str_radix(v.as_str()?.trim_start_matches("0x"), 16).ok()
 }
 
-/// Run the platform's resolver over `addrs` (call-site ip, offset into the image): one output line per address, keyed by ip.
+/// Run the platform's resolver over `addrs` (call-site ip, offset into the image): one entry per address, keyed by ip. On Linux an
+/// entry holds the inlined chain (innermost first, joined with ` <- `); on macOS one resolver line.
 fn resolve(image: &Path, build: &Value, addrs: &[(u64, u64)]) -> Result<std::collections::BTreeMap<u64, String>, String> {
     let os = at(build, "os").as_str().unwrap_or(std::env::consts::OS);
     // literal keys, one per platform (a key built with format! is invisible to the defaults-keys scan)
@@ -222,12 +223,44 @@ fn resolve(image: &Path, build: &Value, addrs: &[(u64, u64)]) -> Result<std::col
     let out = crate::proc::run(cmd, program, defaults::millis("diagnostics.symbolize_ms"), defaults::millis("health.probe_poll_ms"))
         .map_err(|e| defaults::render("diagnostics.msg_symbolize_failed", &[("tool", program), ("err", &format!("{e:?}"))]))?;
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(addrs.iter().zip(text.lines()).map(|((ip, _), l)| (*ip, l.trim().to_string())).collect())
+    let lines = if os == "linux" { grouped_by_address(&text) } else { text.lines().map(|l| l.trim().to_string()).collect() };
+    Ok(addrs.iter().zip(lines).map(|((ip, _), l)| (*ip, l)).collect())
+}
+
+/// One entry per address from `addr2line -a -p -i` output. With `-i` an address inside inlined code prints several lines (the
+/// innermost frame first, then each caller up to the first function that is not inlined); `-a` starts every address with a
+/// `0x<addr>: ` header, so the group of an address is the header line plus the lines up to the next header, whatever the
+/// continuation lines are called. The entry holds the whole chain, innermost first, joined with ` <- `.
+fn grouped_by_address(text: &str) -> Vec<String> {
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let header = line.strip_prefix("0x").and_then(|r| r.split_once(": ")).filter(|(a, _)| !a.is_empty() && a.bytes().all(|b| b.is_ascii_hexdigit()));
+        match (header, groups.last_mut()) {
+            (Some((_, first)), _) => groups.push(vec![first.trim().to_string()]),
+            (None, Some(g)) if !line.is_empty() => g.push(line.trim_start_matches("(inlined by)").trim().to_string()),
+            _ => {}
+        }
+    }
+    groups.into_iter().map(|g| g.join(" <- ")).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inlined_frames_stay_with_their_address() {
+        // `addr2line -a -f -C -p -i`: the second address is inside inlined code (two continuation lines), the first and third are not
+        let out = "0x0000000000001000: plain at a.rs:1\n0x0000000000001010: <Vec<usize>>::new at v.rs:5\n (inlined by) helper at a.rs:9\n (inlined by) fixture_burst_site at a.rs:12\n0x0000000000001020: ?? ??:0\n";
+        assert_eq!(
+            grouped_by_address(out),
+            vec!["plain at a.rs:1", "<Vec<usize>>::new at v.rs:5 <- helper at a.rs:9 <- fixture_burst_site at a.rs:12", "?? ??:0"]
+        );
+        assert!(grouped_by_address("").is_empty());
+        // a continuation line before any header is ignored, not attached to a missing address
+        assert_eq!(grouped_by_address(" (inlined by) stray at x.rs:1\n0x10: f at x.rs:2\n"), vec!["f at x.rs:2"]);
+    }
 
     #[test]
     fn hex_reads_the_dump_notation() {

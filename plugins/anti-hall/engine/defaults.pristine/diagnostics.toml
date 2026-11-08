@@ -729,7 +729,7 @@ value = "sampled_bytes is allocation volume (freed or not) attributed to the sta
 # ---- burst dump symbols --------------------------------------------------------------------------------------------------------------
 
 [files.symbols_dir]
-doc = "Directory (in the state directory) holding the separate symbol files of installed builds, one directory per build id: <symbols_dir>/<build id>/ah-engine.dSYM (macOS) or the debug file (Linux). `scripts/build.sh` copies the symbols of every local release build here, so a burst dump of the installed binary can be named later even after the build tree is cleaned. A downloaded release symbol archive unpacked anywhere under it is found too."
+doc = "Directory (in the state directory) holding the separate symbol files of installed builds, one directory per build id: <symbols_dir>/<build id>/ah-engine.dSYM (macOS) or the debug file (Linux). the local build script copies the symbols of every local release build here, so a burst dump of the installed binary can be named later even after the build tree is cleaned. A downloaded release symbol archive unpacked anywhere under it is found too."
 value = "symbols"
 
 [diagnostics.burst_dump_topic]
@@ -770,12 +770,12 @@ min = 4096
 unit = "bytes"
 
 [diagnostics.symbolize_cmd_macos]
-doc = "Resolver run over the unresolved frames of a dump on macOS: the program, then its arguments. {file} = the DWARF file of the matching dSYM, {arch} = the architecture name (diagnostics.symbolize_arch), {base} = the dump's build.image_base, {ips} = every call-site address, one argument each. It prints one line per address."
+doc = "Resolver run over the unresolved frames of a dump on macOS: the program, then its arguments. {file} = the DWARF file of the matching dSYM, {arch} = the architecture name (diagnostics.symbolize_arch), {base} = the dump's build.image_base, {ips} = every call-site address, one argument each. It prints one entry per address: with -a a header line, with -i the inlined callers after it (the engine joins them, innermost first)."
 value = ["atos", "-o", "{file}", "-arch", "{arch}", "-l", "{base}", "{ips}"]
 
 [diagnostics.symbolize_cmd_linux]
-doc = "Resolver run over the unresolved frames of a dump on Linux (same placeholders; {offsets} = every call-site offset into the image). It prints one line per address."
-value = ["addr2line", "-f", "-C", "-p", "-e", "{file}", "{offsets}"]
+doc = "Resolver run over the unresolved frames of a dump on Linux (same placeholders; {offsets} = every call-site offset into the image). It prints one entry per address: with -a a header line, with -i the inlined callers after it (the engine joins them, innermost first)."
+value = ["addr2line", "-a", "-f", "-C", "-p", "-i", "-e", "{file}", "{offsets}"]
 
 [diagnostics.symbolize_arch]
 doc = "Rust architecture name = the name the macOS resolver takes."
@@ -801,7 +801,7 @@ value = "cannot read {file} as a burst dump"
 
 [diagnostics.msg_symbolize_no_symbols]
 doc = "Printed when no symbol file carries the dump's build id; {id} is the id, {version} the engine version of the dump, {dir} the symbols directory."
-value = "no symbol file for build {id} (engine {version}): unpack the release's symbols-v{version}-<triple> archive under {dir}, or rebuild with scripts/build.sh (it keeps the symbols of every local build there)"
+value = "no symbol file for build {id} (engine {version}): unpack the release's symbols-v{version}-<triple> archive under {dir}, or rebuild locally (the build script keeps the symbols of every local build there)"
 
 [diagnostics.msg_symbolize_no_tool]
 doc = "Printed when no resolver command is set for the dump's operating system {os}."
