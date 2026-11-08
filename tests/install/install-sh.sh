@@ -10,7 +10,7 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 AH_WRAPPER_TEST=1; export AH_WRAPPER_TEST
 
 pass=0; fail=0
-check() { n=$1; shift; if "$@"; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n' "$n" >&2; fi; }
+check() { cname=$1; shift; if "$@"; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n' "$cname" >&2; fi; }
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
 # a scratch plugin: the real script and settings, a lock for the fake release below
@@ -30,6 +30,7 @@ write_lock() { # write_lock SHA
 }
 newhome() { HOME=$tmp/home.$1; export HOME; rm -rf "$HOME"; mkdir -p "$HOME"; st=$HOME/.anti-hall/ah-engine; }
 env_t() { AH_ENGINE_RELEASE_BASE=file://$tmp/www AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=x86_64 AH_BOOTSTRAP_LIBC=gnu "$@"; }
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
 logf() { cat "$st/bootstrap.log" 2>/dev/null || true; }
 hook() { # hook SESSION [EVENT]: one hook call; prints "<stdout-bytes> <rc>", stderr to $tmp/err
   printf '{"session_id":"%s","hook_event_name":"%s"}' "$1" "${2:-PreToolUse}" | sh "$plug/hooks/install.sh" "${2:-PreToolUse}" >"$tmp/out" 2>"$tmp/err"
@@ -52,14 +53,14 @@ t_hook_mode_downloads_nothing_without_opt_in() {
 t_hook_mode_opt_in_installs_on_session_start() {
   newhome optin; write_lock "$good"
   AH_ENGINE_BOOTSTRAP=1 env_t sh -c 'printf "{\"session_id\":\"s\"}" | sh "$1" SessionStart' _ "$plug/hooks/install.sh" >/dev/null 2>&1
-  n=0; while [ ! -x "$st/bin/ah-engine" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+  w=0; while { [ ! -x "$st/bin/ah-engine" ] || [ ! -x "$st/bin/ah-hook" ]; } && [ "$w" -lt 100 ]; do sleep 0.1; w=$((w + 1)); done
   [ -x "$st/bin/ah-engine" ] && [ -x "$st/bin/ah-hook" ]
 }
 t_hook_mode_setting_opt_in() {
   newhome setting; write_lock "$good"; mkdir -p "$HOME/.anti-hall"
   printf '{"engine":{"bootstrap":true}}' >"$HOME/.anti-hall/settings.json"
   env_t sh -c 'printf "{\"session_id\":\"s\"}" | sh "$1" SessionStart' _ "$plug/hooks/install.sh" >/dev/null 2>&1
-  n=0; while [ ! -x "$st/bin/ah-engine" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+  w=0; while { [ ! -x "$st/bin/ah-engine" ] || [ ! -x "$st/bin/ah-hook" ]; } && [ "$w" -lt 100 ]; do sleep 0.1; w=$((w + 1)); done
   [ -x "$st/bin/ah-engine" ]
 }
 t_hook_mode_hands_the_call_to_an_installed_client() {
@@ -99,6 +100,283 @@ t_download_without_a_lock_changes_nothing() {
   [ "$rc" = 0 ] && [ ! -e "$st/bin/ah-engine" ] && logf | grep -q 'why=no_lock'
 }
 
+# a valid JSON check where python3 exists (else the shape checks above must do)
+isjson() { if command -v python3 >/dev/null 2>&1; then python3 -I -c 'import json,sys; json.loads(sys.stdin.read())' <"$1" 2>/dev/null; else grep -q '^{.*}$' "$1"; fi; }
+fake_client() { # fake_client OUTPUT: an installed client that prints OUTPUT for SessionStart
+  mkdir -p "$st/bin"
+  printf '#!/bin/sh\ncat >/dev/null\nprintf "%%s" %s\n' "'$1'" >"$st/bin/ah-hook"; chmod 755 "$st/bin/ah-hook"
+}
+t_sessionstart_not_installed_notice_is_json() {
+  newhome sj; write_lock "$good"
+  [ "$(hook s1 SessionStart)" != "0 0" ] || return 1
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the engine is not installed' "$tmp/out" && grep -q '"additionalContext"' "$tmp/out" && grep -q 'not installed' "$tmp/err" || return 1
+  [ "$(hook s1 SessionStart)" = "0 0" ] && [ "$(wc -l <"$tmp/out" | tr -d ' ')" = 0 ]   # same session: nothing more
+}
+t_sessionstart_engine_without_client_has_its_own_text() {
+  newhome nc; write_lock "$good"; mkdir -p "$st/bin"
+  printf '#!/bin/sh\necho 0.1.0\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q 'hook client (ah-hook) is missing' "$tmp/out"
+}
+t_stale_engine_notice_joins_the_clients_json() {
+  newhome st1; write_lock "$good"
+  fake_client '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"X"}}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine (9.1.0) is older' "$tmp/out" && grep -q '"additionalContext":"X anti-hall' "$tmp/out" || return 1
+  grep -q 'ah-hook install -v' "$tmp/out" && grep -q 'bootstrap.log' "$tmp/out" || return 1
+}
+t_stale_engine_notice_with_a_silent_client_is_the_notice_alone() {
+  newhome st2; write_lock "$good"; fake_client ''
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"hookEventName":"SessionStart"' "$tmp/out" && grep -q 'older than this plugin expects' "$tmp/out"
+}
+t_other_events_and_a_current_engine_leave_the_clients_output_alone() {
+  newhome st3; write_lock "$good"; fake_client '{"a":1}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 PreToolUse >/dev/null; [ "$(cat "$tmp/out")" = '{"a":1}' ] || return 1
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  hook s2 SessionStart >/dev/null; [ "$(cat "$tmp/out")" = '{"a":1}' ]
+}
+t_a_client_that_already_set_a_system_message_gets_the_notice_appended() {
+  newhome st4; write_lock "$good"; fake_client '{"systemMessage":"mine"}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"mine anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"anti-hall' "$tmp/out" || return 1
+  [ -s "$st/install-json.notice" ]   # shown, so marked
+}
+t_a_client_object_without_additional_context_gets_it_added() {
+  newhome st6; write_lock "$good"; fake_client '{"hookSpecificOutput":{"hookEventName":"SessionStart"}}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"anti-hall' "$tmp/out" && grep -q '"hookEventName":"SessionStart"' "$tmp/out" || return 1
+  [ -s "$st/install-json.notice" ]
+}
+# a TOML value from the scratch plugin's own defaults (the budget and the allowance are settings, not numbers in this file)
+tv() { awk -v k="[install.$1]" '$0 == k { f = 1; next } f && $1 == "value" { print $3; exit }' "$plug/engine/defaults/engine.toml"; }
+t_a_probe_that_ignores_term_is_killed_after_the_grace() {
+  newhome kill1; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  budget=$(tv hook_budget_ms)
+  # the WHOLE hook (not only the probe) stays under the budget with a TERM-ignoring probe; a probe cut off by us is not a failure;
+  # no watchdog file is left behind
+  # best of 3 against the budget (a loaded runner may slow one run); every run must still print nothing
+  best=$((budget * 10)); i=0; while [ $i -lt 3 ]; do
+    t0=$(now_ms); hook s1 SessionStart >/dev/null; t1=$(now_ms)
+    [ ! -s "$tmp/out" ] || { echo "run $i: printed output" >&2; return 1; }
+    [ $((t1 - t0)) -lt "$best" ] && best=$((t1 - t0))
+    i=$((i + 1))
+  done
+  [ "$best" -lt "$budget" ] || { echo "best of 3: $best ms (budget $budget)" >&2; return 1; }
+}
+t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget() {
+  [ $(( $(tv defaults_probe_ms) + $(tv defaults_probe_grace_ms) + $(tv hook_overhead_allowance_ms) )) -lt "$(tv hook_budget_ms)" ]
+}
+t_a_failing_probe_leaves_no_orphan_sleep_helper() {
+  newhome kill2; write_lock "$good"; fake_client ''
+  # a probe value no other process uses and far above the poll bound below: an orphan helper outlives the poll (it would otherwise
+  # expire inside the allowance and hide the leak)
+  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 6437"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e6437.toml" && mv "$tmp/e6437.toml" "$plug/engine/defaults/engine.toml"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe runs 0.2 s then fails, so the watchdog has certainly forked its TERM-stage helper before the parent stops it
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 0.2\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  # sleep shim: every `sleep` this hook run starts records its own pid, so the check is on the helpers THIS run created (no system-wide count)
+  mkdir -p "$tmp/shim"; : >"$tmp/sleeppids"
+  printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
+  # none of the watchdog's sleep helpers may outlive the hook call (bounded poll: the overhead allowance setting)
+  oldpath=$PATH; PATH="$tmp/shim:$PATH"; export PATH
+  hook s1 SessionStart >/dev/null
+  PATH=$oldpath; export PATH
+  grep -q 'cannot load' "$tmp/out" || return 1
+  [ -s "$tmp/sleeppids" ] || { echo "shim recorded no sleep: the test would prove nothing" >&2; return 1; }
+  n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+  while :; do
+    alive=
+    for p in $(cat "$tmp/sleeppids"); do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    [ -z "$alive" ] && break
+    [ "$n" -ge "$max" ] && { echo "orphan sleep helper(s) still alive:$alive" >&2; kill $alive 2>/dev/null; return 1; }
+    sleep 0.02; n=$((n + 1))
+  done
+}
+t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper() {
+  newhome kill3; write_lock "$good"; fake_client ''
+  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 6437"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e6437.toml" && mv "$tmp/e6437.toml" "$plug/engine/defaults/engine.toml"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe hangs without forking any sleep of its own (a busy loop), so every recorded sleep is the watchdog's
+  mkdir -p "$st/bin"; printf '#!/bin/sh\necho $$ >"%s/probepid2"\ntrap "" TERM\nwhile :; do :; done\n' "$tmp" >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  rm -f "$tmp/probepid2"; mkdir -p "$tmp/shim"; : >"$tmp/sleeppids"
+  printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
+  oldpath=$PATH; PATH="$tmp/shim:$PATH"; export PATH
+  printf '{"session_id":"s1","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/out" 2>"$tmp/err" &
+  hp=$!
+  PATH=$oldpath; export PATH
+  # wait for the probe AND the watchdog's first helper (the shim has recorded it), then TERM the hook mid-run
+  n=0; while { [ ! -s "$tmp/probepid2" ] || [ ! -s "$tmp/sleeppids" ]; } && [ $n -lt 150 ]; do sleep 0.02; n=$((n + 1)); done
+  pr=$(cat "$tmp/probepid2" 2>/dev/null)
+  [ -s "$tmp/sleeppids" ] || { echo "no watchdog helper started: the test would prove nothing" >&2; for c in $(pgrep -P "$hp" 2>/dev/null) "$hp"; do kill -TERM "$c" 2>/dev/null; done; [ -n "$pr" ] && kill -KILL "$pr" 2>/dev/null; return 1; }
+  for c in $(pgrep -P "$hp" 2>/dev/null) "$hp"; do kill -TERM "$c" 2>/dev/null; done
+  n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+  while :; do
+    alive=
+    for p in $(cat "$tmp/sleeppids") $pr; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    [ -z "$alive" ] && break
+    [ "$n" -ge "$max" ] && { echo "process(es) still alive after the hook was signalled:$alive" >&2; kill -KILL $alive 2>/dev/null; return 1; }
+    sleep 0.02; n=$((n + 1))
+  done
+  wait "$hp" 2>/dev/null; return 0
+}
+t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe() {
+  newhome sig1; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe records its pid, ignores TERM and hangs
+  mkdir -p "$st/bin"; printf '#!/bin/sh\necho $$ >"%s/probepid"\ntrap "" TERM\nwhile :; do sleep 1; done\n' "$tmp" >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  rm -f "$tmp/probepid"
+  printf '{"session_id":"s1","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/out" 2>"$tmp/err" &
+  hp=$!
+  n=0; while [ ! -s "$tmp/probepid" ] && [ $n -lt 100 ]; do sleep 0.02; n=$((n + 1)); done
+  [ -s "$tmp/probepid" ] || { echo "probe never started" >&2; kill "$hp" 2>/dev/null; return 1; }
+  pr=$(cat "$tmp/probepid")
+  # TERM the hook's shell (the child of the subshell running the pipeline is `sh install.sh`)
+  for c in $(pgrep -P "$hp" 2>/dev/null) "$hp"; do kill -TERM "$c" 2>/dev/null; done
+  n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+  while kill -0 "$pr" 2>/dev/null; do
+    [ "$n" -ge "$max" ] && { echo "TERM-ignoring probe $pr still alive after the hook was signalled" >&2; kill -KILL "$pr" 2>/dev/null; return 1; }
+    sleep 0.02; n=$((n + 1))
+  done
+  wait "$hp" 2>/dev/null; return 0
+}
+t_parallel_sessions_in_one_home_each_get_their_notice() {
+  newhome conc; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  k=0; while [ $k -lt 5 ]; do
+    rm -f "$st/install-json.notice" "$st/install-stale.notice" 2>/dev/null
+    ( printf '{"session_id":"a","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/oa" 2>/dev/null ) &
+    pa=$!; sleep 0.1
+    ( printf '{"session_id":"b","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/ob" 2>/dev/null ) &
+    pb=$!; wait $pa $pb
+    grep -q 'cannot load' "$tmp/oa" && grep -q 'cannot load' "$tmp/ob" || { echo "round $k: a=$(grep -c 'cannot load' "$tmp/oa") b=$(grep -c 'cannot load' "$tmp/ob")" >&2; return 1; }
+    k=$((k + 1))
+  done
+}
+t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing() {
+  newhome em; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  rm -f "$st/bin/ah-engine"; sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q 'engine binary is missing' "$tmp/out" && ! grep -q 'cannot load' "$tmp/out"
+}
+t_a_client_with_leading_whitespace_json_still_gets_the_notice() {
+  newhome st5; write_lock "$good"; fake_client '
+   {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"X"}}'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q '"systemMessage":"anti-hall: the installed engine' "$tmp/out" && grep -q '"additionalContext":"X anti-hall' "$tmp/out"
+}
+t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown() {
+  newhome st6; write_lock "$good"; fake_client 'plain context line'
+  printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null
+  [ "$(cat "$tmp/out")" = 'plain context line' ] && [ ! -e "$st/install-json.notice" ] || return 1
+  fake_client '{}'; hook s1 SessionStart >/dev/null   # the same host process: the notice was never delivered, so it comes now
+  isjson "$tmp/out" && grep -q 'older than this plugin expects' "$tmp/out"
+}
+t_codex_keeps_stdout_clean() {
+  newhome cx; write_lock "$good"
+  printf '{"session_id":"s1"}' | sh "$plug/hooks/install.sh" SessionStart --host codex >"$tmp/out" 2>"$tmp/err"
+  [ ! -s "$tmp/out" ] && grep -q 'not installed' "$tmp/err" || return 1
+  fake_client '{"a":1}'; printf '9.1.0 aaaa\n' >"$st/bootstrap.installed"
+  printf '{"session_id":"s1"}' | sh "$plug/hooks/install.sh" SessionStart --host codex >"$tmp/out" 2>"$tmp/err"
+  [ "$(cat "$tmp/out")" = '{"a":1}' ]
+}
+t_defaults_that_failed_to_load_say_the_guards_are_not_running() {
+  newhome df; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null
+  isjson "$tmp/out" && grep -q 'guards are NOT running' "$tmp/out"
+}
+fake_engine() { # fake_engine EXIT: an engine whose `config` probe exits EXIT
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexit %s\n' "$1" >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+}
+t_a_stale_defaults_error_with_a_healthy_engine_says_nothing() {
+  newhome df3; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  fake_engine 0; sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null; [ ! -s "$tmp/out" ]
+}
+t_a_defaults_error_with_a_failing_engine_still_warns() {
+  newhome df4; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  fake_engine 1; sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  hook s1 SessionStart >/dev/null; isjson "$tmp/out" && grep -q 'guards are NOT running' "$tmp/out"
+}
+t_a_defaults_error_older_than_the_engine_is_ignored() {
+  newhome df2; write_lock "$good"
+  mkdir -p "$st"; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  sleep 1; fake_client ''; mkdir -p "$st/bin"; printf '#!/bin/sh\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  hook s1 SessionStart >/dev/null; [ ! -s "$tmp/out" ]
+}
+t_download_keeps_an_older_managed_engine_and_hands_over() {
+  newhome keep; write_lock "$good"; mkdir -p "$st/bin"
+  printf '#!/bin/sh\necho 0.1.0\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  esha=$(sha "$st/bin/ah-engine"); printf '0.1.0 %s\n' "$esha" >"$st/bootstrap.installed"
+  out=$(env_t sh "$plug/hooks/install.sh" --download 2>&1); rc=$?
+  [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -q "installed ah-engine" || return 1
+  [ "$("$st/bin/ah-engine")" = 0.1.0 ] && [ -x "$st/bin/ah-hook" ] || return 1
+  set -- $(cat "$st/bootstrap.installed")
+  [ "$1 $2 $3" = "0.1.0 - $esha" ] && [ "$4" = "$(sha "$st/bin/ah-hook")" ] || return 1
+  grep -q "install --lock .*ah-engine.lock" "$HOME/hook-calls" || return 1   # the one implementation does the swap
+  [ -z "$(ls "$st" | grep -i tmp)" ]   # the scratch dir is gone although the hand-over exec skips the EXIT trap
+}
+t_a_term_obeying_probe_that_runs_past_the_probe_limit_leaves_no_orphan_sleep_helper() {
+  newhome past; write_lock "$good"; fake_client ''
+  # the scratch plugin's settings are shared by the later tests: change them for this test only and put them back on every exit
+  cp "$plug/engine/defaults/engine.toml" "$tmp/engine.toml.keep"
+  # probe limit short, grace far above the poll bound below: an orphan grace-stage helper outlives the poll
+  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 300"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e.toml" && mv "$tmp/e.toml" "$plug/engine/defaults/engine.toml"
+  awk '$0 == "[install.defaults_probe_grace_ms]" { f = 1 } f && $1 == "value" { print "value = 7531"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e.toml" && mv "$tmp/e.toml" "$plug/engine/defaults/engine.toml"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe obeys TERM, forks no sleep of its own (tail on /dev/null) and runs past the probe limit; nothing signals the hook. The parent's
+  # TERM to the watchdog can reach a just-forked helper before it execs (it still carries the shell's TERM trap), so it is a race: repeat.
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexec tail -f /dev/null\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  mkdir -p "$tmp/shim"
+  printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
+  oldpath=$PATH; PATH="$tmp/shim:$PATH"; export PATH
+  i=0; bad=
+  restore_settings() { PATH=$oldpath; export PATH; cp "$tmp/engine.toml.keep" "$plug/engine/defaults/engine.toml"; }
+  while [ $i -lt 8 ] && [ -z "$bad" ]; do
+    : >"$tmp/sleeppids"
+    hook s$i SessionStart >/dev/null
+    [ -s "$tmp/sleeppids" ] || { restore_settings; echo "shim recorded no sleep: the test would prove nothing" >&2; return 1; }
+    n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+    while :; do
+      alive=
+      for p in $(cat "$tmp/sleeppids"); do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+      [ -z "$alive" ] && break
+      [ "$n" -ge "$max" ] && { bad=$alive; kill $alive 2>/dev/null; break; }
+      sleep 0.02; n=$((n + 1))
+    done
+    i=$((i + 1))
+  done
+  restore_settings
+  [ -z "$bad" ] || { echo "orphan sleep helper(s) still alive:$bad" >&2; return 1; }
+}
+t_download_creates_a_private_state_dir() {
+  newhome priv; write_lock "$good"
+  env_t sh "$plug/hooks/install.sh" --download >/dev/null 2>&1
+  [ "$(ls -ld "$st" | cut -c1-10)" = "drwx------" ]
+}
+
 check t_hook_mode_is_silent_and_notices_once_per_session t_hook_mode_is_silent_and_notices_once_per_session
 check t_hook_mode_downloads_nothing_without_opt_in t_hook_mode_downloads_nothing_without_opt_in
 check t_hook_mode_opt_in_installs_on_session_start t_hook_mode_opt_in_installs_on_session_start
@@ -109,6 +387,31 @@ check t_download_refuses_a_wrong_sha t_download_refuses_a_wrong_sha
 check t_download_leaves_an_unmanaged_engine_alone t_download_leaves_an_unmanaged_engine_alone
 check t_download_hands_over_to_an_installed_client t_download_hands_over_to_an_installed_client
 check t_download_without_a_lock_changes_nothing t_download_without_a_lock_changes_nothing
+
+check t_sessionstart_not_installed_notice_is_json t_sessionstart_not_installed_notice_is_json
+check t_sessionstart_engine_without_client_has_its_own_text t_sessionstart_engine_without_client_has_its_own_text
+check t_stale_engine_notice_joins_the_clients_json t_stale_engine_notice_joins_the_clients_json
+check t_stale_engine_notice_with_a_silent_client_is_the_notice_alone t_stale_engine_notice_with_a_silent_client_is_the_notice_alone
+check t_other_events_and_a_current_engine_leave_the_clients_output_alone t_other_events_and_a_current_engine_leave_the_clients_output_alone
+check t_a_client_that_already_set_a_system_message_gets_the_notice_appended t_a_client_that_already_set_a_system_message_gets_the_notice_appended
+check t_a_client_object_without_additional_context_gets_it_added t_a_client_object_without_additional_context_gets_it_added
+check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignores_term_is_killed_after_the_grace
+check t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget
+check t_a_failing_probe_leaves_no_orphan_sleep_helper t_a_failing_probe_leaves_no_orphan_sleep_helper
+check t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper
+check t_a_term_obeying_probe_that_runs_past_the_probe_limit_leaves_no_orphan_sleep_helper t_a_term_obeying_probe_that_runs_past_the_probe_limit_leaves_no_orphan_sleep_helper
+check t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe
+check t_parallel_sessions_in_one_home_each_get_their_notice t_parallel_sessions_in_one_home_each_get_their_notice
+check t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing
+check t_a_client_with_leading_whitespace_json_still_gets_the_notice t_a_client_with_leading_whitespace_json_still_gets_the_notice
+check t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown t_plain_text_client_output_is_kept_and_the_notice_is_not_marked_shown
+check t_codex_keeps_stdout_clean t_codex_keeps_stdout_clean
+check t_a_stale_defaults_error_with_a_healthy_engine_says_nothing t_a_stale_defaults_error_with_a_healthy_engine_says_nothing
+check t_a_defaults_error_with_a_failing_engine_still_warns t_a_defaults_error_with_a_failing_engine_still_warns
+check t_defaults_that_failed_to_load_say_the_guards_are_not_running t_defaults_that_failed_to_load_say_the_guards_are_not_running
+check t_a_defaults_error_older_than_the_engine_is_ignored t_a_defaults_error_older_than_the_engine_is_ignored
+check t_download_keeps_an_older_managed_engine_and_hands_over t_download_keeps_an_older_managed_engine_and_hands_over
+check t_download_creates_a_private_state_dir t_download_creates_a_private_state_dir
 
 printf 'install.sh: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
