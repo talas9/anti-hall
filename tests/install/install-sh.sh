@@ -10,7 +10,7 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 AH_WRAPPER_TEST=1; export AH_WRAPPER_TEST
 
 pass=0; fail=0
-check() { n=$1; shift; if "$@"; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n' "$n" >&2; fi; }
+check() { cname=$1; shift; if "$@"; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL %s\n' "$cname" >&2; fi; }
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
 # a scratch plugin: the real script and settings, a lock for the fake release below
@@ -337,6 +337,40 @@ t_download_keeps_an_older_managed_engine_and_hands_over() {
   grep -q "install --lock .*ah-engine.lock" "$HOME/hook-calls" || return 1   # the one implementation does the swap
   [ -z "$(ls "$st" | grep -i tmp)" ]   # the scratch dir is gone although the hand-over exec skips the EXIT trap
 }
+t_a_term_obeying_probe_that_runs_past_the_probe_limit_leaves_no_orphan_sleep_helper() {
+  newhome past; write_lock "$good"; fake_client ''
+  # the scratch plugin's settings are shared by the later tests: change them for this test only and put them back on every exit
+  cp "$plug/engine/defaults/engine.toml" "$tmp/engine.toml.keep"
+  # probe limit short, grace far above the poll bound below: an orphan grace-stage helper outlives the poll
+  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 300"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e.toml" && mv "$tmp/e.toml" "$plug/engine/defaults/engine.toml"
+  awk '$0 == "[install.defaults_probe_grace_ms]" { f = 1 } f && $1 == "value" { print "value = 7531"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e.toml" && mv "$tmp/e.toml" "$plug/engine/defaults/engine.toml"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe obeys TERM, forks no sleep of its own (tail on /dev/null) and runs past the probe limit; nothing signals the hook. The parent's
+  # TERM to the watchdog can reach a just-forked helper before it execs (it still carries the shell's TERM trap), so it is a race: repeat.
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexec tail -f /dev/null\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  mkdir -p "$tmp/shim"
+  printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
+  oldpath=$PATH; PATH="$tmp/shim:$PATH"; export PATH
+  i=0; bad=
+  restore_settings() { PATH=$oldpath; export PATH; cp "$tmp/engine.toml.keep" "$plug/engine/defaults/engine.toml"; }
+  while [ $i -lt 8 ] && [ -z "$bad" ]; do
+    : >"$tmp/sleeppids"
+    hook s$i SessionStart >/dev/null
+    [ -s "$tmp/sleeppids" ] || { restore_settings; echo "shim recorded no sleep: the test would prove nothing" >&2; return 1; }
+    n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+    while :; do
+      alive=
+      for p in $(cat "$tmp/sleeppids"); do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+      [ -z "$alive" ] && break
+      [ "$n" -ge "$max" ] && { bad=$alive; kill $alive 2>/dev/null; break; }
+      sleep 0.02; n=$((n + 1))
+    done
+    i=$((i + 1))
+  done
+  restore_settings
+  [ -z "$bad" ] || { echo "orphan sleep helper(s) still alive:$bad" >&2; return 1; }
+}
 t_download_creates_a_private_state_dir() {
   newhome priv; write_lock "$good"
   env_t sh "$plug/hooks/install.sh" --download >/dev/null 2>&1
@@ -365,6 +399,7 @@ check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignor
 check t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget
 check t_a_failing_probe_leaves_no_orphan_sleep_helper t_a_failing_probe_leaves_no_orphan_sleep_helper
 check t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper
+check t_a_term_obeying_probe_that_runs_past_the_probe_limit_leaves_no_orphan_sleep_helper t_a_term_obeying_probe_that_runs_past_the_probe_limit_leaves_no_orphan_sleep_helper
 check t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe
 check t_parallel_sessions_in_one_home_each_get_their_notice t_parallel_sessions_in_one_home_each_get_their_notice
 check t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing
