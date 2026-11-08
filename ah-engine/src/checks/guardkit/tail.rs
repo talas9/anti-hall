@@ -36,7 +36,8 @@ pub fn tail_lines_bounded(path: &str, max: u64, line_max: u64) -> Option<(TailLi
         _turn: turn,
     };
     if size > n {
-        t.next();
+        t.next(); // the piece the window starts inside is not a line, whatever its length
+        t.skipped = 0;
     }
     Some((t, size))
 }

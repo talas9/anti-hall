@@ -653,6 +653,82 @@ impl Prefilter {
 
 // ---- the walk ----------------------------------------------------------------------------------------------
 
+/// The 128-bit key of an id: two independent SipHash-1-3 digests of its bytes (fixed keys, so it is the same on every run). A kept
+/// walk holds one entry per tool call and per tool result of a window of up to tens of megabytes; keying them by this digest
+/// instead of by the id text keeps a third of the memory, and two ids that collide (about 2^-128 per pair) would have to be
+/// ids of one session's own calls.
+fn id_key(id: &str) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let digest = |seed: u8| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        seed.hash(&mut h);
+        id.as_bytes().hash(&mut h);
+        h.finish()
+    };
+    (u128::from(digest(1)) << 64) | u128::from(digest(2))
+}
+
+/// A hasher for keys that are already digests.
+#[derive(Default, Clone, Copy)]
+struct DigestHasher(u64);
+
+impl std::hash::Hasher for DigestHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
+        }
+    }
+    fn write_u128(&mut self, i: u128) {
+        self.0 = (i as u64) ^ ((i >> 64) as u64);
+    }
+}
+
+type DigestBuild = std::hash::BuildHasherDefault<DigestHasher>;
+
+/// A set of ids, held as their digests.
+#[derive(Clone, Default)]
+struct IdSet(HashSet<u128, DigestBuild>);
+
+impl IdSet {
+    fn insert(&mut self, id: &str) -> bool {
+        self.0.insert(id_key(id))
+    }
+    fn contains(&self, id: &str) -> bool {
+        self.0.contains(&id_key(id))
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// A map keyed by ids, held as their digests.
+#[derive(Clone)]
+struct IdMap<V>(HashMap<u128, V, DigestBuild>);
+
+impl<V> Default for IdMap<V> {
+    fn default() -> Self {
+        IdMap(HashMap::default())
+    }
+}
+
+impl<V> IdMap<V> {
+    fn get(&self, id: &str) -> Option<&V> {
+        self.0.get(&id_key(id))
+    }
+    fn insert(&mut self, id: &str, v: V) -> Option<V> {
+        self.0.insert(id_key(id), v)
+    }
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.0.values()
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 #[derive(Clone)]
 struct ToolUse {
     name: Option<String>,
@@ -701,13 +777,13 @@ struct Walk {
     desc_by_tool_use: HashMap<String, String>,
     others: Vec<Other>,
     other_bytes: u64,
-    dropped_ids: HashSet<String>,
-    tool_uses: HashMap<String, ToolUse>,
+    dropped_ids: IdSet,
+    tool_uses: IdMap<ToolUse>,
     stops: Vec<Stop>,
-    errored: HashSet<String>,
+    errored: IdSet,
     /// Tool-use ids whose result says the task does not exist (already ended).
-    gone: HashSet<String>,
-    answered: HashSet<String>,
+    gone: IdSet,
+    answered: IdSet,
     team_events: OMap<Vec<TeamEv>>,
     team_info: OMap<TeamInfo>,
     terminal_ev: HashMap<String, Vec<(u64, f64)>>,
@@ -748,12 +824,12 @@ impl Walk {
             desc_by_tool_use: HashMap::new(),
             others: Vec::new(),
             other_bytes: 0,
-            dropped_ids: HashSet::new(),
-            tool_uses: HashMap::new(),
+            dropped_ids: IdSet::default(),
+            tool_uses: IdMap::default(),
             stops: Vec::new(),
-            errored: HashSet::new(),
-            gone: HashSet::new(),
-            answered: HashSet::new(),
+            errored: IdSet::default(),
+            gone: IdSet::default(),
+            answered: IdSet::default(),
             team_events: OMap::default(),
             team_info: OMap::default(),
             terminal_ev: HashMap::new(),
@@ -810,7 +886,7 @@ impl Walk {
             return Err(Unsupported);
         }
         self.tool_uses.insert(
-            id.to_string(),
+            id,
             ToolUse {
                 name: name.map(str::to_string),
                 input: if keep { input.map(|i| std::sync::Arc::new(i.clone())) } else { None },
@@ -1000,10 +1076,10 @@ impl Walk {
                 && prop(block, "is_error") == Some(&Value::Bool(true))
                 && let Some(id) = tuid
             {
-                self.errored.insert(id.to_string());
+                self.errored.insert(id);
             }
             if is_tool_result && let Some(id) = tuid {
-                self.answered.insert(id.to_string());
+                self.answered.insert(id);
             }
             let mut texts: Vec<&str> = Vec::new();
             extract_text_refs(block_content, &mut texts);
@@ -1011,7 +1087,7 @@ impl Walk {
                 && let Some(id) = tuid
                 && texts.iter().any(|t| lower_contains(t, defaults::text("agent_scan.stop_gone_text")))
             {
-                self.gone.insert(id.to_string());
+                self.gone.insert(id);
             }
             for text in texts {
                 if is_tool_result
@@ -1072,7 +1148,7 @@ impl Walk {
                         && !c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n))
                     {
                         if let Some(id) = tuid {
-                            self.dropped_ids.insert(id.to_string());
+                            self.dropped_ids.insert(id);
                         }
                         continue;
                     }
@@ -1594,7 +1670,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
             r.description = d;
         }
         // `rec.spawnInput`: the input of the launching call when it is in the window (an object or array, as `typeof` says)
-        let spawn = launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t)).and_then(|c| c.input.clone());
+        let spawn = launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t.as_str())).and_then(|c| c.input.clone());
         if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), launched.get_mut(id)) {
             r.spawn_input = Some(i);
         }
@@ -1605,10 +1681,10 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
     background.extend(terminal.iter().cloned());
 
     for s in &stops {
-        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t)) {
+        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t.as_str())) {
             continue;
         }
-        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t)) {
+        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t.as_str())) {
             continue;
         }
         mark_terminal_in(&mut terminal, &mut terminal_ev, &s.id, s.seq, s.ts);
@@ -1627,7 +1703,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
     let mut stopped_agents: HashSet<String> = HashSet::new();
     for s in &stops {
         let Some(tuid) = s.tool_use_id.as_ref() else { continue };
-        if (w.errored.contains(tuid) && !w.gone.contains(tuid)) || !(w.answered.contains(tuid)) {
+        if (w.errored.contains(tuid.as_str()) && !w.gone.contains(tuid.as_str())) || !(w.answered.contains(tuid.as_str())) {
             continue;
         }
         let Some(info) = w.team_info.get(&s.id).filter(|i| !i.agent_id.is_empty()) else { continue };
@@ -1649,7 +1725,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
-            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t));
+            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t.as_str()));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
                 if !(delivery && names_agent(c.input.as_deref(), id, &launched)?) {

@@ -404,6 +404,11 @@ fn the_bounded_tail_reads_past_a_long_line_and_keeps_every_other_line_where_it_w
     let got: Vec<String> = b.by_ref().collect();
     assert_eq!(got, vec!["one".to_string(), String::new(), String::new(), "three\u{e9}".into(), "last".into()]);
     assert_eq!(b.skipped(), 1);
+    // the piece a window starts inside is dropped and is not counted as a skipped line, however long it is
+    std::fs::write(&p, format!("{long}\nab\ncd")).unwrap();
+    let (mut cut, _) = tail_lines_bounded(&p, 5005, 1000).unwrap();
+    assert_eq!(cut.by_ref().collect::<Vec<_>>(), vec!["ab".to_string(), "cd".into()]);
+    assert_eq!(cut.skipped(), 0);
     // a window ending on a newline has the empty last element, bounded or not
     std::fs::write(&p, "a\nb\n").unwrap();
     let (b, _) = tail_lines_bounded(&p, 1 << 20, 1000).unwrap();

@@ -297,6 +297,19 @@ fn run_phase(name: &'static str, root: &Path, src: &Path, sessions_n: usize, sec
         ah_engine::discard::harmless(t.join());
     }
     let counters = phase.json(&["query", "counters", "--limit", "5000"]);
+    // what the engine holds when the load stops: the registered holders (caches and stores), so a size-dependent resident part is seen
+    {
+        let m = phase.json(&["status", "--memory"]);
+        let mut rows: Vec<(f64, String)> = m["memory"]["budgets"]["holders"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|h| (h["bytes"].as_f64().unwrap_or(0.0), h["name"].as_str().unwrap_or("?").to_string()))
+            .collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let line: Vec<String> = rows.iter().filter(|(b, _)| *b >= 100_000.0).map(|(b, n)| format!("{n} {:.1}", b / MB)).collect();
+        eprintln!("GATE {name} holders (MB) {}", line.join(", "));
+    }
     // which check held the most (the gate's own diagnosis: the bars above are about the engine, this names the reader)
     {
         let m = &counters["meta"]["metrics"];
