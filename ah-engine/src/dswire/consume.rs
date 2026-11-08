@@ -132,15 +132,21 @@ fn settle_activity(
     (out, dropped, told, held_now)
 }
 
+/// The edges of generation `gen_now` or below (those a look that read `gen_now` as the current generation may use).
+fn up_to(mut edges: Vec<Edge>, gen_now: u64) -> Vec<Edge> {
+    edges.retain(|e| e.generation <= gen_now);
+    edges
+}
+
 /// The held map after `edges` are folded in without telling anything: per workspace the first `from` and the last `to`; a net
-/// no-change leaves nothing held.
+/// no-change leaves nothing held. The folded edges are not counted: `count` is what the "suppressed" counter is made from once the
+/// change is told, and an edge folded while nothing was shown was never going to be shown (a new slot counts as one change).
 fn fold_held(edges: &[Edge], held: &BTreeMap<String, Held>) -> BTreeMap<String, Held> {
     let mut net = held.clone();
     for e in edges.iter().filter(|e| e.kind == EdgeKind::Activity) {
-        let slot = net.entry(e.ws.clone()).or_insert_with(|| Held { from: e.from.clone(), to: e.to.clone(), at_ms: e.at_ms, count: 0 });
+        let slot = net.entry(e.ws.clone()).or_insert_with(|| Held { from: e.from.clone(), to: e.to.clone(), at_ms: e.at_ms, count: 1 });
         slot.to = e.to.clone();
         slot.at_ms = e.at_ms;
-        slot.count += 1;
     }
     net.retain(|_, h| h.from != h.to);
     net
@@ -174,7 +180,9 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     let marker = path.as_deref().map(read_marker).unwrap_or_default();
     let seen = marker.gen_seen.filter(|_| path.is_some());
     let dwell_ms = defaults::num("devswarm_rt.activity_min_dwell_s") as i64 * 1000;
-    let raw_edges = seen.map(|s| rt.edges_since(s)).unwrap_or_default();
+    // `gen_now` was read before the edges: an edge published between the two reads (its generation is above `gen_now`) is not part of
+    // this look. The marker moves to `gen_now`, so that edge is the next look's; folding it now as well would apply it twice.
+    let raw_edges = up_to(seen.map(|s| rt.edges_since(s)).unwrap_or_default(), gen_now);
     let (edges, dropped, mut told, mut held) = settle_activity(raw_edges.clone(), &marker.told, &marker.held, now, dwell_ms);
     // per-workspace pruning: a workspace the (readable) state no longer knows keeps no told time and nothing held
     let snap = rt.current();
@@ -483,6 +491,40 @@ mod tests {
         let (out, dropped, _, held) = settle(vec![act("w1", "stuck", "working", 3, 90_000)], &told, &held, 90_000);
         assert!(out.is_empty() && held.is_empty());
         assert_eq!(dropped, 2);
+    }
+
+    #[test]
+    fn an_edge_published_between_the_two_reads_is_left_to_the_next_look_not_folded_twice() {
+        // a flip pair split by a look: the first edge is in this look, the second (generation 6) came after `gen_now` (5) was read
+        let all = vec![act("w1", "working", "stuck", 5, 1000), act("w1", "stuck", "working", 6, 2000)];
+        let first = up_to(all.clone(), 5);
+        assert_eq!(first.len(), 1, "the edge above gen_now is not part of this look");
+        let held = fold_held(&first, &BTreeMap::new());
+        assert_eq!(held.get("w1").map(|h| (h.from.as_str(), h.to.as_str())), Some(("working", "stuck")));
+        // the next look starts from gen_now: only the late edge, and it cancels the held change; nothing is left held
+        let next = up_to(all.into_iter().filter(|e| e.generation > 5).collect(), 6);
+        assert!(fold_held(&next, &held).is_empty(), "the flip back cancels the held change");
+        // without the filter the late edge is folded in this look and again in the next one: a spurious held stuck -> working remains
+        let both = fold_held(&[act("w1", "working", "stuck", 5, 1000), act("w1", "stuck", "working", 6, 2000)], &BTreeMap::new());
+        assert!(both.is_empty());
+        let again = fold_held(&[act("w1", "stuck", "working", 6, 2000)], &both);
+        assert_eq!(again.get("w1").map(|h| (h.from.as_str(), h.to.as_str())), Some(("stuck", "working")), "this is what the filter prevents");
+    }
+
+    #[test]
+    fn edges_folded_while_the_advisory_is_off_are_not_counted_as_suppressed_when_it_is_back_on() {
+        // working -> stuck -> blocked while off: one net change; told after re-enable with nothing suppressed
+        let held = fold_held(&[act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "blocked", 2, 2000)], &BTreeMap::new());
+        assert_eq!(held.get("w1").map(|h| (h.from.as_str(), h.to.as_str(), h.count)), Some(("working", "blocked", 1)));
+        let (out, dropped, _, held) = settle(vec![], &BTreeMap::new(), &held, 1_000_000);
+        assert_eq!(out.len(), 1, "the net change is told");
+        assert_eq!(dropped, 0, "none of the edges folded while off is a suppressed one");
+        assert!(held.is_empty());
+        // a change held while it was on keeps its own count, and a fold while off adds nothing to it
+        let told = BTreeMap::from([("w1".to_string(), 10i64)]);
+        let (_, _, _, held_on) = settle(vec![act("w1", "a", "b", 1, 10), act("w1", "b", "c", 2, 20)], &told, &BTreeMap::new(), 20);
+        assert_eq!(held_on.get("w1").map(|h| h.count), Some(2));
+        assert_eq!(fold_held(&[act("w1", "c", "d", 3, 30)], &held_on).get("w1").map(|h| h.count), Some(2));
     }
 
     #[test]
