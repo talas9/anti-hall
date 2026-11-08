@@ -99,7 +99,7 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
     view! {
         {boot.screen_on("accounts").then(|| view! {
             <main class="main ops-main" hidden=hide(1)>
-                <Notice cfg=cfg failed=failed retry=load />
+                <Show when=move || screen.get() == 1><Notice cfg=cfg failed=failed retry=load /></Show>
                 <AccountsScreen active=shown(1) cfg=cfg />
             </main>
         })}
@@ -110,7 +110,7 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
         })}
         {boot.screen_on("logs").then(|| view! {
             <main class="main ops-main" hidden=hide(3)>
-                <Notice cfg=cfg failed=failed retry=load />
+                <Show when=move || screen.get() == 3><Notice cfg=cfg failed=failed retry=load /></Show>
                 <LogsScreen active=shown(3) cfg=cfg />
             </main>
         })}

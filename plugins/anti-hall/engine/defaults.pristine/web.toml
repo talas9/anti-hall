@@ -485,6 +485,32 @@ min = 2000
 max = 600000
 unit = "ms"
 
+[web.load_tick_ms]
+doc = "How often a view that is waiting for its first data re-checks whether the load timeout has passed."
+value = 250
+min = 50
+max = 5000
+unit = "ms"
+
+[web.stale_tick_ms]
+doc = "How often a view that shows data re-checks whether the data has gone stale."
+value = 1000
+min = 100
+max = 30000
+unit = "ms"
+
+[web.skeleton_rows]
+doc = "How many grey bars a list, table or tree skeleton draws."
+value = 6
+min = 1
+max = 40
+
+[web.skeleton_stats]
+doc = "How many figure blocks the stats skeleton draws above its chart frame."
+value = 4
+min = 1
+max = 12
+
 # The page's texts. The compiled page carries none of its own: it asks /api/ui for this table.
 [web.ui]
 doc = "Every label the page shows, by key. Edit here; reload the page."

@@ -183,6 +183,10 @@ async fn index(
         ribbon_buckets: s.ribbon_buckets,
         load_timeout_ms: s.load_timeout_ms,
         stale_after_ms: s.stale_after_ms,
+        load_tick_ms: s.load_tick_ms,
+        stale_tick_ms: s.stale_tick_ms,
+        skeleton_rows: s.skeleton_rows,
+        skeleton_stats: s.skeleton_stats,
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot)

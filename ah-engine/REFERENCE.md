@@ -14167,6 +14167,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_timeline_max` | `40` |  |  | Rows of the Live screen's timeline strip. |
 | `web.live_top_n` | `5` |  |  | Checks listed in the Live screen's top list. |
 | `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
+| `web.load_tick_ms` | `250` |  | ms | How often a view that is waiting for its first data re-checks whether the load timeout has passed. |
+| `web.load_timeout_ms` | `8000` |  | ms | How long a view shows its loading skeleton before it replaces it with an error line naming the endpoint and a retry action. |
 | `web.log_file` | `ah-web.log` |  |  | File (in the state directory the server was started with) it appends one line to for its start, every signal it receives and its exit with the reason, so a server that disappears says why. Rotated to `<name>.1` at web.log_max_bytes. |
 | `web.log_max_bytes` | `262144` |  |  | Size at which the server's log file is rotated (one old copy is kept). |
 | `web.manage_file` | `web_manage.toml` |  |  | The Settings screens' config file, next to this one (texts and limits of the Settings, Config, Checks, Jev and History tabs). |
@@ -14230,12 +14232,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.pulse_mem_warn_mb` | `125` |  |  | Engine memory footprint (MB) at which the MEM pill turns amber (the engine's soft memory limit). |
 | `web.pulse_min_interval_ms` | `2000` |  |  | How often the engine's vital signs (CPU, memory, requests, errors) are read and pushed. |
 | `web.push_min_ms` | `500` |  |  | Hard floor of the time between pushes and between asking the engine (500 = at most 2 per second). |
+| `web.ribbon_buckets` | `60` |  |  | How many slots the decision ribbon is divided into. |
+| `web.ribbon_window_s` | `3600` |  | s | Seconds the decision ribbon on the agents view covers (it marks the feed's decisions inside this window). |
+| `web.screens` | `8 items` |  |  | The Command Center's views, in nav order. Each entry: id (which view), label (a web.ui key), icon (a line icon name), enabled (false = hidden from the nav and not rendered; the code stays). Views the page does not know are ignored. Order and visibility are set here, not in the page. |
+| `web.skeleton_rows` | `6` |  |  | How many grey bars a list, table or tree skeleton draws. |
+| `web.skeleton_stats` | `4` |  |  | How many figure blocks the stats skeleton draws above its chart frame. |
 | `web.sse_keepalive_s` | `15` |  |  | Interval of the keep-alive comment on the event stream. |
+| `web.stale_after_ms` | `20000` |  | ms | A view that shows data marks it stale ("stale since HH:MM") when its last read failed or no read succeeded for this long. |
+| `web.stale_tick_ms` | `1000` |  | ms | How often a view that shows data re-checks whether the data has gone stale. |
 | `web.start_poll_ms` | `50` |  |  | Poll interval of that wait. |
 | `web.start_wait_ms` | `8000` |  |  | How long `ah-engine web` waits for a freshly started server to publish its state file. |
 | `web.state_file` | `web.json` |  |  | File (in the engine state directory) the server writes while it runs: pid, port, token and URL. Mode 0600. |
 | `web.static_dir` | `web/static` |  |  | Directory of the page's own files (index, CSS), relative to the plugin root. |
 | `web.step_max_chars` | `240` |  |  | Longest 'doing now' text sent per agent, in characters. |
+| `web.strip_pills` | `cpu, mem, err` |  |  | The figures in the top strip, left to right: cpu, mem, req (requests since start), err. req is a lifetime counter without a threshold, so it is off by default. |
+| `web.switches` | `6 entries` |  |  | Optional page parts. graph_tab: the Graph tab of the agents view (an empty canvas for now). search: the header search box (not wired yet). compose: the Send box of the selected-agent panel (not wired yet). swap_account: the Switch account card of Accounts (not wired yet). topology_toggle: Health can switch to the Topology drawing. tier_switch: the Auto/Full/Lite choice in the sidebar foot. |
 | `web.token_bytes` | `16` |  |  | Random bytes in the per-session token (shown as twice as many hex digits). |
 | `web.topo_action_max_chars` | `4000` |  |  | Longest output text of a Topology action that is returned. |
 | `web.topo_actions` | `7 items` |  |  | The Topology node menus, in order. kind: client, engine, subsystem or store. local: shows the figures the page already has. needs_viewer: only for stores in web.topo_viewers. args: the engine arguments; {pid} is the engine's pid, {viewer} the store's viewer id, {id} the node's id. |
@@ -14248,7 +14259,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
 | `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
 | `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
-| `web.ui` | `266 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `281 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 

@@ -977,7 +977,7 @@ pub(crate) fn Twist(key: String, kids: bool, collapsed: RwSignal<HashSet<String>
 #[component]
 fn TreeLine(row: TreeRow, by_id: Memo<HashMap<String, Agent>>, current: Memo<Option<Agent>>, collapsed: RwSignal<HashSet<String>>) -> impl IntoView {
     match (row.agent.clone(), row.project.clone()) {
-        (Some(id), _) => view! { <Row id=id key=row.key.clone() depth=row.depth guides=row.guides.clone() kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
+        (Some(id), _) => view! { <Row id=id key=row.key.clone() guides=row.guides.clone() kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
         (None, Some((name, live, all))) => view! {
             <div class="row-wrap proj-row">
                 <Twist key=row.key.clone() kids=row.kids collapsed=collapsed label_key="proj_toggle" />
@@ -993,7 +993,6 @@ fn TreeLine(row: TreeRow, by_id: Memo<HashMap<String, Agent>>, current: Memo<Opt
 fn Row(
     id: String,
     key: String,
-    depth: usize,
     guides: Vec<u8>,
     kids: bool,
     suffix: String,

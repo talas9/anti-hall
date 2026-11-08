@@ -413,6 +413,18 @@ pub struct Boot {
     /// How long a view's data may go without a fresh read before it is marked stale (`web.stale_after_ms`).
     #[serde(default)]
     pub stale_after_ms: u64,
+    /// How often a waiting view re-checks its timeout (`web.load_tick_ms`).
+    #[serde(default)]
+    pub load_tick_ms: u64,
+    /// How often a stale note re-checks the age of its data (`web.stale_tick_ms`).
+    #[serde(default)]
+    pub stale_tick_ms: u64,
+    /// Bars in a list or tree skeleton (`web.skeleton_rows`).
+    #[serde(default)]
+    pub skeleton_rows: usize,
+    /// Figures in a stats skeleton (`web.skeleton_stats`).
+    #[serde(default)]
+    pub skeleton_stats: usize,
 }
 
 /// What a view that loads data draws.
@@ -434,6 +446,41 @@ pub fn load_state(have: bool, failed: bool, waited_ms: u64, timeout_ms: u64) -> 
         Load::Error
     } else {
         Load::Skeleton
+    }
+}
+
+/// How long one mounted loading notice has waited. It is created when its view opens, never earlier, so a view opened long after the
+/// page loaded still starts at zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LoadClock {
+    waited_ms: u64,
+    tick_ms: u64,
+}
+
+impl LoadClock {
+    /// A clock at zero that advances `tick_ms` per tick (at least 1).
+    pub fn new(tick_ms: u64) -> Self {
+        Self {
+            waited_ms: 0,
+            tick_ms: tick_ms.max(1),
+        }
+    }
+    /// One tick passed; returns the time waited.
+    pub fn tick(&mut self) -> u64 {
+        self.waited_ms = self.waited_ms.saturating_add(self.tick_ms);
+        self.waited_ms
+    }
+    /// Start waiting again (a retry).
+    pub fn reset(&mut self) {
+        self.waited_ms = 0;
+    }
+    /// Time waited so far.
+    pub fn waited_ms(&self) -> u64 {
+        self.waited_ms
+    }
+    /// The state of the load at this clock.
+    pub fn state(&self, have: bool, failed: bool, timeout_ms: u64) -> Load {
+        load_state(have, failed, self.waited_ms, timeout_ms)
     }
 }
 
@@ -510,6 +557,31 @@ mod load_tests {
         assert_eq!(load_state(false, false, 8000, 8000), Load::Error);
         assert_eq!(load_state(false, true, 10, 8000), Load::Error);
         assert_eq!(load_state(true, true, 99999, 8000), Load::Data);
+    }
+
+    #[test]
+    fn a_view_opened_long_after_page_load_starts_on_the_skeleton() {
+        // the page has been up 30 s; the clock only exists once the view opens, so it starts at zero
+        let mut clock = LoadClock::new(250);
+        assert_eq!(clock.waited_ms(), 0);
+        assert_eq!(clock.state(false, false, 8000), Load::Skeleton);
+        for _ in 0..31 {
+            clock.tick();
+        }
+        assert_eq!(
+            clock.state(false, false, 8000),
+            Load::Skeleton,
+            "7750 ms in"
+        );
+        clock.tick();
+        assert_eq!(clock.state(false, false, 8000), Load::Error, "8000 ms in");
+        clock.reset();
+        assert_eq!(
+            clock.state(false, false, 8000),
+            Load::Skeleton,
+            "retry restarts the wait"
+        );
+        assert_eq!(LoadClock::new(0).tick(), 1, "a zero tick still moves");
     }
 
     #[test]
