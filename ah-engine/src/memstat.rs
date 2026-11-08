@@ -305,7 +305,9 @@ pub fn bursts() -> u64 {
 }
 
 /// [`note_burst`] for the request path: looks at the heap at most once per `mem_gate.burst_sample_ms`, so a check pays one
-/// atomic compare in between instead of the window lock. The allocator's peak spans the gap, so a spike is not missed.
+/// atomic compare in between instead of the window lock. The allocator's peak spans the gap, so a spike is not missed while looks come within `mem_gate.burst_window_ms` of each
+/// other. Across a longer gap the window restarts at the heap then, so a spike that has already fallen back is not counted
+/// (the window has no base to measure its rise from); the memory gate looks on every status poll, which is far shorter.
 pub fn note_burst_sampled() {
     static LAST_MS: AtomicU64 = AtomicU64::new(0);
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
