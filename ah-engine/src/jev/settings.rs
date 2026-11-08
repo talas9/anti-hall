@@ -723,4 +723,40 @@ mod tests {
         assert_eq!(known_integrations().len(), 25);
         assert_eq!(default_mode("dispatchTier"), Some(Mode::On));
     }
+
+    /// Task #548: every `jev.*` key this file reads from the settings file has a row in the settings CLI registry
+    /// (`settings_cli.items`) and in the migration schema (`migrate.settings_schema`), so `settings` can list, set and validate it.
+    /// The keys are the string literals of the `file_value("...")` and `price("...")` calls above the test module, so a key added
+    /// there without a row fails here.
+    #[test]
+    fn every_jev_key_read_from_the_settings_file_has_a_registry_row_and_a_schema_row() {
+        let src = include_str!("settings.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let mut keys: Vec<&str> = Vec::new();
+        for call in ["file_value(\"", "price(\""] {
+            let mut rest = code;
+            while let Some(at) = rest.find(call) {
+                rest = &rest[at + call.len()..];
+                let end = rest.find('"').unwrap();
+                keys.push(&rest[..end]);
+            }
+        }
+        assert!(keys.len() >= 15 && keys.contains(&"modelPin") && keys.contains(&"stateMaxTokens"), "the scan finds the calls: {keys:?}");
+        let rows = |list: &str| -> Vec<String> {
+            defaults::list(list)
+                .iter()
+                .filter_map(|r| serde_json::from_str::<Value>(r).ok())
+                .filter(|v| v["section"] == "jev")
+                .filter_map(|v| v["key"].as_str().map(str::to_string))
+                .collect()
+        };
+        let (cli, schema) = (rows("settings_cli.items"), rows("migrate.settings_schema"));
+        let missing: Vec<String> = keys
+            .iter()
+            .flat_map(|k| [("settings_cli.items", &cli), ("migrate.settings_schema", &schema)].map(|(l, have)| (k, l, have.iter().any(|h| h == k))))
+            .filter(|(_, _, ok)| !ok)
+            .map(|(k, l, _)| format!("jev.{k} has no row in {l}"))
+            .collect();
+        assert!(missing.is_empty(), "{missing:#?}");
+    }
 }

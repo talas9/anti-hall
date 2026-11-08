@@ -1055,6 +1055,73 @@ fn a_push_into_a_worktree_named_by_the_command_reads_that_worktrees_commits() {
     }
 }
 
+/// GH #593 (FW-2): a push the command line names a refspec for is not widened by `push.default` or `remote.<name>.push` (git reads both
+/// only when no refspec is named), so a clean feature branch passes while 60 commits sit unpushed elsewhere; a bare push under the same
+/// configuration, `--all` and a credit in the pushed range still read everything.
+#[test]
+fn a_push_naming_its_refspec_is_not_widened_by_push_default_or_a_configured_push_refspec() {
+    let e = Env::scoped("scoped_cfg_explicit");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let w = wt.to_str().unwrap();
+    for (key, val) in [("push.default", "matching"), ("remote.origin.push", "refs/heads/*:refs/heads/*")] {
+        git_ok(&work, &["config", key, val]);
+        for cmd in ["git push origin feat", "git push -u origin feat", "git push origin HEAD", "git push origin feat:feat"] {
+            assert_eq!(e.hook_in(cmd, w), (String::new(), String::new(), 0), "{key}: {cmd}");
+        }
+        let (out, err, code) = e.hook_in("git push", w);
+        assert_eq!(code, 2, "{key}: a bare push is widened by the setting: stdout={out} stderr={err}");
+        assert!(err.contains("more than 50 local commits"), "{key}: {err}");
+        let (out, err, code) = e.hook_in("git push --all origin", w);
+        assert_eq!(code, 2, "{key}: --all reads everything: stdout={out} stderr={err}");
+        git_ok(&work, &["config", "--unset", key]);
+    }
+    // push.followTags sends annotated tags with every push, a refspec or not: it still widens
+    git_ok(&work, &["config", "push.followTags", "true"]);
+    let (out, err, code) = e.hook_in("git push origin feat", w);
+    assert_eq!(code, 2, "followTags widens a named refspec: stdout={out} stderr={err}");
+    // a credit in the pushed range still blocks under the same configuration
+    let e = Env::scoped("scoped_cfg_credit");
+    let (work, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    git_ok(&work, &["config", "push.default", "matching"]);
+    let (out, err, code) = e.hook_in("git push origin feat", wt.to_str().unwrap());
+    assert_eq!(code, 2, "stdout={out} stderr={err}");
+    assert!(err.contains("AI credit"), "{err}");
+}
+
+/// GH #593 (FW-2): a quoted literal path (`cd "<dir>"`, `git -C "<dir>"`) and `cd -P` cannot expand, so they leave the push proven and
+/// narrowed like the unquoted forms; a credit in the pushed range still blocks through each of them, and a `;` chain stays unproven.
+#[test]
+fn a_quoted_literal_directory_or_cd_dash_p_keeps_the_push_narrowed() {
+    let e = Env::scoped("scoped_quoted_ok");
+    let (work, wt) = big_repo_with_worktree(&e, 4, false);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [
+        format!("cd \"{w}\" && git push origin feat 2>&1 | tail -3"),
+        format!("cd '{w}' && git push origin feat"),
+        format!("cd -P {w} && git push origin feat"),
+        format!("git -C \"{w}\" push origin feat"),
+    ] {
+        assert_eq!(e.hook_in(&cmd, m), (String::new(), String::new(), 0), "{cmd}");
+    }
+    // unbalanced quotes and a `;` chain are not proven: every unpushed commit is read, over the cap
+    for cmd in [format!("cd \"{w} && git push origin feat"), format!("cd {w}; git push origin feat")] {
+        let (_, err, code) = e.hook_in(&cmd, m);
+        assert_eq!(code, 2, "{cmd}: {err}");
+    }
+    let e = Env::scoped("scoped_quoted_credit");
+    let (work, wt) = big_repo_with_worktree(&e, 4, true);
+    let _ = e.hook("echo warm");
+    let (m, w) = (work.to_str().unwrap(), wt.to_str().unwrap());
+    for cmd in [format!("cd \"{w}\" && git push origin feat"), format!("cd -P {w} && git push origin feat"), format!("git -C \"{w}\" push origin feat")] {
+        let (out, err, code) = e.hook_in(&cmd, m);
+        assert_eq!(code, 2, "{cmd}: stdout={out} stderr={err}");
+        assert!(err.contains("AI credit"), "{cmd}: {err}");
+    }
+}
+
 /// GH #506 review (P1): git itself reads the configuration, so every spelling it accepts of a mirror (or another setting that makes
 /// a bare push send more than HEAD) widens the push, and a clean `main` does not hide a credited branch.
 #[test]
@@ -1387,9 +1454,11 @@ fn cd_to_clean_absolute_target_from_credited_session_repo_is_allowed() {
 }
 
 /// GH #506 / PR #524 third review: a cd target or push word the guard cannot prove literal (a bare relative name, a quoted path)
-/// takes the whole-repository scan and is counted.
+/// takes the whole-repository scan and is counted. (GH #593: a path wholly inside one pair of quote marks, no expansion character, is
+/// literal and stays narrowed, see a_quoted_literal_directory_or_cd_dash_p_keeps_the_push_narrowed; a quote that closes before the path
+/// ends, as in `"dir"/`, is still not proven.)
 #[test]
-fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
+fn bare_relative_cd_quoted_tilde_cd_dash_p_dotdot_and_quoted_c_path_take_the_wide_scan() {
     let e = Env::scoped("unproven");
     let work = clean_main_credited_branch(&e);
     std::fs::create_dir_all(work.join("sub")).unwrap();
@@ -1399,7 +1468,21 @@ fn bare_relative_cd_and_tilde_user_and_quoted_c_path_take_the_wide_scan() {
     // a bare relative cd name (CDPATH can redirect it) is not a literal target: refused with the literal-path text
     let (_, err, code) = e.hook_in(&format!("cd sub && git {P}"), w);
     assert!(code == 2 && err.contains("write the repository path literally"), "{code}: {err}");
-    for cmd in [format!("git -C '{w}' {P}"), format!("git -C \"{w}\" {P} origin main")] {
+    // a `~` inside quotes is not expanded by the shell, and `cd -P` with a `..` resolves it physically (symlinks): neither is proven,
+    // so the push reads the whole repository and finds the credited branch
+    for cmd in [
+        format!("cd \"~/x\" && git {P}"),
+        format!("cd '~/x' && git {P}"),
+        format!("cd -P {w}/sub/.. && git {P}"),
+        format!("cd -P ../x && git {P}"),
+        format!("cd -LP ../x && git {P}"),
+    ] {
+        let (out, err, code) = e.hook_in(&cmd, w);
+        if code != 2 || !err.contains("AI credit") {
+            missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));
+        }
+    }
+    for cmd in [format!("git -C '{w}'/ {P}"), format!("git -C \"{w}\"/ {P} origin main")] {
         let (out, err, code) = e.hook_in(&cmd, w);
         if code != 2 || !err.contains("AI credit") {
             missed.push(format!("{cmd}: code={code} stdout={out} stderr={err}"));

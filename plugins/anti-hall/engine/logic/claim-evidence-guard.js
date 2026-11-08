@@ -15,9 +15,9 @@
 function ceCollapse(s) { return s.normalize('NFC').replace(/\s+/g, ' ').trim(); }
 
 // The first hit [start, end] of any pattern of `list` in `t`, else null.
-function ceAny(list, t) {
+function ceAny(list, t, flags) {
   for (var i = 0; i < list.length; i++) {
-    var r = ah.re.find(list[i], 'i', t);
+    var r = ah.re.find(list[i], flags === undefined ? 'i' : flags, t);
     if (r) return r;
   }
   return null;
@@ -208,6 +208,80 @@ function ceCountFired(rule) {
   ah.advisory('claim_evidence', 'fired_' + rule);
 }
 
+// The tool calls of the last `n` of the transcript as [command, output text] (command '' for a call without one, output '' when the
+// result is not in the window), in order: the output a call returned is the tool_result block that names its tool_use id.
+function ceTurnCalls(tp, n) {
+  var lines = ah.fs.tailLines(tp, ah.cfgNum('claim_ledger.window_bytes'), true, ['tool_use', 'tool_result']);
+  if (lines === null) return null;
+  var uses = [], outs = {};
+  for (var i = 0; i < lines.length; i++) {
+    var e;
+    try { e = JSON.parse(lines[i]); } catch (x) { continue; }
+    var c = e && e.message && e.message.content;
+    if (!Array.isArray(c)) continue;
+    for (var j = 0; j < c.length; j++) {
+      var b = c[j];
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'tool_use') uses.push({ id: b.id, cmd: b.input && typeof b.input.command === 'string' ? b.input.command : '' });
+      else if (b.type === 'tool_result') {
+        var t = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(function (x) { return x && typeof x.text === 'string' ? x.text : ''; }).join('\n') : '';
+        outs[b.tool_use_id] = t;
+      }
+    }
+  }
+  return uses.slice(Math.max(0, uses.length - n)).map(function (u) { return [u.cmd, typeof outs[u.id] === 'string' ? outs[u.id] : '']; });
+}
+
+// GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn (claim_evidence.log_read_res) and every
+// figure of the claim is a whole number the output of such reads spells next to a pass / fail / test / check word
+// (claim_evidence.output_pass_res, output_fail_res, output_bare_res: a line number, a version, a hash digit or a size is no count; 1 is not found inside 142; the figure in
+// the prompt, in a command or in an earlier turn does not count). The read verbs are matched case-sensitively (git's HEAD is not head). A claim with no figure is never backed by a read alone.
+function ceLogReadBacks(claim, tp, tools) {
+  if (!ah.settings.bool('claim_evidence.log_read_counts')) return false;
+  var re = ah.cfg('claim_evidence.figure_re'), figs = ah.re.findAll(re, 'i', claim.quote);
+  if (!figs.length) return false;
+  var calls = ceTurnCalls(tp, tools), reads = ah.cfg('claim_evidence.log_read_res');
+  if (calls === null) return false;
+  var passRes = ah.cfg('claim_evidence.output_pass_res'), failRes = ah.cfg('claim_evidence.output_fail_res');
+  var bareRes = ah.cfg('claim_evidence.output_bare_res'), listRes = ah.cfg('claim_evidence.output_listing_res');
+  var passHave = {};
+  for (var i = 0; i < calls.length; i++) {
+    if (calls[i][0] === '' || ceAny(reads, calls[i][0], '') === null) continue;
+    var out = calls[i][1], p = ceNums(passRes, re, out), f = ceNums(failRes, re, out), bare = ceNums(bareRes, re, out, ceSpans(listRes, out));
+    var failSeen = false, k;
+    for (k in f.map) if (Number(k) > 0) failSeen = true;
+    for (k in p.map) passHave[k] = true;
+    // a bare "N tests" count says nothing about pass or fail: it backs a pass claim only when this output shows no failure
+    if (!failSeen) for (k in bare.map) passHave[k] = true;
+  }
+  for (var q = 0; q < figs.length; q++) {
+    var want = Number(claim.quote.slice(figs[q][0], figs[q][1]).replace(/,/g, ''));
+    if (!isFinite(want)) return false;
+    if (passHave[want] !== true) return false;
+  }
+  return true;
+}
+
+// spans of every pattern of a list in a text
+function ceSpans(res, text) {
+  var all = [];
+  for (var j = 0; j < res.length; j++) all = all.concat(ah.re.findAll(res[j], 'i', text));
+  return all;
+}
+
+// the whole numbers the spans of a pattern list spell in a text; a span starting inside a skip span is left out
+function ceNums(res, re, text, skip) {
+  var map = {}, spans = ceSpans(res, text);
+  for (var m = 0; m < spans.length; m++) {
+    var gone = false;
+    for (var s = 0; skip && s < skip.length; s++) if (spans[m][0] >= skip[s][0] && spans[m][0] < skip[s][1]) gone = true;
+    if (gone) continue;
+    var piece = text.slice(spans[m][0], spans[m][1]), nums = ah.re.findAll(re, 'i', piece);
+    for (var k = 0; k < nums.length; k++) map[Number(piece.slice(nums[k][0], nums[k][1]).replace(/,/g, ''))] = true;
+  }
+  return { map: map };
+}
+
 function ceAnyCmd(list, cmds) {
   for (var i = 0; i < cmds.length; i++) if (cmds[i] !== '' && ceAny(list, cmds[i]) !== null) return true;
   return false;
@@ -276,11 +350,19 @@ function decide(p) {
     if (tools === 0) what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
     else if (needs.length > 0) {
       if (cmds === null) cmds = ceCommands(tpOpen, tools);
-      if (cmds !== null && !ceAnyCmd(needs, cmds)) what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+      if (cmds !== null && !ceAnyCmd(needs, cmds)) {
+        if (ceLogReadBacks(claim, tpOpen, tools)) {
+          if (ah.settings.bool('claim_evidence.sw_telemetry')) ah.metric('claim_evidence_log_read_ok', ['claim', claim.row.id]);
+        } else what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
+      }
     }
   }
   if (what === null) return 'allow';
   var instead = what === ah.cfg('claim_evidence.msg_pushed_what') ? ah.cfg('claim_evidence.msg_pushed_instead') : ah.cfg('claim_evidence.msg_claim_instead');
+  // rule 1 names the check that would satisfy the claim row (its `check` text), so the hold says what to run, not only that it failed
+  if (what !== ah.cfg('claim_evidence.msg_pushed_what') && claim !== null && typeof claim.row.check === 'string') {
+    instead = text.render(ah.cfg('claim_evidence.msg_satisfy'), { check: claim.row.check });
+  }
   ah.log(ah.cfg('claim_evidence.log_kind'), what);
   ceCountFired(what === ah.cfg('claim_evidence.msg_pushed_what') ? 'pushed' : 'claim');
   if (ah.cfg('claim_evidence.mode') !== 'block') return 'allow';
