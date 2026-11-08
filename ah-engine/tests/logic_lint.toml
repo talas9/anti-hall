@@ -22,6 +22,7 @@ allow = [
   "model-routing.js:used += n",
   "command.js:k += n;",
   "command.js:f += 'i'",
+  "lib/55-command-parts.js:f += 'i'",
   "lib/50-posix.js:path += '/'",
   "git.js:cur += '/' + segs[i]",
   "reply-length-guard.js:codeChars += n",
@@ -62,6 +63,24 @@ flag = true
 [[charwise_concat.cell]]
 line = "cur += c + c2;"
 flag = true
+[[charwise_concat.cell]]
+line = "cur += c"
+flag = true
+[[charwise_concat.cell]]
+line = "s = s + c;"
+flag = true
+[[charwise_concat.cell]]
+line = "out = out + ch"
+flag = true
+[[charwise_concat.cell]]
+line = "cur +=c }"
+flag = true
+[[charwise_concat.cell]]
+line = "total = other + c;"
+flag = false
+[[charwise_concat.cell]]
+line = "n = n + 1;"
+flag = false
 [[charwise_concat.cell]]
 line = "score += weights[field];"
 flag = false
@@ -104,5 +123,6 @@ git = 14
 command = 6
 [logic_alloc.braces_mib]
 git = 14
+# measured 2026-11-08 (15 KB `a>|b` command): 108 MiB before the char-builder fix, 33 MiB after #656's first commit, 7.1 MiB on dev; budget ~2x the current figure like braces_mib
 [logic_alloc.redirects_mib]
-git = 48
+git = 16
