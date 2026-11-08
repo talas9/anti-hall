@@ -133,10 +133,22 @@ pub(crate) fn run_merged(p: &Parsed, alias: bool) -> i32 {
         dev_rest.push(flag.to_string());
     }
     let quiet = auto || alias; // the old verb never printed the agent half's refusals
-    let agent = std::thread::spawn(move || run(quiet));
+    let agent = std::thread::spawn(move || guarded(move || run(quiet), &mut |l| emit(l)));
     let dev_code = crate::wakew::run(&dev_rest);
     // `None`: the agent half never armed (switched off, no session, held elsewhere), so the exit code follows the DevSwarm half
     if agent.join().ok().flatten().is_some() { 0 } else { dev_code }
+}
+
+/// Run the agent half so that its panic is seen on the monitor stream the moment it happens, not only in the crash file the panic hook
+/// writes: one stdout line naming the failed half (the DevSwarm half keeps the process alive), counted in `merged_watch_failed`. A
+/// panicked half counts as one that never armed.
+pub(crate) fn guarded(half: impl FnOnce() -> Option<i32> + std::panic::UnwindSafe, out: &mut dyn FnMut(&str)) -> Option<i32> {
+    std::panic::catch_unwind(half).unwrap_or_else(|_| {
+        let name = defaults::text("agent_tracker.watch_half_agent");
+        out(&defaults::render("msg.agent_wake_half_failed", &[("half", &name)]));
+        crate::metrics::bump_by_shared("merged_watch_failed", &[("half", name)], 1);
+        None
+    })
 }
 
 fn diag(line: &str) {

@@ -949,6 +949,37 @@ fn a_dead_watcher_with_a_live_child_gets_one_exact_rearm_line_and_is_then_rate_l
     assert_eq!(arm_reminders(&h).len(), 2);
 }
 
+/// A main whose only child is idle with an open task is exactly the session an idle-open wake row is for: it is told to re-arm.
+/// Fails on the old code (only `running` children were counted).
+#[test]
+fn a_dead_watcher_with_an_idle_child_holding_an_open_task_is_asked_to_rearm() {
+    let h = home("rearm-idle-child");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 3 * MIN]);
+    assert!(agent(&st, "w1").open && !agent(&st, "w1").running);
+    let rows: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "monitor_unarmed").collect();
+    assert_eq!(rows.len(), 1, "{:?}", queue(&h, "parent"));
+}
+
+/// A panic of the agent half of the merged watcher is not silent: one stdout line names the half, the counter moves, and the half
+/// counts as never armed (the other half keeps the process).
+#[test]
+fn a_panic_of_the_agent_half_prints_one_line_naming_it_and_is_counted() {
+    crate::metrics::reset_this_thread();
+    let mut lines: Vec<String> = Vec::new();
+    let code = wake::guarded(|| -> Option<i32> { panic!("boom") }, &mut |l| lines.push(l.to_string()));
+    assert_eq!(code, None);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[agent-wake]") && lines[0].contains("agent half") && lines[0].contains("crashed"), "{lines:?}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("merged_watch_failed", &[("half", "agent")]), 1);
+    // a half that returns normally prints nothing and keeps its code
+    let mut quiet: Vec<String> = Vec::new();
+    assert_eq!(wake::guarded(|| Some(0), &mut |l| quiet.push(l.to_string())), Some(0));
+    assert!(quiet.is_empty());
+}
+
 /// #614: the re-arm line asked for an action the session had no use for: with no live child and no background task there is nothing to
 /// wake it for. Fails on the old code (monitor_min_bg = 0 raised the flag for any live main session).
 #[test]
@@ -1870,6 +1901,41 @@ fn a_primary_is_not_told_to_arm_the_devswarm_watcher_it_declines_while_idle() {
     let a = agent(&st, "sessW");
     assert!(a.ws.as_ref().is_some_and(|w| w.armed == Some(true)), "an idle Primary is covered by the watcher idle-skip decision");
     assert!(outbox(&h).is_empty() && queue(&h, "sessW").iter().all(|r| !r["text"].as_str().unwrap().contains("wake-watch --auto")), "nobody is told to arm it");
+}
+
+/// #614: the re-arm line must be judged by the very predicate `wake-watch --auto` arms by (`resolve_identity`). A Primary session
+/// whose recorded directory is a subdirectory of its checkout is a Primary to the watcher (it declines on idle-skip), so the nag may
+/// not ask for the arming the watcher refuses.
+#[test]
+fn a_primary_the_watcher_declines_is_not_nagged_whatever_directory_form_it_is_recorded_under() {
+    let h = home("primary-ws-subdir");
+    let n = now0();
+    devswarm(&h, n, None);
+    let checkout = h.join("checkout");
+    std::fs::create_dir_all(checkout.join("sub")).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&checkout).status().unwrap().success());
+    let sub = checkout.join("sub");
+    let pid = crate::meshw::ident::primary_workspace_id(checkout.to_str().unwrap()).unwrap();
+    std::fs::remove_file(h.join(".anti-hall/devswarm/workspaces/ws1.json")).unwrap();
+    std::fs::write(h.join(format!(".anti-hall/devswarm/workspaces/{pid}.json")), json!({"id": pid, "sessionId": "sessW", "worktreePath": sub}).to_string())
+        .unwrap();
+    // the premise: the watcher itself reads this session as a Primary with no live child, and declines
+    let e = env(&h, n);
+    let proc = crate::wakew::who::Proc {
+        home: h.clone(),
+        cwd: sub.to_string_lossy().into_owned(),
+        env: e.settings.env.clone(),
+        st: e.settings.clone(),
+        root: String::new(),
+    };
+    assert!(crate::wakew::who::resolve_identity(&proc).unwrap().unwrap().primary);
+    assert!(matches!(crate::wakew::arch::idle_skip(&proc), Ok(crate::wakew::arch::IdleSkip::Applies)));
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(a.ws.as_ref().is_some_and(|w| w.armed == Some(true)), "the nag and the watcher decide alike: {:?}", a.ws);
+    assert!(!a.flags.contains_key("monitor_unarmed") && queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_unarmed"), "{:?}", queue(&h, "sessW"));
 }
 
 // ---- teammates the host no longer lists (#15) -----------------------------------------------------------------

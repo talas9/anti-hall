@@ -32,21 +32,34 @@ pub fn lock_live(home: &Path, id: &str, now: i64) -> R<bool> {
     Ok(fresh && alive != Some(false))
 }
 
-/// The same no-live-children decision used by wake-watch and inbox tick.
-pub fn idle_for_workspace(home: &Path, id: &str, st: &crate::checks::git::util::Settings) -> bool {
-    let Some(d) = crate::meshw::ident::read_descriptor(home, id) else { return false };
-    let Some(OVal::Str(scope)) = d.get(defaults::text("mesh_write.field_worktree_path")) else { return false };
+/// The watcher's view of a workspace: the process it would run as (its descriptor's directory).
+fn proc_for_workspace(home: &Path, id: &str, st: &crate::checks::git::util::Settings) -> Option<crate::wakew::who::Proc> {
+    let d = crate::meshw::ident::read_descriptor(home, id)?;
+    let OVal::Str(scope) = d.get(defaults::text("mesh_write.field_worktree_path"))? else { return None };
     if scope.is_empty() {
-        return false;
+        return None;
     }
-    let p = crate::wakew::who::Proc {
+    Some(crate::wakew::who::Proc {
         home: home.to_path_buf(),
         cwd: scope.clone(),
         env: st.env.clone(),
         st: st.clone(),
         root: defaults::root().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
-    };
-    matches!(crate::wakew::arch::idle_skip(&p), Ok(crate::wakew::arch::IdleSkip::Applies))
+    })
+}
+
+/// The same no-live-children decision used by wake-watch and inbox tick.
+pub fn idle_for_workspace(home: &Path, id: &str, st: &crate::checks::git::util::Settings) -> bool {
+    proc_for_workspace(home, id, st).is_some_and(|p| matches!(crate::wakew::arch::idle_skip(&p), Ok(crate::wakew::arch::IdleSkip::Applies)))
+}
+
+/// Whether `wake-watch --auto` declines to arm this workspace: the watcher's own identity (`resolve_identity`, the one it arms by) is
+/// the Primary and the idle-skip applies. The re-arm line asks for arming only when this is false, so a session is never told to
+/// arm a watcher that cannot arm (#614). Returns the identity's `primary` too.
+pub fn watcher_declines(home: &Path, id: &str, st: &crate::checks::git::util::Settings) -> (bool, bool) {
+    let Some(p) = proc_for_workspace(home, id, st) else { return (false, false) };
+    let primary = crate::wakew::who::resolve_identity(&p).ok().flatten().is_some_and(|i| i.primary);
+    (primary, primary && matches!(crate::wakew::arch::idle_skip(&p), Ok(crate::wakew::arch::IdleSkip::Applies)))
 }
 
 /// What [`live_for_workspace`] found.

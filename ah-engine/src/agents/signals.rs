@@ -450,7 +450,10 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
     if (a.kind == kind_name("main") || a.ws.is_some()) && sinks::wake_armed(env, &a.id) {
         return None;
     }
-    let subs = st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64;
+    // live children: running ones, and idle ones still holding an open task (the row that wakes this session); a finished, dead or gone
+    // child is nothing to watch
+    let subs =
+        st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && (running(s) || (s.open && !s.gone && !s.dead && !s.finished))).count() as u64;
     let shells = a.bg_bash.iter().filter(|t| now.saturating_sub(**t) <= lim("bg_bash_ms")).count() as u64;
     let bg = subs + shells;
     if bg < lim("monitor_min_bg") && now > a.armed_until {

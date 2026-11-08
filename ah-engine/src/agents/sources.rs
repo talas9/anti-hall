@@ -211,12 +211,15 @@ fn devswarm(env: &Env, st: &mut State) {
         if !step.is_empty() {
             facts::set_step(a, &step);
         }
-        // The app may register the Primary checkout under a non-primary id. Judge its
-        // checkout, then use the watcher's live-child decision rather than its id spelling.
-        let primary = crate::meshw::ident::resolve_context(&wt, true)
+        // Not told to arm when the watcher itself declines (its own identity, #614), nor when this is the Primary's checkout judged by
+        // path (the app may register it under a non-primary id) with no live child (#672)
+        let (watcher_primary, declined) = crate::meshw::watcher::watcher_declines(&env.home, &id, &env.settings);
+        let by_path = crate::meshw::ident::resolve_context(&wt, true)
             .ok()
             .is_some_and(|c| crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
-        let idle = primary && env.switch("agent_tracker.rearm_idle_setting") && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings);
+        let primary = watcher_primary || by_path;
+        let idle = (declined || (by_path && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings)))
+            && env.switch("agent_tracker.rearm_idle_setting");
         let armed = Some(idle || watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done, primary });
         live_plan(env, &id, a, done);
