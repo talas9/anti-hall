@@ -413,8 +413,35 @@ fn watched_exit(a: &Agent, now: u64) -> Option<Raised> {
     Some((fresh.len() as u64, last.0.clone()))
 }
 
+/// Whether the wake watcher applies to this agent at all: a live main or workspace session. Codex has no Monitor tool (its kind is
+/// `codex`, so it is never asked to arm one: it keeps its cron and hooks).
+fn watcher_session(a: &Agent) -> bool {
+    (a.kind == kind_name("main") || a.kind == kind_name("workspace")) && !a.gone
+}
+
+/// The wake watcher is switched off (agents.wakeWatch=false): said once per session, never silently (signal `monitor_off`).
+fn monitor_off(env: &Env, a: &Agent) -> Option<Raised> {
+    (watcher_session(a) && !wake_switch(env, a)).then(|| (0, String::new()))
+}
+
+/// The wake-watch switch that governs this session: a DevSwarm workspace follows devswarm.wakeWatch, a main session agents.wakeWatch.
+fn wake_switch(env: &Env, a: &Agent) -> bool {
+    env.switch(wake_switch_key(a))
+}
+
+/// The defaults key of the switch entry that governs this session's wake-watch.
+fn wake_switch_key(a: &Agent) -> &'static str {
+    if a.kind == kind_name("workspace") { "agent_tracker.wake_setting_devswarm" } else { "agent_tracker.wake_setting" }
+}
+
+/// A live session whose wake watcher is down. The harness starts the watcher once and a Monitor lives at most 30 minutes, so a dead one
+/// stays dead; this is what tells the session to re-arm it. Silent while the watcher's stamp is fresh (or a Monitor the session armed
+/// itself is still within its timeout), while the switch is off (`monitor_off` speaks then), and during the start-up grace.
 fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
-    if (a.kind != kind_name("main") && a.kind != kind_name("workspace")) || a.gone {
+    if !watcher_session(a) || !wake_switch(env, a) {
+        return None;
+    }
+    if a.first_seen > 0 && now.saturating_sub(a.first_seen) < lim("monitor_grace_ms") {
         return None;
     }
     if let Some(Some(armed)) = a.ws.as_ref().map(|w| w.armed) {
@@ -423,10 +450,21 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
     if (a.kind == kind_name("main") || a.ws.is_some()) && sinks::wake_armed(env, &a.id) {
         return None;
     }
-    let subs = st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64;
+    // live children: running ones, and idle ones still holding an open task (the row that wakes this session); a finished, dead or gone
+    // child is nothing to watch
+    let subs =
+        st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && (running(s) || (s.open && !s.gone && !s.dead && !s.finished))).count() as u64;
     let shells = a.bg_bash.iter().filter(|t| now.saturating_sub(**t) <= lim("bg_bash_ms")).count() as u64;
     let bg = subs + shells;
-    (bg >= lim("monitor_min_bg") && now > a.armed_until).then(|| {
+    if bg < lim("monitor_min_bg") && now > a.armed_until {
+        // #614: nothing to watch (no live subagent, no running background shell), so nothing is lost without a watcher and the line
+        // would only ask for an action the session has no use for
+        if env.act {
+            crate::metrics::bump("monitor_nag_suppressed", &[("reason", "no_live_child")]);
+        }
+        return None;
+    }
+    (now > a.armed_until).then(|| {
         let armed = if a.armed_at == 0 {
             defaults::render("msg.agent_armed_never", &[])
         } else {
@@ -767,6 +805,7 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "drift" => drift(a),
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
+            "monitor_off" => monitor_off(env, a),
             "idle_open_task" => idle_open_task(a, now),
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
@@ -902,10 +941,17 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             let (run, cap, items) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
             defaults::render("msg.agent_underparallel", &[("n", &f.evidence), ("items", &items), ("running", &run), ("cap", &cap)])
         }
+        "monitor_off" => {
+            let e = defaults::raw(wake_switch_key(a));
+            defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])
+        }
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
             defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
-        _ => defaults::render("msg.agent_monitor_unarmed", &[("count", &f.evidence), ("armed", &f.text)]),
+        _ => defaults::render(
+            "msg.agent_monitor_unarmed",
+            &[("command", &defaults::text("agent_tracker.wake_command_agents")), ("timeout", &defaults::num("agent_tracker.wake_timeout_ms"))],
+        ),
     };
     cap(&t, defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap_or(0).max(0) as u64)
 }
@@ -1060,6 +1106,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         if sig == "drift" {
             a.drift_step = step_hash;
         }
+        if sig == "monitor_unarmed" {
+            crate::metrics::bump("monitor_rearm_prompted", &[]);
+        }
         if let Some(f) = a.flags.get_mut(sig)
             && f.reminded_at == 0
         {
@@ -1073,6 +1122,9 @@ fn resolve(env: &Env, st: &mut State, a: &Agent, sig: &str, f: &Flag) {
     if f.reminded_at > 0 {
         let lat = now.saturating_sub(f.reminded_at) / fmtn("ms_per_s");
         rec(env, "outcome", "recovered", Outcome::Allow, base(a).tok("source", sig).num("recovered", 1).num("lat_s", lat));
+        if sig == "monitor_unarmed" {
+            crate::metrics::bump("monitor_rearmed", &[]);
+        }
         st.day(env).recovered += 1;
     } else if a.progress >= f.base_progress + lim("fp_min_progress") {
         rec(env, "outcome", "false_positive", Outcome::Allow, base(a).tok("source", sig).num("fp", 1));
@@ -1098,6 +1150,10 @@ fn apply(env: &Env, st: &mut State, a: &mut Agent, raised: BTreeMap<&'static str
                 );
                 if env.act {
                     st.day(env).signals += 1;
+                    if sig == "monitor_unarmed" {
+                        let reason = if a.ws.is_some() { "workspace_lock" } else { "no_stamp" };
+                        crate::metrics::bump("monitor_unarmed", &[("kind", a.kind.as_str()), ("reason", reason)]);
+                    }
                 }
                 a.flags.insert(sig.into(), f);
             }

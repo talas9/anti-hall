@@ -62,6 +62,11 @@ fn emit(line: &str) {
     crate::discard::harmless(out.flush()); // keep: same
 }
 
+/// One line printed by the DevSwarm half of the merged watcher, counted by source (`merged_watch_rows`).
+fn count_row() {
+    crate::metrics::bump_by_shared("merged_watch_rows", &[("source", "devswarm")], 1);
+}
+
 /// A diagnostic on stderr.
 fn diag(line: &str) {
     let mut err = std::io::stderr().lock();
@@ -477,6 +482,7 @@ impl Run<'_> {
         };
         for l in &lines {
             emit(l);
+            count_row();
         }
         let changed = (state.last_total, state.last_total2, state.last_broadcast) != self.saved;
         locked(self.cell).state = state.clone();

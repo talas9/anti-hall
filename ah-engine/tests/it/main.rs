@@ -11,6 +11,7 @@ mod broad_kill;
 mod common;
 mod deploy_defaults_gate;
 mod event_budgets;
+mod fw1_command;
 mod invisible_channel;
 mod lane_waste;
 mod replies;

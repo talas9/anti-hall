@@ -117,6 +117,7 @@ script/host_mesh.rs | IDENT | cleared at each script call | request-local mesh i
 script/host_parentinbox.rs | CACHE | devswarm_parent.drift_cache_keys_max; clears at cap | transcript session listings
 script/host_parentinbox.rs | CWDS | devswarm_parent.drift_cache_keys_max times drift_cache_cwd_factor; clears at cap | transcript head working directories
 script/mod.rs | CACHE | one library fingerprint snapshot for the current directory pair | replaced when home/root or TTL changes
+script/golden.rs | V | one String (the plugin.json version), set once per process and never replaced | golden corpus runner memo of the plugin version read (module is cfg(test) only)
 web/decisions.rs | RING | decisions.ring rows; drops oldest at cap | dashboard check decisions
 web/io.rs | Reg.names | io.max_clients slots, io.client_name_max characters each | dashboard client registry
 web/pulse.rs | SHA | web.build_sha_bytes rendered as hex, computed once | executable identity
