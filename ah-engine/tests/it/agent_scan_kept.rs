@@ -469,3 +469,27 @@ fn real_transcripts_sliding_through_a_window_scan_the_same() {
     std::fs::remove_dir_all(&dir).ok();
     assert!(diffs.is_empty(), "the kept walk answered differently from the exact window: {diffs:#?}");
 }
+
+/// Launch (a), resume (b), then TaskStop: the stop is pushed during the walk's finish(), after the resume reconciliation's
+/// source was cloned, so the reconciliation must read the finish-local terminal evidence, not the borrowed walk's. With the
+/// borrowed one the stop is invisible and the agent reads as running forever.
+#[test]
+fn a_taskstop_after_a_resume_leaves_the_agent_terminal() {
+    let dir = scratch("resume-stop");
+    let path = dir.join("t.jsonl");
+    let agent = format!("a{:015x}", 1);
+    let mut v = launch(1);
+    v.push(assistant_use("toolu_resume", "SendMessage", json!({"to": agent, "message": "go on"}), "2026-10-06T12:10:00.000Z"));
+    let resumed = json!({"success": true, "message": format!("Resuming agent {agent} in the background"), "resumedAgentId": agent}).to_string();
+    v.push(result("toolu_resume", &resumed, "2026-10-06T12:10:01.000Z"));
+    v.push(assistant_use("toolu_stop2", "TaskStop", json!({"task_id": agent}), "2026-10-06T12:20:00.000Z"));
+    v.push(result("toolu_stop2", "stopped", "2026-10-06T12:20:01.000Z"));
+    std::fs::write(&path, v.join("\n") + "\n").unwrap();
+    for ignore in [false, true] {
+        let s = scan_transcript_uncached(path.to_str().unwrap(), WINDOW, &opts(ignore)).unwrap().unwrap();
+        assert!(s.launched.get(&agent).is_some(), "the agent is known (ignore={ignore})");
+        assert!(s.terminal.contains(&agent), "a TaskStop after the resume ends the agent (ignore={ignore})");
+        assert!(s.rows().iter().all(|r| r.id != agent), "and it is not listed as running (ignore={ignore})");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

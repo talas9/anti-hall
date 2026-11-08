@@ -14,7 +14,10 @@ pub struct App {
     pub engine: PathBuf,
     /// The engine daemon's control socket.
     pub socket: PathBuf,
+    /// The session token; empty when `web.require_token` is false (no token is asked for).
     pub token: String,
+    /// The state directory, set once at start (the counter journal lives in it).
+    pub state: std::sync::OnceLock<PathBuf>,
     pub port: u16,
     pub started: Instant,
     /// Seconds since `started` of the last request.
@@ -54,6 +57,7 @@ impl App {
             engine,
             socket,
             token,
+            state: std::sync::OnceLock::new(),
             port,
             started: Instant::now(),
             last_active_s: AtomicU64::new(0),
@@ -81,6 +85,11 @@ impl App {
             Ok(mut g) => *g = Arc::new(s),
             Err(p) => *p.into_inner() = Arc::new(s),
         }
+    }
+
+    /// Whether the page and API ask for the session token.
+    pub fn token_required(&self) -> bool {
+        !self.token.is_empty()
     }
 
     /// Note activity now.

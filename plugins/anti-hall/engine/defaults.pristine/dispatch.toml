@@ -332,7 +332,7 @@ value = "entry {id} skipped: no runnable Node command"
 
 [dispatch.msg_skipped_entry_stderr]
 doc = "Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}."
-value = "anti-hall: skipped {event} Node hook {id}: no runnable Node command"
+value = "anti-hall: skipped the {event} hook {id}: it has no runnable command on this install"
 
 [dispatch.msg_defer]
 doc = "Event-log detail when the dispatcher cannot answer an event and defers the whole call."

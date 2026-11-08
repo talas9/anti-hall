@@ -379,7 +379,7 @@ value = "--steps-file"
 
 [docs.external_flags]
 doc = "Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry."
-value = ["--allow-empty", "--builtin", "--detach", "--doctor", "--exact", "--help", "--ignored", "--is-ancestor", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--porcelain", "--reparent-children", "--repo", "--squash", "--system-prompt", "--verify", "--version", "--amend", "--bare", "--config", "--engine", "--socket", "--state"]
+value = ["--allow-empty", "--builtin", "--detach", "--doctor", "--exact", "--help", "--ignored", "--is-ancestor", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--porcelain", "--reparent-children", "--repo", "--squash", "--system-prompt", "--verify", "--version", "--amend", "--bare", "--config", "--engine", "--socket", "--state", "--require-token"]
 
 
 [flag.key]
