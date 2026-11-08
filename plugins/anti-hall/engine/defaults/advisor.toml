@@ -244,7 +244,7 @@ value = [
 
 [advisor.thinking_exempt_re]
 doc = "Regular expression (Rust syntax) of a dispatch description that is routine work even when its brief mentions a thinking word (a mechanical lane)."
-value = '(?i)\b(?:mechanical|rename|reformat|typo|regen\w*|bump (?:the )?version|changelog|status (?:check|poll))\b|^\s*(?:watch(?:er)?|monitor)\b|^\s*(?:merge\s+\S+\s+and\s+)?(?:bump|update|advance)\w*\s+(?:the\s+)?(?:[\w-]+\s+)?(?:submodule|gitlink)s?\s+(?:(?:pointers?|pins?)\s+)?(?:for|of|in|to\s+(?:the\s+|latest\b|fix/|#|[\w-]+/))|^\s*(?:(?:submodule|gitlink)\s+)?(?:pin|pointer|gitlink)\s+bump\b|^\s*merge helper\b'
+value = '(?i)\b(?:mechanical|rename|reformat|typo|regen\w*|bump (?:the )?version|changelog|status (?:check|poll))\b|^\s*(?:watch(?:er)?|monitor)\b|^\s*(?:merge\s+\S+\s+and\s+)?(?:bump|update|advance)\w*\s+(?:the\s+)?(?:[\w-]+\s+)?(?:submodule|gitlink)s?\s+(?:(?:pointers?|pins?)\s+)?(?:(?:for|of|in)\b|to\s+(?:the\s+|latest\b|fix/|#|[\w-]+/))|^\s*(?:(?:submodule|gitlink)\s+)?(?:pin|pointer|gitlink)\s+bump\b|^\s*merge helper\b'
 
 [advisor.brief_head_bytes]
 doc = "How much of a dispatch prompt (from its start) is classified when the description names no thinking type."

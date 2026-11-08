@@ -543,6 +543,13 @@ fn a_pin_bump_merge_helper_is_not_a_second_fix_dispatch() {
         "Fix merge helper bug #404",
         "Fix monitor leak #404",
         "Update the submodule parser to fix #404",
+        "Update submodule offsets to fix #404",
+        "Update submodule format parser for the #404 bug",
+        "Update submodule index handling to fix #404",
+        "Update gitlink inference bug #404",
+        "Update submodule init order to fix #404",
+        "Fix information display bug in submodule bump #404",
+        "Update submodules inside the resolver bug #404",
     ];
     for (i, held) in fixes.iter().enumerate() {
         let sid = format!("fx2h{i}");
