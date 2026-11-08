@@ -929,7 +929,11 @@ mod swarm {
         assert!(advisory(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB)).is_some(), "the running writer is inside the window");
         let pad = "{\"type\":\"system\",\"content\":\"padding padding padding padding padding padding padding padding\"}\n";
         let mut body = std::fs::read_to_string(&t).unwrap();
-        body.push_str(&pad.repeat(defaults::num("agent_scan.tail_bytes") as usize / pad.len() + 100));
+        // past the tail by more than one window quantum (`agent_scan.window_quantum_pct`), so the quantized window starts after the launch
+        // on every path; with less the window can reach back to offset 0 and a fresh read and the kept walk treat that first line differently
+        let tail = defaults::num("agent_scan.tail_bytes") as usize;
+        let quantum = tail / 100 * defaults::num("agent_scan.window_quantum_pct") as usize;
+        body.push_str(&pad.repeat((tail + quantum) / pad.len() + 100));
         std::fs::write(&t, body).unwrap();
         assert!(advisory(call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB)).is_none(), "a launch before the default window is not seen");
     }

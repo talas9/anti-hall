@@ -99,6 +99,7 @@ fn same(path: &Path, what: &str) {
 
 #[test]
 fn a_growing_transcript_scans_the_same_as_a_fresh_read_at_every_step() {
+    store_mode();
     let dir = scratch("grow");
     let path = dir.join("t.jsonl");
     let body = session().join("\n") + "\n";
@@ -138,17 +139,23 @@ fn a_rewritten_or_shrunk_transcript_is_walked_afresh() {
     let dir = scratch("rewrite");
     let path = dir.join("t.jsonl");
     let lines = session();
+    // the store (the default) must notice a shrunk, rewritten or replaced file as the kept walk does
+    store_mode();
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     same(&path, "first");
     // shrunk: the kept offset is past the end
     std::fs::write(&path, lines[..10].join("\n") + "\n").unwrap();
     same(&path, "shrunk");
-    // grown again, but with different early content (same names, other bytes)
+    // grown again, but with different early content (same names, other bytes). The lines are reversed, so a result comes before
+    // its call: the kept walk binds the call afterwards, the store's digests do not (a transcript is append-only, so the order
+    // cannot occur in a real one), hence this step runs on the kept walk
+    kept_mode(&[]);
     let mut other = session();
     other.reverse();
     std::fs::write(&path, other.join("\n") + "\n").unwrap();
     same(&path, "rewritten");
     // replaced by another file at the same path (a new inode)
+    store_mode();
     std::fs::remove_file(&path).unwrap();
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     same(&path, "replaced");
@@ -218,6 +225,7 @@ fn running(s: &Option<Scan>) -> usize {
 
 #[test]
 fn a_sliding_window_reads_only_what_was_appended_and_answers_as_a_fresh_scan() {
+    kept_mode(&[]);
     let s = slide("slide-within", 20);
     for ignore in [false, true] {
         settle(&s, ignore);
@@ -246,8 +254,22 @@ fn exact_window() {
 }
 
 fn quantum(pct: u64) {
+    kept_mode(&[("agent_scan.window_quantum_pct", json!(pct))]);
+}
+
+/// The tests that count the kept walk's bytes and rebuilds run with `agent_scan.use_store = 0`, which selects it: with the store on (the default) the scan is answered from
+/// the transcript store's digests and no walk is kept, so the byte and rebuild counts below have nothing to count. The store's own
+/// answers are compared with a fresh scan in `agent_scan/tests.rs` and `tests/it/transcript_store.rs`.
+fn store_mode() {
     ah_engine::defaults::init().unwrap();
-    ah_engine::defaults::set_overlay(&[("agent_scan.window_quantum_pct", json!(pct))]);
+    ah_engine::defaults::set_overlay(&[("agent_scan.use_store", json!(1))]);
+}
+
+fn kept_mode(extra: &[(&str, Value)]) {
+    ah_engine::defaults::init().unwrap();
+    let mut values: Vec<(&str, Value)> = vec![("agent_scan.use_store", json!(0))];
+    values.extend(extra.iter().cloned());
+    ah_engine::defaults::set_overlay(&values);
 }
 
 #[test]
@@ -361,6 +383,7 @@ fn a_quantized_window_slides_past_a_launch_without_a_rebuild_and_answers_as_a_fr
 
 #[test]
 fn real_transcripts_cut_at_many_points_scan_the_same() {
+    store_mode();
     let Some(corpus) = std::env::var_os("AH_SCAN_CORPUS") else { return };
     let dir = scratch("corpus");
     let copy = dir.join("c.jsonl");
@@ -405,6 +428,7 @@ fn verdict(s: &Option<Scan>) -> String {
 /// fresh scan of the same window at every step: the whole answer must be the same. Skipped when unset.
 #[test]
 fn real_transcripts_sliding_through_a_window_scan_the_same() {
+    store_mode();
     let Some(corpus) = std::env::var_os("AH_SCAN_SLIDE") else { return };
     let num = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let tail = num("AH_SCAN_SLIDE_TAIL", 64 * 1024 * 1024);
@@ -475,6 +499,7 @@ fn real_transcripts_sliding_through_a_window_scan_the_same() {
 /// borrowed one the stop is invisible and the agent reads as running forever.
 #[test]
 fn a_taskstop_after_a_resume_leaves_the_agent_terminal() {
+    store_mode();
     let dir = scratch("resume-stop");
     let path = dir.join("t.jsonl");
     let agent = format!("a{:015x}", 1);
