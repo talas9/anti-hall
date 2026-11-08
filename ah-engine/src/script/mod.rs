@@ -550,10 +550,10 @@ fn ensure_module<'js>(
             o
         }
     };
-    if modules.get(module) == Some(file) {
-        if let Ok(f) = reg.get::<_, Function>(module) {
-            return Ok((f, false));
-        }
+    if modules.get(module) == Some(file)
+        && let Ok(f) = reg.get::<_, Function>(module)
+    {
+        return Ok((f, false));
     }
     let text = std::fs::read_to_string(&file.0).map_err(|e| format!("{}: {e}", file.0.display()))?;
     let scope = defaults::render("script.module_scope", &[("source", &text)]);
@@ -830,10 +830,10 @@ fn fit(pool: &mut Pool, ctx: &Context, keep: &str, mut size: usize) -> Option<us
             pool.inst.report(size);
         }
         crate::mem::Action::Recycle => {
-            LIMIT_HARD_TRIPS.fetch_add(1, Ordering::Relaxed);
-            pool.stats.hard_trips += 1;
             size = unload_cold(pool, ctx, keep, 0);
             if matches!(pool.inst.report(size), crate::mem::Action::Recycle) {
+                LIMIT_HARD_TRIPS.fetch_add(1, Ordering::Relaxed);
+                pool.stats.hard_trips += 1;
                 pool.evicted.extend(pool.checks.keys().cloned());
                 pool.modules.clear();
                 pool.checks.clear();
