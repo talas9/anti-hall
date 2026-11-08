@@ -8,6 +8,8 @@
 //!   (`defaults::text(if x { "a.b" } else { "a.c" })`), and the same reader called as a method on a settings view
 //!   (`t.num("a.b")`, `eff.text("a.b")`);
 //! * a prefixing helper ([`HELPERS`]): `defaults::env_var("x")` reads `env.x`, `cap("x")` in the store reads `store.x`;
+//! * a key read through `defaults::optional("a.b")` is NOT collected (a feature added after the pinned pristine copy was released
+//!   reads its keys that way and takes its legacy path when they are absent, so the pristine fallback still loads);
 //! * any other literal `"section.name"` whose section is one the source reads directly (a key handed to a helper that
 //!   forwards it), as a key that must exist, of any type.
 use std::collections::BTreeMap;
@@ -267,6 +269,16 @@ pub fn scan(src: &Path) -> BTreeMap<String, Kind> {
         for (_, k) in literals(text) {
             if is_key(k) && k.split_once('.').is_some_and(|(s, _)| sections.contains(s)) {
                 add(&mut keys, k.to_string(), Kind::Any);
+            }
+        }
+    }
+    // keys read only through `defaults::optional(..)`: a plugin without them is still valid
+    for (_, text) in &texts {
+        for (_, seg, open) in calls(text, "optional") {
+            if seg == Some("defaults") {
+                for (_, k) in literals(first_arg(args_span(text, open))) {
+                    keys.remove(k);
+                }
             }
         }
     }

@@ -549,6 +549,13 @@ pub fn raw(key: &str) -> &'static V {
     overlaid(key).unwrap_or_else(|| &entry(key).value)
 }
 
+/// The effective value of `key` when the active defaults have it, else `None`. For a feature added after the pinned pristine
+/// fallback was released: a key read only through here is not required at load (`build_support/keyscan.rs`), so the engine still
+/// runs on the pristine copy and the feature takes its legacy path.
+pub fn optional(key: &str) -> Option<&'static V> {
+    overlaid(key).or_else(|| find(key).map(|e| &e.value))
+}
+
 /// The value of `key` as shipped, ignoring the owner's files (the schema: what the layers resolve over).
 pub fn shipped(key: &str) -> &'static V {
     &entry(key).value
