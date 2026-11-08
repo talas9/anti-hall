@@ -62,50 +62,179 @@ sha256_of() {
   fi
 }
 
-# #368: the installed engine (the installer's marker) is older than the release ah-engine.lock pins: ONE line on stderr (the same text
-# the thin client prints), once per host process, and the thin client is told so it stays quiet. Nothing is downloaded; any problem
-# (no lock, no marker, unreadable or odd version text) says nothing. Versions compare by their numbers, with the old plugin-numbering
-# floor (launcher.legacy_scheme_floor) counting as older, exactly as the thin client compares them.
+# JSON helpers (SessionStart notices). Claude Code never shows the stderr of a hook that exits 0, so the notice is also printed as
+# JSON on stdout (systemMessage for the user, additionalContext for the model). The template is plugin text; the script only
+# fills {text}.
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n\r\t' '   '; }
+json_notice() { # json_notice TEXT: the whole notice object
+  TPL=$(m msg.install_notice_json_template | sed 's/\\"/"/g') NOTICE=$(json_escape "$1") awk 'BEGIN {
+    t = ENVIRON["TPL"]; n = ENVIRON["NOTICE"]; o = ""
+    while ((i = index(t, "{text}")) > 0) { o = o substr(t, 1, i - 1) n; t = substr(t, i + 6) }
+    print o t }'
+}
+json_merge() { # json_merge TEXT OUT: the client's own SessionStart output with the notice added (never a second JSON object).
+  # Exit 0 only when the notice is in the printed output; 1 when it could not be added (plain text, no JSON object, a systemMessage
+  # that is not a string), so the caller marks it shown only when it was. An existing systemMessage / additionalContext string gets
+  # the notice appended; a missing one is added.
+  _o=$(printf '%s' "$2" | tr '\n\r\t' '   ' | sed 's/^ *//; s/ *$//')
+  case "$_o" in
+    "") json_notice "$1"; return 0 ;;
+    "{"*"}")
+      if [ "$(printf '%s' "$_o" | tr -d ' ')" = '{}' ]; then json_notice "$1"; return 0; fi
+      _r=$(printf '%s\n' "$_o" | NOTICE=$(json_escape "$1") awk '
+        function app(s, key, add,   p, rest, off, i, c) {
+          p = index(s, "\"" key "\"")
+          if (!p) return ""
+          rest = substr(s, p + length(key) + 2)
+          if (!match(rest, /^ *: *"/)) return ""
+          off = p + length(key) + 2 + RLENGTH
+          for (i = off; i <= length(s); i++) { c = substr(s, i, 1); if (c == "\\") { i++; continue } if (c == "\"") break }
+          if (i > length(s)) return ""
+          return substr(s, 1, i - 1) (i > off ? " " : "") add substr(s, i)
+        }
+        function head(s) { match(s, /^\{ */); return RLENGTH }
+        {
+          n = ENVIRON["NOTICE"]; r = $0
+          if (index(r, "\"systemMessage\"")) { r = app(r, "systemMessage", n); if (r == "") exit 3 }
+          else { h = head(r); r = substr(r, 1, h) "\"systemMessage\":\"" n "\"," substr(r, h + 1) }
+          if (index(r, "\"additionalContext\"")) { x = app(r, "additionalContext", n); if (x != "") r = x }
+          else if (!index(r, "\"hookSpecificOutput\"")) {
+            h = head(r); r = substr(r, 1, h) "\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"" n "\"}," substr(r, h + 1)
+          } else {
+            # a hookSpecificOutput object without additionalContext: add the key at its start; any other shape cannot take it
+            p = index(r, "\"hookSpecificOutput\""); rest = substr(r, p + 20)
+            if (!match(rest, /^ *: *\{ */)) exit 3
+            at = p + 20 + RLENGTH - 1
+            r = substr(r, 1, at) "\"additionalContext\":\"" n "\"," substr(r, at + 1)
+          }
+          print r
+        }') || { printf '%s\n' "$2"; return 1; }
+      printf '%s\n' "$_r"; return 0 ;;
+    *) printf '%s\n' "$2"; return 1 ;;
+  esac
+}
+
+# #368: the installed engine (the installer's marker) is older than the release ah-engine.lock pins, or it could not load this
+# plugin's defaults (its defaults.error is newer than both the plugin's defaults and the engine binary: it is rewritten at every
+# failure and never removed, so an older one belongs to a defaults set that is gone): ONE line on stderr (the same text the thin
+# client prints), once per host process, and the thin client is told so it stays quiet. The same text is left in notice_text for the
+# JSON notice (once per host process; empty when off or already shown). Nothing is downloaded; any problem (no lock, no marker,
+# unreadable or odd version text) says nothing. Versions compare by their numbers, with the old plugin-numbering floor
+# (launcher.legacy_scheme_floor) counting as older, exactly as the thin client compares them.
+notice_text=
+notice_kind=
 stale_notice() {
+  notice_text=
   want=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$root/$(c launcher.engine_lock_file)" 2>/dev/null | head -n 1)
   have=$(awk '{ print $1; exit }' "$state/$(c install.file_marker)" 2>/dev/null)
-  case "$want$have" in ""|*[!0-9A-Za-z.+-]*) return 0 ;; esac
-  [ -n "$want" ] && [ -n "$have" ] || return 0
-  older=$(awk -v a="$have" -v b="$want" -v f="$(c launcher.legacy_scheme_floor)" '
-    function parse(v, arr,   n, i, k, p) {
-      sub(/[ \t].*/, "", v); sub(/^v/, "", v); sub(/[+-].*/, "", v)
-      n = split(v, p, "."); k = 0
-      for (i = 1; i <= n; i++) { if (p[i] !~ /^[0-9]+$/) break; arr[++k] = p[i] + 0 }
-      return k
-    }
-    function cmp(x, nx, y, ny,   i, n, u, w) {
-      n = nx > ny ? nx : ny
-      for (i = 1; i <= n; i++) { u = (i <= nx) ? x[i] : 0; w = (i <= ny) ? y[i] : 0; if (u < w) return -1; if (u > w) return 1 }
-      return 0
-    }
-    BEGIN {
-      nx = parse(a, X); ny = parse(b, Y); nf = parse(f, F)
-      if (!nx || !ny) exit
-      lx = nf && cmp(X, nx, F, nf) >= 0; ly = nf && cmp(Y, ny, F, nf) >= 0
-      if (lx != ly) { if (lx) print 1; exit }
-      if (cmp(X, nx, Y, ny) < 0) print 1
-    }' 2>/dev/null)
-  [ "$older" = 1 ] || return 0
+  case "$want$have" in *[!0-9A-Za-z.+-]*) return 0 ;; esac
+  dfail=0
+  derr=$state/$(c install.file_defaults_error)
+  if [ -f "$derr" ] && [ -n "$(find "$derr" -newer "$cfg" 2>/dev/null)" ] \
+    && { [ ! -e "$bindir/$engine_name" ] || [ -n "$(find "$derr" -newer "$bindir/$engine_name" 2>/dev/null)" ]; }; then dfail=1; fi
+  # defaults.error is never removed: only an engine that fails to load the defaults NOW makes the "guards are NOT running" notice true
+  if [ "$dfail" = 1 ] && [ -x "$bindir/$engine_name" ]; then
+    # the two sleep durations are computed and the signal trap is installed BEFORE the probe forks: a signal after the fork finds the
+    # trap already in place (an empty $pp / $wd in it is harmless: the kills are silenced)
+    t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
+    t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
+    pp=; wd=
+    # a signal to the hook stops the watchdog AND the probe (a TERM-ignoring or hung probe must not outlive the hook)
+    trap 'kill "$wd" 2>/dev/null; kill -KILL "$pp" 2>/dev/null; exit 0' HUP INT TERM
+    env "$(c env.plugin_root)=$root" "$bindir/$engine_name" "$(c install.defaults_probe_verb)" >/dev/null 2>&1 </dev/null &
+    pp=$!
+    # watchdog: TERM after defaults_probe_ms, KILL after a further defaults_probe_grace_ms (an engine that ignores TERM must not hold
+    # SessionStart); the whole probe is bounded by the two settings (under 1 s together by default: every hook fails open in under 1 s).
+    # The watchdog subshell owns its sleep helpers and traps TERM to kill the live one. A trap only runs between commands, so `$!`
+    # already names a helper that was forked (a TERM before the trap is installed arrives before any helper exists). `$!` keeps naming
+    # a helper after it is reaped, so `d` records the pid of the last REAPED helper, set right after its `wait` returns (never at
+    # the fork): the trap kills `$!` unless it is the probe's pid (the subshell starts with it in `$!`) or `d`. A live helper is
+    # therefore always killed and a reaped pid never is. The helper is sent KILL, not TERM: the parent's TERM can arrive just after the
+    # helper forked but before it execs `sleep`, while it still carries this shell's inherited TERM trap, and the signal is swallowed
+    # (the sleep then outlives the hook); KILL cannot be trapped (the one exception: a TERM between a `wait` returning and `d=$!` signals a
+    # just-reaped pid, a no-op unless that pid was already reused).
+    d=
+    ( trap '[ "$!" = "$pp" ] || [ "$!" = "$d" ] || kill -KILL "$!" 2>/dev/null; exit 0' TERM
+      sleep "$t1" & wait "$!"; d=$!; kill "$pp"; sleep "$t2" & wait "$!"; d=$!; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
+    wd=$!
+    wait "$pp" 2>/dev/null; prc=$?
+    kill "$wd" 2>/dev/null
+    wait "$wd" 2>/dev/null
+    trap - HUP INT TERM
+    # exit 0 = loads fine; 143 / 137 = our own TERM / KILL (not proof of failure); anything else = it cannot load them now
+    if [ "$prc" -eq 0 ] || [ "$prc" -eq 143 ] || [ "$prc" -eq 137 ]; then dfail=0; fi
+  fi
+  older=
+  if [ -n "$want" ] && [ -n "$have" ]; then
+    older=$(awk -v a="$have" -v b="$want" -v f="$(c launcher.legacy_scheme_floor)" '
+      function parse(v, arr,   n, i, k, p) {
+        sub(/[ \t].*/, "", v); sub(/^v/, "", v); sub(/[+-].*/, "", v)
+        n = split(v, p, "."); k = 0
+        for (i = 1; i <= n; i++) { if (p[i] !~ /^[0-9]+$/) break; arr[++k] = p[i] + 0 }
+        return k
+      }
+      function cmp(x, nx, y, ny,   i, n, u, w) {
+        n = nx > ny ? nx : ny
+        for (i = 1; i <= n; i++) { u = (i <= nx) ? x[i] : 0; w = (i <= ny) ? y[i] : 0; if (u < w) return -1; if (u > w) return 1 }
+        return 0
+      }
+      BEGIN {
+        nx = parse(a, X); ny = parse(b, Y); nf = parse(f, F)
+        if (!nx || !ny) exit
+        lx = nf && cmp(X, nx, F, nf) >= 0; ly = nf && cmp(Y, ny, F, nf) >= 0
+        if (lx != ly) { if (lx) print 1; exit }
+        if (cmp(X, nx, Y, ny) < 0) print 1
+      }' 2>/dev/null)
+  fi
+  [ "$older" = 1 ] || [ "$dfail" = 1 ] || return 0
   knob=$(c launcher.knob_stale_noticed)
   case "$knob" in ""|*[!A-Za-z0-9_]*) ;; *) eval "export $knob=1" ;; esac
+  if [ "$dfail" = 1 ] && [ ! -e "$bindir/$engine_name" ]; then key=msg.install_engine_missing
+  elif [ "$dfail" = 1 ]; then key=msg.install_defaults_failed
+  else key=msg.launcher_stale_engine; fi
+  [ -n "$have" ] || have=unknown
+  [ -n "$want" ] || want=unknown
+  text=$(m "$key" | sed "s|{have}|$have|g; s|{want}|$want|g")
   seen=$state/$(c install.file_stale_notice)
-  [ "$(cat "$seen" 2>/dev/null)" != "$PPID" ] || return 0
-  printf '%s\n' "$PPID" >"$seen" 2>/dev/null
-  printf '%s\n' "$(m msg.launcher_stale_engine | sed "s|{have}|$have|g; s|{want}|$want|g")" >&2
+  if [ "$(cat "$seen" 2>/dev/null)" != "$PPID" ]; then
+    printf '%s\n' "$PPID" >"$seen" 2>/dev/null
+    printf '%s\n' "$text" >&2
+  fi
+  # marked as shown by the caller, only once the notice is really in the output
+  jseen=$state/$(c install.file_json_notice)
+  if [ "${host:-claude}" = claude ] && [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$PPID" ]; then
+    notice_text=$text
+    notice_kind=stale_engine
+    if [ "$dfail" = 1 ]; then notice_kind=defaults_failed; [ -e "$bindir/$engine_name" ] || notice_kind=engine_missing; fi
+  fi
 }
+# one record per JSON notice for the counters (hook mode has no -v and no `say`)
+say_notice() { mkdir -p "$state" 2>/dev/null; printf '%s event=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$state/$(c install.file_notice_log)" 2>/dev/null; return 0; }
 
 # ---- hook mode ------------------------------------------------------------------------------------------------------------------
 if [ "$mode" = hook ]; then
   event=${1:-}
+  # the JSON notice is for Claude Code only: Codex's SessionStart output schema is not verified to take systemMessage (the notice
+  # stays on stderr there, stdout stays empty). Claude's hooks.json passes no --host; Codex's passes `--host codex`.
+  host=claude; prev=
+  for a in "$@"; do [ "$prev" = --host ] && host=$a; prev=$a; done
   # installed: this call is the thin client's. SessionStart comes here FIRST (hooks_form.installer_first_events), so an install whose
   # client predates the stale-engine notice still hears it; the notice never stops the hook from running.
   if [ -x "$bindir/$hook_name" ]; then
+    notice_text=
     if [ "$event" = SessionStart ] && [ "$(c launcher.stale_notice_on)" != 0 ]; then stale_notice; fi
+    if [ -n "$notice_text" ]; then
+      # the client still runs (its SessionStart work is kept); its stdout is captured so the notice joins it as ONE JSON object
+      out=$("$bindir/$hook_name" "$@"); rc=$?
+      if [ "$rc" -eq 0 ]; then
+        merged=$(json_merge "$notice_text" "$out") && {
+          printf '%s\n' "$PPID" >"$state/$(c install.file_json_notice)" 2>/dev/null
+          say_notice "notice_json kind=$notice_kind"
+        }
+        printf '%s\n' "$merged"
+      else printf '%s\n' "$out"; fi
+      exit "$rc"
+    fi
     exec "$bindir/$hook_name" "$@"
   fi
   payload=$(dd bs=4096 count=1 2>/dev/null)
@@ -127,10 +256,23 @@ if [ "$mode" = hook ]; then
   fi
   # one notice per session
   mkdir -p "$state" 2>/dev/null || exit 0
+  # an engine without its client (the 0.300 bootstrap installed only the engine) is a different state from "nothing installed"
+  if [ -e "$bindir/$engine_name" ]; then
+    text=$(m msg.install_notice_no_client | sed "s|{installer}|$here/install.sh|g")
+  else
+    text=$(m msg.install_notice)
+  fi
   seen=$state/$(c install.file_notice)
   if [ "$(cat "$seen" 2>/dev/null)" != "$sid" ]; then
     printf '%s\n' "$sid" >"$seen" 2>/dev/null
-    printf '%s\n' "$(m msg.install_notice)" >&2
+    printf '%s\n' "$text" >&2
+  fi
+  # stderr of an exit-0 hook is not shown: SessionStart also gets the notice as JSON, once per session (every other event: stdout stays empty)
+  jseen=$state/$(c install.file_json_notice)
+  if [ "$event" = SessionStart ] && [ "$host" = claude ] && [ "$(c install.sessionstart_json_notice)" = 1 ] && [ "$(cat "$jseen" 2>/dev/null)" != "$sid" ]; then
+    printf '%s\n' "$sid" >"$jseen" 2>/dev/null
+    say_notice "notice_json kind=not_installed"
+    json_notice "$text"
   fi
   exit 0
 fi
@@ -146,6 +288,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 mkdir -p "$bindir" 2>/dev/null || exit 0
+chmod 700 "$state" 2>/dev/null
 log=$state/$(c install.file_log)
 say() { # say EVENT [k=v ...]: one record in the install log (and on stdout with -v)
   line="$(date -u +%Y-%m-%dT%H:%M:%SZ) event=$*"
@@ -234,8 +377,25 @@ have_hook=0
 if tar -xzOf "$tmp/asset" "$mdir/$hook_name" >"$tmp/$hook_name" 2>/dev/null && [ -s "$tmp/$hook_name" ]; then have_hook=1; chmod 755 "$tmp/$hook_name"; fi
 
 esha=$(sha256_of "$tmp/$engine_name"); hsha=
-if [ ! -e "$bindir/$engine_name" ]; then mv -f "$tmp/$engine_name" "$bindir/$engine_name" 2>/dev/null || fail cannot_install; else esha=$(sha256_of "$bindir/$engine_name"); fi
+kept=0
+if [ ! -e "$bindir/$engine_name" ]; then mv -f "$tmp/$engine_name" "$bindir/$engine_name" 2>/dev/null || fail cannot_install; else esha=$(sha256_of "$bindir/$engine_name"); kept=1; fi
 if [ "$have_hook" -eq 1 ]; then mv -f "$tmp/$hook_name" "$bindir/$hook_name" 2>/dev/null && hsha=$(sha256_of "$bindir/$hook_name"); else say "hook_not_in_archive"; fi
+if [ "$kept" -eq 1 ]; then
+  # an engine this installer put there earlier stays in place (the one implementation of the managed swap is `ah-hook install`):
+  # the marker keeps describing the engine that IS installed (a 2-field 0.300 marker `<ver> <engine sha>` becomes
+  # `<ver> - <engine sha> <hook sha>`), never the archive's version, and the client just installed does the swap.
+  set -- $(cat "$marker" 2>/dev/null)
+  if [ -n "${3:-}" ]; then oldver=$1; oldasset=$2; oldesha=$3; else oldver=${1:-}; oldasset=-; oldesha=${2:-}; fi
+  if [ "$have_hook" -eq 1 ] && [ -x "$bindir/$hook_name" ] && [ -n "$oldver" ]; then
+    printf '%s %s %s %s\n' "$oldver" "$oldasset" "$oldesha" "$hsha" >"$marker"
+    say "engine_kept version=$oldver handover=ah-hook"
+    rm -rf "$tmp" # exec skips the EXIT trap
+    if [ "$verbose" -eq 1 ]; then exec "$bindir/$hook_name" --plugin-root "$root" install --lock "$lock" -v; fi
+    exec "$bindir/$hook_name" --plugin-root "$root" install --lock "$lock"
+  fi
+  say "skip why=engine_kept_no_client"
+  exit 0
+fi
 printf '%s %s %s %s\n' "$version" "$sha" "$esha" "$hsha" >"$marker"
 # remember this engine as the expected one (the thin client owns the integrity record); best effort
 [ ! -x "$bindir/$hook_name" ] || AH_ENGINE_DIR=$state "$bindir/$hook_name" --plugin-root "$root" integrity record </dev/null >/dev/null 2>&1

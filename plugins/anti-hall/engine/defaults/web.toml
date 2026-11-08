@@ -1,6 +1,6 @@
 # ah-engine shipped defaults for the Command Center web dashboard (`ah-engine web`, binary ah-web; GH #266). Format: see the
 # header of engine.toml. The dashboard is a local page: it binds to the loopback address only, on a random free port, behind a
-# per-session token, and exits when nobody has used it for web.idle_exit_s. Nothing runs until `ah-engine web` is called.
+# per-session token (web.require_token = false drops the token; the Host and Origin checks stay on), and exits when nobody has used it for web.idle_exit_s. Nothing runs until `ah-engine web` is called.
 # `ah-web` reads this file itself (start-up and whenever the file changes); the engine reads the start-up keys.
 
 [web.enabled]
@@ -43,6 +43,50 @@ min = 1
 doc = "Random bytes in the per-session token (shown as twice as many hex digits)."
 value = 16
 min = 8
+
+[web.require_token]
+doc = "Whether the page and its API need the per-session token (the `?t=` address and the session cookie). true = the token is required (shipped default). false = no token is made or asked for, `ah-engine web` prints a plain address, and `/`, `/api/*`, `/static/*` and `/pkg/*` work without a cookie; the Host check (web.check_host) and the Origin check (web.check_origin) still apply. Read once when the server starts: `ah-engine config set web.require_token false` (the owner's override; the engine hands the effective value to the server) and restart it."
+value = true
+
+[web.check_host]
+doc = "Refuse a request whose Host header is not one of web.loopback_names (or web.bind_host) plus the bound port, with 421. This stops DNS rebinding, and applies whatever web.require_token says. Counted as web_request_rejected{reason=host}."
+value = true
+
+[web.check_origin]
+doc = "Refuse a state-changing request (any method but GET, HEAD, OPTIONS) that carries an Origin header, or without one a Referer, that is not this dashboard's own origin, with 403. This stops other web pages from posting to the dashboard, and applies whatever web.require_token says. A request with neither header (a command-line client) passes. Counted as web_request_rejected{reason=origin}."
+value = true
+
+[web.loopback_names]
+doc = "Host names the dashboard answers to, besides web.bind_host: the Host header and the Origin must name one of these plus the bound port."
+value = ["localhost", "[::1]"]
+
+[web.origin_scheme]
+doc = "The scheme of the dashboard's own origin (it is served over plain http on the loopback address)."
+value = "http"
+
+[web.msg_bad_origin]
+doc = "Sent with 403 when the Origin or Referer of a state-changing request is not the dashboard's own origin."
+value = "request refused: it did not come from the dashboard page"
+
+[web.rejected_counter]
+doc = "Counter kind a refused request (bad Host, bad Origin) is counted under in the shared counter journal; the reason is the name. Shows in `status` accounting."
+value = "web_request_rejected"
+
+[web.reject_reason_host]
+doc = "The reason name counted for a request refused by the Host check."
+value = "host"
+
+[web.reject_reason_origin]
+doc = "The reason name counted for a request refused by the Origin / Referer check."
+value = "origin"
+
+[web.counters_file]
+doc = "Name (in the state directory) of the shared counter journal the refusals are appended to. Keep it equal to diagnostics.counters_file."
+value = "obs-counters.log"
+
+[web.counters_lock_suffix]
+doc = "Suffix of the journal's lock file (the engine's paths.lock_suffix): the server takes the shared lock on it while it appends, as the engine's own writers do."
+value = ".lock"
 
 [web.cookie_name]
 doc = "Name of the session cookie the browser receives after it presents the token."

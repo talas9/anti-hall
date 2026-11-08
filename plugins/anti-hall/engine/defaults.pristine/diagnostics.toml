@@ -257,6 +257,12 @@ value = 125
 min = 0
 unit = "MB"
 
+[diagnostics.mem_target_mb]
+doc = "The owner's memory target of the daemon in MB (footprint, the figure daemon.mem_metric selects). It is only REPORTED (status budget: mem_target_mb and over_target); nothing is shrunk or restarted at it, the enforced limits are diagnostics.budget_mem_mb and mem.global_hard_bytes. 0 hides it."
+value = 100
+min = 0
+unit = "MB"
+
 [files.debug_log]
 doc = "Debug log file name (state directory): one NDJSON line per debug event, written only in debug mode."
 value = "debug.ndjson"
