@@ -158,6 +158,12 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
         self.core.bytes.load(SeqCst)
     }
 
+    /// [`BoundedCache::bytes`] plus what the values report beyond their weight ([`BoundedCache::with_extra`]): the figure the registry
+    /// limits act on.
+    pub fn reported_bytes(&self) -> usize {
+        Owner::bytes(&*self.core)
+    }
+
     /// The registry handle (for tests and for owners that also grow in other ways).
     pub fn budget(&self) -> &Budget {
         &self.budget

@@ -37,6 +37,7 @@ fn the_estimate_stays_until_every_search_was_measured_and_returns_with_the_first
     memstat::configure_measure(true, 1);
     search(&r);
     assert!(r.reported_bytes() >= est, "measured again, but the entry stays pinned: {}", r.reported_bytes());
+    assert!(recache::usage().1 >= est, "the memory snapshot counts the scratch the cache reports: {}", recache::usage().1);
     // sampled out: every 1000th call measures, so the next search is not measured
     let r2 = recache::get("zzunmeasuredb[a-z]{3}\\d+", "").expect("valid pattern");
     memstat::configure_measure(true, 1_000_000);

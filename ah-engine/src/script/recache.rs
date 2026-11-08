@@ -69,13 +69,11 @@ pub struct Entry {
     scratch: std::sync::atomic::AtomicU64,
     /// [`scratch_estimate`] captured once at creation, so reading the weight never reads the settings.
     estimate: u64,
-    /// `UNSEARCHED`, `ALL_MEASURED` or `PINNED` (an unmeasured search was seen). A plain resettable state: a later trim sets it back.
-    state: std::sync::atomic::AtomicU8,
+    /// Set by the first search on this entry. With `unmeasured` clear, the entry reports its measurement. Plain resettable flags: a later trim sets both back.
+    was_searched: std::sync::atomic::AtomicBool,
+    /// Set by the first search that was not measured; the entry then reports at least the estimate for as long as it lives.
+    unmeasured: std::sync::atomic::AtomicBool,
 }
-
-const UNSEARCHED: u8 = 0;
-const ALL_MEASURED: u8 = 1;
-const PINNED: u8 = 2;
 
 impl std::ops::Deref for Entry {
     type Target = Regex;
@@ -94,7 +92,7 @@ impl Entry {
     pub fn reported_bytes(&self) -> usize {
         use std::sync::atomic::Ordering::Relaxed;
         let measured = self.scratch.load(Relaxed);
-        if self.state.load(Relaxed) == ALL_MEASURED { measured as usize } else { measured.max(self.estimate) as usize }
+        if self.was_searched.load(Relaxed) && !self.unmeasured.load(Relaxed) { measured as usize } else { measured.max(self.estimate) as usize }
     }
 
     /// Run `f` (one search) and apply the heap the REGEX kept to this pattern's scratch (the result `f` returns is not scratch).
@@ -103,10 +101,10 @@ impl Entry {
         let (r, d) = crate::mem::measure(|| f(&self.re));
         SEARCHES.fetch_add(1, Relaxed);
         if d.is_none() {
-            self.state.store(PINNED, Relaxed);
+            self.unmeasured.store(true, Relaxed);
         }
         if let Some(d) = d {
-            let _ = self.state.compare_exchange(UNSEARCHED, ALL_MEASURED, Relaxed, Relaxed);
+            self.was_searched.store(true, Relaxed);
             MEASURED_SEARCHES.fetch_add(1, Relaxed);
             let net = d.retained.saturating_sub(i64::try_from(r.kept_bytes()).unwrap_or(i64::MAX));
             let cap = (defaults::num("daemon.workers")).saturating_mul(defaults::num("script.regex_dfa_size_limit"));
@@ -156,7 +154,7 @@ fn cache() -> &'static Cache {
 /// (patterns held, bytes the cache reports: program weights plus the scratch: measured where every search was, else at least the estimate) for the memory snapshot.
 pub fn usage() -> (usize, usize) {
     let c = cache();
-    (c.len(), c.bytes())
+    (c.len(), c.reported_bytes())
 }
 
 /// What every compile so far weighed, two ways: (programs compiled, estimated bytes, measured bytes of those that were measured,
@@ -221,7 +219,8 @@ pub fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Entry>> {
             re,
             scratch: std::sync::atomic::AtomicU64::new(0),
             estimate: scratch_estimate() as u64,
-            state: std::sync::atomic::AtomicU8::new(UNSEARCHED),
+            was_searched: std::sync::atomic::AtomicBool::new(false),
+            unmeasured: std::sync::atomic::AtomicBool::new(false),
         };
         Ok((Arc::new(entry), weight))
     })
