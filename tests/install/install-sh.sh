@@ -201,6 +201,27 @@ t_a_failing_probe_leaves_no_orphan_sleep_helper() {
     sleep 0.02; n=$((n + 1))
   done
 }
+t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe() {
+  newhome sig1; write_lock "$good"; fake_client ''
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe records its pid, ignores TERM and hangs
+  mkdir -p "$st/bin"; printf '#!/bin/sh\necho $$ >"%s/probepid"\ntrap "" TERM\nwhile :; do sleep 1; done\n' "$tmp" >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  rm -f "$tmp/probepid"
+  printf '{"session_id":"s1","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/out" 2>"$tmp/err" &
+  hp=$!
+  n=0; while [ ! -s "$tmp/probepid" ] && [ $n -lt 100 ]; do sleep 0.02; n=$((n + 1)); done
+  [ -s "$tmp/probepid" ] || { echo "probe never started" >&2; kill "$hp" 2>/dev/null; return 1; }
+  pr=$(cat "$tmp/probepid")
+  # TERM the hook's shell (the child of the subshell running the pipeline is `sh install.sh`)
+  for c in $(pgrep -P "$hp" 2>/dev/null) "$hp"; do kill -TERM "$c" 2>/dev/null; done
+  n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+  while kill -0 "$pr" 2>/dev/null; do
+    [ "$n" -ge "$max" ] && { echo "TERM-ignoring probe $pr still alive after the hook was signalled" >&2; kill -KILL "$pr" 2>/dev/null; return 1; }
+    sleep 0.02; n=$((n + 1))
+  done
+  wait "$hp" 2>/dev/null; return 0
+}
 t_parallel_sessions_in_one_home_each_get_their_notice() {
   newhome conc; write_lock "$good"; fake_client ''
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
@@ -314,6 +335,7 @@ check t_a_client_object_without_additional_context_gets_it_added t_a_client_obje
 check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignores_term_is_killed_after_the_grace
 check t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget
 check t_a_failing_probe_leaves_no_orphan_sleep_helper t_a_failing_probe_leaves_no_orphan_sleep_helper
+check t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe
 check t_parallel_sessions_in_one_home_each_get_their_notice t_parallel_sessions_in_one_home_each_get_their_notice
 check t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing
 check t_a_client_with_leading_whitespace_json_still_gets_the_notice t_a_client_with_leading_whitespace_json_still_gets_the_notice

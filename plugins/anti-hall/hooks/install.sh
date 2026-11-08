@@ -144,11 +144,12 @@ stale_notice() {
     # helper's pid (reaped by the `wait`) means no live helper: skipped.
     t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
     t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
-    s1=
-    ( trap 'h=$!; [ "$h" = "$pp" ] || [ "$h" = "$s1" ] || kill "$h"; exit 0' TERM
-      sleep "$t1" & wait $!; s1=$!; kill "$pp"; sleep "$t2" & wait $!; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
+    s1=; s2=
+    ( trap 'h=$!; [ "$h" = "$pp" ] || [ "$h" = "$s1" ] || [ "$h" = "$s2" ] || kill "$h"; exit 0' TERM
+      sleep "$t1" & s1=$!; wait "$s1"; kill "$pp"; sleep "$t2" & s2=$!; wait "$s2"; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
     wd=$!
-    trap 'kill "$wd" 2>/dev/null; exit 0' HUP INT TERM
+    # a signal to the hook stops the watchdog AND the probe (a TERM-ignoring or hung probe must not outlive the hook)
+    trap 'kill "$wd" 2>/dev/null; kill -KILL "$pp" 2>/dev/null; exit 0' HUP INT TERM
     wait "$pp" 2>/dev/null; prc=$?
     kill "$wd" 2>/dev/null
     wait "$wd" 2>/dev/null
