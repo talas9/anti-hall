@@ -80,7 +80,10 @@ fn alloc_of(check: &str, command: &str, home: &Path) -> u64 {
     run();
     let before = BIG.with(Cell::get);
     run();
-    BIG.with(Cell::get).wrapping_sub(before)
+    let n = BIG.with(Cell::get).wrapping_sub(before);
+    // a script call that moved off the calling thread would count 0 here and pass every budget silently
+    assert!(n > 0, "no large allocation counted for `{check}`: the call no longer runs on the measuring thread");
+    n
 }
 
 #[test]
