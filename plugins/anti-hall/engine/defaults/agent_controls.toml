@@ -432,7 +432,7 @@ value = "runtime-escalation-stops.json"
 
 [silent_nudge.msg_rt_what]
 doc = "What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder."
-value = "{names}{more} still running after repeated runtime nudges, not finished and not stopped."
+value = "{names}{more} still running past the runtime block step, not finished and not stopped."
 
 [silent_nudge.msg_rt_item]
 doc = "One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes)."
@@ -440,7 +440,7 @@ value = "'{name}' (running {dur})"
 
 [silent_nudge.msg_rt_instead]
 doc = "What to do about an escalated agent."
-value = "check its output now, then stop it or re-task it with a tighter scope; this block is shown once per session."
+value = "stop it, or extend it with a stated reason (agents nudge <child> other \"<reason>\"); this block is shown once per session."
 
 [silent_nudge.rt_dur_hours]
 doc = "The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes."
