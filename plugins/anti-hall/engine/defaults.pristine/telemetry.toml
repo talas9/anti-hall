@@ -411,6 +411,10 @@ value = { kind = "counter", unit = "lookups", labels = ["result"] }
 doc = "Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place)."
 value = { kind = "counter", unit = "lookups", labels = ["reason"] }
 
+[metric.taskstate_memo]
+doc = "Task reconstructions asked for by the Stop and prompt checks (`ah.transcript.tasks`): hit (another check already built this state of the file, or is building it), miss (built now) or off (taskstate.memo_entries is 0)."
+value = { kind = "counter", unit = "lookups", labels = ["result"] }
+
 [metric.rule_hits]
 doc = "Regex rule matches, by action (deny, warn, context)."
 value = { kind = "counter", unit = "matches", labels = ["action"] }
