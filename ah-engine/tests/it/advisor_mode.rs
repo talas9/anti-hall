@@ -504,11 +504,47 @@ fn a_pin_bump_merge_helper_is_not_a_second_fix_dispatch() {
     let off = [("ANTIHALL_ADVISOR_THINKING", "0")];
     let tp = transcript("fx2", &[ADVISOR, OWNER, SONNET]);
     assert_eq!(dispatch("fx2", &tp, "Fix #404 crash", &off).0, 0, "first attempt");
-    assert_eq!(dispatch("fx2", &tp, "Merge fix/404 and bump the submodule pin for #404", &off).0, 0, "pin bump merge helper");
-    assert_eq!(dispatch("fx2", &tp, "Advance the gitlink for #404 fix", &off).0, 0, "gitlink advance");
-    assert_eq!(dispatch("fx2", &tp, "Fix #404 again", &off).0, 2, "a real second fix attempt is still held");
-    // the exemption must not swallow a real second fix whose text merely mentions a pin or a gitlink (each in its own session: a held dispatch is let through on its retry)
-    for (i, held) in ["Fix #404 again and update the pin", "Fix gitlink parser crash #404", "Update the cert pin validation to fix #404 failing"].iter().enumerate() {
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 again", &off).0, 2, "a real second fix attempt is held");
+    // every pin/gitlink bump helper phrasing is exempt (each in its own session)
+    let helpers = [
+        "Merge fix/404 and bump the submodule pin for #404",
+        "Advance the gitlink for #404 fix",
+        "Bump submodule pointer to fix/404",
+        "Update the submodule pin for #404",
+        "Bump the gitlink to the #404 fix commit",
+        "Update submodules to latest for #404",
+        "Advance gitlink of anti-hall for #404",
+        "bump submodule pointers in parent repo #404",
+        "Bump the submodule to the #404 fix commit",
+        "Pin bump for #404 fix",
+        "Update the anti-hall submodule pin for #404",
+        "Bump anti-hall gitlink to #404 fix",
+    ];
+    for (i, ok) in helpers.iter().enumerate() {
+        let sid = format!("fx2e{i}");
+        let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
+        assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+        assert_eq!(dispatch(&sid, &tp, ok, &off).0, 0, "{ok} is a bump helper, exempt");
+    }
+    // the exemption must not swallow a real second fix whose text merely mentions a pin, a gitlink, a watcher or a monitor
+    let fixes = [
+        "Fix #404 again and update the pin",
+        "Fix gitlink parser crash #404",
+        "Update the cert pin validation to fix #404 failing",
+        "Fix #404 again",
+        "Fix submodule pin parsing #404",
+        "Fix the submodule pointer resolution crash #404",
+        "Update the submodule pointer logic to fix #404",
+        "Fix the watcher crash #404",
+        "Fix #404: update gitlink handling",
+        "Retry fix #404 and bump the submodule pin",
+        "Update gitlinks to handle #404 bug fix",
+        "Bump the timeout to fix #404",
+        "Fix merge helper bug #404",
+        "Fix monitor leak #404",
+        "Update the submodule parser to fix #404",
+    ];
+    for (i, held) in fixes.iter().enumerate() {
         let sid = format!("fx2h{i}");
         let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
         assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");

@@ -66,7 +66,7 @@ function idAdvisory(p, now) {
 }
 
 // Delivered turns before the same advisory is sent again (a changed set of idle agents is a new advisory and is sent at once); a
-// repeat the model already holds is counted as suppressed.
+// repeat the model already holds is counted as suppressed (only when the interval is on: with 0 the dedupe is the old pending-only one, not this fix).
 function idRepeatEvery() {
   var every = ah.settings.num('idle_sweep.num_repeat_every');
   return isFinite(every) && every > 0 ? every : 0;
@@ -86,6 +86,6 @@ function decide(p) {
       normalize: function (x) { return x.replace(new RegExp(ah.cfg('idle_sweep.re_minutes'), 'g'), ''); },
     });
   }
-  if (!emit) ah.metric('misfire_suppressed', ['guard', 'idle-agent-sweep', 'reason', 'repeat_delivered']);
+  if (!emit && idRepeatEvery() > 0) ah.metric('misfire_suppressed', ['guard', 'idle-agent-sweep', 'reason', 'repeat_delivered']);
   return emit ? { advisory: text.advisoryJson(ah.cfg('idle_sweep.event'), t) } : 'allow';
 }
