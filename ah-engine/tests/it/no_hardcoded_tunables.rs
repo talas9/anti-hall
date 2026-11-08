@@ -33,6 +33,26 @@ use std::path::{Path, PathBuf};
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
     (
+        "src/transcript/scan.rs",
+        "static FREED",
+        "the condition variable that wakes a request waiting for its turn at reading a transcript window: synchronisation state, not a tunable",
+    ),
+    (
+        "src/transcript/scan.rs",
+        "static DEPTH",
+        "an empty thread-local count of the windows this thread is reading (so a nested read does not wait for itself): an initial zero, not a tunable",
+    ),
+    (
+        "src/transcript/scan.rs",
+        "static PEAK",
+        "an empty thread-local high-water mark of the bytes this thread held for transcript reads until the check's cost is observed: an initial zero, not a tunable",
+    ),
+    (
+        "src/transcript/scan.rs",
+        "static TEST_MAX",
+        "a test-only thread-local that keeps the concurrency bound off for the lib's unit tests unless one sets it: an initial zero, not a tunable",
+    ),
+    (
         "src/budget.rs",
         "static LAST_DROP",
         "an empty thread-local slot that holds the reason of the last dropped answer until its observer takes it: an initial None, not a tunable",

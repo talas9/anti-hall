@@ -69,8 +69,8 @@ fn budgets() -> toml::Table {
         .clone()
 }
 
-/// Bytes of the requests above the arena size that one call of `check` for `command` made (after one unmeasured call that loads the check).
-fn alloc_of(check: &str, command: &str, home: &Path) -> u64 {
+/// (bytes of the requests above the arena size, wall microseconds) of one call of `check` for `command` (after one unmeasured call that loads the check).
+fn alloc_of(check: &str, command: &str, home: &Path) -> (u64, u128) {
     let env = RequestEnv::from_pairs(vec![("HOME".to_string(), home.to_string_lossy().into_owned())]);
     let payload = json!({
         "cwd": home, "hook_event_name": "PreToolUse", "session_id": "alloc-budget", "tool_name": "Bash",
@@ -79,11 +79,13 @@ fn alloc_of(check: &str, command: &str, home: &Path) -> u64 {
     let run = || ah_engine::script::run_forced(check, &payload, &json!({}), "PreToolUse", &env);
     run();
     let before = BIG.with(Cell::get);
+    let t = std::time::Instant::now();
     run();
+    let us = t.elapsed().as_micros();
     let n = BIG.with(Cell::get).wrapping_sub(before);
     // a script call that moved off the calling thread would count 0 here and pass every budget silently
     assert!(n > 0, "no large allocation counted for `{check}`: the call no longer runs on the measuring thread");
-    n
+    (n, us)
 }
 
 #[test]
@@ -101,6 +103,12 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
     let line = "- line of a long commit message with some words and 'quotes' and $VAR and (parens) ; semicolons";
     let heredoc = format!("git commit -m \"$(cat <<'EOF'\n{}\nEOF\n)\" && git push origin main", vec![line; lines].join("\n"));
 
+    // an UNQUOTED heredoc body expands, so the git check reads it position by position; many heredocs make the masking pass restart per heredoc
+    // no expansion in the body: the scan then reads every position (a `$VAR` early on would end it at once)
+    let plain = "- line of a long commit message with some words and 'quotes' and (parens) ; semicolons";
+    let body = vec![plain; 15 * 1024 / (plain.len() + 1)].join("\n");
+    let unquoted = format!("git commit -m \"$(cat <<EOF\n{body}\nEOF\n)\"");
+    let many = "cat <<A\nx\nA\n".repeat(15 * 1024 / 14);
     // text that makes the segment scanner look at the segment so far at every `}` / `>|` / `&`: joining at each read would bring the cost back
     let braces = format!("echo {}", "a} ".repeat(5000));
     let redirects = format!("echo {}", "a>|b ".repeat(3000));
@@ -109,14 +117,42 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
     std::fs::create_dir_all(&home).unwrap();
     let home = std::fs::canonicalize(&home).unwrap();
     let mut over = Vec::new();
-    for (table, command) in [("echo_mib", &echo), ("heredoc_mib", &heredoc), ("braces_mib", &braces), ("redirects_mib", &redirects)] {
+    for (table, command) in [
+        ("echo_mib", &echo),
+        ("heredoc_mib", &heredoc),
+        ("braces_mib", &braces),
+        ("redirects_mib", &redirects),
+        ("unquoted_heredoc_mib", &unquoted),
+        ("many_heredocs_mib", &many),
+    ] {
         for (check, limit) in b[table].as_table().unwrap() {
             let limit = limit.as_integer().unwrap() as u64 * MIB;
-            let got = alloc_of(check, command, &home);
-            println!("ALLOC {table} {check}: {} KiB (budget {} KiB)", got / 1024, limit / 1024);
+            let (got, us) = alloc_of(check, command, &home);
+            println!("ALLOC {table} {check}: {} KiB (budget {} KiB), {us} us", got / 1024, limit / 1024);
             if got > limit {
                 over.push(format!("{check} on {table}: {} KiB > {} KiB", got / 1024, limit / 1024));
             }
+        }
+    }
+    // wall time as a RATIO, which does not depend on the machine or the build profile: the same unquoted heredoc at 1 KB and at 15 KB
+    // (15x the bytes). A linear scan costs about 15x; a quadratic one about 225x. Best of N runs each, so a loaded runner's noise
+    // does not decide it.
+    let ratio = b["time_ratio"].as_table().unwrap();
+    let (small_kb, big_kb, runs) =
+        (ratio["small_kb"].as_integer().unwrap() as usize, ratio["big_kb"].as_integer().unwrap() as usize, ratio["runs"].as_integer().unwrap());
+    let heredoc_of = |kb: usize| format!("git commit -m \"$(cat <<EOF\n{}\nEOF\n)\"", vec![plain; kb * 1024 / (plain.len() + 1)].join("\n"));
+    let (small, big) = (heredoc_of(small_kb), heredoc_of(big_kb));
+    for (check, max) in ratio["max"].as_table().unwrap() {
+        let best = |cmd: &String| (0..runs).map(|_| alloc_of(check, cmd, &home).1.max(1)).min().unwrap();
+        let (t_small, t_big) = (best(&small), best(&big));
+        let r = t_big as f64 / t_small as f64;
+        println!("RATIO {check}: {big_kb} KB {t_big} us / {small_kb} KB {t_small} us = {r:.1}x (bound {}x)", max.as_integer().unwrap());
+        if r > max.as_integer().unwrap() as f64 {
+            over.push(format!(
+                "{check}: time at {big_kb} KB / {small_kb} KB = {r:.1}x > {}x (a linear scan is about {}x)",
+                max.as_integer().unwrap(),
+                big_kb / small_kb
+            ));
         }
     }
     std::fs::remove_dir_all(&home).ok();

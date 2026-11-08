@@ -411,6 +411,10 @@ value = { kind = "counter", unit = "lookups", labels = ["result"] }
 doc = "Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place)."
 value = { kind = "counter", unit = "lookups", labels = ["reason"] }
 
+[metric.taskstate_memo]
+doc = "Task reconstructions asked for by the Stop and prompt checks (`ah.transcript.tasks`): hit (another check already built this state of the file, or is building it), miss (built now) or off (taskstate.memo_entries is 0)."
+value = { kind = "counter", unit = "lookups", labels = ["result"] }
+
 [metric.rule_hits]
 doc = "Regex rule matches, by action (deny, warn, context)."
 value = { kind = "counter", unit = "matches", labels = ["action"] }
@@ -731,3 +735,15 @@ value = "SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1"
 [telemetry.sql_update_event]
 doc = "SQL: rewrite one stored event row (?4 = its id) with the replayed completion's time (?1), kind (?2) and data (?3)."
 value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
+
+[metric.transcript_scan_peak_bytes]
+doc = "The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.transcript_scan_waits]
+doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_scan_turn_bypassed]
+doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
+value = { kind = "counter", unit = "requests", labels = [] }

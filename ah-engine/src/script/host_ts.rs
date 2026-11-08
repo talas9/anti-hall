@@ -18,9 +18,9 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 use crate::checks::guardkit::text::js_trim;
-use crate::checks::replykit::io::{read_window, truthy};
+use crate::checks::replykit::io::truthy;
 use crate::checks::replykit::json::stringify_value;
-use crate::checks::replykit::transcript::{parse_line, prop, tail_lines};
+use crate::checks::replykit::transcript::{parse_line, prop};
 use crate::defaults;
 use rquickjs::{Ctx, Function, Object};
 use serde_json::{Value, json};
@@ -168,13 +168,14 @@ pub(super) fn line_items(line: &str) -> Result<Option<LineEv>, ()> {
 
 /// `evidence` read straight from the file: the last `w` bytes, every line, no memory of earlier calls.
 pub(super) fn evidence_uncached(path: &str, w: u64) -> String {
-    let Some(tail) = read_window(path, w) else { return "null".into() };
+    use crate::transcript::scan::Flow;
     let mut items: Vec<String> = Vec::new();
     let mut chars = 0usize;
-    for line in tail_lines(&tail) {
+    let mut bad = false;
+    let Some(truncated) = crate::checks::replykit::io::for_each_line(path, w, |line| {
         match line_items(line) {
-            Err(()) => return unsure(),
-            Ok(None) => continue,
+            Err(()) => bad = true,
+            Ok(None) => return Flow::Next,
             Ok(Some(l)) => {
                 chars += l.chars;
                 if !l.items.is_empty() {
@@ -182,11 +183,18 @@ pub(super) fn evidence_uncached(path: &str, w: u64) -> String {
                 }
             }
         }
-        if chars as f64 > defaults::num("transcript.evidence_max_chars") as f64 {
-            return unsure();
+        if bad || chars as f64 > defaults::num("transcript.evidence_max_chars") as f64 {
+            bad = true;
+            return Flow::Stop;
         }
+        Flow::Next
+    }) else {
+        return "null".into();
+    };
+    if bad {
+        return unsure();
     }
-    answer(&items, tail.truncated)
+    answer(&items, truncated)
 }
 
 /// The answer text: `{"items":[...],"truncated":bool}` (the keys in the order a JSON object map prints them).
@@ -272,6 +280,8 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
 #[cfg(test)]
 pub(in crate::script) mod reference {
     use super::*;
+    use crate::checks::replykit::io::read_window;
+    use crate::checks::replykit::transcript::tail_lines;
 
     pub(in crate::script) fn evidence_v0(path: &str, window: f64) -> String {
         if !path.starts_with('/') {

@@ -298,25 +298,44 @@ fn kept(path: &str, w: u64, want: Option<Variant>) -> Option<(Answer, bool)> {
         k.memo.clear();
     }
     k.base = fls;
-    // read what was appended: the complete lines are judged for good, a last line without its newline now and again next time
-    let mut buf = vec![0u8; (size - k.parsed_to) as usize];
-    f.read_exact_at(&mut buf, k.parsed_to).ok()?;
-    crate::load::note_scan(buf.len() as u64);
-    let mut at = 0usize;
-    while let Some(i) = buf.get(at..).and_then(|r| r.iter().position(|b| *b == b'\n')) {
-        let start = k.parsed_to;
-        let mut calls = std::mem::take(&mut k.task_calls);
-        if let Some(line) = make_line(start, buf.get(at..at + i).unwrap_or_default(), &mut calls, true) {
-            k.lines.push_back(line);
-            k.memo.clear();
+    // read what was appended, a block at a time: the complete lines are judged for good, a last line without its newline now and again next time
+    let _turn = crate::transcript::scan::permit();
+    let block = crate::transcript::scan::block_bytes();
+    let mut buf = vec![0u8; block];
+    let mut carry: Vec<u8> = Vec::new();
+    let mut pos = k.parsed_to;
+    while pos < size {
+        let n = ((size - pos) as usize).min(block);
+        f.read_exact_at(buf.get_mut(..n).unwrap_or_default(), pos).ok()?;
+        crate::load::note_scan(n as u64);
+        pos += n as u64;
+        let mut rest = buf.get(..n).unwrap_or_default();
+        while let Some(i) = rest.iter().position(|b| *b == b'\n') {
+            let (head, tail) = rest.split_at(i);
+            rest = tail.get(1..).unwrap_or_default();
+            let start = k.parsed_to;
+            let consumed = (carry.len() + head.len() + 1) as u64;
+            let mut calls = std::mem::take(&mut k.task_calls);
+            let made = if carry.is_empty() {
+                make_line(start, head, &mut calls, true)
+            } else {
+                carry.extend_from_slice(head);
+                let m = make_line(start, &carry, &mut calls, true);
+                carry.clear();
+                m
+            };
+            if let Some(line) = made {
+                k.lines.push_back(line);
+                k.memo.clear();
+            }
+            k.task_calls = calls;
+            k.parsed_to += consumed;
         }
-        k.task_calls = calls;
-        k.parsed_to += (i + 1) as u64;
-        at += i + 1;
+        carry.extend_from_slice(rest);
     }
-    let pending = (at < buf.len()).then(|| {
+    let pending = (!carry.is_empty()).then(|| {
         let mut calls = k.task_calls.clone();
-        make_line(k.parsed_to, buf.get(at..).unwrap_or_default(), &mut calls, false)
+        make_line(k.parsed_to, &carry, &mut calls, false)
     });
     let pending: Option<String> = pending.flatten().map(|l| l.text);
     let answer = match want {

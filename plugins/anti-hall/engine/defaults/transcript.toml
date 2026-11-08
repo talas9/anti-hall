@@ -368,3 +368,34 @@ value = "The transcript store cannot answer ({why}); the caller defers."
 [transcript.stamp_prefix]
 doc = "Prefix of the settings whose values stamp a restart snapshot: a snapshot is used only when none of them changed since it was written."
 value = "transcript."
+# ---- bounded transcript reads (transcript::scan, T-3 spike fix) ----
+
+[transcript.scan_peak_budget_bytes]
+doc = "The most the daemon's heap may rise above where it stood when four requests (two Stop, two UserPromptSubmit) read one 100 MB and one 300 MB transcript at once, the per-session state that stays (the walk of the agent scan, the evidence and task lines) included. An end-to-end guard (tests/it/transcript_scan_peak.rs), not a runtime limit; measured 2026-11 at 5-12 MB. The per-reader gate that fails on the old whole-window reads is transcript.reader_peak_budget_bytes."
+value = 16777216
+min = 1048576
+unit = "bytes"
+
+[transcript.reader_peak_budget_bytes]
+doc = "The most one transcript reader may hold at once while it reads a window of 16 MiB or more: a block (transcript.read_block_bytes) plus the line being assembled, not the window. A test gate (tests/transcript_scan_blocks.rs), not a runtime limit."
+value = 2097152
+min = 262144
+unit = "bytes"
+
+[transcript.read_block_bytes]
+doc = "Bytes a transcript reader holds at once (transcript::scan). A window of the transcript, of any size, is read in blocks of this size and folded into a small state line by line, so the heap a read raises is one block plus the one line being assembled, never the window. Measured 2026-11: readers that held a whole 12-64 MiB window raised the heap 40-90 MB for half a second when a few requests read one 300 MB transcript, enough to pass the RSS cap."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[transcript.max_concurrent_scans]
+doc = "Most transcript windows being read in the daemon at once. The turn bounds concurrency only and never changes an answer: a request that gets no turn before its own deadline or transcript.scan_wait_max_ms reads anyway, without one, and is counted in transcript_scan_turn_bypassed; one that waited is counted in transcript_scan_waits. 0 turns the bound off."
+value = 1
+min = 0
+unit = "scans"
+
+[transcript.scan_wait_max_ms]
+doc = "Longest a request waits for its turn at reading a transcript window (also cut at the request's own deadline)."
+value = 1500
+min = 0
+unit = "ms"

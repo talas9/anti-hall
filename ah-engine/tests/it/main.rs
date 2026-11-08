@@ -97,6 +97,7 @@ mod telemetry;
 mod temp_leaks;
 mod transcript_index;
 mod transcript_store;
+mod transcript_scan_peak;
 mod w2_behaviour_matrix;
 mod w6_command_allow;
 mod w6_task_tracker;

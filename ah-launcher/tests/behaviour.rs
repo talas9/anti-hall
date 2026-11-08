@@ -1048,3 +1048,82 @@ fn an_unusable_home_without_tmpdir_keeps_the_slow_reply_and_done_mark() {
         o.err
     );
 }
+
+/// A state directory whose plain socket path is over `paths.socket_max_len` has its socket at the engine's private hashed path
+/// (`/tmp/anti-hall-<uid>/<fnv>.sock`). The cold-start wait must watch THAT path: before, it was skipped, so the first guard hook of a
+/// cold start ran the engine at once, before any daemon was up (the engine then missed the 560 ms budget and the call passed unchecked).
+#[test]
+fn the_cold_start_wait_also_runs_for_a_state_dir_with_a_long_socket_path() {
+    let env = Env::new(&format!("long{}", "x".repeat(70)));
+    std::fs::create_dir_all(&env.state).unwrap();
+    let shipped: toml::Table = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../plugins/anti-hall/engine/defaults/engine.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let paths = |k: &str| shipped["paths"][k]["value"].clone();
+    let max = paths("socket_max_len").as_integer().unwrap() as usize;
+    let (prefix, ext) = (
+        paths("private_dir_prefix").as_str().unwrap().to_string(),
+        paths("short_socket_ext").as_str().unwrap().to_string(),
+    );
+    let fallback = paths("fallback_tmp").as_str().unwrap().to_string();
+    let sock_file = paths("socket_file").as_str().unwrap().to_string();
+    assert!(env.state.join(&sock_file).as_os_str().len() > max);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in env.state.to_string_lossy().as_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let uid = unsafe { libc::getuid() };
+    let pdir = std::path::PathBuf::from(format!("{fallback}/{prefix}{uid}"));
+    std::fs::create_dir_all(&pdir).unwrap();
+    let sock = pdir.join(format!("{:012x}{ext}", h & 0xffff_ffff_ffff));
+    let _ = std::fs::remove_file(&sock);
+    let kicks = env.path("kicks");
+    let seen = env.path("seen");
+    let e = env.script(
+        "long.sh",
+        &format!(
+            "cat >/dev/null\ncase \"$*\" in *ColdStartKick*) echo kick >>{k}; exit 0;; esac\nif [ -S {s} ]; then echo up >>{o}; else echo down >>{o}; fi\nexit 0",
+            k = kicks.display(),
+            s = sock.display(),
+            o = seen.display()
+        ),
+    );
+    let sock2 = sock.clone();
+    let kicks2 = kicks.clone();
+    let daemon = std::thread::spawn(move || {
+        assert!(wait_until(Duration::from_secs(5), || kicks2.exists()));
+        std::thread::sleep(Duration::from_millis(400));
+        let l = UnixListener::bind(&sock2).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        drop(l);
+        let _ = std::fs::remove_file(&sock2);
+    });
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_ah-hook"));
+    c.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &env.home)
+        .env("AH_WRAPPER_TEST", "1")
+        .env("AH_ENGINE_BIN", &e)
+        .arg("PreToolUse")
+        .arg("--plugin-root")
+        .arg(&env.root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    let mut si = ch.stdin.take().unwrap();
+    let _ = si.write_all(b"{\"session_id\":\"long1\"}");
+    drop(si);
+    let code = ch.wait_with_output().unwrap().status.code();
+    daemon.join().unwrap();
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        env.read("seen").trim(),
+        "up",
+        "the engine ran only once the daemon's hashed socket was up (the cold wait ran)"
+    );
+}

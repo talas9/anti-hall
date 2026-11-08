@@ -1047,6 +1047,7 @@ fn range_scan(
     let cap = defaults::num("script.tail_max_bytes");
     let window = if window.is_finite() && window > 0.0 { (window as u64).min(cap) } else { cap };
     let line_max = if line_max.is_finite() && line_max > 0.0 { line_max as usize } else { usize::MAX / 2 };
+    let _turn = crate::transcript::scan::permit();
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     if let Some(at) = from

@@ -24,6 +24,7 @@ pub mod reader;
 pub mod record;
 pub mod registry;
 pub mod store;
+pub mod scan;
 
 pub use facts::{Cut, Fact, FactKind};
 pub use index::{Index, Limits, Rebuild, Refresh};

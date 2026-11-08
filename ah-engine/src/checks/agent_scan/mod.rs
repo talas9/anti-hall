@@ -70,7 +70,7 @@ pub struct Rec {
     /// The `shell.kind` of the `task_status` attachment that adopted it (`monitor` for a Monitor-tool task, `bash` for a Bash one); empty when launched or unknown.
     pub shell_kind: String,
     /// The input of the Agent/Task call that launched it (Node `rec.spawnInput`); `None` when that call is outside the window.
-    pub spawn_input: Option<Value>,
+    pub spawn_input: Option<std::sync::Arc<Value>>,
 }
 
 /// A teammate message that has not been answered.
@@ -626,7 +626,7 @@ impl Prefilter {
 #[derive(Clone)]
 struct ToolUse {
     name: Option<String>,
-    input: Option<Value>,
+    input: Option<std::sync::Arc<Value>>,
     /// Offset of the line that made the call (kept walks only).
     off: u64,
     /// Offset of the last line that looked this call up to judge its answer (kept walks only).
@@ -781,7 +781,12 @@ impl Walk {
         }
         self.tool_uses.insert(
             id.to_string(),
-            ToolUse { name: name.map(str::to_string), input: if keep { input.cloned() } else { None }, off: self.cur_off, used: std::cell::Cell::new(0) },
+            ToolUse {
+                name: name.map(str::to_string),
+                input: if keep { input.map(|i| std::sync::Arc::new(i.clone())) } else { None },
+                off: self.cur_off,
+                used: std::cell::Cell::new(0),
+            },
         );
         Ok(())
     }
@@ -1296,6 +1301,8 @@ fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) 
     if !path.starts_with('/') {
         return Err(Unsupported);
     }
+    // one transcript window is walked at a time in the daemon; a request that gets no turn before its deadline walks anyway
+    let _turn = crate::transcript::scan::permit();
     if defaults::num("agent_scan.cache_max_paths") > 0
         && let Ok(m) = file.metadata()
         && m.len() > 0
@@ -1615,7 +1622,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
             let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
-                if !(delivery && names_agent(c.input.as_ref(), id, &launched)?) {
+                if !(delivery && names_agent(c.input.as_deref(), id, &launched)?) {
                     continue;
                 }
             }
