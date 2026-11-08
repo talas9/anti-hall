@@ -1488,8 +1488,21 @@ fn scripted_daemon_gated(e: &Env, script: Vec<(u64, ah_engine::frame::Kind, &'st
     let alive = Arc::new(AtomicBool::new(true));
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (a, s) = (Arc::clone(&alive), Arc::clone(&seen));
+    // a daemon that is working: a fresh heartbeat naming the singleton lock holder, with a progress age of 0 (the file a real daemon's
+    // watchdog rewrites each tick). A client past its deadline waits for a late reply only while the daemon shows progress. The pid is
+    // this test process with no recorded start time, so nothing can ever signal it.
+    let (hb, pid) = (e.state().join("daemon.heartbeat"), std::process::id());
+    std::fs::write(&hb, format!("{pid}\n\n\n{}\n{:010}\n", e.state().display(), 0)).unwrap();
+    std::fs::write(ah_engine::paths::lock_for(&sock), pid.to_string()).unwrap();
     let thread = std::thread::spawn(move || {
+        let mut last_beat = Instant::now();
         while a.load(Ordering::Acquire) {
+            if last_beat.elapsed() >= Duration::from_millis(100) {
+                last_beat = Instant::now();
+                if let Ok(f) = std::fs::File::options().write(true).open(&hb) {
+                    ah_engine::discard::harmless(f.set_modified(std::time::SystemTime::now()));
+                }
+            }
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let i = s.fetch_add(1, Ordering::AcqRel);

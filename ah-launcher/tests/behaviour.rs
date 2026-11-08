@@ -205,8 +205,6 @@ fn engine_that_stops_reading_stalls_the_write_for_at_most_the_write_timeout() {
 #[test]
 fn wall_clock_backstop_fires_when_the_launcher_itself_hangs() {
     let env = Env::new("wall");
-    // the scenario's own late-reply extension, so the planned path (and the bound below) does not follow the shipped value
-    env.set("client.slow_fallback_max_ms", "3000");
     let e = engine(&env, "exit 0");
     let o = env.run(
         "UserPromptSubmit",

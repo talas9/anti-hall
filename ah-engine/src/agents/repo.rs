@@ -45,7 +45,7 @@ fn git(dir: &Path, args: &[&str], ok_exits: &[i32], until: Instant) -> Option<(i
     for k in list("env_remove") {
         cmd.env_remove(k);
     }
-    let timeout = crate::deadline::clamp(left);
+    let timeout = crate::deadline::share(left);
     let o = crate::proc::run(cmd, &bin, timeout, Duration::from_millis(num("poll_ms"))).ok()?;
     let code = o.status.code()?;
     ok_exits.contains(&code).then_some((code, o.stdout))

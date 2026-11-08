@@ -459,8 +459,12 @@ mod tests {
             .collect();
         // the request already waited 2.5 s of wall time for a core (the live log: 1.2-2 s per Stop check under load 18-24)
         let waited = std::time::Duration::from_millis(2500);
+        // the first read of a setting parses the shipped files (seconds in a debug build under load): not inside the request window
+        crate::defaults::millis("daemon.reply_slack_ms");
+        crate::deadline::ceiling_ms("Stop");
         crate::deadline::begin(std::time::Instant::now() - waited);
         crate::deadline::client_window(crate::defaults::num("client.deadline_ms"));
+        crate::deadline::set_event("Stop"); // the daemon names the event right after the window: Stop has the longer ceiling
         let reasons = std::cell::RefCell::new(Vec::new());
         let got = evaluate(&stop, &p, &|_| false, &|e, _, _| {
             if let Some(r) = crate::budget::take_drop_reason() {
@@ -483,9 +487,10 @@ mod tests {
     fn past_the_wall_ceiling_the_stop_guards_still_fail_open() {
         let p = json!({"session_id": "s-684-hung", "cwd": "/", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "done"});
         let stop = Meta { event: "Stop".into(), ..meta() };
-        let ceiling = crate::defaults::num("daemon.request_hard_ms") + crate::defaults::num("diagnostics.deadline_grace_cap_ms") + 1000;
+        let ceiling = crate::deadline::ceiling_ms("Stop") + crate::defaults::num("diagnostics.deadline_grace_cap_ms") + 1000;
         crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_millis(ceiling));
         crate::deadline::client_window(crate::defaults::num("client.deadline_ms"));
+        crate::deadline::set_event("Stop");
         let reasons = std::cell::RefCell::new(Vec::new());
         let got = evaluate(&stop, &p, &|_| false, &|e, _, _| {
             if let Some(r) = crate::budget::take_drop_reason() {

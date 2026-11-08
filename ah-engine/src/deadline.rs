@@ -127,6 +127,19 @@ pub fn beat() {
     });
 }
 
+/// Progress that is already paid for: the worker is inside a call that ends by itself within `dur` (a git run with its timeout, a
+/// model call with its budget), so the watchdog and a waiting client count it as making progress until then. A later [`beat`]
+/// replaces it with the real time. Nothing outside a daemon request.
+pub fn beat_for(dur: Duration) {
+    BEAT.with(|b| {
+        if let Some((slot, base)) = b.borrow().as_ref()
+            && slot.load(Ordering::Relaxed) != 0
+        {
+            slot.store((base.elapsed() + dur).as_millis() as u64 + 1, Ordering::Relaxed);
+        }
+    });
+}
+
 /// Arm the cut of the script call in progress at the request's client deadline plus `grace` ms (the check's
 /// `diagnostics.deadline_grace_ms`), or disarm it (`None`).
 pub fn set_cut_grace(grace: Option<u64>) {
@@ -205,10 +218,20 @@ pub fn client_deadline(ms: u64) {
     set_window(ms, ms);
 }
 
-/// The client's fail-fast wait is `soft_ms` (a warning past it); the request is cut at `daemon.request_hard_ms`, or at `soft_ms`
-/// when that is larger.
+/// The wall ceiling of a request for `event` (`daemon.request_hard_ms`, or its `daemon.request_hard_event_ms` row), in ms; an
+/// empty event gets the plain ceiling.
+pub fn ceiling_ms(event: &str) -> u64 {
+    crate::defaults::raw("daemon.request_hard_event_ms")
+        .get(event)
+        .and_then(crate::defaults::V::as_integer)
+        .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v.max(0) as u64)
+}
+
+/// The client's fail-fast wait is `soft_ms` (a warning past it); the request is cut at the event's wall ceiling
+/// ([`ceiling_ms`]), or at `soft_ms` when that is larger.
 pub fn client_window(soft_ms: u64) {
-    set_window(soft_ms, soft_ms.max(crate::defaults::num("daemon.request_hard_ms")));
+    let event = event().unwrap_or_default();
+    set_window(soft_ms, soft_ms.max(ceiling_ms(&event)));
 }
 
 fn set_window(soft_ms: u64, hard_ms: u64) {
@@ -232,6 +255,16 @@ pub fn end() {
 /// The request being served on this thread is a dispatch of hook event `event`.
 pub fn set_event(event: &str) {
     EVENT.with(|e| *e.borrow_mut() = Some(event.to_string()));
+    // the window was set before the event was known: its ceiling is the event's own now (a request cut at its soft wait stays so)
+    REQ.with(|r| {
+        if let Some(req) = r.get()
+            && let (Some(soft), Some(hard)) = (req.soft, req.hard)
+            && hard > soft
+        {
+            let at = req.arrived + Duration::from_millis(ceiling_ms(event)).saturating_sub(crate::defaults::millis("daemon.reply_slack_ms"));
+            r.set(Some(Req { hard: Some(at.max(soft)), ..req }));
+        }
+    });
 }
 
 /// The hook event of the request being served, when the dispatch named it.
@@ -289,6 +322,19 @@ pub fn clamp(budget: Duration) -> Duration {
     remaining().map_or(budget, |left| budget.min(left))
 }
 
+/// `budget` for ONE host call (a git run, a spawned program) of a check: cut to the time left ([`clamp`]) and to the call's share of
+/// the request's ceiling (`daemon.host_call_share_pct` of [`ceiling_ms`] for the event), so a slow call cannot drain the clock the
+/// checks after it need. Outside a request, or with the share off (0), only the request clock cuts.
+pub fn share(budget: Duration) -> Duration {
+    let budget = clamp(budget);
+    let pct = crate::defaults::num("daemon.host_call_share_pct");
+    if !in_request() || pct == 0 {
+        return budget;
+    }
+    let ceiling = Duration::from_millis(ceiling_ms(&event().unwrap_or_default()));
+    budget.min(ceiling.mul_f64(pct as f64 / 100.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +376,55 @@ mod tests {
         assert_eq!(clamp(long), Duration::ZERO, "a client that no longer waits leaves no budget");
         end();
         assert_eq!(clamp(long), long);
+    }
+
+    /// #684 review of #690: the long wall ceiling belongs to Stop and SubagentStop only. The daemon names the event after the window is
+    /// set, so naming it moves the ceiling; a request the client cut at its own wait (hard = soft) stays cut there.
+    #[test]
+    fn the_wall_ceiling_is_per_event_and_naming_the_event_moves_it() {
+        let ms = |d: Option<Duration>| d.unwrap().as_millis() as u64;
+        let (short, long) = (crate::defaults::num("daemon.request_hard_ms"), ceiling_ms("Stop"));
+        assert!(
+            long > short
+                && ceiling_ms("SubagentStop") == long
+                && ceiling_ms("PreToolUse") == short
+                && ceiling_ms("SessionEnd") == short
+                && ceiling_ms("") == short
+        );
+        begin_now();
+        assert!(ms(remaining()) <= short, "event not named yet: the plain ceiling");
+        set_event("Stop");
+        assert!(ms(remaining()) > short + 1000 && ms(remaining()) <= long, "Stop: the long ceiling");
+        end();
+        begin_now();
+        set_event("PreToolUse");
+        assert!(ms(remaining()) <= short, "a tool call keeps the short ceiling");
+        end();
+        begin_now();
+        client_deadline(250);
+        set_event("Stop");
+        assert!(ms(remaining()) <= 250, "a request the client cut at its own wait is not extended by its event");
+        end();
+    }
+
+    /// #684 review of #690: one host call gets a share of the ceiling, never the rest of the request clock.
+    #[test]
+    fn one_host_call_gets_a_share_of_the_ceiling_not_the_rest_of_the_clock() {
+        let ms = |d: Duration| d.as_millis() as u64;
+        let long = Duration::from_secs(60);
+        assert_eq!(share(long), long, "outside a request nothing is cut");
+        let pct = crate::defaults::num("daemon.host_call_share_pct");
+        assert!(pct > 0 && pct < 100, "the shipped share is on");
+        begin_now();
+        set_event("Stop");
+        let stop = ms(share(long));
+        assert!(stop <= ceiling_ms("Stop") * pct / 100 && stop > ceiling_ms("Stop") * pct / 100 - 1000, "{stop}");
+        assert_eq!(ms(share(Duration::from_millis(100))), 100, "a call that asks for less keeps its own timeout");
+        end();
+        begin_now();
+        set_event("PreToolUse");
+        assert!(ms(share(long)) <= ceiling_ms("PreToolUse") * pct / 100);
+        end();
     }
 
     #[test]

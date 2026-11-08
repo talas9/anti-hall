@@ -47,7 +47,7 @@ pub const NUMS: &[(&str, u64)] = &[
     ("client.wrapper_extra_ms", 250),
     ("client.wrapper_kill_grace_ms", 200),
     ("client.wrapper_default_timeout_s", 10),
-    ("client.slow_fallback_max_ms", 9000),
+    ("client.slow_fallback_max_ms", 3000),
     ("client.cold_guard_wait_ms", 2000),
     ("client.cold_guard_poll_ms", 50),
     ("dispatch.defer_exit", 75),
@@ -330,16 +330,22 @@ pub const STRS: &[(&str, &str)] = &[
 ];
 
 /// Per-field number tables (`{ default = .., <Event> = .. }`).
-pub const TABLES: &[(&str, &[(&str, u64)])] = &[(
-    "launcher.wall_soft_ms",
-    &[
-        ("default", 0),
-        ("SessionStart", 1100),
-        ("UserPromptSubmit", 900),
-        ("SessionEnd", 800),
-        ("Stop", 3000),
-    ],
-)];
+pub const TABLES: &[(&str, &[(&str, u64)])] = &[
+    (
+        "launcher.wall_soft_ms",
+        &[
+            ("default", 0),
+            ("SessionStart", 1100),
+            ("UserPromptSubmit", 900),
+            ("SessionEnd", 800),
+            ("Stop", 3000),
+        ],
+    ),
+    (
+        "client.slow_fallback_event_ms",
+        &[("Stop", 9000), ("SubagentStop", 9000)],
+    ),
+];
 
 pub const LISTS: &[(&str, &[&str])] = &[
     ("cli.help_flags", &["--help", "-h"]),

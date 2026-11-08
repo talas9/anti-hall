@@ -451,12 +451,31 @@ pub fn heartbeat_init() {
     let start = crate::procid::start(pid).map(|s| s.to_string()).unwrap_or_default();
     let exe = crate::procid::exe(pid).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let ident = format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy());
-    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), ident));
+    IDENT_LEN.store(ident.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), format!("{ident}{}", progress_line(0))));
 }
 
-/// One heartbeat: touch the file's modification time (no data written).
-pub fn heartbeat() {
+/// Length of the identity part of the heartbeat file this process wrote (the progress line follows it).
+static IDENT_LEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The heartbeat's progress line: the age in ms, zero-padded to a fixed width, so a rewrite never changes the file's length and a
+/// reader never sees a shorter number's leftover digits.
+fn progress_line(age_ms: u64) -> String {
+    let width = defaults::num("health.progress_digits") as usize;
+    let digits = age_ms.to_string();
+    // an age too wide for the line is recorded as the widest number that fits
+    if digits.len() > width { format!("{}\n", "9".repeat(width)) } else { format!("{digits:0>width$}\n") }
+}
+
+/// One heartbeat: record the progress age in ms of the daemon's longest-silent busy worker (0 = none busy) in the progress line,
+/// and touch the file's modification time. Rewritten in place with one write at a fixed offset and width.
+pub fn heartbeat(progress_ms: u64) {
+    use std::os::unix::fs::FileExt;
     if let Ok(f) = std::fs::File::options().write(true).open(state_file("heartbeat")) {
+        let at = IDENT_LEN.load(std::sync::atomic::Ordering::Relaxed);
+        if at > 0 {
+            crate::discard::harmless(f.write_all_at(progress_line(progress_ms).as_bytes(), at)); // keep: a missed figure reads as no progress, the call fails open
+        }
         crate::discard::harmless(f.set_modified(std::time::SystemTime::now())); // keep: a missed beat only makes a slow reply fail open sooner
     }
 }
@@ -466,8 +485,11 @@ pub fn heartbeat() {
 pub(crate) struct Heartbeat {
     /// The pid the heartbeat names.
     pub pid: u32,
-    /// The whole file: the generation identity (pid, start time, executable, state dir).
+    /// The identity part of the file: the generation identity (pid, start time, executable, state dir).
     pub ident: String,
+    /// The progress age in ms the daemon recorded at its last beat: how long its longest-silent busy worker has made no
+    /// progress (0 = no worker busy). `None` = the file carries none (a build from before it, an unreadable figure).
+    pub progress_ms: Option<u64>,
     /// Its modification time, nanoseconds since the epoch: changes on every beat.
     pub mtime_ns: u128,
     /// How old that modification time is by the wall clock (0 when it is in the future).
@@ -492,17 +514,25 @@ impl Heartbeat {
     }
 }
 
+/// A heartbeat file's two parts: the identity (its first four lines) and the progress age of its fifth line, when it has one that reads
+/// as a number.
+fn split_heartbeat(raw: &str) -> (String, Option<u64>) {
+    let split = raw.match_indices('\n').nth(3).map_or(raw.len(), |(i, _)| i + 1);
+    (raw[..split].to_string(), raw[split..].trim().parse::<u64>().ok())
+}
+
 /// The daemon's heartbeat, counted only when it names the pid that holds the singleton lock (the daemon now serving the socket).
 /// `None` = unknown (no heartbeat yet, a daemon still starting whose watchdog has not begun, a build from before the heartbeat,
 /// an unreadable file), which counts as alive.
 pub(crate) fn heartbeat_of_lock_holder() -> Option<Heartbeat> {
     let p = state_file("heartbeat");
-    let ident = std::fs::read_to_string(&p).ok()?;
+    let raw = std::fs::read_to_string(&p).ok()?;
+    let (ident, progress_ms) = split_heartbeat(&raw);
     let pid: u32 = ident.lines().next()?.trim().parse().ok()?;
     let holder: u32 = std::fs::read_to_string(paths::lock_for(&paths::socket())).ok()?.trim().parse().ok()?;
     let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
     let mtime_ns = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
+    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, progress_ms, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
 }
 
 /// The system-wide monotonic clock in milliseconds: comparable across the short-lived client processes (std's `Instant` is not
@@ -1131,6 +1161,22 @@ mod tests {
     }
 
     #[test]
+    fn the_progress_line_is_fixed_width_and_split_off_the_identity() {
+        let ident = "42\n1000\n/bin/ah-engine\n/state\n";
+        let width = defaults::num("health.progress_digits") as usize;
+        for age in [0u64, 7, 1234, u64::MAX] {
+            let line = progress_line(age);
+            assert_eq!(line.len(), width + 1, "the line never changes length: {line:?}");
+            let (id, p) = split_heartbeat(&format!("{ident}{line}"));
+            assert_eq!(id, ident, "the progress never leaks into the identity");
+            assert_eq!(p, Some(age.min("9".repeat(width).parse::<u64>().unwrap())));
+        }
+        // a file from before the progress line, or with an unreadable one, has no figure (the client reads that as no progress)
+        assert_eq!(split_heartbeat(ident), (ident.to_string(), None));
+        assert_eq!(split_heartbeat(&format!("{ident}junk\n")), (ident.to_string(), None));
+    }
+
+    #[test]
     fn the_generation_does_not_depend_on_the_executable_path() {
         // a binary update replaces the executable under a surviving daemon: same pid, start and dir must stay recoverable
         let pid = std::process::id();
@@ -1138,6 +1184,7 @@ mod tests {
         let beat = |start: u64, exe: &str| Heartbeat {
             pid,
             ident: format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy()),
+            progress_ms: None,
             mtime_ns: 0,
             age: Duration::ZERO,
         };
