@@ -23,6 +23,7 @@ use crate::checks::agent_scan::{self, Opts};
 use crate::checks::taskstate::{
     Task, Variant,
     backfill::backfill,
+    memo,
     parse::reconstruct,
     scanview,
     tail::{lines_of, read_tail},
@@ -93,7 +94,12 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
             return json!({"unreadable": true}).to_string();
         }
         let wide = if wide.is_finite() && wide > 0.0 { wide as u64 } else { window };
-        let scan = if kept { scanview::scan_tasks(path, window, wide) } else { scanview::scan_tasks_uncached(path, window, wide) };
+        // one reconstruction per state of the file, shared by the Stop checks that ask (taskstate::memo)
+        let scan = if kept {
+            memo::memoized(path, memo::Tag::Scan, window, &wide.to_string(), || scanview::scan_tasks(path, window, wide), |r| r.is_ok())
+        } else {
+            scanview::scan_tasks_uncached(path, window, wide)
+        };
         return match scan {
             Err(_) => unsure(),
             Ok(None) => json!({"quiet": true}).to_string(),
@@ -127,6 +133,7 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
 }
 
 /// Why a task list could not be rebuilt from a transcript tail.
+#[derive(Clone, Copy)]
 enum Unreadable {
     /// The file cannot be read.
     File,
@@ -138,6 +145,35 @@ enum Unreadable {
 /// window read afresh; a cut tail is completed from before the window. The one read [`tasks_of`] answers from and [`guard_open_tasks`]
 /// reads, so a reader beside task-guard sees the list task-guard sees.
 fn task_facts(path: &str, window: u64, v: Variant, kept: bool) -> Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable> {
+    if !kept {
+        return task_facts_built(path, window, v, false).0;
+    }
+    // one reconstruction per state of the file and variant, shared by the Stop checks that ask (taskstate::memo)
+    let tag = if v == Variant::State { memo::Tag::State } else { memo::Tag::Guard };
+    // only a complete answer is kept: an error (a file that cannot be read, a value only JavaScript could read) or a backfill that
+    // failed (so the facts were marked unsure) is computed afresh by the next check, never served from the memo
+    memo::memoized(path, tag, window, "", || task_facts_built(path, window, v, true), keep_built).0
+}
+
+/// Whether a built reconstruction is kept in the memo: only a complete, successful one.
+fn keep_built(built: &(Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable>, bool)) -> bool {
+    built.1 && built.0.is_ok()
+}
+
+/// The reconstruction, and whether it is complete: false when the backfill that completes a cut tail failed.
+fn task_facts_built(path: &str, window: u64, v: Variant, kept: bool) -> (Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable>, bool) {
+    let mut complete = true;
+    let r = task_facts_reconstructed(path, window, v, kept, &mut complete);
+    (r, complete)
+}
+
+fn task_facts_reconstructed(
+    path: &str,
+    window: u64,
+    v: Variant,
+    kept: bool,
+    complete: &mut bool,
+) -> Result<(crate::checks::taskstate::parse::Facts, bool), Unreadable> {
     let kept_facts = if kept { super::tasks_cache::facts(path, window, v) } else { None };
     let (built, truncated) = match kept_facts {
         Some((facts, truncated)) => (facts, truncated),
@@ -149,6 +185,7 @@ fn task_facts(path: &str, window: u64, v: Variant, kept: bool) -> Result<(crate:
     let Ok(mut facts) = built else { return Err(Unreadable::Unsure) };
     if truncated && backfill(&mut facts, path, window).is_err() {
         facts.unsure = true;
+        *complete = false;
     }
     Ok((facts, truncated))
 }
@@ -457,4 +494,32 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     )?;
     h.set("uid", Function::new(c.clone(), || f64::from(crate::checks::jsport::home::uid()))?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+    use crate::checks::taskstate::parse::Facts;
+
+    #[test]
+    fn only_a_complete_successful_reconstruction_is_kept_in_the_memo() {
+        let ok = || {
+            Ok((
+                Facts {
+                    unsure: false,
+                    tasks: Default::default(),
+                    window_reset: false,
+                    first_created: f64::INFINITY,
+                    deleted: Vec::new(),
+                    created: Vec::new(),
+                    created_by: Vec::new(),
+                },
+                false,
+            ))
+        };
+        assert!(keep_built(&(ok(), true)));
+        assert!(!keep_built(&(ok(), false)));
+        assert!(!keep_built(&(Err(Unreadable::Unsure), true)));
+        assert!(!keep_built(&(Err(Unreadable::File), true)));
+    }
 }

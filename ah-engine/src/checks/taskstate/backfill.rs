@@ -38,7 +38,7 @@ fn terminal(s: &str) -> bool {
     res().terminal.is_match(s)
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Found {
     status: bool,
     owner: bool,
@@ -47,6 +47,7 @@ struct Found {
     subject: bool,
 }
 
+#[derive(Clone)]
 struct Rec {
     need_status: bool,
     f: Found,
@@ -356,45 +357,14 @@ fn prefix_end_of(f: &mut std::fs::File, start: u64) -> Option<u64> {
     None
 }
 
-/// `backfillSubjects(taskMap, transcriptPath, { windowReset, firstCreated })`: mutates `facts.tasks` in place.
-pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
-    if facts.window_reset {
-        return Ok(());
-    }
-    let first = facts.first_created;
-    let mut wanted: Vec<(String, Need)> = Vec::new();
-    for t in facts.tasks.values() {
-        if !super::is_digits(&t.id) {
-            continue;
-        }
-        if terminal(t.status.as_deref().unwrap_or("")) {
-            continue;
-        }
-        if number_of_digits(&t.id) >= first {
-            continue;
-        }
-        let u = t.unknown.unwrap_or_default();
-        let need = Need { subject: t.content == t.id, status: u.status, owner: u.owner, blocked_by: u.blocked_by, blocked_on: u.blocked_on };
-        if need.subject || need.status || need.owner || need.blocked_by || need.blocked_on {
-            // `wanted` is a Map keyed by the number: a later task with the same number replaces the value in place.
-            match wanted.iter_mut().find(|(id, _)| number_of_digits(id) == number_of_digits(&t.id)) {
-                Some(slot) => *slot = (t.id.clone(), need),
-                None => wanted.push((t.id.clone(), need)),
-            }
-        }
-    }
-    if wanted.is_empty() {
-        return Ok(());
-    }
-    let size = std::fs::metadata(path).map_err(|_| Unsure)?.len();
-    let win = window;
-    if size <= win {
-        return Ok(());
-    }
-    let start = size - win;
+/// The backward scan from the window start for the records of the `wanted` tasks: what each of them is found to be before the
+/// window. A function of the file's bytes, the window and the wanted set alone, so every reconstruction that wants the same tasks
+/// of the same file state shares one scan ([`super::memo`]).
+fn scan_back(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
+    let start = size - window;
     let mut recs: HashMap<u64, Rec> = HashMap::new();
     let key = |id: &str| number_of_digits(id) as u64;
-    for (id, need) in &wanted {
+    for (id, need) in wanted {
         recs.insert(key(id), Rec::new(need.status));
     }
     let mut f = std::fs::File::open(path).map_err(|_| Unsure)?;
@@ -527,6 +497,54 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
         }
     }
     let _ = exhausted;
+    Ok(recs)
+}
+
+/// `backfillSubjects(taskMap, transcriptPath, { windowReset, firstCreated })`: mutates `facts.tasks` in place.
+pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
+    if facts.window_reset {
+        return Ok(());
+    }
+    let first = facts.first_created;
+    let mut wanted: Vec<(String, Need)> = Vec::new();
+    for t in facts.tasks.values() {
+        if !super::is_digits(&t.id) {
+            continue;
+        }
+        if terminal(t.status.as_deref().unwrap_or("")) {
+            continue;
+        }
+        if number_of_digits(&t.id) >= first {
+            continue;
+        }
+        let u = t.unknown.unwrap_or_default();
+        let need = Need { subject: t.content == t.id, status: u.status, owner: u.owner, blocked_by: u.blocked_by, blocked_on: u.blocked_on };
+        if need.subject || need.status || need.owner || need.blocked_by || need.blocked_on {
+            // `wanted` is a Map keyed by the number: a later task with the same number replaces the value in place.
+            match wanted.iter_mut().find(|(id, _)| number_of_digits(id) == number_of_digits(&t.id)) {
+                Some(slot) => *slot = (t.id.clone(), need),
+                None => wanted.push((t.id.clone(), need)),
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let size = std::fs::metadata(path).map_err(|_| Unsure)?.len();
+    if size <= window {
+        return Ok(());
+    }
+    let key = |id: &str| number_of_digits(id) as u64;
+    // the wanted set names the scan: the same tasks wanted of the same file state are scanned for once, whichever reconstruction asks
+    let sig = format!(
+        "{first}|{}",
+        wanted
+            .iter()
+            .map(|(id, n)| format!("{id}:{}{}{}{}{}", n.subject as u8, n.status as u8, n.owner as u8, n.blocked_by as u8, n.blocked_on as u8))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let mut recs = super::memo::memoized(path, super::memo::Tag::Backfill, window, &sig, || scan_back(path, size, window, &wanted, first), |r| r.is_ok())?;
     for (id, need) in &wanted {
         let rec = recs.remove(&key(id)).unwrap_or_else(|| Rec::new(need.status));
         if let Some(t) = facts.tasks.get_mut(id) {

@@ -1891,6 +1891,23 @@ fn merge_side_pick_script_matches_the_compiled_port() {
     );
 }
 
+/// A heredoc tag that names an `Object.prototype` key (`constructor`, `toString`) must not throw: the terminator memo is a plain
+/// lookup table, and an inherited member used to come back as a "cached" non-RegExp.
+#[test]
+fn merge_side_pick_survives_a_heredoc_tag_named_like_an_object_member() {
+    for tag in ["constructor", "toString", "__proto__", "hasOwnProperty"] {
+        let h = home(&format!("msp-{tag}"));
+        let e = env(&h);
+        let cmd = format!("git checkout --ours f.txt && cat <<{tag}\nbody\n{tag}\n");
+        let p = json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/x", "session_id": "s1", "hook_event_name": "PostToolUse"});
+        let got = super::run_forced("merge-side-pick", &p, &Value::Null, "PostToolUse", &e);
+        assert_eq!(got, Some(Some(Verdict::Allow)), "{tag}: {:?}", crate::discard::captured());
+        // the pick that precedes the heredoc is still recorded: a throw would have left no state behind
+        let st = std::fs::read_to_string(format!("{h}/.anti-hall/merge-side-pick-s1.json")).unwrap_or_default();
+        assert!(st.contains("\"pickSeq\":1"), "{tag}: the side-pick was not recorded: {st:?} {:?}", crate::discard::captured());
+    }
+}
+
 /// The platform's throttle prefix (macOS `taskpolicy ...`, Linux `nice ...`) stands as `{PREFIX}` in the corpus, so one corpus
 /// serves both CI systems.
 fn prefix_neutral(v: &mut Value) {
