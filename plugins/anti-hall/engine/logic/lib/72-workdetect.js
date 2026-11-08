@@ -28,7 +28,17 @@ var wd = {
     }
     return out.join('');
   },
-  fileRedirect: function (s) { return /(?<![0-9&])>{1,2}(?!&)/.test(s); },
+  // A redirect to a file; one into the null device writes nothing (GH #459: `cmd >/dev/null` is not a file change).
+  fileRedirect: function (s) {
+    var kept = s.replace(/(?<![0-9&])>{1,2}(?!&)\s*(\S+)/g, function (m, target) { return wd.re('workdetect.dev_null').test(target) ? ' ' : m; });
+    return /(?<![0-9&])>{1,2}(?!&)/.test(kept);
+  },
+  // The first command segment that makes a Bash command count as work (the whole command when none does alone): what the block names.
+  workSegment: function (cmd) {
+    var segs = cmd.split(/&&|\|\||;|\||\n/);
+    for (var i = 0; i < segs.length; i++) { var g = segs[i].trim(); if (g && wd.bashWork(wd.neutralize(g))) return g; }
+    return cmd;
+  },
   bashWork: function (n) { return wd.re('workdetect.always_work', 'i').test(n) || wd.re('workdetect.command_position', 'i').test(n) || wd.fileRedirect(n); },
   isUnder: function (path, root) { return path === root || (path.indexOf(root) === 0 && path.charAt(root.length) === '/'); },
   // `isUnderTmpRoot(p)`.

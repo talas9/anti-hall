@@ -392,6 +392,262 @@ pub struct Boot {
     /// The Health and Topology screens' settings.
     #[serde(default)]
     pub topo: TopoCfg,
+    /// The views in nav order (`web.screens`).
+    #[serde(default)]
+    pub screens: Vec<ScreenDef>,
+    /// Optional page parts by name (`web.switches`); a name that is not listed is off.
+    #[serde(default)]
+    pub switches: BTreeMap<String, bool>,
+    /// The figures of the top strip, in order (`web.strip_pills`).
+    #[serde(default)]
+    pub strip_pills: Vec<String>,
+    /// Seconds the decision ribbon covers (`web.ribbon_window_s`).
+    #[serde(default)]
+    pub ribbon_window_s: u64,
+    /// Slots of the decision ribbon (`web.ribbon_buckets`).
+    #[serde(default)]
+    pub ribbon_buckets: usize,
+    /// How long a view shows its skeleton before it says the load failed (`web.load_timeout_ms`).
+    #[serde(default)]
+    pub load_timeout_ms: u64,
+    /// How long a view's data may go without a fresh read before it is marked stale (`web.stale_after_ms`).
+    #[serde(default)]
+    pub stale_after_ms: u64,
+    /// How often a waiting view re-checks its timeout (`web.load_tick_ms`).
+    #[serde(default)]
+    pub load_tick_ms: u64,
+    /// How often a stale note re-checks the age of its data (`web.stale_tick_ms`).
+    #[serde(default)]
+    pub stale_tick_ms: u64,
+    /// Bars in a list or tree skeleton (`web.skeleton_rows`).
+    #[serde(default)]
+    pub skeleton_rows: usize,
+    /// Figures in a stats skeleton (`web.skeleton_stats`).
+    #[serde(default)]
+    pub skeleton_stats: usize,
+}
+
+/// What a view that loads data draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Load {
+    /// The data is here.
+    Data,
+    /// Nothing yet and still within the timeout: the skeleton of the final layout.
+    Skeleton,
+    /// The read failed, or took longer than the timeout: an error line with a retry.
+    Error,
+}
+
+/// The state of a view's first load: data wins; else a failed read or a wait past `timeout_ms` is an error; else the skeleton.
+pub fn load_state(have: bool, failed: bool, waited_ms: u64, timeout_ms: u64) -> Load {
+    if have {
+        Load::Data
+    } else if failed || waited_ms >= timeout_ms {
+        Load::Error
+    } else {
+        Load::Skeleton
+    }
+}
+
+/// How long one mounted loading notice has waited. It is created when its view opens, never earlier, so a view opened long after the
+/// page loaded still starts at zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LoadClock {
+    waited_ms: u64,
+    tick_ms: u64,
+}
+
+impl LoadClock {
+    /// A clock at zero that advances `tick_ms` per tick (at least 1).
+    pub fn new(tick_ms: u64) -> Self {
+        Self {
+            waited_ms: 0,
+            tick_ms: tick_ms.max(1),
+        }
+    }
+    /// One tick passed; returns the time waited.
+    pub fn tick(&mut self) -> u64 {
+        self.waited_ms = self.waited_ms.saturating_add(self.tick_ms);
+        self.waited_ms
+    }
+    /// Start waiting again (a retry).
+    pub fn reset(&mut self) {
+        self.waited_ms = 0;
+    }
+    /// Time waited so far.
+    pub fn waited_ms(&self) -> u64 {
+        self.waited_ms
+    }
+    /// The state of the load at this clock.
+    pub fn state(&self, have: bool, failed: bool, timeout_ms: u64) -> Load {
+        load_state(have, failed, self.waited_ms, timeout_ms)
+    }
+}
+
+/// Whether data already on screen has stopped updating: the last read failed, or none succeeded for `after_ms`.
+pub fn is_stale(failed: bool, last_ok_ms: u64, now_ms: u64, after_ms: u64) -> bool {
+    last_ok_ms > 0 && (failed || now_ms.saturating_sub(last_ok_ms) >= after_ms)
+}
+
+/// One view of the nav (`web.screens`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScreenDef {
+    /// Which view: the page knows a fixed set of ids; others are ignored.
+    pub id: String,
+    /// The `web.ui` key of its nav label.
+    pub label: String,
+    /// The line icon's name.
+    pub icon: String,
+    /// False: not in the nav and not rendered.
+    pub enabled: bool,
+}
+
+/// The view ids the page can render.
+pub const KNOWN_SCREENS: [&str; 8] = [
+    "agents", "live", "reports", "health", "logs", "settings", "accounts", "updates",
+];
+
+impl Boot {
+    /// The views the nav shows, in order: enabled, known to the page, each id once.
+    pub fn nav(&self) -> Vec<&ScreenDef> {
+        let mut seen = Vec::new();
+        self.screens
+            .iter()
+            .filter(|s| {
+                s.enabled
+                    && KNOWN_SCREENS.contains(&s.id.as_str())
+                    && !seen.contains(&s.id.as_str())
+                    && {
+                        seen.push(s.id.as_str());
+                        true
+                    }
+            })
+            .collect()
+    }
+
+    /// Whether the view `id` is shown (and so rendered).
+    pub fn screen_on(&self, id: &str) -> bool {
+        self.nav().iter().any(|s| s.id == id)
+    }
+
+    /// The view an address names: `wanted` when it is shown, else the first shown one (so a link to a switched-off view lands home).
+    pub fn resolve_screen(&self, wanted: &str) -> String {
+        let nav = self.nav();
+        nav.iter()
+            .find(|s| s.id == wanted)
+            .or(nav.first())
+            .map(|s| s.id.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the optional part `name` is on.
+    pub fn switch(&self, name: &str) -> bool {
+        self.switches.get(name).copied().unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    #[test]
+    fn a_view_shows_its_skeleton_before_data_and_the_error_after_the_timeout() {
+        assert_eq!(load_state(false, false, 0, 8000), Load::Skeleton);
+        assert_eq!(load_state(false, false, 7999, 8000), Load::Skeleton);
+        assert_eq!(load_state(false, false, 8000, 8000), Load::Error);
+        assert_eq!(load_state(false, true, 10, 8000), Load::Error);
+        assert_eq!(load_state(true, true, 99999, 8000), Load::Data);
+    }
+
+    #[test]
+    fn a_view_opened_long_after_page_load_starts_on_the_skeleton() {
+        // the page has been up 30 s; the clock only exists once the view opens, so it starts at zero
+        let mut clock = LoadClock::new(250);
+        assert_eq!(clock.waited_ms(), 0);
+        assert_eq!(clock.state(false, false, 8000), Load::Skeleton);
+        for _ in 0..31 {
+            clock.tick();
+        }
+        assert_eq!(
+            clock.state(false, false, 8000),
+            Load::Skeleton,
+            "7750 ms in"
+        );
+        clock.tick();
+        assert_eq!(clock.state(false, false, 8000), Load::Error, "8000 ms in");
+        clock.reset();
+        assert_eq!(
+            clock.state(false, false, 8000),
+            Load::Skeleton,
+            "retry restarts the wait"
+        );
+        assert_eq!(LoadClock::new(0).tick(), 1, "a zero tick still moves");
+    }
+
+    #[test]
+    fn data_that_stops_updating_is_stale_by_a_failed_read_or_by_silence() {
+        assert!(!is_stale(false, 1000, 5000, 20000), "fresh");
+        assert!(is_stale(true, 1000, 2000, 20000), "a failed read");
+        assert!(
+            is_stale(false, 1000, 21000, 20000),
+            "no read for too long (a hung request)"
+        );
+        assert!(
+            !is_stale(true, 0, 99999, 20000),
+            "nothing was ever shown, so nothing is stale"
+        );
+    }
+}
+
+#[cfg(test)]
+mod screens_tests {
+    use super::*;
+
+    fn def(id: &str, enabled: bool) -> ScreenDef {
+        ScreenDef {
+            id: id.into(),
+            label: format!("nav_{id}"),
+            icon: id.into(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn a_switched_off_screen_is_not_in_the_nav_and_a_link_to_it_lands_home() {
+        let b = Boot {
+            screens: vec![
+                def("agents", true),
+                def("live", false),
+                def("health", true),
+                def("nowhere", true),
+                def("health", true),
+            ],
+            ..Boot::default()
+        };
+        let ids: Vec<&str> = b.nav().iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["agents", "health"],
+            "off, unknown and repeated entries are not shown"
+        );
+        assert!(b.screen_on("health") && !b.screen_on("live") && !b.screen_on("nowhere"));
+        assert_eq!(b.resolve_screen("live"), "agents");
+        assert_eq!(b.resolve_screen("health"), "health");
+    }
+
+    #[test]
+    fn the_order_is_the_lists_and_a_switch_not_listed_is_off() {
+        let b = Boot {
+            screens: vec![def("logs", true), def("agents", true)],
+            switches: [("search".to_string(), true)].into(),
+            ..Boot::default()
+        };
+        assert_eq!(
+            b.nav().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["logs", "agents"]
+        );
+        assert!(b.switch("search") && !b.switch("compose"));
+    }
 }
 
 /// The Live screen's settings (`web.live_*`).
