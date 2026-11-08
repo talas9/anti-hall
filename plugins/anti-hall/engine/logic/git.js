@@ -2090,6 +2090,7 @@ function pushCreditVerdict(ev, lastCdDir) {
       const fresh = unpushedCredit(dir, repo, ev.env, scope, recurse);
       if (fresh.scoped) ah.metric('git_push_scoped', []);
       if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
+      if (scopeOn && !fresh.scoped) ah.metric('git_push_unscoped', ['reason', !proven ? ah.cfg('git.unscoped_reason_unproven') : scope === null ? ah.cfg('git.unscoped_reason_form') : fresh.why || ah.cfg('git.unscoped_reason_query')]);
       S.pushChecks.set(ckey, fresh);
     }
     const r = S.pushChecks.get(ckey);
@@ -2245,7 +2246,8 @@ function pushNarrowDir(cmd, dir) {
   for (const sg of segs) {
     for (const re of res) {
       const m = re.exec(sg);
-      if (m && m[1]) { at = normalizeGuardPath(m[1], at) || m[1]; break; }
+      const tgt = m ? m[m.length - 1] : null; // the target is the last capture group (an optional opening quote and its closing twin come before it)
+      if (tgt) { at = normalizeGuardPath(tgt, at) || tgt; break; }
     }
   }
   return at;
@@ -2297,7 +2299,9 @@ function pushScope(ev) {
     if (!src || refRe.test(src)) return null;
     if (!revs.includes(src)) revs.push(src);
   }
-  return revs.length ? revs : null;
+  if (!revs.length) return null;
+  revs.explicit = true; // the command line names the refspec: git ignores push.default and remote.<name>.push then (pushConfigNarrow)
+  return revs;
 }
 
 // GH #506: true when the repository's configuration cannot make a push send more than the refs its command line names. Git itself
@@ -2313,12 +2317,15 @@ function pushConfigQuery(tplKey, pattern, dir, repo, env) {
   return out.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-function pushConfigNarrow(dir, repo, env) {
+function pushConfigNarrow(dir, repo, env, explicit) {
   for (const p of ah.cfg('git.push_scope_bool_patterns')) {
     const lines = pushConfigQuery('git.push_argv_config_bool', p, dir, repo, env);
     if (lines === null) return false;
     if (lines.some((l) => !/ false$/.test(l))) return false; // true, or anything git did not report as false
   }
+  // GH #593: a refspec on the command line overrides remote.<name>.push and push.default (git reads both only when none is named),
+  // so neither can widen a push that names its refspec; the boolean widening above (mirror, followTags) holds either way
+  if (explicit) return true;
   for (const p of ah.cfg('git.push_scope_any_patterns')) {
     const lines = pushConfigQuery('git.push_argv_config_raw', p, dir, repo, env);
     if (lines === null || lines.length) return false;
@@ -2401,10 +2408,13 @@ function unpushedCredit(dir, repo, env, scope, recurse) {
   // GH #506: a push the command line and the configuration narrow reads only the commits it sends (its refspec sources, or HEAD,
   // not on any remote), so unpushed work on other branches or worktrees neither blocks it nor fills the cap. A scoped query that
   // fails (an unknown revision, a timeout) falls back to every unpushed commit of the repository, never to fewer.
-  if (scope && gitSettingOn('git.setting_push_credit_scope') && pushConfigNarrow(dir, repo, execEnv)) {
-    scan(dir, repo, execEnv, null, scope);
-    if (out.unchecked) { out.unchecked = false; out.over = false; out.hits = []; count = 0; unpushed.clear(); }
-    else out.scoped = true;
+  if (scope && gitSettingOn('git.setting_push_credit_scope')) {
+    if (!pushConfigNarrow(dir, repo, execEnv, scope.explicit === true)) out.why = ah.cfg('git.unscoped_reason_config');
+    else {
+      scan(dir, repo, execEnv, null, scope);
+      if (out.unchecked) { out.unchecked = false; out.over = false; out.hits = []; count = 0; unpushed.clear(); out.why = ah.cfg('git.unscoped_reason_query'); }
+      else out.scoped = true;
+    }
   }
   if (!out.scoped) scan(dir, repo, execEnv, null);
   out.over = out.over || count > cap;
