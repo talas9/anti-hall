@@ -27,7 +27,10 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::{Relaxed, SeqCst}};
+use std::sync::atomic::{
+    AtomicBool, AtomicU64,
+    Ordering::{Relaxed, SeqCst},
+};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -117,6 +120,10 @@ pub struct Cfg {
     pub idle_ttl_ms: u64,
     /// Largest snapshot written.
     pub snapshot_max: usize,
+    /// Age after which a snapshot is removed.
+    pub snapshot_ttl_ms: u64,
+    /// Most snapshot files kept.
+    pub snapshot_max_files: usize,
 }
 
 impl Cfg {
@@ -145,6 +152,8 @@ impl Cfg {
             max_sessions: num("transcript.max_indexes") as usize,
             idle_ttl_ms: num("transcript.idle_ttl_ms"),
             snapshot_max: num("transcript.snapshot_max_bytes") as usize,
+            snapshot_ttl_ms: num("transcript.snapshot_ttl_ms"),
+            snapshot_max_files: num("transcript.snapshot_max_files") as usize,
         }
     }
 }
@@ -779,8 +788,7 @@ impl Store {
     /// Remove the least recently used session nobody is refreshing from the map (never `keep`). None when there is none.
     fn take_victim(&self, keep: Option<&Path>) -> Option<(PathBuf, Arc<Slot>)> {
         let mut map = lock(&self.slots);
-        let mut order: Vec<(&PathBuf, u64)> =
-            map.iter().filter(|(k, _)| Some(k.as_path()) != keep).map(|(k, s)| (k, s.last_used_ms.load(Relaxed))).collect();
+        let mut order: Vec<(&PathBuf, u64)> = map.iter().filter(|(k, _)| Some(k.as_path()) != keep).map(|(k, s)| (k, s.last_used_ms.load(Relaxed))).collect();
         order.sort_by_key(|(_, t)| *t);
         let key = order.into_iter().find(|(k, _)| map.get(*k).is_some_and(|s| s.claim())).map(|(k, _)| k.clone())?;
         map.remove(&key).map(|s| (key, s))
@@ -927,6 +935,7 @@ impl Store {
                 n += 1;
             }
         }
+        persist::sweep(&self.snap_dir(), cfg.snapshot_ttl_ms, cfg.snapshot_max_files);
         n
     }
 
@@ -1003,7 +1012,15 @@ impl Store {
 
     /// Adopt the snapshot of this transcript when every stamp still matches.
     fn try_snapshot(&self, s: &mut Session, path: &Path, file: &File, meta: &std::fs::Metadata, cfg: &Cfg) -> bool {
-        let Some(snap) = persist::read(&self.snap_dir(), path, cfg.snapshot_max) else { return false };
+        let snap = match persist::read(&self.snap_dir(), path, cfg.snapshot_max) {
+            Ok(snap) => snap,
+            Err(persist::Miss::Absent) => return false,
+            Err(persist::Miss::Unusable) => {
+                // there is a snapshot and it is corrupt, over the cap or of another format or configuration
+                self.stats.snapshot_misses.fetch_add(1, Relaxed);
+                return false;
+            }
+        };
         let fits = |snap: &persist::Snap| snap.id == (meta.dev(), meta.ino()) && snap.offset <= meta.len() && meta.len() - snap.offset <= cfg.horizon;
         if !fits(&snap) {
             self.stats.snapshot_misses.fetch_add(1, Relaxed);
@@ -1151,14 +1168,19 @@ pub fn global() -> &'static Store {
 struct MemOwner;
 
 impl crate::mem::Owner for MemOwner {
+    // A memory poll never creates the store: until a check asks it a question there is nothing to count or shrink.
     fn bytes(&self) -> usize {
-        global().bytes()
+        global_if_started().map_or(0, Store::bytes)
     }
     fn shrink(&self, target: usize) {
-        global().shrink(target);
+        if let Some(st) = global_if_started() {
+            st.shrink(target);
+        }
     }
     fn recycle(&self) {
-        global().shrink(0);
+        if let Some(st) = global_if_started() {
+            st.shrink(0);
+        }
     }
 }
 

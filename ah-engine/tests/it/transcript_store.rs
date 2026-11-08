@@ -532,3 +532,42 @@ fn a_missing_or_empty_transcript_is_unsure_not_an_error_of_the_caller() {
     write(&t.path("empty.jsonl"), "");
     assert_eq!(st.with(&t.path("empty.jsonl"), 0, |_| ()).unwrap_err(), Unsure::Missing);
 }
+
+#[test]
+fn a_corrupt_snapshot_is_counted_as_a_miss_and_the_sweep_caps_the_snapshot_directory() {
+    let t = Tmp::new("ts");
+    let snap = t.path("snap");
+    let mut c = cfg();
+    c.snapshot_max_files = 2;
+    let files: Vec<_> = (0..4)
+        .map(|i| {
+            let f = t.path(&format!("s{i}.jsonl"));
+            write(&f, &prompt_line(i, 20));
+            f
+        })
+        .collect();
+    let first = Store::with_cfg(c.clone(), Some(snap.clone()));
+    for f in &files {
+        first.with(f, 0, |_| ()).unwrap();
+    }
+    first.persist_all();
+    let names = |d: &std::path::Path| std::fs::read_dir(d).unwrap().count();
+    assert_eq!(names(&snap), 2, "the sweep keeps the newest snapshot_max_files");
+    // corrupt what is left, then a restart: a counted miss and a cold build, not a silent one
+    for e in std::fs::read_dir(&snap).unwrap().flatten() {
+        std::fs::write(e.path(), b"{not json").unwrap();
+    }
+    let second = Store::with_cfg(c.clone(), Some(snap.clone()));
+    for f in &files {
+        second.with(f, 0, |_| ()).unwrap();
+    }
+    assert_eq!(second.stats().snapshot_misses, 2, "the two corrupt snapshots are counted");
+    // a zero ttl removes every snapshot older than it at the next sweep
+    c.snapshot_ttl_ms = 0;
+    c.snapshot_max_files = 100;
+    std::thread::sleep(Duration::from_millis(5));
+    let third = Store::with_cfg(c, Some(snap.clone()));
+    third.with(&files[0], 0, |_| ()).unwrap();
+    third.persist_all();
+    assert_eq!(names(&snap), 0, "every snapshot is older than a zero ttl");
+}

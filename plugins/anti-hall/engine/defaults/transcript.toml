@@ -340,6 +340,17 @@ value = 4194304
 min = 4096
 unit = "bytes"
 
+[transcript.snapshot_ttl_ms]
+doc = "Age after which a restart snapshot is removed by the sweep that writes the snapshots; a transcript untouched that long costs one cold build if it comes back."
+value = 604800000
+min = 60000
+unit = "ms"
+
+[transcript.snapshot_max_files]
+doc = "Most snapshot files kept in the snapshot directory; the sweep removes the oldest beyond it."
+value = 200
+min = 1
+
 [transcript.snapshot_version]
 doc = "Version of the snapshot format; a snapshot of another version is ignored."
 value = 1

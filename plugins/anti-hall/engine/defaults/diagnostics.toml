@@ -689,6 +689,12 @@ value = 20971520
 min = 4096
 unit = "bytes"
 
+[mem_gate.burst_sample_ms]
+doc = "The burst detector looks at the heap at most this often while checks run (a check finishing sooner after the last look skips it); the allocator keeps the peak between looks, so a spike is still seen."
+value = 50
+min = 1
+unit = "ms"
+
 [mem_gate.burst_window_ms]
 doc = "Window within which a rise of the live heap by mem_gate.burst_bytes counts as a burst."
 value = 1000

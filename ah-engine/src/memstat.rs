@@ -304,6 +304,18 @@ pub fn bursts() -> u64 {
     BURSTS.load(Relaxed)
 }
 
+/// [`note_burst`] for the request path: looks at the heap at most once per `mem_gate.burst_sample_ms`, so a check pays one
+/// atomic compare in between instead of the window lock. The allocator's peak spans the gap, so a spike is not missed.
+pub fn note_burst_sampled() {
+    static LAST_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let last = LAST_MS.load(Relaxed);
+    if now_ms.saturating_sub(last) < crate::defaults::num("mem_gate.burst_sample_ms") || LAST_MS.compare_exchange(last, now_ms, Relaxed, Relaxed).is_err() {
+        return;
+    }
+    note_burst(PEAK.load(Relaxed));
+}
+
 /// Feed the burst detector the heap now and `peak` (the highest heap since the last look: [`reset_peak`] passes the peak it is
 /// about to forget, so a status poll cannot hide a spike). Called as each request's checks finish.
 pub fn note_burst(peak: u64) {

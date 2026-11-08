@@ -1833,6 +1833,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `transcript.snapshot_dir` | `tstore` |  |  | Directory under the state directory that holds the restart snapshots of the session stores. |
 | `transcript.snapshot_ext` | `.json` |  |  | File extension of a session store snapshot. |
 | `transcript.snapshot_max_bytes` | `4194304` |  | bytes | Largest snapshot written or loaded; a session over it is not saved and costs one cold build after a restart. |
+| `transcript.snapshot_max_files` | `200` |  |  | Most snapshot files kept in the snapshot directory; the sweep removes the oldest beyond it. |
+| `transcript.snapshot_ttl_ms` | `604800000` |  | ms | Age after which a restart snapshot is removed by the sweep that writes the snapshots; a transcript untouched that long costs one cold build if it comes back. |
 | `transcript.snapshot_version` | `1` |  |  | Version of the snapshot format; a snapshot of another version is ignored. |
 | `transcript.stamp_prefix` | `transcript.` |  |  | Prefix of the settings whose values stamp a restart snapshot: a snapshot is used only when none of them changed since it was written. |
 | `transcript.tail_probe_bytes` | `64` |  | bytes | Bytes hashed just before a session's offset to notice an in-place rewrite that keeps the start of the file. |
@@ -13730,6 +13732,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `mem_gate.burst_bytes` | `20971520` |  | bytes | A heap burst (heap_burst_total) is a rise of the live heap by more than this within mem_gate.burst_window_ms (counted in heap_burst_total). |
+| `mem_gate.burst_sample_ms` | `50` |  | ms | The burst detector looks at the heap at most this often while checks run (a check finishing sooner after the last look skips it); the allocator keeps the peak between looks, so a spike is still seen. |
 | `mem_gate.burst_window_ms` | `1000` |  | ms | Window within which a rise of the live heap by mem_gate.burst_bytes counts as a burst. |
 | `mem_gate.ci_enforce` | `0` |  |  | 1 makes the memory gate on a generated transcript (tests/mem_gate.rs, part of the regular test job) fail the build when a bar is missed; 0 only reports the numbers. Flip it to 1 in the change that moves the last transcript reader onto the store. |
 | `mem_gate.ci_run_secs` | `40` |  | s | How long each phase of the CI memory gate replays hook payloads. |

@@ -355,7 +355,8 @@ fn run_gate(src: &Path, root: &Path, secs: u64, sessions: usize) -> Vec<String> 
         fails.push(format!("peak footprint {:.1} MB > {limit_foot} MB", big.peak_footprint_mb));
     }
     match big.counters.get("transcript_read_buf_max_bytes") {
-        Some(b) if *b <= buf_limit => {}
+        Some(b) if *b > 0.0 && *b <= buf_limit => {}
+        Some(b) if *b <= 0.0 => fails.push("largest read buffer is 0: the store never read anything".into()),
         Some(b) => fails.push(format!("largest read buffer {b} > {buf_limit}")),
         None => fails.push("transcript_read_buf_max_bytes counter missing".into()),
     }
@@ -376,12 +377,37 @@ fn run_gate(src: &Path, root: &Path, secs: u64, sessions: usize) -> Vec<String> 
     fails
 }
 
-fn work_root(tag: &str) -> PathBuf {
-    let root = std::env::var("AH_MEM_GATE_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+/// The gate's scratch directory. One this run created itself (the default, named by the process id) is removed when the run ends,
+/// pass or fail, so a gate run leaves no clones or generated transcripts behind; a directory the caller names through
+/// `AH_MEM_GATE_DIR` is theirs and stays.
+struct WorkRoot {
+    path: PathBuf,
+    own: bool,
+}
+
+impl std::ops::Deref for WorkRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkRoot {
+    fn drop(&mut self) {
+        if self.own {
+            std::fs::remove_dir_all(&self.path).ok(); // scratch of this run; absent is the goal
+        }
+    }
+}
+
+fn work_root(tag: &str) -> WorkRoot {
+    let named = std::env::var("AH_MEM_GATE_DIR").map(PathBuf::from).ok();
+    let own = named.is_none();
+    let path = named.unwrap_or_else(|| {
         Path::new(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".anti-hall/work/mem-gate").join(format!("{tag}-{}", std::process::id()))
     });
-    std::fs::create_dir_all(&root).unwrap();
-    root
+    std::fs::create_dir_all(&path).unwrap();
+    WorkRoot { path, own }
 }
 
 /// The local and live proof: the machine's largest real transcript (`scripts/mem-gate.sh`).
@@ -394,8 +420,41 @@ fn the_memory_gate() {
     assert!(fails.is_empty(), "gate failed: {fails:?}");
 }
 
-/// A transcript of about `mb` MB, built from nothing: prompts, replies, tool calls and results of every size (some far over
-/// the line cap), task events and agent notifications, so every kind of fact and every reader path is exercised.
+/// The line-size mix of `tests/mem_gate_sizes.toml`: (lo, hi, weight) rows.
+fn size_mix() -> Vec<(u64, u64, u64)> {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mem_gate_sizes.toml")).unwrap();
+    let doc: toml::Table = text.parse().unwrap();
+    let rows: Vec<(u64, u64, u64)> = doc["bucket"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["lo_bytes"].as_integer().unwrap() as u64, b["hi_bytes"].as_integer().unwrap() as u64, b["per_million"].as_integer().unwrap() as u64))
+        .collect();
+    assert_eq!(rows.iter().map(|r| r.2).sum::<u64>(), 1_000_000, "the size mix must sum to 1,000,000");
+    rows
+}
+
+/// One line size drawn from the mix (a xorshift state keeps every run the same).
+fn draw_size(mix: &[(u64, u64, u64)], rng: &mut u64) -> u64 {
+    let mut next = || {
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 7;
+        *rng ^= *rng << 17;
+        *rng
+    };
+    let mut pick = next() % 1_000_000;
+    for (lo, hi, w) in mix {
+        if pick < *w {
+            return lo + next() % (hi - lo).max(1);
+        }
+        pick -= w;
+    }
+    mix[0].0
+}
+
+/// A transcript of about `mb` MB, built from nothing: prompts, replies, tool calls and results, task events and agent
+/// notifications, so every kind of fact and every reader path is exercised. The size of the free-text lines follows the measured
+/// mix of real transcripts (`tests/mem_gate_sizes.toml`), including the rare line over the line cap.
 fn synth_transcript(path: &Path, mb: u64) {
     use std::io::BufWriter;
     let ts = "2026-10-04T10:00:00.000Z";
@@ -403,18 +462,17 @@ fn synth_transcript(path: &Path, mb: u64) {
     let mut w = BufWriter::new(std::fs::File::create(path).unwrap());
     let target = mb * 1024 * 1024;
     let (mut written, mut i) = (0u64, 0u64);
+    let (mix, mut rng) = (size_mix(), 0x9e37_79b9_7f4a_7c15u64);
     while written < target {
         let pad = |n: usize| "x".repeat(n);
+        let drawn = draw_size(&mix, &mut rng).saturating_sub(200) as usize;
         let chunk = match i % 12 {
-            0 => line(serde_json::json!({"type":"user","message":{"role":"user","content":format!("prompt {i} {}", pad(200))},"timestamp":ts})),
+            0 => line(serde_json::json!({"type":"user","message":{"role":"user","content":format!("prompt {i} {}", pad(drawn))},"timestamp":ts})),
             1 => line(
-                serde_json::json!({"type":"assistant","message":{"id":format!("m{i}"),"role":"assistant","content":[{"type":"text","text":format!("reply {i} {}", pad(1500))},{"type":"tool_use","id":format!("t{i}"),"name":"Bash","input":{"command":"ls"}}]},"timestamp":ts}),
+                serde_json::json!({"type":"assistant","message":{"id":format!("m{i}"),"role":"assistant","content":[{"type":"text","text":format!("reply {i} {}", pad(drawn))},{"type":"tool_use","id":format!("t{i}"),"name":"Bash","input":{"command":"ls"}}]},"timestamp":ts}),
             ),
             2 => line(
-                serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("t{}", i-1),"content":pad(2000 + (i as usize % 7) * 9000)}]},"timestamp":ts}),
-            ),
-            3 if i % 120 == 3 => line(
-                serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"big","content":pad(6 * 1024 * 1024)}]},"timestamp":ts}),
+                serde_json::json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("t{}", i-1),"content":pad(drawn)}]},"timestamp":ts}),
             ),
             4 => line(
                 serde_json::json!({"type":"assistant","message":{"id":format!("m{i}"),"role":"assistant","content":[{"type":"tool_use","id":format!("c{i}"),"name":"TaskCreate","input":{"subject":format!("task {i}")}}]},"timestamp":ts}),
@@ -429,7 +487,7 @@ fn synth_transcript(path: &Path, mb: u64) {
                 serde_json::json!({"type":"user","message":{"role":"user","content":format!("<task-notification>\n<task-id>a{i:015}</task-id>\n<tool-use-id>a{}</tool-use-id>\n<status>completed</status>\n</task-notification>", i-1)},"timestamp":ts}),
             ),
             _ => line(
-                serde_json::json!({"type":"assistant","message":{"id":format!("m{i}"),"role":"assistant","content":[{"type":"text","text":pad(300)}]},"timestamp":ts}),
+                serde_json::json!({"type":"assistant","message":{"id":format!("m{i}"),"role":"assistant","content":[{"type":"text","text":pad(drawn)}]},"timestamp":ts}),
             ),
         };
         w.write_all(chunk.as_bytes()).unwrap();
