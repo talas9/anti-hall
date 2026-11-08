@@ -1802,6 +1802,12 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     if first {
         crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
         crate::wire::withdraw();
+        // the session stores are written for the next start: a restart then parses only what was appended meanwhile
+        std::thread::spawn(|| {
+            if let Some(store) = crate::transcript::store::global_if_started() {
+                store.persist_all();
+            }
+        });
     }
     let armed = if forced_exit { &sh.forced_timer } else { &sh.drain_timer };
     if armed.swap(true, SeqCst) {
