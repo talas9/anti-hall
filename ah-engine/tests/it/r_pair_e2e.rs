@@ -285,13 +285,16 @@ fn stop_hook_active_allows() {
 }
 
 #[test]
-fn unowned_open_task_is_left_to_task_guard() {
+fn unowned_open_task_is_the_strict_owner_rule_not_the_pairing() {
     let w = World::new("unowned");
     let t = transcript(&[task(1, "in_progress", None)], &[]);
     let o = w.stop(&t, true, serde_json::json!({}));
-    assert!(!pair_text(&o), "an open task with no owner and no agent is task-guard's fact: {o:?}");
+    assert!(!pair_text(&o), "an open task with no owner and no agent is not a pairing fact: {o:?}");
+    assert!(o.1.contains("task list: #1 in_progress, no owner"), "it is the strict owner rule's (GH #682): {o:?}");
     let named_idle = transcript(&[task(2, "in_progress", Some("nobody"))], &[]);
-    assert!(!pair_text(&w.stop(&named_idle, true, serde_json::json!({}))), "an owner that names no live agent is task-guard's too");
+    let o2 = w.stop(&named_idle, true, serde_json::json!({}));
+    assert!(!pair_text(&o2), "an owner that names no live agent is not a pairing fact either: {o2:?}");
+    assert!(o2.1.contains("#2 in_progress, owner \\\"nobody\\\" not a live agent"), "it is the strict owner rule's: {o2:?}");
 }
 
 #[test]

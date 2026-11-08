@@ -82,11 +82,15 @@ function tlgEntry(t, meta) {
 // Write the entry of task `t` unless the ledger holds it. `meta` is the metadata the call carried (may be null). Returns 'present',
 // 'written' or 'failed' (no confirmed root, a name the file system cannot hold, a write that did not happen). `rel` is the ledger path
 // relative to the root, for the message.
-function tlgEnsure(p, home, t, meta, now) {
+// `cache` (optional, {text: null|string}) carries the ledger text between calls of one answer, so a Stop over many finished tasks reads
+// the history files once; a written entry is added to it.
+function tlgEnsure(p, home, t, meta, now, cache) {
   var root = tlgRoot(p, home), sid = tlgSid(p);
   if (root === null || sid === '') return { result: 'failed' };
   var date = new Date(now).toISOString().slice(0, 10), dir = tlgDir(), rel = dir + '/' + date + '/' + tlgName(sid);
-  if (tlgHas(tlgText(root, sid), t.id)) return { result: 'present', rel: rel };
+  var c = cache || { text: null };
+  if (c.text === null) c.text = tlgText(root, sid);
+  if (tlgHas(c.text, t.id)) return { result: 'present', rel: rel };
   if (tlgName(sid).length > ah.cfgNum('task_lifecycle_log.name_max')) return { result: 'failed', rel: rel };
   var rec = tlgStoreRec(home, sid, t.id), merged = {};
   var storeMeta = rec !== null && rec.metadata !== null && typeof rec.metadata === 'object' ? rec.metadata : {};
@@ -98,7 +102,9 @@ function tlgEnsure(p, home, t, meta, now) {
     if (!full.description && typeof rec.description === 'string') full.description = rec.description;
   }
   if (!ah.state.op(root, 'mkdir', dir + '/' + date)) return { result: 'failed', rel: rel };
-  if (!ah.state.op(root, 'append', rel, tlgEntry(full, merged))) return { result: 'failed', rel: rel };
+  var entry = tlgEntry(full, merged);
+  if (!ah.state.op(root, 'append', rel, entry)) return { result: 'failed', rel: rel };
+  c.text += entry;
   var index = dir + '/' + ah.cfg('task_lifecycle_log.index_name'), existing = ah.fs.readText(root + '/' + index, ah.cfgNum('script.read_max_bytes'));
   if (existing === null || existing.indexOf(sid) < 0) {
     var sep = ah.cfg('task_lifecycle_log.separator');

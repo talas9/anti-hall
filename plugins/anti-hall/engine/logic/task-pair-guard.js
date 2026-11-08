@@ -9,7 +9,7 @@
 //   PostToolUse Agent/Task: the named agent is running but no open task names it as owner: an advisory.
 //   Stop: (F2) a live agent with a launch name that no open task names as owner, or (F3) an in-progress task whose owner is that agent's id or
 //   description and not its launch name: blocked, listing at most pair_rule.ids_max items.
-// Open tasks with no owner, and owners that name no live agent, are task-guard's facts and print nothing here. Main session only, Claude only,
+// Open tasks with no owner, and owners that name no live agent, are the strict rules' facts (below, GH #682), not the pairing's. Main session only, Claude only,
 // not plan mode, not while an OMC loop runs (task-guard's own step-aside), never on liveness or agents this script cannot read. With the switch
 // off the facts are computed and counted (pair_rule_observed) and nothing is printed. The owner matching is task-guard's (tgMatchingOwners,
 // tgLiveAgentOwner), copied here because a shared-lib edit would touch six golden-tested checks. State: none (a Stop that re-fires is cut by the
@@ -385,29 +385,43 @@ function prsCut(s) { return tk.oneLine(String(s), ah.cfgNum('pair_rule.strict_na
 
 // An in-progress task's owner stands as: 'live' (a live agent, the session itself, a live DevSwarm workspace), 'unknown' (it names agent
 // work whose liveness no source tells: not judged) or 'dead' (it names nothing live the session can see).
-function prsOwnerState(owner, rows) {
+// `tracked()` gives the agent tracker's rows (read once, on first need): a teammate launched long ago has no launch row in the transcript
+// tail, but the tracker still knows it by name.
+function prsOwnerState(owner, rows, tracked) {
   if (ah.cfg('pair_rule.strict_coordinator_live') === true && prgCoordinator(owner)) return 'live';
   if (tk.childAttended(owner)) return 'live';
   var lc = prgLc(owner), hits = rows.filter(function (r) { return (r.name !== '' && prgLc(r.name) === lc) || prgLooseOwner(owner, r); });
   if (hits.some(function (r) { return r.live === true; })) return 'live';
+  var t = tracked(), named = t === null ? undefined : ah.transcript.trackedIndex(t).byName.get(owner);
+  if (named !== undefined) {
+    var live = ah.transcript.trackedLiveness(owner, t);
+    if (live === true) return 'live';
+    if (live === null) return 'unknown';
+    return 'stopped:' + named.map(function (r) { return String(r.state); }).filter(function (x, i, a) { return a.indexOf(x) === i; }).join('/');
+  } else if (t === null && hits.length === 0) return 'unknown'; // no tracker to ask and no launch seen: not judged
   if (hits.some(function (r) { return r.live === null; })) return 'unknown';
   return 'dead';
 }
 
 // The strict items of the session's list: [{rule, item, call}] (each item's visible text and the exact call that clears it). `all` every
-// task of the list, `rows` the launched agents, `free` the name of a live agent that owns no task ('' when none). The ledger rule writes
-// a missing entry first (guards.taskAutoLedger) and lists only an entry it could not write.
-function prsItems(p, home, all, rows, free) {
-  var out = [], open = {}, done = ah.cfg('tasklist_hygiene.done_trigger');
+// task of the list, `rows` the launched agents. The owner call never guesses which agent works on a task: it names the placeholder. The
+// ledger rule writes a missing entry first (guards.taskAutoLedger) and lists only an entry it could not write.
+function prsItems(p, home, all, rows) {
+  var out = [], open = {}, done = ah.cfg('tasklist_hygiene.done_trigger'), trackedRows;
+  function tracked() {
+    if (trackedRows === undefined) { try { trackedRows = ah.transcript.trackedAgents(p); } catch (e) { trackedRows = null; } }
+    if (!Array.isArray(trackedRows)) trackedRows = null;
+    return trackedRows;
+  }
   var inProgress = ah.cfg('taskstate.in_progress_statuses'), pending = ah.cfg('taskstate.pending_statuses');
   all.forEach(function (t) { if (tk.isOpen(t)) open[t.id] = true; });
-  var auto = ah.settings.bool('pair_rule.strict_auto_ledger'), ledgerText = null, root = tlgRoot(p, home), sid = tlgSid(p), now = ah.clock.now();
+  var auto = ah.settings.bool('pair_rule.strict_auto_ledger'), ledgerText = null, cache = { text: null }, root = tlgRoot(p, home), sid = tlgSid(p), now = ah.clock.now();
   var path = root === null ? ah.cfg('task_lifecycle_log.history_dir').join('/') : tlgDir() + '/' + new Date(now).toISOString().slice(0, 10) + '/' + tlgName(sid);
   all.forEach(function (t) {
     var s = tk.statusLc(t), id = String(t.id);
     if (done.indexOf(s) >= 0) {
       if (auto) {
-        var r = tlgEnsure(p, home, t, null, now);
+        var r = tlgEnsure(p, home, t, null, now, cache);
         if (r.result === 'written') ah.metric('task_strict_auto_ledgered', ['event', ah.cfg('pair_rule.event_stop')]);
         if (r.result !== 'failed') return;
       } else if (root !== null && sid !== '') {
@@ -417,11 +431,12 @@ function prsItems(p, home, all, rows, free) {
       out.push({ rule: 'ledger', item: text.render(ah.cfg('pair_rule.strict_item_ledger'), { id: id }),
         call: text.render(ah.cfg('pair_rule.strict_call_ledger'), { id: id, marker: tlgMarker(id), path: path }) });
     } else if (inProgress.indexOf(s) >= 0) {
-      var owner = typeof t.owner === 'string' ? t.owner.trim() : '', st = owner === '' ? 'none' : prsOwnerState(owner, rows);
+      var owner = typeof t.owner === 'string' ? t.owner.trim() : '', st = owner === '' ? 'none' : prsOwnerState(owner, rows, tracked);
       if (st === 'live') return;
       if (st === 'unknown') { prgSuppressed('owner_unknown'); return; }
-      out.push({ rule: 'owner', item: text.render(ah.cfg(st === 'none' ? 'pair_rule.strict_item_no_owner' : 'pair_rule.strict_item_dead_owner'), { id: id, owner: prsCut(owner) }),
-        call: text.render(ah.cfg('pair_rule.strict_call_owner'), { id: id, agent: free !== '' ? free : ah.cfg('pair_rule.strict_agent_placeholder') }) });
+      var stopped = st.indexOf('stopped:') === 0, key = st === 'none' ? 'pair_rule.strict_item_no_owner' : stopped ? 'pair_rule.strict_item_stopped_owner' : 'pair_rule.strict_item_dead_owner';
+      out.push({ rule: 'owner', item: text.render(ah.cfg(key), { id: id, owner: prsCut(owner), state: stopped ? st.slice(8) : '' }),
+        call: text.render(ah.cfg('pair_rule.strict_call_owner'), { id: id, agent: ah.cfg('pair_rule.strict_agent_placeholder') }) });
     } else if (pending.indexOf(s) >= 0) {
       if (tk.blockedOnText(t) !== '') return;
       var deps = Array.isArray(t.blockedBy) ? t.blockedBy : [];
@@ -456,8 +471,7 @@ function prgStop(p, on, home) {
   // the strict rules; a script failure here is counted and lets the Stop go on (fail open), never a block on a broken reading
   var strict = [];
   try {
-    var free = pairReason.f2.length > 0 ? pairReason.f2[0].name : '';
-    strict = prsItems(p, home, all, rows, free);
+    strict = prsItems(p, home, all, rows);
   } catch (e) { ah.unable('task-pair-guard:strict_failed'); strict = []; }
   strict.forEach(function (x) { ah.metric('task_strict_fired', ['rule', x.rule]); });
   if (pairReason.result !== 'clean') ah.metric('task_strict_fired', ['rule', 'agent_task']);

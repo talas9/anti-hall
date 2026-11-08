@@ -292,15 +292,19 @@ doc = "Item: an in-progress task with no owner. {id} the task id."
 value = "#{id} in_progress, no owner"
 
 [pair_rule.strict_item_dead_owner]
-doc = "Item: an in-progress task whose owner is not a live agent. {id} the task id, {owner} the owner."
+doc = "Item: an in-progress task whose owner names no agent the session can see (no launch in the transcript, no agent tracker row). {id} the task id, {owner} the owner."
 value = "#{id} in_progress, owner \"{owner}\" not a live agent"
 
+[pair_rule.strict_item_stopped_owner]
+doc = "Item: an in-progress task whose owner the agent tracker knows but holds as not running (its state is one of agent_tracker.guard_inactive_states: done, stale or dead; an idle teammate between turns reads done). {id} the task id, {owner} the owner, {state} the tracker state(s)."
+value = "#{id} in_progress, owner \"{owner}\" not running (tracker: {state})"
+
 [pair_rule.strict_call_owner]
-doc = "Call that clears an owner item: give it the live agent working on it, or put it back to pending with what it waits on. {id} the task id, {agent} a live agent that owns no task (strict_agent_placeholder when none)."
+doc = "Call that clears an owner item: give it the live agent working on it, or put it back to pending with what it waits on. {id} the task id, {agent} always strict_agent_placeholder (the engine cannot know which agent works on the task, and a call is run as written)."
 value = "TaskUpdate({taskId: \"{id}\", owner: \"{agent}\"}) or TaskUpdate({taskId: \"{id}\", status: \"pending\", metadata: {blockedOn: \"<what it waits on>\"}})"
 
 [pair_rule.strict_agent_placeholder]
-doc = "The {agent} of strict_call_owner when no live agent is free to name."
+doc = "The {agent} of strict_call_owner: the agent fills in the name of the live agent doing the task."
 value = "<live agent name>"
 
 [pair_rule.strict_item_no_blocked_on]

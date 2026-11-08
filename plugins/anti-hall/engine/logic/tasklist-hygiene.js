@@ -53,7 +53,9 @@ function thAutoLedger(p, inp, id, sid) {
   if (!ah.settings.bool('pair_rule.strict_auto_ledger')) return false;
   try {
     var home = ah.home(), t = { id: id, content: '', description: '' };
-    var r = typeof p.transcript_path === 'string' && p.transcript_path !== '' ? tk.tasksOf(home, sid, p.transcript_path, 'state') : null;
+    // the task's own store file answers first (a named list leaves the session store empty, and a transcript scan is the costly path)
+    var rec = tlgStoreRec(home, sid, id);
+    var r = rec === null && typeof p.transcript_path === 'string' && p.transcript_path !== '' ? tk.tasksOf(home, sid, p.transcript_path, 'state') : null;
     var hit = r && Array.isArray(r.tasks) ? r.tasks.filter(function (x) { return String(x.id) === id; })[0] : undefined;
     if (hit) t = { id: id, content: hit.content || '', description: hit.description || '' };
     var res = tlgEnsure(p, home, t, jx.isObj(inp.metadata) ? inp.metadata : null, ah.clock.now());
