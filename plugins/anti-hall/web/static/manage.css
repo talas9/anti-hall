@@ -22,7 +22,7 @@
 .mg-title { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
 .mg-name { font: 500 13px var(--font-mono); color: var(--text-hi); overflow-wrap: anywhere; }
 .mg-doc { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-mid); overflow-wrap: anywhere; }
-.mg-meta { margin: 0; font: 11px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.mg-meta { margin: 0; font: 400 12px/16px var(--font-ui); color: var(--muted); overflow-wrap: anywhere; }
 .mg-side { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
 .mg-edit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .mg-input { min-height: 38px; background: var(--panel); color: var(--text); border: 1px solid var(--line-2); border-radius: 10px; padding: 0 10px; font: 500 13px var(--font-mono); }
@@ -33,7 +33,7 @@
 .mg-btn.primary { border-color: color-mix(in oklch, var(--cyan) 50%, transparent); color: var(--cyan); }
 .mg-btn.danger { border-color: color-mix(in oklch, var(--red) 55%, transparent); color: var(--red); }
 .mg-btns { display: flex; gap: 8px; flex-wrap: wrap; }
-.mg-badge { font: Ipx var(--font-ui); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--muted); }
+.mg-badge { font: 400 11px/14px var(--font-ui); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line-2); color: var(--muted); }
 .mg-badge.chg { color: var(--violet); border-color: color-mix(in oklch, var(--violet) 45%, transparent); }
 .mg-badge.warn { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 45%, transparent); }
 .mg-badge.mode-on { color: var(--green); } .mg-badge.mode-shadow { color: var(--amber); } .mg-badge.mode-off { color: var(--idle); }
@@ -45,7 +45,7 @@
 .mg-switch:disabled { opacity: .5; cursor: not-allowed; }
 .mg-confirm { flex: 1 1 100%; border: 1px solid color-mix(in oklch, var(--amber) 50%, transparent); border-radius: 12px; padding: 10px 14px; background: color-mix(in oklch, var(--amber) 7%, transparent); }
 .mg-confirm p { margin: 4px 0 8px; font-size: 13px; color: var(--text); }
-.mg-fb { flex: 1 1 100%; margin: 0; font: 12px var(--font-mono); overflow-wrap: anywhere; }
+.mg-fb { flex: 1 1 100%; margin: 0; font: 400 12px/16px var(--font-ui); overflow-wrap: anywhere; }
 .mg button:focus-visible, .mg input:focus-visible, .mg select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 
 /* a category of options folds under its heading */

@@ -66,6 +66,7 @@ pub struct Settings {
     pub index_file: String,
     pub port: u16,
     pub mode: String,
+    pub theme: String,
     pub full_push_ms: u64,
     pub lite_push_ms: u64,
     pub push_min_ms: u64,
