@@ -6,42 +6,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .ok()?;
+    let out = Command::new("git").arg("-C").arg(repo).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !text.is_empty()).then_some(text)
 }
 
 fn sanitize(branch: &str) -> String {
-    branch
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
+    branch.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>().trim_matches('-').to_string()
 }
 
 /// Print the cargo directives that set `AH_BUILD_VERSION` and re-run the script when the checkout moves.
 pub fn emit() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let pkg = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
-    let repo = manifest
-        .ancestors()
-        .find(|d| {
-            d.join("plugins/anti-hall/.claude-plugin/plugin.json")
-                .is_file()
-        })
-        .map(Path::to_path_buf);
+    let repo = manifest.ancestors().find(|d| d.join("plugins/anti-hall/.claude-plugin/plugin.json").is_file()).map(Path::to_path_buf);
     let base = pkg;
     let version = match repo.as_ref().and_then(|r| {
         let sha = git(r, &["rev-parse", "--short=8", "HEAD"])?;
-        let branch = git(r, &["rev-parse", "--abbrev-ref", "HEAD"])
-            .map(|b| sanitize(&b))
-            .filter(|b| !b.is_empty() && b != "HEAD");
+        let branch = git(r, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|b| sanitize(&b)).filter(|b| !b.is_empty() && b != "HEAD");
         // tracked source changes only: the compiled UI bundle and cargo's target dirs are tracked here and change on every build
         let dirty = git(
             r,
@@ -65,19 +47,11 @@ pub fn emit() {
         watch.extend(git(r, &["symbolic-ref", "-q", "HEAD"]));
         for w in watch {
             if let Some(path) = git(r, &["rev-parse", "--git-path", &w]) {
-                let path = if Path::new(&path).is_absolute() {
-                    PathBuf::from(path)
-                } else {
-                    r.join(path)
-                };
+                let path = if Path::new(&path).is_absolute() { PathBuf::from(path) } else { r.join(path) };
                 println!("cargo:rerun-if-changed={}", path.display());
             }
         }
-        Some(format!(
-            "{}{sha}{}",
-            branch.map(|b| format!("{b}.")).unwrap_or_default(),
-            if dirty { "-dirty" } else { "" }
-        ))
+        Some(format!("{}{sha}{}", branch.map(|b| format!("{b}.")).unwrap_or_default(), if dirty { "-dirty" } else { "" }))
     }) {
         Some(tail) => format!("{base}+{tail}"),
         None => base,
