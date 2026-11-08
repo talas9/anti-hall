@@ -36,6 +36,7 @@ fn pats() -> std::sync::Arc<Pats> {
 ///
 /// Mirrors `lib/transcript-tail.js` `readTail`.
 pub(crate) fn read_tail(path: &str, max: u64) -> Option<Vec<String>> {
+    let _turn = crate::transcript::scan::permit()?;
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     if size == 0 {

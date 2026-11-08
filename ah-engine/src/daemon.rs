@@ -890,6 +890,7 @@ pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u6
     let bytes = crate::load::take_check_scan();
     let cpu = crate::load::take_check_cpu();
     let mem = crate::load::take_check_mem();
+    let scan_peak = crate::transcript::scan::take_peak();
     let notes = crate::load::take_counts();
     let size = crate::load::size_bucket(crate::load::transcript_size());
     if crate::obs::profile::active() {
@@ -913,6 +914,9 @@ pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u6
             if d.retained > 0 {
                 m.add("check_mem_retained_bytes", &[("check", check)], d.retained as u64);
             }
+        }
+        if scan_peak > 0 {
+            m.observe_bytes("transcript_scan_peak_bytes", &[("check", check)], scan_peak);
         }
         m.observe("check_latency_by_size_us", &l, micros);
         for (metric, label, value) in notes {

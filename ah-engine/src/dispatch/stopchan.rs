@@ -32,7 +32,6 @@ use crate::defaults;
 use crate::reqenv::RequestEnv;
 use crate::telemetry::emit;
 use serde_json::{Map, Value, json};
-use std::io::{Read, Seek, SeekFrom};
 
 use super::combine::{HSO_CTX as CTX, HSO_EVENT as EVENT, HSO_KEY as HSO, TOP_MSG as MSG};
 
@@ -171,70 +170,102 @@ fn has_marker(seg: &[u8]) -> bool {
     !m.is_empty() && seg.windows(m.len()).any(|w| w == m)
 }
 
-/// The continuations counted in a window of the transcript, newest line first, up to the last human prompt. `Ok(None)`: the window
-/// starts inside the file and holds no human prompt, so it proves nothing (read a bigger one). A line that is not UTF-8 JSON of a
-/// known shape is `Err`, with two exceptions for the NEWEST line while it is still UNFINISHED (no newline yet: the host may be
-/// writing it): it is skipped, or, when it holds the attachment marker, counted as one own continuation (the host's write lag must not
-/// let a chain run one past K). A finished line that cannot be parsed is `Err`, marker or not.
+/// The continuations counted in a window of the transcript, newest line first, up to the last human prompt. It is fed the lines of the
+/// window one at a time, newest first (the trailing empty element of a window that ends on a newline first), so no more than a block and
+/// a line is held.
+struct Walk<'a> {
+    event: &'a str,
+    found: Chain,
+    /// The next line fed is the last element of the window.
+    last: bool,
+    /// The window ends on a newline (its last element is empty).
+    ended: bool,
+    /// No line that is not blank has been seen yet.
+    newest: bool,
+}
+
+/// What the walk does after a line.
+enum Step {
+    More,
+    Done(Result<Chain, ()>),
+}
+
+impl<'a> Walk<'a> {
+    fn new(event: &'a str) -> Walk<'a> {
+        Walk { event, found: Chain::default(), last: true, ended: false, newest: true }
+    }
+
+    /// One line of the window, newest first. A line that is not UTF-8 JSON of a known shape is `Err`, with two exceptions for the NEWEST
+    /// line while it is still UNFINISHED (no newline yet: the host may be writing it): it is skipped, or, when it holds the attachment
+    /// marker, counted as one own continuation (the host's write lag must not let a chain run one past K). A finished line that cannot be
+    /// parsed is `Err`, marker or not.
+    fn feed(&mut self, seg: &[u8]) -> Step {
+        let is_last = std::mem::take(&mut self.last);
+        if is_last {
+            self.ended = seg.is_empty();
+        }
+        if seg.iter().all(u8::is_ascii_whitespace) {
+            return Step::More;
+        }
+        let is_newest = std::mem::replace(&mut self.newest, false);
+        let Some(v) = parse_line(seg) else {
+            if is_newest && !self.ended && has_marker(seg) {
+                self.found.own = self.found.own.saturating_add(1);
+                return Step::More;
+            }
+            if is_last && !self.ended {
+                return Step::More; // the host is still writing this line
+            }
+            return Step::Done(Err(()));
+        };
+        match classify(&v, self.event) {
+            Line::Human => return Step::Done(Ok(self.found)),
+            Line::Own => self.found.own = self.found.own.saturating_add(1),
+            Line::Feedback => self.found.feedback = self.found.feedback.saturating_add(1),
+            Line::Other => {}
+        }
+        Step::More
+    }
+}
+
+/// [`Walk`] over a window held whole, as the tests build it. `Ok(None)`: the window starts inside the file and holds no human prompt,
+/// so it proves nothing (read a bigger one).
+#[cfg(test)]
 fn scan(buf: &[u8], partial_first: bool, event: &str) -> Result<Option<Chain>, ()> {
     let segs: Vec<&[u8]> = buf.split(|b| *b == b'\n').collect();
-    let ended = buf.last() == Some(&b'\n');
-    let mut found = Chain::default();
-    let mut newest = true;
+    let mut walk = Walk::new(event);
     for (i, seg) in segs.iter().enumerate().rev() {
         if i == 0 && partial_first {
             return Ok(None); // the first segment of a window that starts inside the file is cut
         }
-        if seg.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let is_newest = std::mem::replace(&mut newest, false);
-        let Some(v) = parse_line(seg) else {
-            if is_newest && !ended && has_marker(seg) {
-                found.own = found.own.saturating_add(1);
-                continue;
-            }
-            if i + 1 == segs.len() && !ended {
-                continue; // the host is still writing this line
-            }
-            return Err(());
-        };
-        match classify(&v, event) {
-            Line::Human => return Ok(Some(found)),
-            Line::Own => found.own = found.own.saturating_add(1),
-            Line::Feedback => found.feedback = found.feedback.saturating_add(1),
-            Line::Other => {}
+        if let Step::Done(r) = walk.feed(seg) {
+            return r.map(Some);
         }
     }
-    Ok(if partial_first { None } else { Some(found) })
+    Ok(if partial_first { None } else { Some(walk.found) })
 }
 
 /// The Stop continuations (by shape) since the last human-typed prompt in the transcript at `path` (since its start when it has none). The end
-/// of the file is read in a window that doubles up to `stop_channel.tail_max_bytes`; a file that is absent, empty, not a regular
-/// file, unreadable, of an unknown shape or whose last human prompt is further back than the maximum is `Err`.
+/// of the file is read backward in blocks (`transcript::scan`, at most `stop_channel.tail_max_bytes`), stopping at the human prompt; a file that
+/// is absent, empty, not a regular file, unreadable, of an unknown shape or whose last human prompt is further back than the maximum is `Err`.
 fn chain_len(path: &str, event: &str) -> Result<Chain, ()> {
-    let mut f = std::fs::File::open(path).map_err(|_| ())?;
-    let meta = f.metadata().map_err(|_| ())?;
-    let len = meta.len();
-    if !meta.is_file() || len == 0 {
+    let meta = std::fs::metadata(path).map_err(|_| ())?;
+    if !meta.is_file() || meta.len() == 0 {
         return Err(());
     }
-    let max = defaults::num("stop_channel.tail_max_bytes");
-    let mut want = defaults::num("stop_channel.tail_start_bytes").min(max);
-    loop {
-        let win = want.min(len);
-        let from = len.saturating_sub(win);
-        f.seek(SeekFrom::Start(from)).map_err(|_| ())?;
-        let mut buf = Vec::new();
-        (&mut f).take(win).read_to_end(&mut buf).map_err(|_| ())?;
-        if let Some(n) = scan(&buf, from > 0, event)? {
-            return Ok(n);
+    let mut w = crate::transcript::scan::Window::open(path, defaults::num("stop_channel.tail_max_bytes")).ok_or(())?;
+    let mut walk = Walk::new(event);
+    let mut verdict: Option<Result<Chain, ()>> = None;
+    w.lines_rev(|seg| match walk.feed(seg) {
+        Step::More => crate::transcript::scan::Flow::Next,
+        Step::Done(r) => {
+            verdict = Some(r);
+            crate::transcript::scan::Flow::Stop
         }
-        if want >= max {
-            return Err(());
-        }
-        want = want.saturating_mul(2).min(max);
-    }
+    })
+    .map_err(|_| ())?;
+    // the window ended without a human prompt: a whole file counts since its start, a cut one proves nothing
+    verdict.unwrap_or(if w.truncated() { Err(()) } else { Ok(walk.found) })
 }
 
 // ---- the gate ----

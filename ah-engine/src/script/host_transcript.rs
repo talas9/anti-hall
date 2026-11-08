@@ -82,26 +82,43 @@ pub fn grep(path: &str, bytes: f64, needles: &str, re: &str, flags: &str) -> rqu
     let Ok(needles) = serde_json::from_str::<Vec<String>>(needles) else { return Ok(r#"{"unsure":true}"#.into()) };
     let cap = crate::defaults::num("script.tail_max_bytes");
     let n = if bytes.is_finite() && bytes > 0.0 { (bytes as u64).min(cap) } else { cap };
-    let Some(tail) = crate::checks::replykit::io::read_window(path, n) else { return Ok("null".into()) };
-    let mut lines = tail.data.split('\n');
-    if tail.truncated {
-        lines.next();
-    }
+    let Some(mut w) = crate::transcript::scan::Window::open(path, n) else { return Ok("null".into()) };
     let max = crate::defaults::num("script.grep_max_bytes") as usize;
     let mut total = 0usize;
-    let mut out: Vec<&str> = Vec::new();
-    for line in lines {
+    let mut out: Vec<String> = Vec::new();
+    let mut failed: Option<rquickjs::Error> = None;
+    let mut over = false;
+    let read = w.lines(|piece| {
+        let line = String::from_utf8_lossy(piece);
         if !needles.iter().all(|nd| line.contains(nd.as_str())) {
-            continue;
+            return crate::transcript::scan::Flow::Next;
         }
-        if !re.is_empty() && !super::host::with_re(re, flags, |r| r.is_match(line))? {
-            continue;
+        if !re.is_empty() {
+            match super::host::with_re(re, flags, |r| r.is_match(&line)) {
+                Ok(true) => {}
+                Ok(false) => return crate::transcript::scan::Flow::Next,
+                Err(e) => {
+                    failed = Some(e);
+                    return crate::transcript::scan::Flow::Stop;
+                }
+            }
         }
         total += line.len();
         if total > max {
-            return Ok(r#"{"unsure":true}"#.into());
+            over = true;
+            return crate::transcript::scan::Flow::Stop;
         }
-        out.push(line);
+        out.push(line.into_owned());
+        crate::transcript::scan::Flow::Next
+    });
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    if read.is_err() {
+        return Ok("null".into());
+    }
+    if over {
+        return Ok(r#"{"unsure":true}"#.into());
     }
     Ok(json!({"lines": out}).to_string())
 }

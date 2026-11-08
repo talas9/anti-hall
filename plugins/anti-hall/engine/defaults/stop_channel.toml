@@ -82,13 +82,6 @@ value = ["human"]
 doc = "Values of a user transcript line's promptSource that mark a prompt the human typed (notification turns are system). Either this or stop_channel.human_origin_kinds marks a human prompt."
 value = ["typed"]
 
-[stop_channel.tail_start_bytes]
-doc = "Bytes of the end of the transcript read first for the chain count. When no human prompt is inside and the start of the file is not, the window doubles up to stop_channel.tail_max_bytes."
-value = 1048576
-min = 4096
-max = 67108864
-unit = "bytes"
-
 [stop_channel.tail_max_bytes]
 doc = "Most bytes of the end of the transcript read for the chain count. A chain whose last human prompt is further back than this is unknown (counter transcript_unreadable): the note stays on its old channel."
 value = 33554432

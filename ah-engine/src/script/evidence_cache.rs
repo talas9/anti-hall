@@ -170,18 +170,36 @@ pub(super) fn with_lines<R>(path: &str, w: u64, f: impl FnOnce(&[&Line], bool, b
         k.lines.pop_front();
     }
     k.base = fls;
-    // read what was appended: the complete lines are kept, a last line without its newline is read now and again next time
-    let mut buf = vec![0u8; (size - k.parsed_to) as usize];
-    file.read_exact_at(&mut buf, k.parsed_to).ok()?;
-    crate::load::note_scan(buf.len() as u64);
-    let mut at = 0usize;
-    while let Some(i) = buf.get(at..).and_then(|r| r.iter().position(|b| *b == b'\n')) {
-        let line = make_line(k.parsed_to, buf.get(at..at + i).unwrap_or_default());
-        k.lines.push_back(line);
-        k.parsed_to += (i + 1) as u64;
-        at += i + 1;
+    // read what was appended, a block at a time: the complete lines are kept, a last line without its newline is read now and again next time
+    let _turn = crate::transcript::scan::permit()?;
+    let block = crate::transcript::scan::block_bytes();
+    let mut buf = vec![0u8; block];
+    let mut carry: Vec<u8> = Vec::new();
+    let mut at = k.parsed_to;
+    while at < size {
+        let n = ((size - at) as usize).min(block);
+        file.read_exact_at(buf.get_mut(..n).unwrap_or_default(), at).ok()?;
+        crate::load::note_scan(n as u64);
+        at += n as u64;
+        let mut rest = buf.get(..n).unwrap_or_default();
+        while let Some(i) = rest.iter().position(|b| *b == b'\n') {
+            let (head, tail) = rest.split_at(i);
+            rest = tail.get(1..).unwrap_or_default();
+            let consumed = (carry.len() + head.len() + 1) as u64;
+            let line = if carry.is_empty() {
+                make_line(k.parsed_to, head)
+            } else {
+                carry.extend_from_slice(head);
+                let l = make_line(k.parsed_to, &carry);
+                carry.clear();
+                l
+            };
+            k.lines.push_back(line);
+            k.parsed_to += consumed;
+        }
+        carry.extend_from_slice(rest);
     }
-    let pending = (at < buf.len()).then(|| make_line(k.parsed_to, buf.get(at..).unwrap_or_default()));
+    let pending = (!carry.is_empty()).then(|| make_line(k.parsed_to, &carry));
     // the window: every line, the unfinished one last
     let max_chars = defaults::num("transcript.evidence_max_chars") as f64;
     let mut chars = 0usize;
@@ -218,11 +236,10 @@ pub(super) fn with_window<R>(path: &str, w: u64, f: impl FnOnce(&[&Line], bool, 
         return r;
     }
     let f = f.take()?;
-    let tail = crate::checks::replykit::io::read_window(path, w)?;
     let mut lines: Vec<Line> = Vec::new();
     let mut bad = false;
     let mut chars = 0usize;
-    for line in crate::checks::replykit::transcript::tail_lines(&tail) {
+    let truncated = crate::checks::replykit::io::for_each_line(path, w, |line| {
         match line_items(line) {
             Err(()) => bad = true,
             Ok(None) => {}
@@ -231,9 +248,10 @@ pub(super) fn with_window<R>(path: &str, w: u64, f: impl FnOnce(&[&Line], bool, 
                 lines.push(Line { start: 0, items, chars: c, unsure: false });
             }
         }
-    }
+        crate::transcript::scan::Flow::Next
+    })?;
     let refs: Vec<&Line> = lines.iter().collect();
-    Some(f(&refs, tail.truncated, bad || chars as f64 > defaults::num("transcript.evidence_max_chars") as f64))
+    Some(f(&refs, truncated, bad || chars as f64 > defaults::num("transcript.evidence_max_chars") as f64))
 }
 
 /// (entries kept, their estimated bytes) for the memory snapshot.

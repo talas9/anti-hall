@@ -17,6 +17,7 @@
 pub mod index;
 pub mod record;
 pub mod registry;
+pub mod scan;
 
 pub use index::{Index, Limits, Rebuild, Refresh};
 pub use record::{Assistant, Notification, Prompt, Shape, TaskEvent, TaskStatus, ToolUse};

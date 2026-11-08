@@ -776,3 +776,15 @@ value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
 [metric.memory_leak_notices]
 doc = "Memory-registry leak notices, by largest holder."
 value = { kind = "counter", unit = "notices", labels = ["top"] }
+
+[metric.transcript_scan_peak_bytes]
+doc = "The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.transcript_scan_waits]
+doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_scan_timeouts]
+doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and answered as for an unreadable transcript."
+value = { kind = "counter", unit = "requests", labels = [] }
