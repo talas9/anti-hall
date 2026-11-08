@@ -599,12 +599,20 @@ fn a_corrupt_snapshot_is_counted_as_a_miss_and_the_sweep_caps_the_snapshot_direc
         second.with(f, 0, |_| ()).unwrap();
     }
     assert_eq!(second.stats().snapshot_misses, 2, "the two corrupt snapshots are counted");
-    // a zero ttl removes every snapshot older than it at the next sweep
-    c.snapshot_ttl_ms = 0;
+    // The ttl removes a snapshot strictly OLDER than it (the config doc: "age after which"), so the snapshot the sweep's own
+    // persist_all has just written (age ~0, possibly under 1 ms) is kept at any ttl. Backdate the two stale files by an hour so
+    // the outcome does not depend on clock granularity: the stale one goes, the fresh one stays.
+    c.snapshot_ttl_ms = 600_000;
     c.snapshot_max_files = 100;
-    std::thread::sleep(Duration::from_millis(5));
-    let third = Store::with_cfg(c, Some(snap.clone()));
+    let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for e in std::fs::read_dir(&snap).unwrap().flatten() {
+        std::fs::File::options().write(true).open(e.path()).unwrap().set_modified(hour_ago).unwrap();
+    }
+    let third = Store::with_cfg(c.clone(), Some(snap.clone()));
     third.with(&files[0], 0, |_| ()).unwrap();
     third.persist_all();
-    assert_eq!(names(&snap), 0, "every snapshot is older than a zero ttl");
+    assert_eq!(names(&snap), 1, "the stale snapshots are swept; only the one just written is left");
+    let fourth = Store::with_cfg(c, Some(snap.clone()));
+    fourth.with(&files[0], 0, |_| ()).unwrap();
+    assert_eq!(fourth.stats().snapshot_misses, 0, "the survivor is the fresh, readable snapshot of the transcript");
 }

@@ -1538,6 +1538,10 @@ value = "ah-engine docs: nothing was generated for format '{what}' (is the plugi
 doc = "Printed to stderr when `docs --out` could not write its file. Placeholders: out, err."
 value = "ah-engine docs: could not write '{out}': {err}"
 
+[msg.log_supervised_start]
+doc = "Detail of a supervised_start event: the service manager started this daemon and it won the singleton lock."
+value = "started by the service manager"
+
 [msg.log_sqlite_alloc_failed]
 doc = "Event-log detail when SQLite could not be routed through the engine's allocator (it had already started); it stays on the C library's allocator."
 value = "sqlite already initialised: staying on the C library allocator"

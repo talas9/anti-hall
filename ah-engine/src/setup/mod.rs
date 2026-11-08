@@ -19,6 +19,7 @@ pub mod capability;
 pub mod harvest;
 pub mod jev_setup;
 pub mod jsfmt;
+pub mod supervise;
 pub mod units;
 
 use crate::cli::Parsed;

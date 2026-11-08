@@ -137,6 +137,8 @@ pub struct Ctx<'a> {
     pub duty: &'a dyn Fn(&str) -> bool,
     /// The clock, in milliseconds since the epoch.
     pub now_ms: u64,
+    /// Whether the unit written is the supervised one (`maintenance.unitsSupervise`).
+    pub supervise: bool,
 }
 
 /// `{name}` placeholders replaced in one pass (a value is never scanned again).
@@ -177,7 +179,7 @@ fn argvs(key: &str, args: &[(&str, &str)]) -> Vec<Vec<String>> {
     defaults::raw(key).as_array().unwrap_or_default().iter().map(|a| a.strings().iter().map(|t| fill(t, args)).collect()).collect()
 }
 
-fn argv(key: &str, args: &[(&str, &str)]) -> Vec<String> {
+pub(super) fn argv(key: &str, args: &[(&str, &str)]) -> Vec<String> {
     defaults::list(key).iter().map(|t| fill(t, args)).collect()
 }
 
@@ -213,16 +215,30 @@ fn plist_path(home: &Path, label: &str) -> PathBuf {
     launchd_dir(home).join(format!("{label}{}", defaults::text("units.plist_suffix")))
 }
 
-fn timer_name(unit: &str) -> String {
+pub(super) fn timer_name(unit: &str) -> String {
     format!("{unit}{}", defaults::text("units.timer_suffix"))
 }
 
 /// The engine unit's files and their contents for `m`.
 pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)> {
-    // The allocator tuning the daemon reads before its first allocation (`daemon.malloc_conf` under each name in
-    // `daemon.malloc_conf_vars`); a unit is a starter that, without it, runs the daemon on the allocator's own defaults.
+    engine_files_with(m, home, exe, super::supervise::enabled())
+}
+
+/// Where launchd sends the unit's stdout and stderr: `units.plist_log` in the engine state directory under `home`.
+pub(super) fn unit_log_path(home: &Path) -> PathBuf {
+    home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")).join(defaults::text("units.plist_log"))
+}
+
+/// [`engine_files`] with the supervision decided by the caller (`supervise`: the unit restarts a killed daemon).
+pub fn engine_files_with(m: Manager, home: &Path, exe: &str, supervise: bool) -> Vec<(PathBuf, String)> {
+    // What the daemon is started with and a unit would otherwise not give it: the allocator tuning it reads before its first
+    // allocation (`daemon.malloc_conf` under each name in `daemon.malloc_conf_vars`) and the configured allocator, so a daemon the
+    // service manager starts runs as the one a client would have started.
     let conf = defaults::text("daemon.malloc_conf");
-    let vars: Vec<&str> = if conf.is_empty() { Vec::new() } else { defaults::list("daemon.malloc_conf_vars") };
+    let mut vars: Vec<(&str, &str)> =
+        if conf.is_empty() { Vec::new() } else { defaults::list("daemon.malloc_conf_vars").into_iter().map(|v| (v, conf)).collect() };
+    let want = defaults::text("diagnostics.allocator");
+    vars.push((defaults::text("diagnostics.allocator_env"), if defaults::list("diagnostics.allocator_choices").contains(&want) { want } else { "jemalloc" }));
     let mut args = vec![exe.to_string()];
     args.extend(defaults::list("units.serve_args").into_iter().map(str::to_string));
     args.push(defaults::text("health.start_reason_flag").to_string());
@@ -239,11 +255,26 @@ pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)
             let x = |s: &str| escape("units.xml_escapes", s);
             let lines: Vec<String> = args.iter().map(|a| fill(defaults::text("units.plist_arg"), &[("arg", &x(a))])).collect();
             let label = defaults::text("units.label");
-            let entries: Vec<String> = vars.iter().map(|v| fill(defaults::text("units.plist_env_entry"), &[("name", &x(v)), ("value", &x(conf))])).collect();
+            let sup = if supervise {
+                fill(
+                    defaults::text("units.plist_supervise"),
+                    &[("throttle", &defaults::num("units.throttle_interval_s").to_string()), ("process_type", &x(defaults::text("units.process_type")))],
+                )
+            } else {
+                String::new()
+            };
+            let entries: Vec<String> = vars.iter().map(|(n, v)| fill(defaults::text("units.plist_env_entry"), &[("name", &x(n)), ("value", &x(v))])).collect();
             let env = if entries.is_empty() { String::new() } else { fill(defaults::text("units.plist_env"), &[("entries", &entries.join("\n"))]) };
             let text = fill(
                 defaults::text("units.plist_template"),
-                &[("label", &x(label)), ("args", &lines.join("\n")), ("env", &env), ("interval", &interval), ("log", &x(defaults::text("units.plist_log")))],
+                &[
+                    ("label", &x(label)),
+                    ("args", &lines.join("\n")),
+                    ("env", &env),
+                    ("supervise", &sup),
+                    ("interval", &interval),
+                    ("log", &x(&unit_log_path(home).to_string_lossy())),
+                ],
             );
             vec![(plist_path(home, label), text)]
         }
@@ -252,11 +283,28 @@ pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)
             let unit = defaults::text("units.unit_name");
             let dir = systemd_dir(home);
             let esc = |s: &str| escape("units.systemd_escapes", s);
-            let env: String = vars.iter().map(|v| fill(defaults::text("units.service_env"), &[("name", &esc(v)), ("value", &esc(conf))]) + "\n").collect();
+            let env: String = vars.iter().map(|(n, v)| fill(defaults::text("units.service_env"), &[("name", &esc(n)), ("value", &esc(v))]) + "\n").collect();
+            let (sup_unit, sup_service) = if supervise {
+                (
+                    fill(
+                        defaults::text("units.service_supervise_unit"),
+                        &[
+                            ("interval", &defaults::num("units.start_limit_interval_s").to_string()),
+                            ("burst", &defaults::num("units.start_limit_burst").to_string()),
+                        ],
+                    ),
+                    fill(defaults::text("units.service_supervise_service"), &[("restart_sec", &defaults::num("units.restart_sec").to_string())]),
+                )
+            } else {
+                (String::new(), String::new())
+            };
             vec![
                 (
                     dir.join(format!("{unit}{}", defaults::text("units.service_suffix"))),
-                    fill(defaults::text("units.service_template"), &[("env", &env), ("exec", &exec.join(" "))]),
+                    fill(
+                        defaults::text("units.service_template"),
+                        &[("env", &env), ("exec", &exec.join(" ")), ("supervise_unit", &sup_unit), ("supervise_service", &sup_service)],
+                    ),
                 ),
                 (dir.join(timer_name(unit)), fill(defaults::text("units.timer_template"), &[("interval", &interval)])),
             ]
@@ -397,7 +445,7 @@ fn install_into(run: &mut Run<'_, '_>) {
         return;
     }
     let mut changed = false;
-    for (path, text) in engine_files(m, &ctx.home, &ctx.exe) {
+    for (path, text) in engine_files_with(m, &ctx.home, &ctx.exe, ctx.supervise) {
         let shown = path.display().to_string();
         if std::fs::read(&path).is_ok_and(|b| b == text.as_bytes()) {
             run.row(defaults::text("units.act_unchanged"), &shown, defaults::text("units.out_ok"), "");
@@ -407,6 +455,20 @@ fn install_into(run: &mut Run<'_, '_>) {
         if ctx.dry {
             run.row(defaults::text("units.act_write"), &shown, defaults::text("units.out_dry"), "");
             continue;
+        }
+        // a unit that differs is the owner's older copy of ours (an interval-only unit): keep it once in the retired directory, never
+        // next to the new one (a second file with the same Label in the LaunchAgents directory is one launchd may load)
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let bak_dir = run.units_dir().join(defaults::text("units.retired_subdir"));
+        let bak = bak_dir.join(format!("{name}{}", defaults::text("units.bak_suffix")));
+        if path.is_file() && !bak.exists() {
+            let ok = std::fs::create_dir_all(&bak_dir).is_ok() && std::fs::copy(&path, &bak).is_ok();
+            run.row(
+                defaults::text("units.act_backup"),
+                &bak.display().to_string(),
+                if ok { defaults::text("units.out_ok") } else { defaults::text("units.out_failed") },
+                "",
+            );
         }
         let ok = path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) && crate::atomic::write(&path, text.as_bytes()).is_ok();
         run.row(defaults::text("units.act_write"), &shown, if ok { defaults::text("units.out_ok") } else { defaults::text("units.out_failed") }, "");
@@ -432,12 +494,18 @@ fn uninstall_from(run: &mut Run<'_, '_>) {
         run.note(fill(defaults::text("units.msg_unsupported"), &[("os", &ctx.sys.os())]));
         return;
     };
-    let files: Vec<PathBuf> = engine_files(m, &ctx.home, &ctx.exe).into_iter().map(|(p, _)| p).filter(|p| p.exists()).collect();
+    let files: Vec<PathBuf> = engine_files_with(m, &ctx.home, &ctx.exe, ctx.supervise).into_iter().map(|(p, _)| p).filter(|p| p.exists()).collect();
     let plist = plist_path(&ctx.home, defaults::text("units.label")).display().to_string();
     let timer = timer_name(defaults::text("units.unit_name"));
     let unload = match m {
         Manager::Launchd => argvs("units.launchd_unload", &[("plist", &plist)]),
-        Manager::Systemd => argvs("units.systemd_unload", &[("unit", &timer)]),
+        Manager::Systemd => {
+            // the timer is disabled and stopped; the service it started runs on its own (Restart=always when supervised), so it is stopped too
+            let service = format!("{}{}", defaults::text("units.unit_name"), defaults::text("units.service_suffix"));
+            let mut v = argvs("units.systemd_unload", &[("unit", &timer)]);
+            v.extend(argvs("units.systemd_stop", &[("unit", &service)]));
+            v
+        }
     };
     if !files.is_empty() {
         run.sequence(&unload);
@@ -591,7 +659,7 @@ fn status_into(run: &mut Run<'_, '_>) {
         run.note(fill(defaults::text("units.msg_unsupported"), &[("os", &ctx.sys.os())]));
         return;
     };
-    for (p, _) in engine_files(m, &ctx.home, &ctx.exe) {
+    for (p, _) in engine_files_with(m, &ctx.home, &ctx.exe, ctx.supervise) {
         let out = if p.exists() { defaults::text("units.out_present") } else { defaults::text("units.out_absent") };
         run.row(defaults::text("units.act_status"), &p.display().to_string(), out, "");
     }
@@ -670,7 +738,7 @@ pub fn run_real(sub: Sub, dry: bool, bin: Option<String>) -> Result<Report, &'st
     let sys = RealSys::new(&home, &env);
     let _held = if dry || sub == Sub::Status { None } else { Some(lock(&state).ok_or("units.msg_busy")?) };
     let now_ms = crate::health::now_ms();
-    Ok(execute(sub, &Ctx { home, state, exe, dry, sys: &sys, duty: &engine_runs, now_ms }))
+    Ok(execute(sub, &Ctx { home, state, exe, dry, sys: &sys, duty: &engine_runs, now_ms, supervise: super::supervise::enabled() }))
 }
 
 /// `units heal` for a caller in the engine (update's post-pull stage, doctor --repair): the report as JSON.
