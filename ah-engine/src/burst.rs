@@ -30,6 +30,8 @@ static FRAMES: AtomicUsize = AtomicUsize::new(16);
 static WIN_BASE: AtomicU64 = AtomicU64::new(0);
 static WIN_PEAK: AtomicU64 = AtomicU64::new(0);
 static WIN_START: AtomicU64 = AtomicU64::new(0);
+/// Requests between `begin()` and `request_end()`: a window is only rolled by `begin()` when none is in flight.
+static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static THRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 static WINDOW_MS: AtomicU64 = AtomicU64::new(500);
 static WINDOW_MAX_MS: AtomicU64 = AtomicU64::new(5_000);
@@ -162,6 +164,7 @@ pub fn configure(c: &Config) {
         warm();
         if !ON.load(Relaxed) {
             // switched on (or started): the window opens at the heap as it is now, so the first request never counts the whole heap as growth
+            INFLIGHT.store(0, Relaxed);
             reset_window(crate::memstat::heap().live, now_ms());
         }
     }
@@ -183,6 +186,15 @@ pub fn set_dump_dir(dir: Option<PathBuf>) {
     *DIR_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = dir;
 }
 
+/// Test seam: forget the window state left by earlier tests of the same process (base, peak, start, requests in flight), as a fresh
+/// process has it, so a test's outcome never depends on which test ran before it.
+pub fn forget_window() {
+    for a in [&WIN_BASE, &WIN_PEAK, &WIN_START] {
+        a.store(0, Relaxed);
+    }
+    INFLIGHT.store(0, Relaxed);
+}
+
 /// Test seam: forget the dumps written so far, so the hourly limit starts empty.
 pub fn forget_dumps() {
     DUMPED.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -198,8 +210,10 @@ pub fn begin() {
     if ON.load(Relaxed) {
         NOTE.with(|n| n.borrow_mut().clear());
         // a window that outlived `window_max_ms` (an idle gap) holds growth of no burst: open a new one at the heap before this request
+        // (only when no other request is in flight: that request's burst is in the window, and rolling would throw its growth away)
+        let alone = INFLIGHT.fetch_add(1, AcqRel) == 0;
         let (now, start) = (now_ms(), WIN_START.load(Relaxed));
-        if now.saturating_sub(start) > WINDOW_MAX_MS.load(Relaxed) && WIN_START.compare_exchange(start, now, AcqRel, Relaxed).is_ok() {
+        if alone && now.saturating_sub(start) > WINDOW_MAX_MS.load(Relaxed) && WIN_START.compare_exchange(start, now, AcqRel, Relaxed).is_ok() {
             reset_window(crate::memstat::heap().live, now);
         }
     }
@@ -332,6 +346,7 @@ pub fn request_end(ctx: &Ctx<'_>) -> Option<Outcome> {
         return None;
     }
     let checks = NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()));
+    INFLIGHT.try_update(AcqRel, Relaxed, |n| Some(n.saturating_sub(1))).ok();
     let now = now_ms();
     {
         let mut r = RECENT.lock().unwrap_or_else(|e| e.into_inner());

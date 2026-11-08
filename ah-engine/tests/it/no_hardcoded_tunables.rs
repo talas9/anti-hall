@@ -136,8 +136,68 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     (
         "src/buildid.rs",
-        "",
-        "the Mach-O and ELF file formats: magic numbers, load-command and note types, header and program-header sizes and field offsets, defined by the formats and read to take a binary's build id; how much of a file is read is `diagnostics.symbols_read_cap_bytes`",
+        "const MACHO_MAGIC_64",
+        "the Mach-O 64-bit little-endian file magic, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "const LC_UUID",
+        "the Mach-O load-command type of the UUID, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "const ELF_MAGIC",
+        "the four-byte ELF file magic, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "const PT_NOTE",
+        "the ELF program-header type of a note segment, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "if n >= 32 && u32::from_le_bytes(head[0..4]",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "if n >= 64 && head[0..4] == ELF_MAGIC",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "if phentsize < 56",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "u64_at(&ph, 8)?, u64_at(&ph, 32)?",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "u64::from(u32_at(head, 20)?)",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "while at + 12 <= notes.len()",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "let mut head = [0u8; 64]",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "let mut ph = [0u8; 56]",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "const NT_GNU_BUILD_ID",
+        "the ELF note type of the GNU build id, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
     ),
     ("src/burst.rs", "static BUSY", "per-thread re-entrancy flag initialised to false: state, not a tunable"),
     ("src/burst.rs", "static NOTE", "per-thread list of the checks of the request in progress, empty at start: state, not a tunable"),

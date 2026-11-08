@@ -110,6 +110,7 @@ fn the_first_request_after_switch_on_does_not_count_the_existing_heap_as_growth(
     let dir = std::env::temp_dir().join(format!("ah-burst-first-{}", std::process::id()));
     burst::set_dump_dir(Some(dir.clone()));
     burst::configure(&Config { on: false, ..cfg() });
+    burst::forget_window(); // a fresh process's window: nothing left over from the tests that ran before
     let existing = synthetic_burst_allocator(); // 32 MB held BEFORE the profile starts, over the 16 MB threshold
     burst::configure(&cfg());
     // no `begin()`: the window set at switch-on alone must hold (begin() also rolls a stale window, which would hide the bug)
@@ -127,6 +128,7 @@ fn slow_growth_over_an_idle_gap_is_not_a_burst() {
     let dir = std::env::temp_dir().join(format!("ah-burst-idle-{}", std::process::id()));
     burst::set_dump_dir(Some(dir.clone()));
     burst::configure(&Config { on: false, ..cfg() });
+    burst::forget_window(); // a fresh process's window: start 0, so it is older than the maximum
     burst::configure(&Config { window_ms: 20, window_max_ms: 60, ..cfg() });
     let grown = synthetic_burst_allocator(); // 32 MB arrive while no request runs
     std::thread::sleep(std::time::Duration::from_millis(150));
@@ -137,6 +139,46 @@ fn slow_growth_over_an_idle_gap_is_not_a_burst() {
     std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
 }
 
+/// A burst in flight on one worker is not thrown away when another worker's `begin()` finds the window older than `window_max_ms`.
+/// (`begin()` used to reset the window base at the live heap, so the first worker's growth went into the new base and was never reported.)
+#[test]
+fn a_begin_does_not_roll_the_window_away_from_a_burst_in_flight() {
+    let _one = serial();
+    let scenario = |window_max_ms: u64| -> bool {
+        let dir = std::env::temp_dir().join(format!("ah-burst-inflight-{}-{window_max_ms}", std::process::id()));
+        burst::set_dump_dir(Some(dir.clone()));
+        burst::forget_dumps();
+        let c = Config { window_ms: 100, window_max_ms, max_per_hour: 5, ..cfg() };
+        burst::configure(&Config { on: false, ..c.clone() });
+        burst::forget_window();
+        burst::configure(&c);
+        std::thread::sleep(std::time::Duration::from_millis(250)); // idle: window age 250 ms, under the 300 ms maximum
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (tx2, rx2) = std::sync::mpsc::channel::<()>();
+        let b = std::thread::spawn(move || {
+            burst::begin(); // worker B: the window is not older than the maximum yet, no roll
+            let held = synthetic_burst_allocator(); // 32 MB, fast
+            tx.send(()).unwrap();
+            rx2.recv().unwrap();
+            let out = burst::request_end(&Ctx { event: "PreToolUse", busy: 2 });
+            drop(black_box(held));
+            out
+        });
+        rx.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100)); // window age now over 300 ms
+        burst::begin(); // worker A begins while B's burst is in flight
+        tx2.send(()).unwrap();
+        let out_b = b.join().unwrap();
+        let out_a = burst::request_end(&Ctx { event: "PreToolUse", busy: 1 });
+        std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
+        matches!(out_b, Some(Outcome::Written(_))) || matches!(out_a, Some(Outcome::Written(_)))
+    };
+    let control = scenario(10_000); // no roll is possible
+    let rolled = scenario(300);
+    assert!(control, "the control run (no roll) dumps the burst");
+    assert!(rolled, "the burst in flight is dumped although a begin() found the window past its maximum");
+}
+
 /// Turn a dump's resolved names back into what a stripped binary gives (`function: null`), then name them from the symbol file.
 /// macOS: `dsymutil` makes the dSYM of this test binary beside it. Skipped where the tool or the build id is missing.
 #[test]
@@ -144,30 +186,37 @@ fn a_dump_of_a_stripped_binary_is_named_from_its_symbol_file() {
     let _one = serial();
     let exe = std::env::current_exe().unwrap();
     let have = |t: &str| std::process::Command::new(t).arg("--version").output().is_ok();
-    let sym = if cfg!(target_os = "macos") {
-        std::path::PathBuf::from(format!("{}.dSYM", exe.display()))
-    } else {
-        std::path::PathBuf::from(format!("{}.debug", exe.display()))
-    };
+    // the symbol file is made in the test's own scratch directory: cargo's own `<exe>.dSYM` beside the binary is never overwritten
+    let dir = std::env::temp_dir().join(format!("ah-burst-sym-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sym = dir.join(if cfg!(target_os = "macos") { "test.dSYM" } else { "test.debug" });
     if cfg!(target_os = "macos") {
-        if !std::process::Command::new("dsymutil").arg(&exe).arg("-o").arg(&sym).output().is_ok_and(|o| o.status.success())
-            || !have("atos") && !std::path::Path::new("/usr/bin/atos").exists()
+        let beside = std::path::PathBuf::from(format!("{}.dSYM", exe.display()));
+        let copied = beside.is_dir() && std::process::Command::new("cp").arg("-R").arg(&beside).arg(&sym).status().is_ok_and(|s| s.success());
+        if !copied
+            && (!std::process::Command::new("dsymutil").arg(&exe).arg("-o").arg(&sym).output().is_ok_and(|o| o.status.success())
+                || !have("atos") && !std::path::Path::new("/usr/bin/atos").exists())
         {
             eprintln!("skipped: no dsymutil/atos");
+            std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
             return;
         }
     } else {
         if !have("addr2line") || ah_engine::buildid::of_file(&exe).is_none() {
             eprintln!("skipped: no addr2line or no build id");
+            std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
             return;
         }
         std::fs::copy(&exe, &sym).unwrap();
     }
-    let dir = std::env::temp_dir().join(format!("ah-burst-sym-{}", std::process::id()));
-    let empty_sidecar = dir.join("sidecar");
-    std::fs::create_dir_all(&empty_sidecar).unwrap();
+    // the symbol file is kept as the installed layout keeps it, `<symbols dir>/<build id>/` (nothing is written beside the test binary)
+    let sidecar = dir.join("sidecar");
+    let id = ah_engine::buildid::of_file(&exe).unwrap().id;
+    let side = sidecar.join(&id);
+    std::fs::create_dir_all(&side).unwrap();
+    assert!(std::process::Command::new("cp").arg("-R").arg(&sym).arg(&side).status().unwrap().success());
     burst::set_dump_dir(Some(dir.clone()));
-    ah_engine::burstsym::set_symbols_dir(Some(empty_sidecar));
+    ah_engine::burstsym::set_symbols_dir(Some(sidecar));
     burst::forget_dumps();
     burst::configure(&Config { on: false, ..cfg() });
     burst::configure(&cfg());
@@ -188,10 +237,6 @@ fn a_dump_of_a_stripped_binary_is_named_from_its_symbol_file() {
     let named = out["sites"].to_string();
     assert!(out["resolved_frames"].as_u64().unwrap_or(0) > 0 && named.contains("synthetic_burst_allocator"), "frames named from the symbol file: {out}");
     // the binary is gone (a cleaned build tree): the sidecar copy `<symbols dir>/<build id>/` finds the same names
-    let id = doc["build"]["build_id"].as_str().map(str::to_string).unwrap_or_else(|| ah_engine::buildid::of_file(&exe).unwrap().id);
-    let side = dir.join("sidecar").join(&id);
-    std::fs::create_dir_all(&side).unwrap();
-    assert!(std::process::Command::new("cp").arg("-R").arg(&sym).arg(&side).status().unwrap().success());
     let mut moved = doc.clone();
     moved["build"]["exe"] = serde_json::json!("/nonexistent/ah-engine");
     let p3 = dir.join("moved.json");
