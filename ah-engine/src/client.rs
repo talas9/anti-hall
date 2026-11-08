@@ -1499,6 +1499,9 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("ah-kick-{tag}-{}", std::process::id()));
             crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run of this test
             std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `STATE_TURN` first. A state directory of its
+            // own, because a test per process (nextest) is not serialised by the turn: they would otherwise count each other's events in the shared one.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
             crate::limits::ensure_private_dir(&paths::dir()).unwrap();
             clear_supervisor_unhealthy();
             release_spawn_lock();
@@ -1522,6 +1525,8 @@ mod tests {
     impl Drop for KickState {
         fn drop(&mut self) {
             clear_supervisor_unhealthy();
+            // SAFETY: as in `new`.
+            unsafe { std::env::remove_var("AH_ENGINE_DIR") };
             crate::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: cleanup that raced; an absent dir is the goal state
         }
     }

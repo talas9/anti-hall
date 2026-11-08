@@ -11,6 +11,7 @@
 //! makes the whole call [`Unsure`] and the Node hook decides (D74). A task map is only ever answered from when every
 //! record in the window was understood.
 pub mod backfill;
+pub mod memo;
 pub mod parse;
 pub mod scanview;
 pub mod store;

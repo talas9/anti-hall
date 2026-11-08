@@ -1437,6 +1437,64 @@ value = "stale-engine-hook.notice"
 doc = "Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory)."
 value = "install.notice"
 
+[install.file_defaults_error]
+doc = "The note the engine writes (in the state directory) when it could not load the plugin's defaults; hooks/install.sh reads it to tell the session that the guards are not running."
+value = "defaults.error"
+
+[install.defaults_probe_verb]
+doc = "The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults and exits non-zero only when they cannot be loaded. It is not read-only: a load that fails rewrites defaults.error (the note it reads). A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing."
+value = "config"
+
+[install.defaults_probe_ms]
+doc = "Milliseconds the defaults probe may run before it is sent TERM. A probe that does not finish in time is not taken as a failure: the notice stays silent. Together with defaults_probe_grace_ms and install.hook_overhead_allowance_ms it must stay under install.hook_budget_ms (every hook fails open in under 1 s)."
+value = 400
+min = 100
+max = 5000
+
+[install.defaults_probe_grace_ms]
+doc = "Milliseconds the defaults probe gets, after the TERM sent at defaults_probe_ms, before it is killed (KILL). The probe is bounded by defaults_probe_ms plus this (550 ms by default), so an engine that ignores TERM cannot hold SessionStart."
+value = 150
+min = 0
+max = 5000
+
+[install.hook_budget_ms]
+doc = "Milliseconds the whole SessionStart hook (hooks/install.sh with a TERM-ignoring defaults probe) must stay under: every hook fails open in under 1 s. A test checks defaults_probe_ms + defaults_probe_grace_ms + hook_overhead_allowance_ms against it."
+value = 1000
+min = 100
+max = 10000
+
+[install.hook_overhead_allowance_ms]
+doc = "Measured allowance, in milliseconds, for the hook's own work around the defaults probe (shell start, config reads, the notice join); about 220 ms on a loaded laptop."
+value = 300
+min = 0
+max = 5000
+
+[install.file_notice_log]
+doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read."
+value = "install-notices.log"
+
+[install.explicit_fail_exit]
+doc = "Exit code of an explicit `ah-hook install` (not --auto, with install.explicit_ignores_retry on) that did not install: a failure, or a skip other than 'already current'."
+value = 1
+min = 1
+max = 125
+
+[install.file_json_notice]
+doc = "Holds the process id of the host process that already got the SessionStart JSON notice of hooks/install.sh (inside the state directory), so the notice shows once per host process."
+value = "install-json.notice"
+
+[install.sessionstart_json_notice]
+doc = "1 (default): at SessionStart hooks/install.sh shows the 'guards are not running / engine out of date' notice to the user as JSON on stdout (systemMessage plus additionalContext), because Claude Code never shows the stderr of a hook that exits 0. 0: stderr only. The installed client's own SessionStart output is kept (the notice is merged in, never a second JSON object)."
+value = 1
+min = 0
+max = 1
+
+[install.explicit_ignores_retry]
+doc = "1 (default): an explicit `ah-hook install` (without --auto) ignores the retry window of the last failed automatic attempt, prints why it failed on stderr (msg.install_failed) and exits non-zero on a failure. 0: as before (silent, exit 0, skipped for install.retry_s after an attempt)."
+value = 1
+min = 0
+max = 1
+
 [install.file_marker]
 doc = "Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten."
 value = "bootstrap.installed"

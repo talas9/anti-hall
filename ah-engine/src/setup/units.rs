@@ -499,7 +499,13 @@ fn uninstall_from(run: &mut Run<'_, '_>) {
     let timer = timer_name(defaults::text("units.unit_name"));
     let unload = match m {
         Manager::Launchd => argvs("units.launchd_unload", &[("plist", &plist)]),
-        Manager::Systemd => argvs("units.systemd_unload", &[("unit", &timer)]),
+        Manager::Systemd => {
+            // the timer is disabled and stopped; the service it started runs on its own (Restart=always when supervised), so it is stopped too
+            let service = format!("{}{}", defaults::text("units.unit_name"), defaults::text("units.service_suffix"));
+            let mut v = argvs("units.systemd_unload", &[("unit", &timer)]);
+            v.extend(argvs("units.systemd_stop", &[("unit", &service)]));
+            v
+        }
     };
     if !files.is_empty() {
         run.sequence(&unload);

@@ -124,6 +124,29 @@ fn codex_wired(hooks_json: &Path, expected: &[String]) -> Option<bool> {
     }))
 }
 
+/// The commands of a Codex `hooks.json` that still run a Node-era anti-hall hook script (`node .../anti-hall/.../hooks/<name>.js`): how
+/// many, and the first. The scripts no longer ship, so each of them fails on every call. `(0, "")` when none, or when the file is
+/// absent or unreadable.
+fn codex_node_entries(hooks_json: &Path) -> (usize, String) {
+    let Ok(text) = std::fs::read_to_string(hooks_json) else { return (0, String::new()) };
+    let Some(cfg) = migrate::parse_json(&text) else { return (0, String::new()) };
+    let re = crate::checks::lit_re(defaults::text("doctor.codex_node_entry_re"));
+    let mut found: Vec<String> = Vec::new();
+    for (_, groups) in as_obj(cfg.get("hooks")).into_iter().flatten() {
+        for g in as_arr(Some(groups)) {
+            for h in as_arr(g.get("hooks")) {
+                if let Some(J::Str(c)) = h.get("command")
+                    && re.is_match(&c.replace('\\', "/"))
+                {
+                    found.push(c.clone());
+                }
+            }
+        }
+    }
+    let max = defaults::num("doctor_l.excerpt_chars") as usize;
+    (found.len(), found.first().map(|c| c.chars().take(max).collect()).unwrap_or_default())
+}
+
 /// The events of the plugin's own Codex registration (what the installer registers).
 fn codex_events(root: Option<&Path>) -> Vec<String> {
     let Some(root) = root else { return Vec::new() };
@@ -153,13 +176,14 @@ pub fn codex_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) -> Option<&'
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
             .is_some_and(|value| crate::hooksgen::missing_launcher(&value, &ctx.home, root, &ctx.env));
-        found.push((label, enabled, codex_wired(&hooks, &expected), missing, hooks));
+        let node = if defaults::num("doctor.codex_node_entries") == 1 { codex_node_entries(&hooks) } else { (0, String::new()) };
+        found.push((label, enabled, codex_wired(&hooks, &expected), missing, node, hooks));
     }
     if found.is_empty() {
         return Some(defaults::text("doctor_msg.codex_none"));
     }
     doc.head(defaults::text("doctor_msg.head_codex"));
-    for (label, enabled, wired, missing, hooks) in found {
+    for (label, enabled, wired, missing, node, hooks) in found {
         if enabled {
             doc.ok(defaults::render("doctor_msg.codex_hooks_on", &[("label", &label)]));
         } else {
@@ -167,6 +191,12 @@ pub fn codex_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) -> Option<&'
         }
         if missing {
             doc.bad(defaults::render("doctor_msg.codex_launcher_missing", &[("label", &label), ("file", &hooks.display())]));
+            continue;
+        }
+        if node.0 > 0 {
+            // Node-era hooks that cannot run: they fail on every call, so no Codex guard runs (and `install-codex` replaces them)
+            crate::metrics::bump_shared("doctor_codex_node_entries", &[]);
+            doc.bad(defaults::render("doctor_msg.codex_node_entries", &[("label", &label), ("file", &hooks.display()), ("n", &node.0), ("first", &node.1)]));
             continue;
         }
         match wired {

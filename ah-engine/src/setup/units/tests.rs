@@ -308,6 +308,20 @@ fn uninstall_unloads_and_moves_the_engine_unit_aside() {
 }
 
 #[test]
+fn a_systemd_uninstall_also_stops_the_restart_always_service() {
+    let d = scratch("uninstall-sd");
+    run(Sub::Install, &d, &Fake::new("linux"), &none, false);
+    let sys = Fake::new("linux");
+    let r = run(Sub::Uninstall, &d, &sys, &none, false);
+    assert!(!r.failed, "{:?}", r.to_json());
+    let calls = sys.calls();
+    let pos = |c: &str| calls.iter().position(|x| x == c);
+    let (timer, service) = (pos("systemctl --user disable --now anti-hall-engine.timer"), pos("systemctl --user stop anti-hall-engine.service"));
+    assert!(timer.is_some() && service.is_some() && timer < service, "timer disabled, then the service stopped: {calls:?}");
+    assert!(service < pos("systemctl --user daemon-reload"), "stopped before the files move: {calls:?}");
+}
+
+#[test]
 fn an_os_without_a_service_manager_gets_a_note_and_nothing_else() {
     let d = scratch("other");
     let sys = Fake::new("freebsd");

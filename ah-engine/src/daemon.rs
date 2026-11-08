@@ -424,6 +424,7 @@ impl Shared {
             "allocator": crate::memstat::active_allocator().as_str(),
             "allocator_config": self.cfg().effective.text("diagnostics.allocator"),
             "allocator_stats": crate::memdiag::allocator_stats(),
+            "sqlite_global_allocator": crate::sqlalloc::routed(),
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
@@ -2210,6 +2211,14 @@ pub fn serve(start_reason: &str) -> i32 {
     crate::crash::mark_daemon(true);
     // set before the first thing that can fail, so a failed start by the service manager is recognised as one (see `start_fail`)
     SUPERVISED.store(crate::setup::supervise::supervised_reason(start_reason), SeqCst);
+    // SQLite takes its allocator when it first starts, so this comes before anything opens a database
+    if defaults::num("storage.sqlite_use_global_allocator") != 0 {
+        let routed = crate::sqlalloc::route_through_global_allocator();
+        crate::metrics::bump("sqlite_alloc_routing", &[("result", if routed { "routed" } else { "failed" })]);
+        if !routed {
+            health::log_event("sqlite", "alloc", defaults::text("msg.log_sqlite_alloc_failed"));
+        }
+    }
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
     let initial_parent = unsafe { libc::getppid() };

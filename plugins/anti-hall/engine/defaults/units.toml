@@ -393,6 +393,10 @@ value = ["systemctl", "--user", "is-enabled", "--quiet", "{unit}"]
 doc = "The command that disables and stops a unit (its failure is ignored: the unit may not be enabled)."
 value = [["systemctl", "--user", "disable", "--now", "{unit}"]]
 
+[units.systemd_stop]
+doc = "The command that stops the engine service on an uninstall (its failure is ignored: the service may not be running). The service restarts on exit when supervised, and the disabled timer alone does not stop it. Placeholder: unit."
+value = [["systemctl", "--user", "stop", "{unit}"]]
+
 [units.systemd_reload]
 doc = "The command that re-reads the unit files after files were moved aside."
 value = [["systemctl", "--user", "daemon-reload"]]
