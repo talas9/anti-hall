@@ -63,7 +63,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take an older anti-hall status line out of the host's settings: restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
 | `update` | `[--check] [--post-pull-only] \| --from-local <dir> [--engine-bin F] [--hook-bin F] [--tree D] [--source release\|local\|manual] [--check] [--yes] [--force] \| --rollback [--deploy-dir D] [--yes]` | no | implemented | Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions (with --json it adds an `engine` object: the running build version, its sha, where it came from - release, local build or manual - and the latest GitHub release). `--from-local <dir>` and `--rollback` run the ONE install routine (pre-check, rollback copy, install, settle, validate, automatic rollback on failure, cleanup, install record); a downgrade needs --force. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
-| `web` | `[open\|status] [--no-open] [--json]` | no | implemented | The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token, serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled. |
+| `web` | `[open\|status] [--no-open] [--json]` | no | implemented | The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token (web.require_token = false removes the token; the Host and Origin checks stay), serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled. |
 | `afk` | `on\|off\|status` | no | implemented | AFK mode, machine-wide: `on` starts it (agents work silently and log milestone bullets to their progress files), `off` ends it, `status` shows it. Lasts until `back` / `off`. Settings: afk.*. |
 | `back` | `` | no | implemented | End AFK mode and print each session's digest: the checklist bullets after the AFK marker in its progress file, with the percentage of [x] bullets. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
@@ -1573,7 +1573,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `docs.external_flags` | `25 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
+| `docs.external_flags` | `26 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
 
 ### telemetry.toml / telemetry
 
@@ -14105,10 +14105,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.bind_attempts` | `40` |  |  | How many random ports are tried before the server gives up. |
 | `web.bind_host` | `127.0.0.1` |  |  | The address the dashboard server binds to. Keep it a loopback address: the page can send agent messages. |
 | `web.boot_marker` | `__AH_BOOT__` |  |  | The text in the index file that the server replaces with the page's boot data (texts and thresholds as JSON). |
+| `web.check_host` | `true` |  |  | Refuse a request whose Host header is not one of web.loopback_names (or web.bind_host) plus the bound port, with 421. This stops DNS rebinding, and applies whatever web.require_token says. Counted as web_request_rejected{reason=host}. |
+| `web.check_origin` | `true` |  |  | Refuse a state-changing request (any method but GET, HEAD, OPTIONS) that carries an Origin header, or without one a Referer, that is not this dashboard's own origin, with 403. This stops other web pages from posting to the dashboard, and applies whatever web.require_token says. A request with neither header (a command-line client) passes. Counted as web_request_rejected{reason=origin}. |
 | `web.client_label` | `{project} · {name}` |  |  | How a Health client (a hook session) is named once the tracker knows it. Placeholders: {project}, {name} (its session or agent title). |
 | `web.compat_msg` | `web {web_version} needs engine >= {required}, installed {actual} -> update th...` |  |  | The sentence shown when the engine is older than the lowest version this dashboard works with. Placeholders: {web_version}, {required}, {actual}. |
 | `web.config_rel` | `engine/defaults/web.toml` |  |  | This file's path relative to the plugin root; the engine hands it to the server, which reads it itself. |
 | `web.cookie_name` | `ah_web_session` |  |  | Name of the session cookie the browser receives after it presents the token. |
+| `web.counters_file` | `obs-counters.log` |  |  | Name (in the state directory) of the shared counter journal the refusals are appended to. Keep it equal to diagnostics.counters_file. |
+| `web.counters_lock_suffix` | `.lock` |  |  | Suffix of the journal's lock file (the engine's paths.lock_suffix): the server takes the shared lock on it while it appends, as the engine's own writers do. |
 | `web.coverage` | `8 entries` |  |  | Which dashboard screen shows which engine feature, for `ah-engine describe --coverage` (the header badge counts what no screen covers). Screen to selectors; a selector is `kind:name` with `*` as a wildcard. Kinds: verbs, checks, settings, files, jobs, jev, switches, sources. |
 | `web.csp` | `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'u...` |  |  | Content-Security-Policy header sent with every page and file. |
 | `web.ctl_max_bytes` | `16777216` |  |  | Largest engine reply accepted. |
@@ -14169,6 +14173,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
 | `web.log_file` | `ah-web.log` |  |  | File (in the state directory the server was started with) it appends one line to for its start, every signal it receives and its exit with the reason, so a server that disappears says why. Rotated to `<name>.1` at web.log_max_bytes. |
 | `web.log_max_bytes` | `262144` |  |  | Size at which the server's log file is rotated (one old copy is kept). |
+| `web.loopback_names` | `localhost, [::1]` |  |  | Host names the dashboard answers to, besides web.bind_host: the Host header and the Origin must name one of these plus the bound port. |
 | `web.manage_file` | `web_manage.toml` |  |  | The Settings screens' config file, next to this one (texts and limits of the Settings, Config, Checks, Jev and History tabs). |
 | `web.max_streams` | `16` |  |  | Most event streams open at once; more are refused with 503. |
 | `web.mesh_db_rel` | `.anti-hall/devswarm/store/devswarm.db` |  |  | The mesh store, relative to the home directory. |
@@ -14181,6 +14186,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.msg_action_failed` | `The action failed.` |  |  | Said when the verb failed without a message. |
 | `web.msg_action_timeout` | `The engine did not answer in time.` |  |  | Said when the engine did not answer in time. |
 | `web.msg_action_unknown` | `That action is not available.` |  |  | Said for an action the menu does not list. |
+| `web.msg_bad_origin` | `request refused: it did not come from the dashboard page` |  |  | Sent with 403 when the Origin or Referer of a state-changing request is not the dashboard's own origin. |
 | `web.msg_busy` | `Too many open dashboard tabs.` |  |  | Body sent when too many event streams are open. |
 | `web.msg_disabled` | `The Command Center is switched off (web.enabled = false).` |  |  | Printed when web.enabled is false. |
 | `web.msg_no_bin` | `The Command Center server binary was not found: {bin}` |  |  | Printed when the server binary is missing. Placeholder: {bin}. |
@@ -14199,6 +14205,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.open_browser` | `true` |  |  | Open the page in the default browser after `ah-engine web` (the --no-open flag overrides it). |
 | `web.open_cmd` | `open` |  |  | Command that opens a URL; the URL is appended as the last argument. |
 | `web.ops_cfg_rel` | `engine/defaults/web_ops.toml` |  |  | The Accounts, Updates and Logs screens config file, relative to the plugin root; the server reads its [web.ops.*] values and merges its texts into the page labels. |
+| `web.origin_scheme` | `http` |  |  | The scheme of the dashboard's own origin (it is served over plain http on the loopback address). |
 | `web.pkg_dir` | `web/pkg` |  |  | Directory of the compiled page (WASM and its loader), relative to the plugin root. |
 | `web.placeholder_id_chars` | `8` |  |  | How many characters of the missing parent's id its name carries. |
 | `web.placeholder_kind` | `workspace` |  |  | The kind shown for a parent agent that a sub-agent names but the tracker does not list. |
@@ -14230,6 +14237,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.pulse_mem_warn_mb` | `125` |  |  | Engine memory footprint (MB) at which the MEM pill turns amber (the engine's soft memory limit). |
 | `web.pulse_min_interval_ms` | `2000` |  |  | How often the engine's vital signs (CPU, memory, requests, errors) are read and pushed. |
 | `web.push_min_ms` | `500` |  |  | Hard floor of the time between pushes and between asking the engine (500 = at most 2 per second). |
+| `web.reject_reason_host` | `host` |  |  | The reason name counted for a request refused by the Host check. |
+| `web.reject_reason_origin` | `origin` |  |  | The reason name counted for a request refused by the Origin / Referer check. |
+| `web.rejected_counter` | `web_request_rejected` |  |  | Counter kind a refused request (bad Host, bad Origin) is counted under in the shared counter journal; the reason is the name. Shows in `status` accounting. |
+| `web.require_token` | `true` |  |  | Whether the page and its API need the per-session token (the `?t=` address and the session cookie). true = the token is required (shipped default). false = no token is made or asked for, `ah-engine web` prints a plain address, and `/`, `/api/*`, `/static/*` and `/pkg/*` work without a cookie; the Host check (web.check_host) and the Origin check (web.check_origin) still apply. Read once when the server starts: `ah-engine config set web.require_token false` (the owner's override; the engine hands the effective value to the server) and restart it. |
 | `web.sse_keepalive_s` | `15` |  |  | Interval of the keep-alive comment on the event stream. |
 | `web.start_poll_ms` | `50` |  |  | Poll interval of that wait. |
 | `web.start_wait_ms` | `8000` |  |  | How long `ah-engine web` waits for a freshly started server to publish its state file. |
