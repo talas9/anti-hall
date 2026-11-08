@@ -22,6 +22,7 @@ allow = [
   "model-routing.js:used += n",
   "command.js:k += n;",
   "command.js:f += 'i'",
+  "lib/55-command-parts.js:f += 'i'",
   "lib/50-posix.js:path += '/'",
   "git.js:cur += '/' + segs[i]",
   "reply-length-guard.js:codeChars += n",
@@ -63,6 +64,24 @@ flag = true
 line = "cur += c + c2;"
 flag = true
 [[charwise_concat.cell]]
+line = "cur += c"
+flag = true
+[[charwise_concat.cell]]
+line = "s = s + c;"
+flag = true
+[[charwise_concat.cell]]
+line = "out = out + ch"
+flag = true
+[[charwise_concat.cell]]
+line = "cur +=c }"
+flag = true
+[[charwise_concat.cell]]
+line = "total = other + c;"
+flag = false
+[[charwise_concat.cell]]
+line = "n = n + 1;"
+flag = false
+[[charwise_concat.cell]]
 line = "score += weights[field];"
 flag = false
 [[charwise_concat.cell]]
@@ -84,6 +103,13 @@ flag = false
 # (origin/dev logic): git 37 MiB, compact-declaration-guard 37 MiB; heredoc commit: git 69 MiB, merge-side-pick 17 MiB. After: git 5.7,
 # compact 4.4; heredoc git 7.1, merge-side-pick 0.8. Budgets sit between the two so the regression fails and noise does not.
 command_len_words = 3000
+# QuickJS-ng serves blocks of up to 512 bytes from arenas of at most 4096 bytes (JS_ARENA_SIZE) and frees an arena as soon as it is
+# empty, so a loop making and dropping a small string pays one arena malloc/free per step or none, depending on the heap layout (lib
+# files loaded). Only requests above this size are counted; the 15 KB charwise-concat blow-up lives in those.
+# 4104 = JS_ARENA_SIZE 4096 (rquickjs-sys 0.14.0 quickjs.c:267; an arena is sizeof(JSArena) + n_blocks*block_size <= 4096, quickjs.c:1758) + the
+# 8-byte HEADER_SIZE the rquickjs RustAllocator adds to every request (rquickjs-core 0.14.0 allocator/rust.rs:25,66): for block sizes 24 / 104
+# the arena request reaches 4104 at the global allocator, so a limit of 4096 would count those arenas.
+arena_max_bytes = 4104
 heredoc_lines = 160
 # per check, MiB
 [logic_alloc.echo_mib]
@@ -100,5 +126,6 @@ git = 14
 command = 6
 [logic_alloc.braces_mib]
 git = 14
+# measured 2026-11-08 (15 KB `a>|b` command): 108 MiB before the char-builder fix, 33 MiB after #656's first commit, 7.1 MiB on dev; budget ~2x the current figure like braces_mib
 [logic_alloc.redirects_mib]
-git = 48
+git = 16

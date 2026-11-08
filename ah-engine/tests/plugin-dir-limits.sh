@@ -11,7 +11,11 @@ val() { # val <key>: the value of `key = ...` in the config, quotes stripped
   sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" | head -n 1 | sed 's/^"//; s/"[[:space:]]*$//'
 }
 dir=$(val dir); max_files=$(val max_files); max_bytes=$(val max_non_image_bytes); images=$(val image_extensions)
-headroom_pct=$(val min_headroom_pct); headroom=$((max_bytes * ${headroom_pct:-0} / 100))
+headroom_pct=$(val min_headroom_pct)
+case ${headroom_pct:-0} in
+  '' | *[!0-9]*) echo "plugin-dir-limits: min_headroom_pct must be a whole number, got '$headroom_pct' (in $cfg)" >&2; exit 2 ;;
+esac
+headroom=$((max_bytes * ${headroom_pct:-0} / 100))
 if [ -z "$dir" ] || [ -z "$max_files" ] || [ -z "$max_bytes" ]; then
   echo "plugin-dir-limits: cannot read the limits from $cfg" >&2
   exit 2
