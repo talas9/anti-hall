@@ -1,0 +1,44 @@
+# The line-size mix of the synthetic transcript the memory gate generates (tests/mem_gate.rs).
+#
+# Why these numbers: they are the measured shape of real Claude Code session transcripts, not a guess. The line sizes were
+# counted over the 8 largest local transcripts (711,922 lines, ~1.4 GB). About 94% of lines are under 4 KiB, a few percent are
+# tool results of 4-64 KiB, and lines over 1 MiB are about 1 in 70,000. An earlier generator put a 6 MiB result in every 120th
+# line, which made ~95% of the bytes lines over `transcript.max_line_bytes`: a stress test of oversize handling, not of a
+# normal session. Re-measure and edit these rows when real transcripts change shape; the generator reads them at run time.
+#
+# Each row: a line of `lo_bytes` <= size < `hi_bytes` is drawn with weight `per_million` (the rows sum to 1,000,000).
+
+[[bucket]]
+lo_bytes = 0
+hi_bytes = 1024
+per_million = 617972
+
+[[bucket]]
+lo_bytes = 1024
+hi_bytes = 4096
+per_million = 320805
+
+[[bucket]]
+lo_bytes = 4096
+hi_bytes = 16384
+per_million = 49893
+
+[[bucket]]
+lo_bytes = 16384
+hi_bytes = 65536
+per_million = 8060
+
+[[bucket]]
+lo_bytes = 65536
+hi_bytes = 262144
+per_million = 2586
+
+[[bucket]]
+lo_bytes = 262144
+hi_bytes = 1048576
+per_million = 670
+
+[[bucket]]
+lo_bytes = 1048576
+hi_bytes = 4194304
+per_million = 14

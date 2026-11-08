@@ -39,7 +39,10 @@ fn home(tag: &str) -> PathBuf {
     let state = ah_engine::paths::dir();
     assert_eq!(state, d.join("state"), "the state directory is the scratch one");
     if let Some(Some(real)) = REAL_HOME.get() {
-        assert!(!state.starts_with(Path::new(real).join(".anti-hall")), "the real home's state tree must stay untouched: {state:?}");
+        // the real state dirs only (default and live); a scratch checkout under `~/.anti-hall/work/scratch/**` is not state (#532)
+        for real_state in [".anti-hall/ah-engine", ".anti-hall/ah-engine-live"] {
+            assert!(!state.starts_with(Path::new(real).join(real_state)), "the real home's state tree must stay untouched: {state:?}");
+        }
     }
     std::fs::create_dir_all(&state).unwrap(); // the counter journal is only written when the state directory exists
     d

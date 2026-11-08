@@ -2238,6 +2238,8 @@ function extractEvalPayloadRaw(segment) {
 // RECURSION: also evaluates commands hidden in command substitution `$(...)` /
 // backticks and in `bash -c '...'` payloads, so `echo "$(npm run build)"` and
 // `bash -c "npm run build"` are caught. Depth-bounded to avoid pathological input.
+function wrapperScriptBody(seg) { return wrapScript.body(seg, S, scriptRunToken, effectiveVerb, resolveScriptPath, T); }
+
 function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
@@ -2255,6 +2257,8 @@ function isHeavyCommand(command, depth) {
       // (c) eval payload: unwrap eval's argument(s) and evaluate as command(s).
       const evalPayload = extractEvalPayload(seg);
       if (evalPayload && isHeavyCommand(evalPayload, d + 1)) return true;
+      const wb = wrapperScriptBody(seg);
+      if (wb !== null && wrapScript.note(S, isHeavyCommand(wb, d + 1))) return true;
     }
   }
   // (a) command substitution: scan the WHOLE command (substitutions can span
@@ -2310,6 +2314,8 @@ function classifyHeavy(command, depth) {
         const inner = classifyHeavy(evalPayload, d + 1);
         if (inner) return inner;
       }
+      const wb = wrapperScriptBody(seg), wi = wb !== null && classifyHeavy(wb, d + 1);
+      if (wi) return wi;
     }
   }
   if (d < T.maxDepth) {
@@ -4480,7 +4486,10 @@ function mainFlow(payload) {
   });
   if (hit) return hit;
   S.light = T.light.concat(launcherRegexes(command));
-  if (!isHeavyCommand(command)) return 'allow';
+  S.wrapCwd = wrapScript.cwd(payload);
+  const heavyNow = isHeavyCommand(command);
+  wrapScript.count(S);
+  if (!heavyNow) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowReadOnlyVerify') !== false && isBoundedVerificationCommand(command, { payload: payload }))) return 'allow';
   if (guarded(() => {
     if (settingsGet('guards', 'projectCommandAllow') !== false) {
@@ -4534,7 +4543,7 @@ function mainFlow(payload) {
       return standNote ? { advisory: text.advisoryJson('PreToolUse', standNote) } : 'allow';
     }
   }
-  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
+  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + ah.cfg('command.msg_heavy_suite_place') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
   const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
     why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),

@@ -47,11 +47,15 @@ function wsPaths(words, spec) {
   // pattern-first: flags, then a pattern (unless a flag supplied it), then paths
   var values = spec.value_flags || [], patFlags = spec.pattern_flags || [], noPat = spec.no_pattern_flags || [];
   var havePattern = false, recursive = !spec.needs_recursive, afterDash = false;
-  var recRe = spec.recursive_re;
+  var recRe = spec.recursive_re, roots = spec.root_flags || [];
   for (i = 0; i < args.length; i++) {
     var w = args[i];
     if (!afterDash && w === '--') { afterDash = true; continue; }
     if (!afterDash && w.charAt(0) === '-' && w.length > 1) {
+      for (var r = 0; r < roots.length; r++) {
+        if (w === roots[r] && i + 1 < args.length) out.push(args[i + 1]);
+        else if (w.indexOf(roots[r] + '=') === 0) out.push(w.slice(roots[r].length + 1));
+      }
       if (recRe && ah.re.test(recRe, 'r', w)) recursive = true;
       if (patFlags.indexOf(w) >= 0) { havePattern = true; i++; continue; }
       if (noPat.indexOf(w) >= 0) { havePattern = true; continue; }
@@ -62,6 +66,14 @@ function wsPaths(words, spec) {
     out.push(w);
   }
   return recursive ? out : null;
+}
+
+// The depth limit of a search command: wideWalk.depth (lib/54-wide-walk.js) reads it by allowlist (wide_search.commands.<name>.safe_flags).
+
+// The deepest limit allowed under `root`: wide_search.depth_allow_max_by_root names a lower one for a root such as `/`.
+function wsDepthMax(root) {
+  var by = ah.cfg('wide_search.depth_allow_max_by_root'), base = ah.cfg('wide_search.depth_allow_max');
+  return Object.prototype.hasOwnProperty.call(by, root) && by[root] < base ? by[root] : base;
 }
 
 function wsBlock(what, instead) {
@@ -102,6 +114,13 @@ function decide(p, opts) {
     for (i = 0; i < paths.length; i++) {
       var root = wsResolve(paths[i], cwd, home);
       if (root === null || forbidden.indexOf(root) < 0 || allowed.indexOf(root) >= 0) continue;
+      if (ah.settings.bool('wide_search.sw_depth_bound')) {
+        var depth = wideWalk.depth(words, specs[base]);
+        if (depth !== null && depth <= wsDepthMax(root)) {
+          try { ah.metric('wide_search_depth_bounded', ['cmd', base]); } catch (e) { /* counting never fails a hook */ }
+          continue;
+        }
+      }
       var repo = sessionCwd !== null ? wsResolve(sessionCwd, null, home) : null;
       var instead = repo !== null && forbidden.indexOf(repo) < 0
         ? text.render(ah.cfg('wide_search.msg_instead'), { repo: repo })
