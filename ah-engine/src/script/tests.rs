@@ -1891,6 +1891,23 @@ fn merge_side_pick_script_matches_the_compiled_port() {
     );
 }
 
+/// A heredoc tag that names an `Object.prototype` key (`constructor`, `toString`) must not throw: the terminator memo is a plain
+/// lookup table, and an inherited member used to come back as a "cached" non-RegExp.
+#[test]
+fn merge_side_pick_survives_a_heredoc_tag_named_like_an_object_member() {
+    for tag in ["constructor", "toString", "__proto__", "hasOwnProperty"] {
+        let h = home(&format!("msp-{tag}"));
+        let e = env(&h);
+        let cmd = format!("git checkout --ours f.txt && cat <<{tag}\nbody\n{tag}\n");
+        let p = json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/x", "session_id": "s1", "hook_event_name": "PostToolUse"});
+        let got = super::run_forced("merge-side-pick", &p, &Value::Null, "PostToolUse", &e);
+        assert_eq!(got, Some(Some(Verdict::Allow)), "{tag}: {:?}", crate::discard::captured());
+        // the pick that precedes the heredoc is still recorded: a throw would have left no state behind
+        let st = std::fs::read_to_string(format!("{h}/.anti-hall/merge-side-pick-s1.json")).unwrap_or_default();
+        assert!(st.contains("\"pickSeq\":1"), "{tag}: the side-pick was not recorded: {st:?} {:?}", crate::discard::captured());
+    }
+}
+
 /// The platform's throttle prefix (macOS `taskpolicy ...`, Linux `nice ...`) stands as `{PREFIX}` in the corpus, so one corpus
 /// serves both CI systems.
 fn prefix_neutral(v: &mut Value) {
@@ -3609,6 +3626,24 @@ mod claim_evidence_guard {
             assert!(blocked(&v).is_none(), "switch off restores the old reading: {r}");
             assert_eq!(count(reason), 0, "off: nothing is refused or counted");
         }
+    }
+
+    // GH #650: a PR's check rollup read through the GitHub CLI earlier in the turn is the evidence a "checks passed" claim needs
+    #[test]
+    fn a_checks_claim_backed_by_the_pr_check_rollup_of_this_turn_passes_and_a_plain_pr_view_does_not() {
+        let mk = |cmd: &str, reply: &str| {
+            vec![
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("{\"statusCheckRollup\": [{\"conclusion\": \"SUCCESS\"}]}"),
+                assistant("m2", reply, &[]),
+            ]
+        };
+        let r = "All checks passed on the PR.";
+        assert_eq!(stop("ce-roll-view", &mk("gh pr view 12 --json statusCheckRollup", r), r, &[], json!({})).0, ALLOW);
+        assert_eq!(stop("ce-roll-api", &mk("gh api repos/o/r/commits/abc/check-runs", r), r, &[], json!({})).0, ALLOW);
+        assert!(blocked(&stop("ce-roll-plain", &mk("gh pr view 12 --json title", r), r, &[], json!({})).0).is_some(), "a view without the rollup is no check");
+        assert!(blocked(&stop("ce-roll-ls", &mk("ls -la", r), r, &[], json!({})).0).is_some(), "an unrelated command still holds the claim");
     }
 
     #[test]

@@ -53,10 +53,6 @@ unit = "bytes"
 doc = "Global object of the shared context that holds each loaded check's entry function, by check name."
 value = "__ahCheckEntries"
 
-[script.msg_no_evaluator]
-doc = "Reason logged when a shared include (script.shared_includes) does not evaluate to its evaluator function. Placeholder: {module}."
-value = "{module}: the shared include defines no evaluator"
-
 [script.msg_no_entry]
 doc = "Reason logged (then the failure policy applies) when a check's script defines no entry function. Placeholders: {check}, {entry}."
 value = "{check}: the script defines no {entry} function"
@@ -350,22 +346,6 @@ unit = "bytes"
 [script.includes]
 doc = "Scripts a check script builds on: check name to the names of other scripts in the logic directory, loaded as libraries (after the shared helpers, before the check's own script, which then defines the entry). A listed script that does not exist makes the check's script unavailable."
 value = { git-audit = ["git"], codex-quota-detect = ["codex-availability"], codex-nudge = ["codex-availability"], coordinator-work-guard = ["command"], "rules/coordinator-work-baseline" = ["command", "coordinator-work-guard"], verify-first-orch-codex = ["verify-first-orch"], devswarm-child-gate = ["devswarm-child-role"], devswarm-parent-reply-tracker = ["devswarm-child-role", "devswarm-child-gate"], devswarm-child-drain = ["devswarm-child-role", "devswarm-child-gate"], devswarm-parent-gate = ["devswarm-child-role", "devswarm-parent-inbox"], devswarm-child-turn = ["devswarm-child-role"], devswarm-parent-inbox = ["devswarm-child-role"], api-guard = ["command", "inc/shell-writes"], edit-guard = ["command"], orch-on-spawn = ["verify-first-orch"], ship-it-guard = ["command", "inc/shell-writes"] }
-
-[script.shared_includes]
-doc = "Scripts, among those named in `script.includes` (and checks of the same name), that are compiled ONCE per worker interpreter instead of once per check built on them. Each is evaluated as the body of one function (`script.module_scope`); a check built on it evaluates its own files inside that scope (so it sees every declaration of the include with live bindings, as when the include was spliced in front of it) and the check of the same name answers from the include's own entry. Before this, command.js (231 KB) was compiled into each of the five checks that build on it plus the command check, and git.js (157 KB) into git-audit plus the git check, in each of the worker interpreters, and every reload after the memory limit unloaded one compiled it again. A script is listed here only if it keeps no per-check state other than what a call sets and clears itself (command.js `cmdBegin`/`cmdEnd`, git.js its per-call state)."
-value = ["command", "git"]
-
-[script.module_scope]
-doc = "How a shared include (`script.shared_includes`) is compiled into a worker interpreter: its source as the body of a function that returns an evaluator, so its declarations stay private to the module and a check's body evaluated through the evaluator sees them. Placeholder: {source}."
-value = "(function () {\n{source}\n;return function (__src) { return eval(__src); };\n}).call(globalThis)"
-
-[script.module_entry]
-doc = "What the check of a shared include's own name evaluates through that include's evaluator: the include's entry function (placeholder {entry}, script.entry)."
-value = "typeof {entry} === 'function' ? {entry} : undefined"
-
-[script.modules_global]
-doc = "Global object in which each worker interpreter keeps the evaluators of its shared includes, by script name."
-value = "__ah_modules"
 
 [script.lock_max_held]
 doc = "Most cross-process locks (`ah.state.lock`) a script may hold at once in one call. A script that nests two takes them in one fixed order and releases the inner one first."

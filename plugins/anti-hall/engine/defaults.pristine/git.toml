@@ -840,12 +840,20 @@ max = 268435456
 # ---- GH #457: unresolved expansion in a commit message, and the pre-push credit backstop -----------------------
 
 [git.commit_expansion_patterns]
-doc = "Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it."
+doc = "Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. Each pattern is matched at the start of the expansion within the whole text, so a pattern with lookbehind, \\b, \\B or a `^` alternative is dropped (counted, and named once per session in an advisory) while the other patterns keep working."
 value = ["\\$[A-Za-z_{]", "\\$\\(", "`"]
 
 [git.commit_expansion_allow]
 doc = "Regular expressions tested against the text that starts at an expansion; a match means the expansion is a form the guard already reads (a heredoc substitution, or the `$(:)` stand-in the guard puts where it already scanned a heredoc body), so it is not refused."
 value = ["^\\$\\([ \\t]*cat[ \\t]*<<", "^\\$\\([ \\t]*:[ \\t]*\\)"]
+
+[git.expansion_advisory_state_prefix]
+doc = "File name prefix of the per-session stamp that records the dropped-expansion-pattern advisory was shown (git.expansion_pattern_advisory), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it."
+value = "git-expansion-advisory-"
+
+[git.expansion_pattern_advisory]
+doc = "Advisory (shown once per session) naming the git.commit_expansion_patterns entries the guard dropped because they are not valid or look before the match start (lookbehind, \\b, \\B, `^`); the other patterns and every other git check keep working. Placeholder: {shown} (the dropped patterns, quoted)."
+value = "anti-hall git guard config: ignored git.commit_expansion_patterns entries that are invalid or look before the match start (lookbehind, \\b, \\B, ^): {shown}. Fix or remove them in the git settings; the rest of the git guard is unaffected."
 
 [git.msg_commit_expansion]
 doc = "Block: an inline commit message holds an unresolved shell expansion. Placeholder: {shown} (the first expansion found)."
@@ -1155,6 +1163,10 @@ value = "msg_"
 [metric.git_blocked]
 doc = "Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push)."
 value = { kind = "counter", unit = "commands", labels = ["reason"] }
+
+[metric.git_expansion_pattern_dropped]
+doc = "git.commit_expansion_patterns entries the guard dropped (invalid regex, or one that looks before the match start), counted each time the git tables are built; the user is told once per session."
+value = { kind = "counter", unit = "patterns", labels = [] }
 
 [metric.git_push_blocked]
 doc = "Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457)."
