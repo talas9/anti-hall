@@ -619,6 +619,14 @@ value = ["run script", "install", "build", "run tests", "git push", "deploy"]
 doc = "Complex/planning signal phrases whose presence vetoes rows that steer to haiku."
 value = ["plan", "planning", "design", "architect", "review", "audit", "regression", "coupling", "merge order", "critique", "debate", "validate", "simulate", "root cause", "workflow analysis", "logic", "mockup", "security"]
 
+[model_routing.never_routine]
+doc = "Signal phrases of work that is never routine, whatever else the brief says (install, migrate, driver, firmware; deploy is not here because the deploy floor already keeps a deploy-shaped spawn off haiku, and the owner can switch that floor off): like model_routing.complex, one of them vetoes the rows that steer a flagship or omitted-model spawn to haiku (rows 1-3). The deploy floor logic is separate and unchanged. Empty list = no veto (#620)."
+value = ["install", "migrate", "migration", "driver", "firmware"]
+
+[metric.model_routing_never_routine]
+doc = "Spawns the model-routing-guard would have steered to haiku as mechanical-only but did not because a model_routing.never_routine phrase vetoed it (#620)."
+value = { kind = "counter", unit = "spawns", labels = [] }
+
 [model_routing.role_word_re]
 doc = "Debate-role exemption regex matched against the description only."
 value = '\b(reviewer|auditor|critic|debate|deadly[- ]?loop)\b'
@@ -654,6 +662,18 @@ value = { section = "guards", key = "exploreHintExec", env = "ANTIHALL_EXPLORE_H
 [model_routing.exec_report_re]
 doc = "Regex (case-insensitive) of a brief that writes a file or report (writes a report, a report file, saves findings to a file) or runs a script or shell commands (run a script, shell commands, invoking an interpreter on a script file): such an agent needs a general-purpose type, not Explore, so the row-6 Explore hint is withheld whatever read-only words the brief quotes. A negated write is removed first (negated_write_re)."
 value = '''\bwrit(?:e|es|ing|ten)\s+(?:\S+\s+){0,4}?(?:reports?|summar(?:y|ies)|findings|results?|notes|files?|output|logs?)\b|\b(?:reports?|findings|results?|output)\s+files?\b|\b(?:run|runs|running|execut(?:e|es|ing))\s+(?:\S+\s+){0,3}?(?:scripts?|shell|bash|commands?)\b|\bshell\s+(?:commands?|scripts?)\b|\b(?:bash|sh|python3?|node)\s+(?:-\S+\s+)*\S+\.(?:sh|py|js)\b'''
+
+[model_routing.explore_hint_skip_setting]
+doc = "Withholds the Explore hint for a review seat or a brief that runs tests (guards.exploreHintSkip, default on, #336): those agents run commands or hold a review role, so Explore is the wrong type."
+value = { section = "guards", key = "exploreHintSkip", env = "ANTIHALL_EXPLORE_HINT_SKIP", aliases = [], option = "", default = true }
+
+[model_routing.explore_hint_skip_re]
+doc = "Two regular expressions (Rust syntax, case-insensitive) that withhold the row-6 Explore hint: `reviewer` matches a review seat (a reviewer, auditor, critic, code review or deadly-loop role in the description or brief), `tests` matches a brief that runs tests (run or execute the tests or a test suite, cargo test, nextest, node --test, npm test, a Python or JS test runner). Counted as model_routing_explore_hint_skipped by reason."
+value = { reviewer = '(?i)\b(?:reviewer|review\s+seat|code[- ]review|auditor|critic|deadly[- ]?loop|adversarial\s+review)\b', tests = '(?i)\b(?:run|runs|running|execut(?:e|es|ing))\s+(?:\S+\s+){0,3}?(?:tests?|test\s+suites?|nextest|py[t]est|vitest|jest)\b|\bcargo\s+(?:test|nextest)\b|\bnode\s+--test\b|\bnpm\s+(?:run\s+)?test\b|\bpy[t]est\b|\bnextest\b' }
+
+[metric.model_routing_explore_hint_skipped]
+doc = "Explore hints (row 6) withheld because the spawn is a review seat or its brief runs tests (#336), by reason (reviewer, tests)."
+value = { kind = "counter", unit = "spawns", labels = ["reason"] }
 
 [model_routing.negated_commit_re]
 doc = "Regex (case-insensitive, global) of a negated commit, push or worktree instruction ('never commit', 'do not push'); removed from the brief before commit_phrase_re is tested."

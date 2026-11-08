@@ -73,7 +73,7 @@ value = 8
 
 [agent_tracker.wake_command_agents]
 doc = "The Monitor command that re-arms the session wake-watch (the exact line the re-arm reminder gives)."
-value = "~/.anti-hall/ah-engine/bin/ah-hook agents wake-watch --auto 2>&1"
+value = "~/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto 2>&1"
 
 [agent_tracker.wake_timeout_ms]
 doc = "The timeout_ms the re-arm reminder asks for (30 minutes, the longest a Monitor lives)."

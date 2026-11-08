@@ -95,7 +95,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `inference.msg` (skill): your reply states a cause as fact ('...') but no tool output in this session mentions it.
 - `speculation_judge.msg` (skill): your reply states an unchecked claim as fact. Why: Unverified claims read as facts. Instead: verify the claim or label it unverified.
 - `lane_test.policy` (skill, switch `guards.allowTestSuites`): tests are off by owner policy (...): ... Why: The owner chose to verify at deploy instead of running tests here. Instead: Build or check syntax, then report the change and that tests were not run.
-- `lane_test.msg` (skill, switch `guards.allowTestSuites`): a helper cannot run this full suite (...): ... Why: Full suites can queue behind a shared build lock and waste the work budget. Instead: Run a build check or one allowed module test, then report the result.
+- `lane_test.msg` (skill, switch `guards.allowTestSuites`): a helper cannot run this full suite (...): ... Why: Full suites can queue behind a shared build lock and waste the work budget. Instead: Run a build check or one allowed module test, then report the result. The full suite: integration gate only.
 - `queued_wait.bg` (skill): a helper cannot start this build or test in the background: ... Instead: Run the command in the foreground under the shared lock.
 - `queued_wait.sleep` (skill): this wait is too long (...s; limit ...s): ... Instead: End the turn and wait for the completion notification.
 - `queued_wait.loop` (skill): this poll loop waits too long (...s per round; limit ...s): ...

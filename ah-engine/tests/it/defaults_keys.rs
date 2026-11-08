@@ -94,6 +94,9 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     // a latency gate in a test binary of its own reads the per-check allowances (`script.p95_budget_by_check`)
     let latency = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/script_latency.rs")).unwrap();
     literals.extend(re.captures_iter(&latency).map(|c| c[1].to_string()));
+    // the memory gate (tests/mem_gate.rs) reads its `mem_gate.*` bars and the store's buffer sizes
+    let gate = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mem_gate.rs")).unwrap();
+    literals.extend(re.captures_iter(&gate).map(|c| c[1].to_string()));
     // the invisible-channel ratchet test reads its own lists (`channel_ratchet.*`, tests/it/invisible_channel.rs)
     let channel = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/invisible_channel.rs")).unwrap();
     literals.extend(re.captures_iter(&channel).map(|c| c[1].to_string()));
