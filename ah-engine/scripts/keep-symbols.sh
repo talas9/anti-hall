@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Keep the separate debug symbols of a release binary under the state directory, one directory per build id:
-#   <state>/symbols/<build id>/ah-engine.dSYM        (macOS; Linux: ah-engine.dwp)
+#   <state>/symbols/<build id>/ah-engine.dSYM        (macOS; Linux: ah-engine.debug, the unstripped build made by split-symbols.sh)
 # so a burst dump of the INSTALLED binary (`ah-engine diag burst-dump --symbolize`) can be named later, after the build tree is cleaned.
-# The shipped binary is stripped (Cargo.toml: strip = true, split-debuginfo = "packed"); only its symbols make a dump readable.
+# The shipped binary is stripped (Cargo.toml: strip = true; Linux: build.sh strips it after scripts/split-symbols.sh keeps the symbols); only its symbols make a dump readable.
 # usage: keep-symbols.sh <binary>
 # <state> and the folder name are read from the plugin's defaults, the same files the engine reads, so they cannot drift:
 #   state  = $<env.dir> (AH_ENGINE_DIR), else $HOME/<paths.base_dir>/<paths.state_dir>   (engine.toml)
@@ -22,13 +22,19 @@ esac
 
 syms=()
 [ -d "$bin.dSYM" ] && syms+=("$bin.dSYM")
-[ -f "$bin.dwp" ] && syms+=("$bin.dwp")
-[ ${#syms[@]} -gt 0 ] || { echo "keep-symbols.sh: no $bin.dSYM or $bin.dwp beside the binary (Cargo.toml: split-debuginfo = \"packed\"); symbols not kept" >&2; exit 1; }
+[ -f "$bin.debug" ] && syms+=("$bin.debug")
+[ ${#syms[@]} -gt 0 ] || { echo "keep-symbols.sh: no $bin.dSYM or $bin.debug beside the binary (macOS: split-debuginfo = \"packed\"; Linux: scripts/split-symbols.sh); symbols not kept" >&2; exit 1; }
 
 # a dSYM must carry the binary's own id, or it would name the wrong functions
 if [ -d "$bin.dSYM" ] && [ "$(uname -s)" = Darwin ]; then
   dsym_id="$(dwarfdump --uuid "$bin.dSYM" 2>/dev/null | awk 'NR==1{print $2}')"
   [ "$dsym_id" = "$id" ] || { echo "keep-symbols.sh: $bin.dSYM is id $dsym_id but the binary is $id (stale dSYM); symbols not kept" >&2; exit 1; }
+fi
+
+# a Linux debug file must carry the binary's own build id, or it would name the wrong functions
+if [ -f "$bin.debug" ] && [ "$(uname -s)" != Darwin ]; then
+  dbg_id="$(readelf -n "$bin.debug" 2>/dev/null | awk '/Build ID:/{print $3; exit}')"
+  [ "$dbg_id" = "$id" ] || { echo "keep-symbols.sh: $bin.debug is id ${dbg_id:-none} but the binary is $id (stale debug file); symbols not kept" >&2; exit 1; }
 fi
 
 defaults_dir="${AH_ENGINE_DEFAULTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../plugins/anti-hall/engine/defaults" 2>/dev/null && pwd)}"

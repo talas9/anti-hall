@@ -188,7 +188,12 @@ fn hex(v: &Value) -> Option<u64> {
 /// Run the platform's resolver over `addrs` (call-site ip, offset into the image): one output line per address, keyed by ip.
 fn resolve(image: &Path, build: &Value, addrs: &[(u64, u64)]) -> Result<std::collections::BTreeMap<u64, String>, String> {
     let os = build["os"].as_str().unwrap_or(std::env::consts::OS);
-    let tpl = defaults::list(&format!("diagnostics.symbolize_cmd_{os}"));
+    // literal keys, one per platform (a key built with format! is invisible to the defaults-keys scan)
+    let tpl = match os {
+        "macos" => defaults::list("diagnostics.symbolize_cmd_macos"),
+        "linux" => defaults::list("diagnostics.symbolize_cmd_linux"),
+        _ => Vec::new(),
+    };
     let Some((program, rest)) = tpl.split_first() else { return Err(defaults::render("diagnostics.msg_symbolize_no_tool", &[("os", &os)])) };
     if addrs.is_empty() {
         return Ok(std::collections::BTreeMap::new());

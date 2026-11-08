@@ -745,8 +745,8 @@ doc = "File extension of a burst dump."
 value = "json"
 
 [diagnostics.symbols_suffixes]
-doc = "Name endings of a separate symbol file: beside the binary a dump names (<binary>.dSYM, <binary>.dwp, <binary>.debug) and in the symbols directory. Every candidate is verified by the build id inside it, never by its name."
-value = [".dSYM", ".dwp", ".debug"]
+doc = "Name endings of a separate symbol file: beside the binary a dump names (<binary>.dSYM, <binary>.debug) and in the symbols directory. Every candidate is verified by the build id inside it, never by its name."
+value = [".dSYM", ".debug"]
 
 [diagnostics.symbols_dsym_dwarf]
 doc = "Where the DWARF file sits inside a dSYM bundle."

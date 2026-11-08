@@ -1953,12 +1953,13 @@ real changes means a source changes all the time; the watcher ignores names endi
 
 **Readable stacks.** Release binaries ship stripped; their symbols are built separately (`Cargo.toml`: `debug =
 "line-tables-only"`, `split-debuginfo = "packed"`). A local build leaves `target/<triple>/release/ah-engine.dSYM` (macOS) or
-`ah-engine.dwp` (Linux) beside the binary, and `scripts/build.sh` copies them to `<state>/symbols/<build id>/` (`files.symbols_dir`;
+`ah-engine.debug` (Linux: the unstripped build, kept by `scripts/split-symbols.sh` before `build.sh` strips the shipped binary; a packed `.dwp`
+cannot name frames alone) beside the binary, and `scripts/build.sh` copies them to `<state>/symbols/<build id>/` (`files.symbols_dir`;
 skipped in CI, `AH_KEEP_SYMBOLS=0` turns it off), so they outlive a `cargo clean`; a release run uploads them as the workflow artifact
 `symbols-v<version>-<triple>` (`scripts/package.sh` writes `dist/symbols/ah-engine-v<version>-<triple>.symbols.tar.gz`). They match only the binary of the
 same build (check with `dwarfdump --uuid`). On macOS: `sample <pid> 3 -file s.txt`, then name a frame with
 `atos -o ah-engine.dSYM/Contents/Resources/DWARF/<file> -arch arm64 -l <load address> <address>` (the load address is
-printed on each `???` line of the sample). On Linux: `perf record -g -p <pid>` and `perf report` with the `.dwp` next to the
+printed on each `???` line of the sample). On Linux: `perf record -g -p <pid>` and `perf report` with the `.debug` next to the
 binary, or `eu-stack -p <pid>`.
 
 **Burst dumps.** When the counted heap grows by more than `diagnostics.burst_dump_mb` inside one window
@@ -1975,8 +1976,7 @@ which finds the symbol file whose own id equals the dump's `build_id` (beside th
 `<state>/symbols/<build id>/`, or anywhere under `<state>/symbols/` two levels down, so an unpacked release symbols archive works),
 refuses a file of another build, and runs `diagnostics.symbolize_cmd_macos` / `_linux`. By hand, per frame (use `ip` - 1 and `offset` - 1):
 `atos -o ah-engine.dSYM/Contents/Resources/DWARF/ah-engine -arch arm64 -l <build.image_base> <ip>` (macOS) or
-`addr2line -f -C -p -e <unstripped binary or debug file> <offset>` (Linux). Linux note: a `.dwp` of a fully stripped binary has no
-skeleton to resolve against; use an unstripped build of the same build id.
+`addr2line -f -C -p -e <ah-engine.debug> <offset>` (Linux).
 
 ### Debug mode and resource budgets
 
