@@ -290,6 +290,8 @@ impl Index {
         if self.started && rebuilt.is_none() && size == self.offset + self.pending_len {
             return Ok(Refresh::Unchanged);
         }
+        // the turn is taken before anything is counted: a wait that ends in a bypass must not leave a half-counted refresh behind
+        let _turn = super::scan::permit();
         let (start, windowed) = if !self.started {
             let s = size.saturating_sub(self.lim.initial_window);
             (s, s > 0)
@@ -307,7 +309,6 @@ impl Index {
             self.pending = Acc::default();
         }
         // read what is new a block at a time (`transcript::scan`): the lines are folded as they complete, an unfinished last one is kept
-        let _turn = super::scan::permit().ok_or_else(|| self.io(std::io::Error::other(defaults::text("transcript.msg_no_turn"))))?;
         let block = super::scan::block_bytes();
         let mut buf = vec![0u8; block];
         let mut carry: Vec<u8> = Vec::new();

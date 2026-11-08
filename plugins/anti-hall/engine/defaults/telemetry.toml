@@ -789,6 +789,6 @@ value = { kind = "histogram", unit = "bytes", labels = ["check"] }
 doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
 value = { kind = "counter", unit = "requests", labels = [] }
 
-[metric.transcript_scan_timeouts]
-doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and answered as for an unreadable transcript."
+[metric.transcript_scan_turn_bypassed]
+doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
 value = { kind = "counter", unit = "requests", labels = [] }

@@ -1301,9 +1301,8 @@ fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) 
     if !path.starts_with('/') {
         return Err(Unsupported);
     }
-    // one transcript window is walked at a time in the daemon; a request that gets no turn before its deadline reads as unknown (the
-    // callers' unsure path: the Node hook decides, the nudge does not block)
-    let Some(_turn) = crate::transcript::scan::permit() else { return Err(Unsupported) };
+    // one transcript window is walked at a time in the daemon; a request that gets no turn before its deadline walks anyway
+    let _turn = crate::transcript::scan::permit();
     if defaults::num("agent_scan.cache_max_paths") > 0
         && let Ok(m) = file.metadata()
         && m.len() > 0

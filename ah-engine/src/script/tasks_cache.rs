@@ -299,7 +299,7 @@ fn kept(path: &str, w: u64, want: Option<Variant>) -> Option<(Answer, bool)> {
     }
     k.base = fls;
     // read what was appended, a block at a time: the complete lines are judged for good, a last line without its newline now and again next time
-    let _turn = crate::transcript::scan::permit()?;
+    let _turn = crate::transcript::scan::permit();
     let block = crate::transcript::scan::block_bytes();
     let mut buf = vec![0u8; block];
     let mut carry: Vec<u8> = Vec::new();

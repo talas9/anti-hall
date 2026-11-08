@@ -110,10 +110,6 @@ value = ["<task-notification", "<command-", "<local-command", "<system-reminder"
 doc = "Printed when a transcript cannot be read; {path} and {err} are filled in."
 value = "Cannot read the transcript {path}: {err}."
 
-[transcript.msg_no_turn]
-doc = "The reason a transcript refresh gives when no turn at reading came before the request's deadline (transcript.max_concurrent_scans windows are read at once)."
-value = "No turn at reading a transcript came before the deadline."
-
 # ---- the text evidence of a transcript (`ah.transcript.evidence`, D88 batch 7) --------------------------------------------
 
 [transcript.evidence_max_bytes]
@@ -246,7 +242,7 @@ min = 4096
 unit = "bytes"
 
 [transcript.max_concurrent_scans]
-doc = "Most transcript windows being read in the daemon at once. A request that does not get a turn before its own deadline or transcript.scan_wait_max_ms answers as for an unreadable transcript (the configured failure path of its check) and is counted in transcript_scan_timeouts; one that waited is counted in transcript_scan_waits. 0 turns the bound off."
+doc = "Most transcript windows being read in the daemon at once. The turn bounds concurrency only and never changes an answer: a request that gets no turn before its own deadline or transcript.scan_wait_max_ms reads anyway, without one, and is counted in transcript_scan_turn_bypassed; one that waited is counted in transcript_scan_waits. 0 turns the bound off."
 value = 1
 min = 0
 unit = "scans"

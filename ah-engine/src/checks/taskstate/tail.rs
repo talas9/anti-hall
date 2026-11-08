@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom};
 /// The last `window` bytes of the file as text, and whether the file was cut. Everything is read when the file fits.
 /// `None` on any read error (Node's `catch` returns null).
 pub fn read_tail(path: &str, window: u64) -> Option<(String, bool)> {
-    let _turn = crate::transcript::scan::permit()?;
+    let _turn = crate::transcript::scan::permit();
     let size = std::fs::metadata(path).ok()?.len();
     crate::load::note_scan(size.min(window));
     if size <= window {

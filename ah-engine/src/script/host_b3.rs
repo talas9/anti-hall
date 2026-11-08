@@ -175,7 +175,7 @@ fn tail_has_any(path: &str, window: u64, needles: &[String], lower_needles: &[St
 
 pub(super) fn read_tail(path: &str, window: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let _turn = crate::transcript::scan::permit()?;
+    let _turn = crate::transcript::scan::permit();
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     crate::load::note_scan(size.min(window));

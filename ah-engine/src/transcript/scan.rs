@@ -7,9 +7,9 @@
 //! window is. A caller folds the lines it is handed into a small state and keeps nothing else.
 //!
 //! Two bounds hold for every reader behind this module:
-//! * [`permit`]: at most `transcript.max_concurrent_scans` windows are being read in the process at once. A request that cannot
-//!   get a turn before its own deadline (or `transcript.scan_wait_max_ms`) gets `None` and takes the path of an unreadable
-//!   file, which is the configured failure path of every caller (fail open).
+//! * [`permit`]: at most `transcript.max_concurrent_scans` windows are being read in the process at once. The turn bounds
+//!   concurrency only and never changes an answer: a request that cannot get one before its own deadline (or
+//!   `transcript.scan_wait_max_ms`) reads anyway, without a turn, and the bypass is counted in `transcript_scan_turn_bypassed`.
 //! * the block size is read from the plugin's TOML, never compiled in.
 //!
 //! The line semantics are those of `text.split('\n')` over the window as the Node hooks read it: the first, possibly cut, line is
@@ -60,9 +60,10 @@ impl Drop for Permit {
 }
 
 /// A turn at reading a transcript window, waiting for one at most until the request's own deadline and `transcript.scan_wait_max_ms`.
-/// `None` when none came in time (counted in `transcript_scan_timeouts`): the caller answers as for an unreadable file. A thread that
-/// already holds a turn gets another at once. `transcript.max_concurrent_scans` 0 turns the bound off.
-pub fn permit() -> Option<Permit> {
+/// When none comes in time the caller reads anyway, without a turn (counted in `transcript_scan_turn_bypassed`): the turn bounds
+/// concurrency and must never change an answer, so a timeout is not a failed read. A thread that already holds a turn gets another at
+/// once. `transcript.max_concurrent_scans` 0 turns the bound off.
+pub fn permit() -> Permit {
     permit_for(max_scans(), Duration::from_millis(defaults::num("transcript.scan_wait_max_ms")))
 }
 
@@ -84,10 +85,10 @@ thread_local! {
     static TEST_MAX: Cell<usize> = const { Cell::new(0) };
 }
 
-fn permit_for(max: usize, wait: Duration) -> Option<Permit> {
+fn permit_for(max: usize, wait: Duration) -> Permit {
     if DEPTH.with(Cell::get) > 0 || max == 0 {
         DEPTH.with(|d| d.set(d.get() + 1));
-        return Some(Permit { counted: false });
+        return Permit { counted: false };
     }
     let mut wait = wait;
     if let Some(left) = crate::deadline::remaining() {
@@ -100,8 +101,9 @@ fn permit_for(max: usize, wait: Duration) -> Option<Permit> {
         let now = Instant::now();
         if now >= until {
             drop(n);
-            crate::metrics::bump("transcript_scan_timeouts", &[]);
-            return None;
+            crate::metrics::bump("transcript_scan_turn_bypassed", &[]);
+            DEPTH.with(|d| d.set(d.get() + 1));
+            return Permit { counted: false };
         }
         if !waited {
             waited = true;
@@ -112,7 +114,7 @@ fn permit_for(max: usize, wait: Duration) -> Option<Permit> {
     *n += 1;
     drop(n);
     DEPTH.with(|d| d.set(d.get() + 1));
-    Some(Permit { counted: true })
+    Permit { counted: true }
 }
 
 /// The most bytes this thread held for transcript reads since the last call, and reset: what the check that just ran peaked at.
@@ -124,9 +126,49 @@ fn note_held(bytes: usize) {
     PEAK.with(|p| p.set(p.get().max(bytes as u64)));
 }
 
-/// `transcript.read_block_bytes`.
+/// `transcript.read_block_bytes` (a test can set its own thread's block to cut lines at small edges).
 pub fn block_bytes() -> usize {
+    #[cfg(test)]
+    if let Some(b) = TEST_BLOCK.with(Cell::get) {
+        return b.max(1);
+    }
     (defaults::num("transcript.read_block_bytes") as usize).max(1)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BLOCK: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// The bound is process-wide: the tests that take a turn must not overlap.
+#[cfg(test)]
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+/// Runs `f` on this thread while another thread holds the only turn, with a request deadline short enough that `f`'s own wait for a
+/// turn ends in a bypass: what a caller sees under contention.
+#[cfg(test)]
+pub(crate) fn while_turn_is_held<R>(f: impl FnOnce() -> R) -> R {
+    let _g = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let t = permit_for(1, Duration::from_secs(5));
+        held_tx.send(t.counted).unwrap();
+        let _ = done_rx.recv();
+    });
+    assert!(held_rx.recv().unwrap(), "the holder has the only turn");
+    TEST_MAX.with(|m| m.set(1));
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(300);
+    crate::metrics::reset_this_thread();
+    let out = f();
+    let bypassed = crate::metrics::bumped_on_this_thread("transcript_scan_turn_bypassed", &[]);
+    crate::deadline::end();
+    TEST_MAX.with(|m| m.set(0));
+    done_tx.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(bypassed > 0, "the call ended its wait and read anyway ({bypassed} bypasses)");
+    out
 }
 
 // ---- the window ----
@@ -143,10 +185,10 @@ pub struct Window {
 }
 
 impl Window {
-    /// The last `max` bytes of `path` (all of it when smaller). `None` when the file cannot be opened or read, or no turn came in time.
+    /// The last `max` bytes of `path` (all of it when smaller). `None` when the file cannot be opened or read.
     /// An empty file is a window of no bytes.
     pub fn open(path: &str, max: u64) -> Option<Window> {
-        let turn = permit()?;
+        let turn = permit();
         let file = std::fs::File::open(path).ok()?;
         let size = file.metadata().ok()?.len();
         let start = size.saturating_sub(max);
@@ -285,9 +327,6 @@ mod tests {
 
     const SHORT: Duration = Duration::from_millis(150);
 
-    /// The bound is process-wide: the tests that take a turn must not overlap.
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
     fn file(tag: &str, bytes: &[u8]) -> String {
         let p = std::env::temp_dir().join(format!("ah-scan-{tag}-{}", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
@@ -303,6 +342,43 @@ mod tests {
             pieces.remove(0);
         }
         pieces
+    }
+
+    #[test]
+    fn lines_are_the_same_whatever_the_block_edge() {
+        // block edges fall mid-line, between the CR and the LF, and inside a two- and a three-byte character
+        let mut bytes = "a\r\nb\u{e9}c\r\n\u{4e2d}\u{6587}x\n\n\u{1f600}tail\r\nlast".as_bytes().to_vec();
+        bytes.extend_from_slice(&body());
+        let p = file("edges", &bytes);
+        for block in [1usize, 2, 3, 4, 5, 7, 16, 61] {
+            TEST_BLOCK.with(|b| b.set(Some(block)));
+            for window in [3usize, 11, 30, 100, bytes.len() - 1, bytes.len(), bytes.len() + 9] {
+                let want = reference(&bytes, window);
+                let mut fwd: Vec<(Vec<u8>, bool)> = Vec::new();
+                let mut w = Window::open(&p, window as u64).unwrap();
+                w.lines_ex(|l, last| {
+                    fwd.push((l.to_vec(), last));
+                    Flow::Next
+                })
+                .unwrap();
+                assert_eq!(fwd.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), want, "forward, block {block}, window {window}");
+                assert_eq!(
+                    fwd.iter().filter(|(_, last)| *last).count(),
+                    usize::from(!want.is_empty()),
+                    "the final element is the one flagged last, block {block}, window {window}"
+                );
+                let mut rev: Vec<Vec<u8>> = Vec::new();
+                let mut w = Window::open(&p, window as u64).unwrap();
+                w.lines_rev(|l| {
+                    rev.push(l.to_vec());
+                    Flow::Next
+                })
+                .unwrap();
+                rev.reverse();
+                assert_eq!(rev, want, "backward, block {block}, window {window}");
+            }
+        }
+        TEST_BLOCK.with(|b| b.set(None));
     }
 
     fn body() -> Vec<u8> {
@@ -362,25 +438,27 @@ mod tests {
     #[test]
     fn a_thread_that_holds_a_turn_does_not_wait_for_itself() {
         let _g = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let a = permit_for(1, SHORT).unwrap();
-        let b = permit_for(1, SHORT).expect("the same thread gets another turn at once");
+        let a = permit_for(1, SHORT);
+        let b = permit_for(1, SHORT);
+        assert!(!b.counted, "the same thread gets another turn at once");
         drop(b);
         drop(a);
     }
 
     #[test]
-    fn a_second_thread_waits_for_the_turn_and_gives_up_at_its_wait_bound() {
+    fn a_second_thread_waits_for_the_turn_then_reads_anyway_without_one() {
         let _g = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let held = permit_for(1, SHORT).unwrap();
+        let held = permit_for(1, SHORT);
+        assert!(held.counted);
         let waiter = std::thread::spawn(|| {
             let t = Instant::now();
             let got = permit_for(1, SHORT);
-            (got.is_some(), t.elapsed())
+            (got.counted, t.elapsed())
         });
-        let (got, took) = waiter.join().unwrap();
-        assert!(!got, "no turn while another thread holds the only one");
+        let (counted, took) = waiter.join().unwrap();
+        assert!(!counted, "no turn while another thread holds the only one: it reads anyway, without one");
         assert!(took >= SHORT / 2, "it waited: {took:?}");
         drop(held);
-        assert!(std::thread::spawn(|| permit_for(1, SHORT).is_some()).join().unwrap(), "the turn comes back when it is released");
+        assert!(std::thread::spawn(|| permit_for(1, SHORT).counted).join().unwrap(), "the turn comes back when it is released");
     }
 }

@@ -10,7 +10,7 @@ use std::io::{BufRead, Read, Seek, SeekFrom};
 /// the stream early, as a short read ended the old whole-window read.
 pub fn tail_lines(path: &str, max: u64) -> Option<(TailLines, u64)> {
     // the turn is held until the line stream drops, so one window is being read at a time in the daemon
-    let turn = crate::transcript::scan::permit()?;
+    let turn = crate::transcript::scan::permit();
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     if size == 0 {
