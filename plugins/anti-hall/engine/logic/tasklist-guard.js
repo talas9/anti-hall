@@ -102,7 +102,7 @@ function tlCountUse(tu, ts, out, progressAbs, cx) {
     if (progressAbs && ts !== null && fp === progressAbs && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   } else if (name === 'Bash') {
     var cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-    if (wd.counted(tu, cx)) { out.work++; tlName(out, cmd); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
+    if (wd.counted(tu, cx)) { out.work++; tlName(out, wd.workSegment(cmd)); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
     if (progressAbs && ts !== null && cmd && wd.bashWork(wd.neutralize(cmd)) && tlWritesTo(cmd, progressAbs) && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   }
 }

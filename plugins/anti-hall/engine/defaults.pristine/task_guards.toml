@@ -202,6 +202,12 @@ min = 1
 doc = "Field names of a task file in the store that a reader needs: `id` (a string or a number) and `status` (a string). A file without both is not a task. The ladder reads the open-task fact from the store with them, as the task guards do."
 value = { id = "id", status = "status" }
 
+[taskstate.memo_entries]
+doc = "How many task reconstructions of a transcript file the engine remembers, each for one state of the file (its size, modification time, window sizes and variant). The Stop checks task-guard (twice), task-pair-guard and tasklist-guard each rebuild the same task list from the same tail, and a tail cut in the middle of a task's history makes each of them scan back up to taskstate.backfill_exact_bytes; with this memo the first check computes it and the others take its answer. A changed file is read afresh. The least recently used is dropped first. 0 turns the memo off and every check reconstructs for itself."
+value = 16
+min = 0
+unit = "count"
+
 [taskstate.re_created]
 doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
 value = '^Task\s+#(\d+)\s+created\s+successfully'
