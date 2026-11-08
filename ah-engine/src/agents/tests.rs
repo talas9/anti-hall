@@ -2175,6 +2175,8 @@ fn six_wake_rows_in_a_burst_print_six_lines_before_and_one_coalesced_line_after(
 fn nudge_env(h: &Path, now: u64, extra: &[(&str, &str)]) -> Env {
     let mut e = env(h, now);
     e.settings.env.clear();
+    // the runtime steps (GH #687) are off unless a test asks for them: the older nudge scenarios run past 45 minutes
+    e.settings.env.insert("ANTIHALL_AGENT_NUDGE_RUNTIME".into(), "false".into());
     for (k, v) in extra {
         e.settings.env.insert((*k).into(), (*v).into());
     }
@@ -4500,4 +4502,215 @@ fn a_rewound_clock_restarts_the_windows_and_the_stall_comes_back() {
     // the quiet stretch then runs from there: a full window later the agent is flagged again
     ticks(&h, &mut st, &[back + 16 * MIN, back + 16 * MIN + 30_000]);
     assert!(stalled_flag(&st), "a rewound clock does not hide a stall for ever");
+}
+
+// ---- GH #687: escalating runtime steps ----------------------------------------------------------------------
+
+/// One tick of the nudge loop at `t`, the child having written a small reply a minute before (so it stays running and its spend stays tiny).
+fn rt_tick(h: &Path, child: &Path, st: &mut State, t: u64, k: u64) -> Env {
+    append(child, &[asst(t - MIN, &format!("rt{k}"), 100, 10, json!([{"type": "text", "text": "working"}]), None)]);
+    let e = nudge_env(h, t, &[("ANTIHALL_AGENT_NUDGE_RUNTIME", "true")]);
+    arm_wake(&e, "parent");
+    tick(&e, st);
+    e
+}
+
+/// The texts of the runtime nudges delivered to the parent so far (queue and wake feed).
+fn rt_texts(h: &Path) -> Vec<String> {
+    queue(h, "parent")
+        .into_iter()
+        .chain(wake_rows(h, "parent"))
+        .filter_map(|r| r["text"].as_str().map(String::from))
+        .filter(|t| t.contains("agent runtime"))
+        .collect()
+}
+
+fn rt_fired(step: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("agent_runtime_step_fired", &[("step", step)])
+}
+
+/// A child WITH outcomes (a commit) and tiny spend: nothing before the first step's minutes, then step 1 (advise) at 45 minutes, in the
+/// house format (fact line, then `Do now:`), with no question. The old loop only ever nudged on tokens with no outcome.
+#[test]
+fn rt_step_1_advise_fires_at_45_minutes_for_an_agent_with_outcomes() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-s1");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + 38 * MIN, 2);
+    assert!(
+        rt_texts(&h).is_empty() && rt_fired("advise") == 0,
+        "nothing before 45 minutes of running (a runtime is measured from the transcript's creation, about n)"
+    );
+    rt_tick(&h, &child, &mut st, n + 46 * MIN, 3);
+    assert_eq!(rt_fired("advise"), 1, "step 1 fired once");
+    let t = rt_texts(&h);
+    assert_eq!(t.len(), 1, "one delivery: {t:?}");
+    assert!(
+        t[0].starts_with("⚠️ agent runtime:") && t[0].contains("last outcome") && t[0].contains("\nDo now: get its status and ETA"),
+        "house format: {}",
+        t[0]
+    );
+    assert!(!t[0].contains('?') && !t[0].to_lowercase().contains("advisory only"), "no question: {}", t[0]);
+    assert!(st.nudges.get("abc").is_some_and(|x| x.trigger == "runtime"), "the nudge is a runtime nudge");
+}
+
+/// The token side of a step: 1.0 x the per-agent budget (1M) fires step 1 long before 45 minutes, even with outcomes.
+#[test]
+fn rt_step_1_fires_on_one_budget_of_tokens_before_45_minutes() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-tok");
+    drained();
+    let mut st = State::default();
+    append(&child, &[asst(n + 3 * MIN, "big", 1_100_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    append(&child, &[tool(n + 5 * MIN, "kc", 10, "gc", "Bash", json!({"command": "git commit -m done"})), result(n + 5 * MIN + 1000, "gc", "ok", false)]);
+    rt_tick(&h, &child, &mut st, n + 10 * MIN, 1);
+    assert_eq!(rt_fired("advise"), 1, "1.1M tokens >= 1.0 x budget fires step 1 at 15 minutes of running");
+}
+
+/// Steps climb: advise, then order (90 min), then block (120 min). An extension moves the agent on to the next step (never back to
+/// zero): the extended step does not repeat, the next one fires on its own thresholds even while the extension runs. The block step
+/// publishes the escalation the coordinator's Stop reads; an extension with a stated reason lifts it and the reason is recorded.
+#[test]
+fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-climb");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let mut k = 0;
+    let mut at = |st: &mut State, m: u64| {
+        k += 1;
+        rt_tick(&h, &child, st, n + m * MIN, k)
+    };
+    at(&mut st, 20);
+    let e = at(&mut st, 46);
+    assert_eq!(rt_fired("advise"), 1);
+    let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "waiting on a long CI job", "min": 0})).unwrap();
+    at(&mut st, 47);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "advise"), ("action", "extend")]), 1, "acted_on extend counted");
+    assert_eq!(st.nudges.get("abc").map(|x| x.reason.clone()).as_deref(), Some("waiting on a long CI job"), "the extend reason is recorded");
+    at(&mut st, 80);
+    assert_eq!(rt_texts(&h).len(), 1, "an extended step does not repeat, even past its refire time");
+    at(&mut st, 92);
+    assert_eq!(rt_fired("order"), 1, "step 2 fires on its own threshold, not reset by the extension");
+    assert!(rt_texts(&h).last().is_some_and(|t| t.contains("Do now: message it for a status, or stop it")), "{:?}", rt_texts(&h));
+    assert!(
+        std::fs::read_to_string(h.join(".anti-hall/agent-tracker/runtime-escalations.json")).map_or(true, |b| !b.contains("abc")),
+        "no block before step 3"
+    );
+    at(&mut st, 123);
+    assert_eq!(rt_fired("block"), 1, "step 3 fires at 120 minutes");
+    let last = rt_texts(&h).last().cloned().unwrap_or_default();
+    assert!(last.starts_with("⛔") && last.contains("Do now: stop it, or extend it with a stated reason"), "{last}");
+    let first = rt_stop(&h);
+    assert!(first.contains("\"decision\":\"block\""), "step 3 blocks the coordinator's Stop: {first}");
+    sinks::append(&ans, &json!({"ts": e.now_ms + 124 * MIN, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
+    at(&mut st, 125);
+    let body = std::fs::read_to_string(h.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap_or_default();
+    assert!(!body.contains("abc"), "an extended block step leaves the Stop check: {body}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "block"), ("action", "extend")]), 1);
+}
+
+/// GH #689 review P1-1/P1-2: the block step keeps blocking every Stop until the owner acts (stop or extend), on its own count so a
+/// repeated-reminder escalation cannot use it up, and the block reads as an order in the house format, never "advisory".
+#[test]
+fn rt_block_step_blocks_every_stop_until_extended_and_never_says_advisory() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt689-block");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let mut k = 0;
+    let mut at = |st: &mut State, m: u64| {
+        k += 1;
+        rt_tick(&h, &child, st, n + m * MIN, k)
+    };
+    at(&mut st, 20);
+    let e = at(&mut st, 123);
+    assert_eq!(rt_fired("block"), 1, "the block step fired");
+    at(&mut st, 124); // the escalation is published by the next follow
+    let stops: Vec<String> = (0..3).map(|_| rt_stop(&h)).collect();
+    for (i, s) in stops.iter().enumerate() {
+        assert!(s.contains("\"decision\":\"block\""), "Stop {i} is still blocked until the owner acts: {s}");
+        assert!(!s.to_lowercase().contains("advisory") && !s.contains("auto-killed"), "an order, not advisory: {s}");
+        assert!(s.contains("Stop stays blocked until you act") && s.contains("stop it, or extend it"), "the fact and the action in view: {s}");
+    }
+    let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
+    at(&mut st, 126);
+    assert!(!rt_stop(&h).contains("decision"), "an extended block step lets the Stop pass");
+}
+
+/// GH #689 review P2: a runtime extension with no stated reason holds only the shortest time even when an earlier `wrong` report left
+/// text in the nudge's reason.
+#[test]
+fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt689-stale");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "an old explanation", "min": 0})).unwrap();
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "", "min": 60})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    let nd = st.nudges.get("abc").expect("the nudge stays open");
+    assert!(nd.reason.is_empty(), "the stale reason is dropped: {:?}", nd.reason);
+    assert_eq!(nd.snooze_min, 10, "no reason = the shortest hold (snooze_min_min), not the asked 60");
+}
+
+/// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
+#[test]
+fn rt_msg_and_wrong_are_counted_per_step() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-acts");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "it is waiting on CI", "min": 0})).unwrap();
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "msg", "text": "status", "min": 0})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    let c = |a: &str| crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "advise"), ("action", a)]);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_reported_wrong", &[("step", "advise")]), 1);
+    assert_eq!((c("msg"), c("stop"), c("extend")), (1, 0, 0));
+    assert!(st.nudges.contains_key("abc"), "the report left the nudge open");
+}
+
+/// The existing 0-outcome rule keeps firing but is worded in the house format: a fact line, then `Do now:`, and no question.
+#[test]
+fn zero_outcome_nudge_uses_the_house_format_without_a_question() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-zero");
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let e = nudge_env(&h, n + MIN, &[]);
+    arm_wake(&e, "parent");
+    tick(&e, &mut st);
+    append(&child, &spend);
+    let e = nudge_env(&h, n + 18 * MIN, &[]);
+    arm_wake(&e, "parent");
+    tick(&e, &mut st);
+    let nd = st.nudges.get("abc").expect("the 0-outcome nudge still opens");
+    assert_eq!(nd.trigger, "waste");
+    assert!(
+        nd.last_text.starts_with("⚠️ agent health:") && nd.last_text.contains("looks unhealthy") && nd.last_text.contains("\nDo now: "),
+        "{}",
+        nd.last_text
+    );
+    assert!(!nd.last_text.contains("Do you want"), "no question: {}", nd.last_text);
 }

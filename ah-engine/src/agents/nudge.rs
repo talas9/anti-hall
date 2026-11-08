@@ -133,6 +133,10 @@ pub struct Nudge {
     pub last_delivered_at: u64,
     /// When a wake-only delivery was repeated in the reminder queue because no delivery was recorded in time (0 = not).
     pub fallback_at: u64,
+    /// Runtime steps (GH #687): the step reached and sent (1-based; 0 = not a runtime nudge or none yet).
+    pub rt_level: u64,
+    /// Runtime steps: the step the parent extended or snoozed (the agent moves on to the next one; never back to zero).
+    pub rt_acked: u64,
 }
 
 /// An agentHealth `done` verdict on a child (#430): no nudge about it before `until`, and only while the child shows no activity newer
@@ -273,6 +277,8 @@ fn ev(n: &Nudge) -> Fields {
         .num("tokens_after", n.tokens_after)
         .num("ans_s", if n.first_answer_at > 0 { n.first_answer_at.saturating_sub(n.sent_at) / super::fmtn("ms_per_s") } else { 0 })
         .num("act_s", if n.outcome_at > 0 { n.outcome_at.saturating_sub(n.sent_at) / super::fmtn("ms_per_s") } else { 0 })
+        .num("rt_level", n.rt_level)
+        .tok("reason", if n.trigger == rt_trigger() { &n.reason } else { "" })
 }
 
 fn emit(env: &Env, event: &str, n: &Nudge) {
@@ -431,6 +437,198 @@ fn health_req(a: &Agent, now: u64) -> Value {
         "sections": {"goal": goal, "tool_calls": calls, "outcomes": [defaults::render("agent_nudge.outcomes_line", &[("commits", &a.commits), ("steps", &a.steps_done), ("checks", &a.tests_pass), ("files", &a.files.len()), ("reports", &a.reports), ("owner", &owner_text(a, now))])], "signals": signals},
         "blocking": false,
     })
+}
+
+// ---- escalating runtime steps (GH #687) -----------------------------------------------------------------------
+
+/// One configured runtime step (`agent_nudge.runtime.steps`).
+struct Step {
+    name: &'static str,
+    min: u64,
+    budget_pct: u64,
+    tier: &'static str,
+    refire_ms: u64,
+    text: &'static str,
+}
+
+fn rt_cfg() -> &'static V {
+    defaults::raw("agent_nudge.runtime")
+}
+
+fn rt_trigger() -> &'static str {
+    rt_cfg().str_field("trigger")
+}
+
+fn rt_steps() -> Vec<Step> {
+    let min_ms = super::fmtn("ms_per_s") * 60;
+    let int = |v: &V, k: &str| v.get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    rt_cfg()
+        .get("steps")
+        .and_then(V::as_array)
+        .unwrap_or_default()
+        .iter()
+        .map(|v| Step {
+            name: v.str_field("name"),
+            min: int(v, "min"),
+            budget_pct: int(v, "budget_pct"),
+            tier: v.str_field("tier"),
+            refire_ms: int(v, "refire_min") * min_ms,
+            text: v.str_field("text"),
+        })
+        .collect()
+}
+
+/// The highest step (1-based) the agent has reached by running time or spend; 0 = none. A threshold of 0 is off.
+fn rt_reached(a: &Agent, now: u64, steps: &[Step]) -> u64 {
+    let min_ms = super::fmtn("ms_per_s") * 60;
+    let mins = now.saturating_sub(super::started_ms(a)) / min_ms;
+    let spent = super::signals::total_spent(a);
+    let budget = rt_cfg().get("budget_tokens").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    let pct = super::fmtn("pct").max(1);
+    steps
+        .iter()
+        .rposition(|s| (s.min > 0 && mins >= s.min) || (s.budget_pct > 0 && budget > 0 && spent.saturating_mul(pct) >= budget.saturating_mul(s.budget_pct)))
+        .map_or(0, |i| i as u64 + 1)
+}
+
+/// When the agent's last outcome came: the start of the newest run of samples at its current progress, else when it started.
+fn last_outcome_ms(a: &Agent) -> u64 {
+    let Some(cur) = a.samples.last() else { return super::started_ms(a) };
+    a.samples.iter().rev().take_while(|s| s.progress == cur.progress).last().map_or(super::started_ms(a), |s| s.t).max(super::started_ms(a))
+}
+
+fn rt_text(n: &Nudge, a: &Agent, step: &Step, now: u64) -> String {
+    defaults::fill(
+        step.text,
+        &[
+            ("kind", &n.child_kind),
+            ("name", &n.child_name),
+            ("dur", &age(now.saturating_sub(super::started_ms(a)))),
+            ("tokens", &tokens(super::signals::total_spent(a))),
+            ("outcome_age", &age(now.saturating_sub(last_outcome_ms(a)))),
+            ("child", &n.child),
+            ("cmd", &defaults::text("agent_nudge.cmd")),
+            ("answer", &answer_line(n)),
+        ],
+    )
+}
+
+/// Whether a runtime nudge is at the block tier right now (its extension, if any, has run out): the coordinator's Stop is blocked.
+fn rt_blocking(n: &Nudge, now: u64) -> bool {
+    n.trigger == rt_trigger()
+        && n.rt_level > 0
+        && n.snooze_until <= now
+        && n.answer_class != ans("stop")
+        && rt_steps().get(n.rt_level as usize - 1).is_some_and(|s| s.tier == rt_cfg().str_field("block_tier"))
+}
+
+/// Send a runtime step's text to the nudge's parent (or the nearest live ancestor, or the owner when none is live).
+fn rt_send(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge, text: String) {
+    n.last_text.clone_from(&text);
+    n.last_sent = env.now_ms;
+    let to = if live(st, &n.parent) {
+        Some(n.parent.clone())
+    } else {
+        let (direct, to, walked) = target(env, st, a);
+        (n.direct_parent, n.walked) = (direct, walked);
+        if let Some(p) = &to {
+            n.parent.clone_from(p);
+        }
+        to
+    };
+    match to {
+        Some(p) => n.path = send_to(env, &p, n, text),
+        None => {
+            escalate_now(env, st, n, defaults::text("agent_nudge.why_no_parent"));
+        }
+    }
+}
+
+/// A runtime nudge for every running child that reached a step and has none open.
+fn open_runtime(env: &Env, st: &mut State) {
+    let steps = rt_steps();
+    if steps.is_empty() {
+        return;
+    }
+    let now = env.now_ms;
+    let ids: Vec<String> = st
+        .agents
+        .values()
+        .filter(|a| {
+            !escalate::primary(a)
+                && !a.dead
+                && !st.nudges.contains_key(&a.id)
+                && state_of(a) == state_name("running")
+                && !done_held(env, st, a, now)
+                && rt_reached(a, now, &steps) > 0
+        })
+        .map(|a| a.id.clone())
+        .collect();
+    for id in ids {
+        let Some(a) = st.agents.get(&id).cloned() else { continue };
+        let level = rt_reached(&a, now, &steps);
+        let (direct, to, walked) = target(env, st, &a);
+        let mut n = Nudge {
+            id: format!("{:x}", crate::health::fnv(&format!("{}{now}rt", a.id))),
+            ref_id: new_ref(st, &a.id, now),
+            child: a.id.clone(),
+            child_name: if a.name.is_empty() { a.id.clone() } else { super::cap(&a.name, lim("name_cap")) },
+            child_kind: kind_word(&a).into(),
+            direct_parent: direct,
+            parent: to.clone().unwrap_or_default(),
+            parent_kind: to.as_ref().and_then(|p| st.agents.get(p)).map(|p| p.kind.clone()).unwrap_or_default(),
+            walked,
+            trigger: rt_trigger().into(),
+            signal: word("signal").into(),
+            ev_dur_ms: now.saturating_sub(super::started_ms(&a)),
+            ev_tokens: super::signals::total_spent(&a),
+            ev_outcomes: a.progress,
+            sent_at: now,
+            reminders: 1,
+            tokens_at_sent: super::signals::total_spent(&a),
+            out_mark: a.last_output_ms,
+            rt_level: level,
+            ..Nudge::default()
+        };
+        let step = &steps[level as usize - 1];
+        let text = rt_text(&n, &a, step, now);
+        rt_send(env, st, &a, &mut n, text);
+        emit(env, word("ev_sent"), &n);
+        crate::metrics::bump("agent_runtime_step_fired", &[("step", step.name)]);
+        if !n.path.is_empty() {
+            crate::metrics::bump("agent_nudge_sent", &[("trigger", rt_trigger())]);
+        }
+        st.nudges.insert(id, n);
+    }
+}
+
+/// Follow one open runtime nudge: a newly reached step is sent at once (an extension or snooze never holds it back); the same step
+/// repeats every `refire_min` unless the parent extended it (the last step repeats once the extension runs out).
+fn rt_follow(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge) {
+    let steps = rt_steps();
+    let now = env.now_ms;
+    let level = rt_reached(a, now, &steps).max(n.rt_level);
+    if n.snooze_until > 0 && n.snooze_until <= now {
+        n.snooze_until = 0;
+    }
+    let advanced = level > n.rt_level;
+    let Some(step) = steps.get(level as usize - 1).filter(|_| level > 0) else { return };
+    let last = level as usize == steps.len();
+    let due = n.answer_class.is_empty() && n.snooze_until == 0 && now.saturating_sub(n.last_sent) >= step.refire_ms && (n.rt_acked < level || last);
+    if advanced {
+        n.rt_level = level;
+        n.answer_class.clear();
+        n.snooze_until = 0;
+        n.outcome.clear();
+        n.ignored = 0;
+        crate::metrics::bump("agent_runtime_step_fired", &[("step", step.name)]);
+    } else if !due {
+        return;
+    }
+    n.reminders += 1;
+    let text = rt_text(n, a, step, now);
+    rt_send(env, st, a, n, text);
+    emit(env, if advanced { word("ev_sent") } else { word("ev_reminded") }, n);
 }
 
 /// A new nudge for every unhealthy child that has none open.
@@ -671,8 +869,8 @@ fn publish_escalations(env: &Env, st: &State) {
     let rows: Vec<Value> = st
         .nudges
         .values()
-        .filter(|n| n.runtime_escalated)
-        .map(|n| json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders}))
+        .filter(|n| n.runtime_escalated || rt_blocking(n, now))
+        .map(|n| json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders, "block": rt_blocking(n, now)}))
         .collect();
     let path = env.dir().join(defaults::raw("agent_nudge.runtime_escalation").str_field("file"));
     let body = json!({"rows": rows}).to_string();
@@ -713,7 +911,8 @@ fn follow_nudges(env: &Env, st: &mut State) {
             continue;
         }
         let unhealthy = a.flags.keys().any(|k| trigger_of(k).is_some()) || a.kind == kind_name("codex");
-        if !unhealthy && a.last_output_ms > n.out_mark {
+        let runtime = n.trigger == rt_trigger();
+        if !runtime && !unhealthy && a.last_output_ms > n.out_mark {
             close(env, st, &id, out("acted_progress"));
             continue;
         }
@@ -751,6 +950,15 @@ fn follow_nudges(env: &Env, st: &mut State) {
                 }
                 Err(_) => delivery_failed("queue"),
             }
+        }
+        if runtime && !env.switch("agent_nudge.runtime_setting") {
+            close(env, st, &id, out("acted_progress")); // the steps were switched off: an open runtime nudge is dropped, not reminded as an unhealthy one
+            continue;
+        }
+        if runtime {
+            rt_follow(env, st, &a, &mut n);
+            st.nudges.insert(id, n);
+            continue;
         }
         let snoozed = n.snooze_until > now;
         if !snoozed && n.answer_class.is_empty() && now.saturating_sub(n.last_sent) >= lim("cadence_ms") {
@@ -923,6 +1131,17 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
     let key = key.to_string();
     let a = st.agents.get(&key).cloned().unwrap_or_default();
     n.answer = class.clone();
+    let runtime = n.trigger == rt_trigger();
+    let step_name = rt_steps().get((n.rt_level as usize).wrapping_sub(1)).map_or("", |s| s.name);
+    if class == ans("wrong") {
+        if runtime {
+            crate::metrics::bump("agent_runtime_step_reported_wrong", &[("step", step_name)]);
+        }
+        n.reason.clone_from(&text);
+        emit(env, word("ev_answered"), &n);
+        st.nudges.insert(key, n);
+        return; // a report is not an answer: the nudge stays as it was
+    }
     if class == ans("prose") {
         let req = json!({"id": defaults::text("agent_nudge.reply_integration"), "child": key, "facts": {}, "sections": {"reply": [text], "child": [n.child_name, n.ev_text]}, "blocking": false});
         let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
@@ -944,12 +1163,30 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
     if class == ans("msg") {
         n.reason.clone_from(&text);
     }
+    if runtime {
+        let action = if class == ans("stop") || class == ans("acted") {
+            "stop"
+        } else if class == ans("msg") {
+            "msg"
+        } else {
+            "extend"
+        };
+        crate::metrics::bump("agent_runtime_step_acted", &[("step", step_name), ("action", action)]);
+    }
     if class == ans("snooze") || class == ans("other") {
         if class == ans("other") || !text.is_empty() {
             n.reason.clone_from(&text);
+        } else if runtime {
+            n.reason.clear(); // a stale reason from an earlier message must not stand in for the one this extension did not give
         }
         let asked = Some(asked_min).filter(|m| *m > 0 && class == ans("snooze")).unwrap_or(lim("snooze_default_min"));
         let mut min = asked.clamp(lim("snooze_min_min"), lim("snooze_max_min"));
+        if runtime {
+            n.rt_acked = n.rt_level; // the agent moves on to the next step, never back to zero
+            if n.reason.trim().is_empty() {
+                min = lim("snooze_min_min"); // an extension needs a stated reason: without one it holds only for the shortest time
+            }
+        }
         if !n.reason.is_empty() {
             let calls: Vec<String> = a.recent.iter().rev().take(lim("health_calls") as usize).rev().map(|r| super::cap(&r.1, lim("step_cap"))).collect();
             let req = json!({"id": defaults::text("agent_nudge.reason_integration"), "child": key, "facts": {"tool_calls": calls.len()}, "sections": {"reason": [n.reason], "tool_calls": calls, "signals": [n.ev_text]}, "blocking": false});
@@ -1210,6 +1447,9 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     }
     let mut budget = lim("health_per_tick");
     open_new(env, st, &mut budget);
+    if env.switch("agent_nudge.runtime_setting") {
+        open_runtime(env, st);
+    }
     watch_parents(st);
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
@@ -1263,6 +1503,7 @@ pub fn run_answer(p: &Parsed) -> i32 {
             let m = tail.first().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
             (w, tail.iter().skip(usize::from(m > 0)).copied().collect::<Vec<_>>().join(" "), m)
         }
+        w if w == ans("wrong") => (w, joined, 0),
         w if w == ans("other") => {
             if joined.trim().is_empty() {
                 println!("{}", defaults::text("msg.agent_nudge_need_reason"));
