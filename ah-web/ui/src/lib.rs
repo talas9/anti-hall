@@ -268,22 +268,36 @@ fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<Ev
     current.set_value(Some(es));
 }
 
-fn set_theme(dark: bool) {
+/// The colour-scheme choices the header switch cycles through, in order.
+const THEMES: [&str; 3] = ["system", "light", "dark"];
+
+/// Show `theme` (`system` follows the computer's setting: no `data-theme`, so the style sheet's light-dark() decides).
+fn apply_theme(theme: &str) {
     if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
-        let _ = root.set_attribute("data-theme", if dark { "dark" } else { "light" });
-    }
-    if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = st.set_item("ah-theme", if dark { "dark" } else { "light" });
+        let _ = if theme == "system" { root.remove_attribute("data-theme") } else { root.set_attribute("data-theme", theme) };
     }
 }
 
-fn stored_dark() -> Option<bool> {
-    let st = web_sys::window()?.local_storage().ok().flatten()?;
-    match st.get_item("ah-theme").ok().flatten().as_deref() {
-        Some("dark") => Some(true),
-        Some("light") => Some(false),
-        _ => None,
+/// Counts colour-scheme changes (the header switch, or the computer's setting while on `system`): what draws with scheme colours in
+/// code (the charts) tracks it and redraws.
+#[derive(Clone, Copy)]
+struct ThemeTick(RwSignal<u32>);
+
+pub(crate) fn theme_tick() -> RwSignal<u32> {
+    use_context::<ThemeTick>().map_or_else(|| RwSignal::new(0), |t| t.0)
+}
+
+/// Show `theme` and remember it in this browser.
+fn set_theme(theme: &str) {
+    apply_theme(theme);
+    if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = st.set_item("ah-theme", theme);
     }
+}
+
+fn stored_theme() -> Option<String> {
+    let st = web_sys::window()?.local_storage().ok().flatten()?;
+    st.get_item("ah-theme").ok().flatten().filter(|t| THEMES.contains(&t.as_str()))
 }
 
 fn stored_mode() -> Option<String> {
@@ -427,6 +441,14 @@ fn App(boot: Boot) -> impl IntoView {
     };
     provide_context(ctx);
     provide_context(health::HealthState::new());
+    let tick = RwSignal::new(0u32);
+    provide_context(ThemeTick(tick));
+    // the computer's setting changing matters only while the page follows it; the tick tells the charts either way
+    if let Some(mq) = web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten()) {
+        let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || tick.update(|n| *n += 1));
+        let _ = mq.add_event_listener_with_callback("change", wasm_bindgen::JsCast::unchecked_ref(cb.as_ref()));
+        cb.forget();
+    }
     let snap = ctx.snap;
     let conn = ctx.conn;
     let selected = ctx.selected;
@@ -488,10 +510,9 @@ fn App(boot: Boot) -> impl IntoView {
     apply_route(route::current());
     route::on_change(apply_route);
     Effect::new(move |_| route::enter(screen_now(), manage_on.get()));
-    let dark = RwSignal::new(stored_dark().unwrap_or(true));
-    if let Some(d) = stored_dark() {
-        set_theme(d);
-    }
+    // the colour scheme: the person's choice (kept in the browser), else the configured start (web.theme)
+    let theme = RwSignal::new(stored_theme().unwrap_or_else(|| if THEMES.contains(&boot.theme.as_str()) { boot.theme.clone() } else { THEMES[0].to_string() }));
+    apply_theme(&theme.get_untracked());
     // the tier: the person's choice (kept in the browser), else the configured start; the stream follows it live
     let mode = RwSignal::new(stored_mode().unwrap_or_else(|| boot.mode.clone()));
     let stream: StoredValue<Option<EventSource>, LocalStorage> = StoredValue::new_local(None);
@@ -603,11 +624,13 @@ fn App(boot: Boot) -> impl IntoView {
                                 }).collect_view()}
                             </div>
                         })}
-                        <button type="button" class="theme" aria-label=tx("theme_label") on:click=move |_| {
-                            let d = !dark.get_untracked();
-                            dark.set(d);
-                            set_theme(d);
-                        }>{move || if dark.get() { tx("theme_light") } else { tx("theme_dark") }}</button>
+                        <button type="button" class="theme" aria-label=move || format!("{}: {}", tx("theme_label"), tx(&format!("theme_{}", theme.get()))) on:click=move |_| {
+                            let now = theme.get_untracked();
+                            let next = THEMES[(THEMES.iter().position(|t| *t == now).unwrap_or(0) + 1) % THEMES.len()];
+                            theme.set(next.to_string());
+                            set_theme(next);
+                            tick.update(|n| *n += 1);
+                        }>{move || tx(&format!("theme_{}", theme.get()))}</button>
                     </div>
                 </nav>
                 <main class="main" hidden=move || other_on.get()>

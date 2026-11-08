@@ -6154,3 +6154,158 @@ fn range_sha1_hex_equals_sha1_of_range_hex() {
     assert_eq!(host::range_sha1_hex(&format!("{h}/absent"), 0.0, 1.0), None);
     assert_eq!(host::range_sha1_hex(&h, 0.0, 1.0), None, "a directory is not a file");
 }
+
+/// The checks built on a shared include (command.js, git.js): every worker interpreter compiles each of them once.
+const SHARED_USERS: [&str; 7] = ["command", "coordinator-work-guard", "api-guard", "edit-guard", "ship-it-guard", "git", "git-audit"];
+
+/// Installs settings for a test and removes them on drop (the overlay is process-wide; nextest runs each test in its own process).
+struct Overlay;
+
+impl Overlay {
+    fn set(values: &[(&str, Value)]) -> Overlay {
+        defaults::set_overlay(values);
+        Overlay
+    }
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        defaults::set_overlay(&[]);
+    }
+}
+
+/// What one steady-load run saw.
+struct Steady {
+    /// Limit counters after the first round (everything is loaded once by then) and after the last.
+    first: LimitCounts,
+    last: LimitCounts,
+    /// Bytes the interpreter held after the last round and a collection.
+    bytes: i64,
+    /// The verdict of every check in the first round.
+    verdicts: Vec<String>,
+}
+
+/// Run the checks that build on shared includes in turn for `rounds` rounds on a fresh thread, with the interpreter's soft limit at
+/// `soft` bytes and `script.shared_includes` set to `shared`.
+fn steady_load(tag: &str, soft: u64, shared: &[&str], rounds: usize) -> Steady {
+    let h = home(tag);
+    let shared_json: Vec<Value> = shared.iter().map(|s| json!(s)).collect();
+    let _o = Overlay::set(&[("mem.quickjs_soft_bytes", json!(soft)), ("script.shared_includes", Value::Array(shared_json))]);
+    let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls -la"}, "cwd": h, "session_id": "s"});
+    std::thread::spawn(move || {
+        let e = env(&h);
+        let (mut first, mut verdicts) = (LimitCounts::default(), Vec::new());
+        for r in 0..rounds {
+            for name in SHARED_USERS {
+                let v = super::run_forced(name, &payload, &Value::Null, "PreToolUse", &e);
+                assert!(v.is_some(), "{name} round {r}");
+                if r == 0 {
+                    verdicts.push(format!("{name}: {v:?}"));
+                }
+            }
+            if r == 0 {
+                first = super::pool_limit_counts().expect("ran scripts");
+            }
+        }
+        let (_, bytes, ..) = super::pool_usage().expect("ran scripts");
+        let last = super::pool_limit_counts().expect("ran scripts");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        Steady { first, last, bytes, verdicts }
+    })
+    .join()
+    .expect("the scripts ran")
+}
+
+/// Memory plan C, phase 0b. command.js (231 KB) was compiled into each of the six checks that build on or are it, and git.js (157 KB)
+/// into git-audit and the git check, in every worker interpreter; with the working set over `mem.quickjs_soft_bytes` the least recently
+/// called checks were unloaded and rebuilt from source again and again (live: a soft trip every 3.5 s). Now each is compiled once per
+/// interpreter (`script.shared_includes`). The limit is set between the two working sets: with the includes shared, a steady load
+/// never trips it and never reloads a check (the counters stay flat after the first round); without them (`shared_includes` empty,
+/// the old behaviour) the same load trips it and reloads checks in every round. Every check answers the same either way.
+#[test]
+fn shared_includes_are_compiled_once_and_a_steady_load_never_reloads() {
+    let rounds = 25;
+    let huge = 1u64 << 30;
+    let old = steady_load("shared-old-size", huge, &[], 2);
+    let new = steady_load("shared-new-size", huge, &["command", "git"], 2);
+    assert!(new.bytes < old.bytes, "sharing must shrink the working set: {} bytes shared, {} not", new.bytes, old.bytes);
+    assert_eq!(old.verdicts, new.verdicts, "a check answers differently when its include is shared");
+    assert_eq!(new.last.module_loads, 2, "command.js and git.js are each compiled once: {:?}", new.last);
+    assert_eq!(old.last.module_loads, 0, "{:?}", old.last);
+    let soft = ((old.bytes + new.bytes) / 2) as u64;
+
+    let on = steady_load("shared-on", soft, &["command", "git"], rounds);
+    assert_eq!(on.last.reloads, 0, "a steady load reloaded checks: {:?}", on.last);
+    assert_eq!(on.last, on.first, "the limit counters moved after the first round: first {:?}, last {:?}", on.first, on.last);
+    assert_eq!((on.last.soft_trips, on.last.hard_trips, on.last.unloads), (0, 0, 0), "{:?}", on.last);
+
+    // the same limit and load without sharing (what the code did before): it thrashes
+    let off = steady_load("shared-off", soft, &[], rounds);
+    assert!(off.last.soft_trips > 0 && off.last.reloads as usize >= rounds, "the old behaviour should reload every round: {:?}", off.last);
+    assert!(off.last.reloads > off.first.reloads, "reloads kept growing: first {:?}, last {:?}", off.first, off.last);
+}
+
+// ---- FW-1 (command-family misfires): the counters of the five guard changes ----
+
+mod fw1_counters {
+    use super::*;
+
+    fn env_of(h: &str) -> RequestEnv {
+        RequestEnv::from_pairs([
+            ("HOME", h),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("DEVSWARM_REPO_ID", "r1"),
+            ("DEVSWARM_SOURCE_BRANCH", "feat"),
+            ("ANTIHALL_INGEST_DRY_RUN", "1"),
+        ])
+    }
+
+    fn drained() -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        m
+    }
+
+    fn bash(cwd: &str, command: &str, sub: bool) -> Value {
+        let mut p = json!({"tool_name": "Bash", "session_id": "fw1", "cwd": cwd, "tool_input": {"command": command}});
+        if sub {
+            p["agent_id"] = json!("a1");
+            p["agent_type"] = json!("general-purpose");
+        }
+        p
+    }
+
+    #[test]
+    fn each_changed_guard_counts_what_it_decided() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("fw1-cnt");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(format!("{proj}/heavy.sh"), "#!/bin/sh\ncargo build --release\n").unwrap();
+        std::fs::write(format!("{proj}/light.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        let e = env_of(&h);
+        drained();
+        // #621: a lock-bound suite is blocked and counted with shared_lock true; a lock-free one is allowed and counted
+        run_forced("lane-test-guard", &bash(&proj, "cargo test", true), &e);
+        run_forced("lane-test-guard", &bash(&proj, "node --test", true), &e);
+        // #623: a depth-bounded home search is allowed and counted
+        run_forced("wide-search-guard", &bash(&proj, "find ~ -maxdepth 3 -name x", false), &e);
+        // #547: a wrapper whose body is heavy, then one whose body is light
+        run_forced("command", &bash(&proj, "bash heavy.sh", false), &e);
+        run_forced("command", &bash(&proj, "bash light.sh", false), &e);
+        // #620 and #336: an install brief on a flagship model, and a review seat that would have been hinted
+        let spawn = |model: &str, d: &str, pr: &str| json!({"tool_name": "Agent", "session_id": "fw1", "cwd": "/tmp", "tool_input": {"model": model, "description": d, "prompt": pr}});
+        run_forced("model-routing", &spawn("opus", "", "install the USB driver"), &e);
+        run_forced("model-routing", &spawn("sonnet", "code reviewer for the diff", "investigate the change and locate regressions"), &e);
+        let m = drained();
+        assert_eq!(m.counter("lane_test_block", &[("label", "cargo test"), ("shared_lock", "true")]), 1);
+        assert_eq!(m.counter("lane_test_lockfree_allowed", &[("label", "node --test")]), 1);
+        assert_eq!(m.counter("wide_search_depth_bounded", &[("cmd", "find")]), 1);
+        assert_eq!(m.counter("command_wrapper_resolved", &[("verdict", "differs")]), 1);
+        assert_eq!(m.counter("command_wrapper_resolved", &[("verdict", "same")]), 1);
+        assert_eq!(m.counter("model_routing_never_routine", &[]), 1);
+        assert_eq!(m.counter("model_routing_explore_hint_skipped", &[("reason", "reviewer")]), 1);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+}

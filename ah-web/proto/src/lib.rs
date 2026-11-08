@@ -368,6 +368,9 @@ pub struct Boot {
     pub kind_order: Vec<String>,
     /// `auto`, `full` or `lite`: the tier the page starts in.
     pub mode: String,
+    /// `system`, `light` or `dark`: the colour scheme the page starts in until the person picks one.
+    #[serde(default)]
+    pub theme: String,
     /// Header pill colour limits.
     pub limits: PulseLimits,
     /// The action menu, in order.

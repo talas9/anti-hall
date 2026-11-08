@@ -84,6 +84,13 @@ struct Pool {
     ctx: Option<(Fingerprint, Context)>,
     /// Each loaded check's own files (includes, then its script), as they were when its entry was registered.
     checks: HashMap<String, Fingerprint>,
+    /// The shared includes (`script.shared_includes`) compiled once into this runtime, by script name, with the file version each
+    /// was built from. Every check built on one evaluates its own files inside that module's scope instead of carrying a copy.
+    modules: HashMap<String, (PathBuf, u64, u128)>,
+    /// Entries the memory limit unloaded, so a rebuild of one of them is counted as a reload (`script.toml` telemetry).
+    evicted: std::collections::HashSet<String>,
+    /// What the memory limit did on this runtime so far (the process-wide counters feed telemetry; this one is for tests and `pool_usage`).
+    stats: LimitCounts,
     /// When each loaded entry was last called (a per-pool counter), for least-recently-used unloading.
     used: HashMap<String, u64>,
     tick: u64,
@@ -102,9 +109,44 @@ struct Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         self.checks.clear();
+        self.modules.clear();
         self.used.clear();
         self.ctx = None;
         self.rt.run_gc();
+    }
+}
+
+/// Counters of the interpreter's memory limit at work, drained by the daemon into telemetry ([`take_limit_counts`]).
+static LIMIT_SOFT_TRIPS: AtomicU64 = AtomicU64::new(0);
+static LIMIT_HARD_TRIPS: AtomicU64 = AtomicU64::new(0);
+static UNLOADS: AtomicU64 = AtomicU64::new(0);
+static RELOADS: AtomicU64 = AtomicU64::new(0);
+static MODULE_LOADS: AtomicU64 = AtomicU64::new(0);
+
+/// What the interpreter's memory limit did since the last call: soft-limit trips, hard-limit trips (recycles), checks unloaded,
+/// checks rebuilt after an unload (the cost of a limit set under the working set), shared includes compiled.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LimitCounts {
+    /// Soft-limit trips: the coldest checks were unloaded down to the low-water mark.
+    pub soft_trips: u64,
+    /// Hard-limit trips: the interpreter was recycled.
+    pub hard_trips: u64,
+    /// Checks unloaded by the limit.
+    pub unloads: u64,
+    /// Checks rebuilt from source after an unload.
+    pub reloads: u64,
+    /// Shared includes compiled.
+    pub module_loads: u64,
+}
+
+/// Drain the limit counters (the daemon adds them to its metrics after each request).
+pub fn take_limit_counts() -> LimitCounts {
+    LimitCounts {
+        soft_trips: LIMIT_SOFT_TRIPS.swap(0, Ordering::Relaxed),
+        hard_trips: LIMIT_HARD_TRIPS.swap(0, Ordering::Relaxed),
+        unloads: UNLOADS.swap(0, Ordering::Relaxed),
+        reloads: RELOADS.swap(0, Ordering::Relaxed),
+        module_loads: MODULE_LOADS.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -275,6 +317,9 @@ impl Pool {
         Some(Pool {
             ctx: None,
             checks: HashMap::new(),
+            modules: HashMap::new(),
+            evicted: std::collections::HashSet::new(),
+            stats: LimitCounts::default(),
             used: HashMap::new(),
             tick: 0,
             inst: budget().instance(),
@@ -325,6 +370,11 @@ pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
             (p.checks.len(), u.malloc_size, u.malloc_count, u.js_func_count, u.js_func_code_size)
         })
     })
+}
+
+/// What the memory limit did on this thread's interpreter so far (cumulative; `None` before its first scripted call).
+pub fn pool_limit_counts() -> Option<LimitCounts> {
+    POOL.with(|cell| cell.borrow().as_ref().map(|p| p.stats))
 }
 
 /// The shared regex cache against what its programs measured (`status --memory`): patterns and bytes held under the cache's weights,
@@ -446,21 +496,73 @@ fn load_libs(pool: &Pool, libs: &Fingerprint) -> Result<Context, String> {
 
 /// Evaluate check `name`'s own files `own` in the shared context, inside `script.check_scope`, and register the entry it
 /// defines. `Err` carries the reason (an unreadable file, an exception, no entry function).
-fn load_check(ctx: &Context, name: &str, own: &Fingerprint, entry: &str) -> Result<(), String> {
+fn load_check(ctx: &Context, modules: &mut HashMap<String, (PathBuf, u64, u128)>, name: &str, own: &Fingerprint, entry: &str) -> Result<bool, String> {
+    // a check built on a shared include (`script.shared_includes`, the first of its own files) evaluates the rest inside that
+    // include's module scope, compiled once per runtime, instead of carrying its own copy of the include
+    let shared = own.first().and_then(|(path, ..)| {
+        let stem = path.file_stem()?.to_str()?.to_string();
+        defaults::raw("script.shared_includes").strings().contains(&stem.as_str()).then_some(stem)
+    });
+    let rest: &[(PathBuf, u64, u128)] = if shared.is_some() { &own[1..] } else { &own[..] };
     let mut src = String::new();
-    for (path, _, _) in own {
+    for (path, _, _) in rest {
         src.push_str(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?);
         src.push('\n');
     }
-    let body = defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)]);
-    ctx.with(|c| -> Result<(), String> {
-        let f: JsValue = c.eval(body).catch(&c).map_err(|e| format!("{name}: {e}"))?;
+    let body = if shared.is_some() && rest.is_empty() {
+        // the check IS the shared script: its entry is the module's own
+        defaults::render("script.module_entry", &[("entry", &entry)])
+    } else {
+        defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)])
+    };
+    ctx.with(|c| -> Result<bool, String> {
+        let mut compiled = false;
+        let f: JsValue = match &shared {
+            None => c.eval(body).catch(&c).map_err(|e| format!("{name}: {e}"))?,
+            Some(module) => {
+                let (eval, fresh) = ensure_module(&c, modules, module, &own[0])?;
+                compiled = fresh;
+                eval.call((body,)).catch(&c).map_err(|e| format!("{name}: {e}"))?
+            }
+        };
         if !f.is_function() {
             return Err(defaults::render("script.msg_no_entry", &[("check", &name), ("entry", &entry)]));
         }
         let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).map_err(|e| e.to_string())?;
-        reg.set(name, f).map_err(|e| e.to_string())
+        reg.set(name, f).map_err(|e| e.to_string())?;
+        Ok(compiled)
     })
+}
+
+/// The evaluator of shared include `module` (`script.module_scope`): the include compiled once into this runtime, kept under
+/// `script.modules_global`, and rebuilt only when its file changed. A check's body evaluated through it sees every declaration of the
+/// include, with live bindings, exactly as if the include were spliced in front of it.
+fn ensure_module<'js>(
+    c: &rquickjs::Ctx<'js>,
+    modules: &mut HashMap<String, (PathBuf, u64, u128)>,
+    module: &str,
+    file: &(PathBuf, u64, u128),
+) -> Result<(Function<'js>, bool), String> {
+    let reg: rquickjs::Object = match c.globals().get(defaults::text("script.modules_global")) {
+        Ok(o) => o,
+        Err(_) => {
+            let o = rquickjs::Object::new(c.clone()).map_err(|e| e.to_string())?;
+            c.globals().set(defaults::text("script.modules_global"), o.clone()).map_err(|e| e.to_string())?;
+            o
+        }
+    };
+    if modules.get(module) == Some(file)
+        && let Ok(f) = reg.get::<_, Function>(module)
+    {
+        return Ok((f, false));
+    }
+    let text = std::fs::read_to_string(&file.0).map_err(|e| format!("{}: {e}", file.0.display()))?;
+    let scope = defaults::render("script.module_scope", &[("source", &text)]);
+    let f: JsValue = c.eval(scope).catch(c).map_err(|e| format!("{module}: {e}"))?;
+    let f = f.into_function().ok_or_else(|| defaults::render("script.msg_no_evaluator", &[("module", &module)]))?;
+    reg.set(module, f.clone()).map_err(|e| e.to_string())?;
+    modules.insert(module.to_string(), file.clone());
+    Ok((f, true))
 }
 
 /// Convert what a script returned into a verdict. `Err` for a value of the wrong shape.
@@ -685,6 +787,8 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
         pool.checks.remove(key);
         if libs_stale {
             pool.checks.clear();
+            pool.modules.clear();
+            pool.evicted.clear();
             pool.used.clear();
             pool.used.insert(key.to_string(), pool.tick);
             pool.ctx = None;
@@ -695,7 +799,14 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
             pool.ctx = Some((libs.clone(), load_libs(pool, libs)?));
         }
         let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
-        load_check(&ctx, key, own, entry)?;
+        if load_check(&ctx, &mut pool.modules, key, own, entry)? {
+            MODULE_LOADS.fetch_add(1, Ordering::Relaxed);
+            pool.stats.module_loads += 1;
+        }
+        if pool.evicted.remove(key) {
+            RELOADS.fetch_add(1, Ordering::Relaxed);
+            pool.stats.reloads += 1;
+        }
         pool.checks.insert(key.to_string(), own.clone());
         pool.rt.run_gc();
         let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
@@ -714,12 +825,18 @@ fn fit(pool: &mut Pool, ctx: &Context, keep: &str, mut size: usize) -> Option<us
     match pool.inst.report(size) {
         crate::mem::Action::None => {}
         crate::mem::Action::Shrink(target) => {
+            LIMIT_SOFT_TRIPS.fetch_add(1, Ordering::Relaxed);
+            pool.stats.soft_trips += 1;
             size = unload_cold(pool, ctx, keep, target);
             pool.inst.report(size);
         }
         crate::mem::Action::Recycle => {
             size = unload_cold(pool, ctx, keep, 0);
             if matches!(pool.inst.report(size), crate::mem::Action::Recycle) {
+                LIMIT_HARD_TRIPS.fetch_add(1, Ordering::Relaxed);
+                pool.stats.hard_trips += 1;
+                pool.evicted.extend(pool.checks.keys().cloned());
+                pool.modules.clear();
                 pool.checks.clear();
                 pool.used.clear();
                 pool.ctx = None;
@@ -793,7 +910,10 @@ fn unload_cold(pool: &mut Pool, ctx: &Context, keep: &str, target: usize) -> usi
         for n in &names {
             pool.checks.remove(n);
             pool.used.remove(n);
+            pool.evicted.insert(n.clone());
         }
+        UNLOADS.fetch_add(names.len() as u64, Ordering::Relaxed);
+        pool.stats.unloads += names.len() as u64;
         pool.rt.run_gc();
         size = pool.rt.memory_usage().malloc_size.max(0) as usize;
     }

@@ -289,7 +289,55 @@ pub fn heap() -> Heap {
 /// Start a new peak window: the peak becomes the current live size (so a status call can report the peak since the
 /// previous one).
 pub fn reset_peak() {
+    note_burst(PEAK.load(Relaxed));
     PEAK.store(LIVE.load(Relaxed), Relaxed);
+}
+
+/// The burst detector's window: when it started (ms since the epoch), the live heap then, the highest heap seen since.
+struct BurstWindow {
+    start_ms: u64,
+    base_live: u64,
+    max_peak: u64,
+}
+
+static BURST: std::sync::Mutex<BurstWindow> = std::sync::Mutex::new(BurstWindow { start_ms: 0, base_live: 0, max_peak: 0 });
+static BURSTS: AtomicU64 = AtomicU64::new(0);
+
+/// Bursts counted so far: times the live heap rose by more than `mem_gate.burst_bytes` within `mem_gate.burst_window_ms`.
+pub fn bursts() -> u64 {
+    BURSTS.load(Relaxed)
+}
+
+/// [`note_burst`] for the request path: looks at the heap at most once per `mem_gate.burst_sample_ms`, so a check pays one
+/// atomic compare in between instead of the window lock. The allocator's peak spans the gap, so a spike is not missed while looks come within `mem_gate.burst_window_ms` of each
+/// other. Across a longer gap the window restarts at the heap then, so a spike that has already fallen back is not counted
+/// (the window has no base to measure its rise from); the memory gate looks on every status poll, which is far shorter.
+pub fn note_burst_sampled() {
+    static LAST_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let last = LAST_MS.load(Relaxed);
+    if now_ms.saturating_sub(last) < crate::defaults::num("mem_gate.burst_sample_ms") || LAST_MS.compare_exchange(last, now_ms, Relaxed, Relaxed).is_err() {
+        return;
+    }
+    note_burst(PEAK.load(Relaxed));
+}
+
+/// Feed the burst detector the heap now and `peak` (the highest heap since the last look: [`reset_peak`] passes the peak it is
+/// about to forget, so a status poll cannot hide a spike). Called as each request's checks finish.
+pub fn note_burst(peak: u64) {
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let live = LIVE.load(Relaxed);
+    let (window_ms, burst_bytes) = (crate::defaults::num("mem_gate.burst_window_ms"), crate::defaults::num("mem_gate.burst_bytes"));
+    let mut w = BURST.lock().unwrap_or_else(|e| e.into_inner());
+    if now_ms.saturating_sub(w.start_ms) > window_ms {
+        *w = BurstWindow { start_ms: now_ms, base_live: live, max_peak: live.max(peak) };
+        return;
+    }
+    w.max_peak = w.max_peak.max(peak).max(live);
+    if w.max_peak.saturating_sub(w.base_live) > burst_bytes {
+        BURSTS.fetch_add(1, Relaxed);
+        *w = BurstWindow { start_ms: now_ms, base_live: live, max_peak: live };
+    }
 }
 
 #[cfg(test)]

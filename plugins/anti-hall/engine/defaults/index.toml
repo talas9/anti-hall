@@ -72,6 +72,7 @@ files = [
     "sibling_sweep.toml",
     "limits.toml",
     "script.toml",
+    "script_shared.toml",
     "mcp_reaper.toml",
     "devswarm_rt.toml",
     "host_proc.toml",

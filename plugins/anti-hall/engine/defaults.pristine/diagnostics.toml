@@ -252,8 +252,8 @@ min = 1
 max = 100
 
 [diagnostics.budget_mem_mb]
-doc = "SOFT memory limit of the daemon (125 MB, owner decision 2026-10-23; hard is mem.global_hard_bytes). Memory budget of the daemon in MB, measured with the figure daemon.mem_metric selects. A breach is reported while the daemon is over it; 0 turns the memory budget off."
-value = 125
+doc = "SOFT memory limit of the daemon (150 MB, the same figure as mem.global_soft_bytes; hard is mem.global_hard_bytes). Memory budget of the daemon in MB, measured with the figure daemon.mem_metric selects. A breach is reported while the daemon is over it; 0 turns the memory budget off."
+value = 150
 min = 0
 unit = "MB"
 
@@ -814,3 +814,71 @@ value = "{tool} failed: {err}"
 [diagnostics.msg_symbolize_unreadable]
 doc = "Printed when the symbol file that matches the dump holds no readable DWARF image; {file} is its path."
 value = "cannot read the symbol file {file}"
+
+# ---- the memory gate (tests/mem_gate.rs, scripts/mem-gate.sh): pass criteria of the D acceptance gate --------------------
+
+[mem_gate.run_secs]
+doc = "How long each phase of the memory gate (the big transcripts, then the 5 MB control) replays hook payloads."
+value = 600
+min = 10
+unit = "s"
+
+[mem_gate.sessions]
+doc = "How many sessions (clones of the largest transcript) the memory gate drives at once, one stream of UserPromptSubmit and Stop payloads each."
+value = 4
+min = 1
+unit = "count"
+
+[mem_gate.size_delta_mb]
+doc = "Gate bar: the peak heap with the big transcripts minus the peak heap with the 5 MB control must stay under this. The difference isolates the term that grows with the transcript size from the non-transcript peaks."
+value = 8
+min = 0
+unit = "MB"
+
+[mem_gate.peak_footprint_mb]
+doc = "Gate bar: the peak physical footprint of the scratch daemon during the gate (under the 200 MB rss_cap)."
+value = 150
+min = 1
+unit = "MB"
+
+[mem_gate.parse_ratio_max_permille]
+doc = "Gate bar: bytes the transcript store parsed divided by bytes appended to the transcripts, in permille (1000 = every byte parsed once)."
+value = 1050
+min = 1000
+unit = "permille"
+
+[mem_gate.burst_bytes]
+doc = "A heap burst (heap_burst_total) is a rise of the live heap by more than this within mem_gate.burst_window_ms (counted in heap_burst_total)."
+value = 20971520
+min = 4096
+unit = "bytes"
+
+[mem_gate.burst_sample_ms]
+doc = "The burst detector looks at the heap at most this often while checks run (a check finishing sooner after the last look skips it); the allocator keeps the peak between looks, so a spike is still seen."
+value = 50
+min = 1
+unit = "ms"
+
+[mem_gate.burst_window_ms]
+doc = "Window within which a rise of the live heap by mem_gate.burst_bytes counts as a burst."
+value = 1000
+min = 10
+unit = "ms"
+
+[mem_gate.ci_enforce]
+doc = "1 makes the memory gate on a generated transcript (tests/mem_gate.rs, part of the regular test job) fail the build when a bar is missed; 0 only reports the numbers. Flip it to 1 in the change that moves the last transcript reader onto the store."
+value = 0
+min = 0
+max = 1
+
+[mem_gate.synth_mb]
+doc = "Size of the generated transcript the CI memory gate builds at test time (nothing is committed)."
+value = 300
+min = 10
+unit = "MB"
+
+[mem_gate.ci_run_secs]
+doc = "How long each phase of the CI memory gate replays hook payloads."
+value = 40
+min = 5
+unit = "s"

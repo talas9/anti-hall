@@ -796,3 +796,75 @@ value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
 [metric.memory_leak_notices]
 doc = "Memory-registry leak notices, by largest holder."
 value = { kind = "counter", unit = "notices", labels = ["top"] }
+
+[metric.transcript_store_cold_builds]
+doc = "Session stores built from the transcript file (a first touch with no usable snapshot, or a rebuild)."
+value = { kind = "counter", unit = "builds", labels = [] }
+
+[metric.transcript_store_cold_bytes]
+doc = "Transcript bytes the cold builds read."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.transcript_store_refresh_bytes]
+doc = "Transcript bytes the incremental refreshes parsed; divided by transcript_store_appended_bytes it is 1.0 when every byte is parsed once."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.transcript_store_appended_bytes]
+doc = "Bytes the transcripts grew by between incremental refreshes."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.transcript_store_partial]
+doc = "Transcript questions answered unsure because the window starts before what the store holds or covers a skipped line."
+value = { kind = "counter", unit = "questions", labels = [] }
+
+[metric.transcript_store_waits]
+doc = "Requests that found a refresh of their session already in flight and waited for it."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_store_wait_timeouts]
+doc = "Waits that gave up after transcript.wait_ms and answered unsure."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_store_oversize_lines]
+doc = "Transcript lines skipped by the store because they were longer than transcript.max_line_bytes."
+value = { kind = "counter", unit = "lines", labels = [] }
+
+[metric.transcript_store_evictions]
+doc = "Session stores dropped by a budget, the session cap or the idle TTL."
+value = { kind = "counter", unit = "sessions", labels = [] }
+
+[metric.transcript_store_rebuilds]
+doc = "Session stores rebuilt because the transcript was truncated, rotated or rewritten."
+value = { kind = "counter", unit = "builds", labels = [] }
+
+[metric.transcript_store_snapshot_loads]
+doc = "Restart snapshots loaded on a first touch (the store then parsed only the bytes appended since)."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_snapshot_misses]
+doc = "Restart snapshots found but not usable (the file changed, the defaults changed, or the format differs)."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_snapshot_writes]
+doc = "Restart snapshots written."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_snapshot_skipped]
+doc = "Restart snapshots not written because they were over transcript.snapshot_max_bytes."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_bytes]
+doc = "Bytes the session stores hold now."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.transcript_store_sessions]
+doc = "Session stores held now."
+value = { kind = "gauge", unit = "sessions", labels = [] }
+
+[metric.transcript_read_buf_max_bytes]
+doc = "The most memory any transcript reader held at once (its fixed buffer plus the longest line kept); the memory gate bounds it by transcript.read_buf_bytes plus transcript.max_line_bytes."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.heap_burst_total]
+doc = "Times the live heap rose by more than mem_gate.burst_bytes within mem_gate.burst_window_ms (a transient allocation spike, whatever caused it)."
+value = { kind = "counter", unit = "bursts", labels = [] }

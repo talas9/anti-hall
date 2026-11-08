@@ -41,13 +41,14 @@ function ltCargo(words) {
   return suite || !narrow ? 'cargo ' + sub : null;
 }
 
-// null, or the label of the suite-scale runner (a lane_test.rules row) the command `words` is.
+// null, or {label, lock} for the suite-scale runner (a lane_test.rules row) the command `words` is: `lock` says whether it queues behind
+// the shared build lock (a row sets shared_lock = false when it does not; absent = true).
 function ltRule(words) {
-  var joined = words.join(' '), rules = ah.cfg('lane_test.rules');
+  var joined = words.join(' '), rules = ah.cfg('lane_test.rules'), lockKey = ah.cfg('lane_test.shared_lock_key');
   for (var r = 0; r < rules.length; r++) {
     if (!ah.re.test(rules[r].re, 'r', joined)) continue;
     if (rules[r].unless_re && ah.re.test(rules[r].unless_re, 'r', joined)) continue;
-    return rules[r].label;
+    return { label: rules[r].label, lock: rules[r][lockKey] !== false };
   }
   return null;
 }
@@ -58,6 +59,8 @@ function ltRunner(words) {
   for (var r = 0; r < rows.length; r++) if (ah.re.test(rows[r].re, 'r', joined)) return rows[r].label;
   return null;
 }
+
+function ltMetric(name, labels) { try { ah.metric(name, labels); } catch (e) { /* counting never fails a hook */ } }
 
 // exit 2 with the reason on stdout as a decision and on stderr: Claude reads the decision, Codex honors exit 2 only with the reason on stderr
 function ltBlock(words, label, whatKey, whyKey, insteadKey, overrideKey) {
@@ -83,9 +86,16 @@ function decide(p, opts) {
     }
   }
   if (!ah.settings.bool('lane_test.sw') || ah.settings.bool('lane_test.sw_allow_suites') || policy === ah.cfg('lane_test.policy_suites') || !sub) return 'allow';
+  var lockBound = ah.settings.bool('lane_test.sw_lock_bound_only');
   for (c = 0; c < cmds.length; c++) {
-    var label = ltCargo(cmds[c].words) || ltRule(cmds[c].words);
-    if (label === null) continue;
+    var label = ltCargo(cmds[c].words), lock = true; // a cargo suite always queues behind the shared build lock
+    if (label === null) {
+      var rule = ltRule(cmds[c].words);
+      if (rule === null) continue;
+      label = rule.label; lock = rule.lock;
+    }
+    if (!lock && lockBound) { ltMetric('lane_test_lockfree_allowed', ['label', label]); continue; }
+    ltMetric('lane_test_block', ['label', label, 'shared_lock', ah.cfg(lock ? 'lane_test.label_shared_lock_yes' : 'lane_test.label_shared_lock_no')]);
     return ltBlock(cmds[c].words, label, 'lane_test.msg_what', 'lane_test.msg_why', 'lane_test.msg_instead', 'lane_test.msg_override');
   }
   return 'allow';

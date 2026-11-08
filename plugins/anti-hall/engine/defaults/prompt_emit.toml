@@ -212,6 +212,14 @@ value = { section = "guards", key = "idleAgentSweepCount", env = "ANTIHALL_IDLE_
 doc = "Where the idle minutes that fire the advisory for any one agent are read from (guards.idleAgentSweepMin, default 15)."
 value = { section = "guards", key = "idleAgentSweepMin", env = "ANTIHALL_IDLE_AGENT_SWEEP_MIN", default = 15, min = 1 }
 
+[metric.misfire_suppressed]
+doc = "Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason."
+value = { kind = "counter", unit = "suppressions", labels = ["guard", "reason"] }
+
+[idle_sweep.num_repeat_every]
+doc = "Where the repeat interval of the idle-agents advisory is read from (guards.injectionRepeatEvery, delivered turns, default 10): once the same advisory was delivered it is not re-sent until this many turns pass or the set of idle agents changes; 0 re-sends it every turn."
+value = { section = "guards", key = "injectionRepeatEvery", env = "ANTIHALL_INJECTION_REPEAT_EVERY", option = "guards_injection_repeat_every", default = 10, min = 0 }
+
 [idle_sweep.env_test_isolation]
 doc = "When this variable is 1, the injected clock below is honoured (tests and replays only, as in the Node hook)."
 value = "ANTIHALL_TEST_ISOLATION"

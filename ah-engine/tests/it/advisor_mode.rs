@@ -498,6 +498,67 @@ fn second_fix_attempt_for_one_issue_needs_a_consult() {
     assert_eq!(stats("fx1")["second_gated"], 1);
 }
 
+// GH #668: a submodule pin (gitlink) bump merge helper is integration work, not a second fix dispatch for the issue it lands
+#[test]
+fn a_pin_bump_merge_helper_is_not_a_second_fix_dispatch() {
+    let off = [("ANTIHALL_ADVISOR_THINKING", "0")];
+    let tp = transcript("fx2", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 again", &off).0, 2, "a real second fix attempt is held");
+    // every pin/gitlink bump helper phrasing is exempt (each in its own session)
+    let helpers = [
+        "Merge fix/404 and bump the submodule pin for #404",
+        "Advance the gitlink for #404 fix",
+        "Bump submodule pointer to fix/404",
+        "Update the submodule pin for #404",
+        "Bump the gitlink to the #404 fix commit",
+        "Update submodules to latest for #404",
+        "Advance gitlink of anti-hall for #404",
+        "bump submodule pointers in parent repo #404",
+        "Bump the submodule to the #404 fix commit",
+        "Pin bump for #404 fix",
+        "Update the anti-hall submodule pin for #404",
+        "Bump anti-hall gitlink to #404 fix",
+    ];
+    for (i, ok) in helpers.iter().enumerate() {
+        let sid = format!("fx2e{i}");
+        let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
+        assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+        assert_eq!(dispatch(&sid, &tp, ok, &off).0, 0, "{ok} is a bump helper, exempt");
+    }
+    // the exemption must not swallow a real second fix whose text merely mentions a pin, a gitlink, a watcher or a monitor
+    let fixes = [
+        "Fix #404 again and update the pin",
+        "Fix gitlink parser crash #404",
+        "Update the cert pin validation to fix #404 failing",
+        "Fix #404 again",
+        "Fix submodule pin parsing #404",
+        "Fix the submodule pointer resolution crash #404",
+        "Update the submodule pointer logic to fix #404",
+        "Fix the watcher crash #404",
+        "Fix #404: update gitlink handling",
+        "Retry fix #404 and bump the submodule pin",
+        "Update gitlinks to handle #404 bug fix",
+        "Bump the timeout to fix #404",
+        "Fix merge helper bug #404",
+        "Fix monitor leak #404",
+        "Update the submodule parser to fix #404",
+        "Update submodule offsets to fix #404",
+        "Update submodule format parser for the #404 bug",
+        "Update submodule index handling to fix #404",
+        "Update gitlink inference bug #404",
+        "Update submodule init order to fix #404",
+        "Fix information display bug in submodule bump #404",
+        "Update submodules inside the resolver bug #404",
+    ];
+    for (i, held) in fixes.iter().enumerate() {
+        let sid = format!("fx2h{i}");
+        let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
+        assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+        assert_eq!(dispatch(&sid, &tp, held, &off).0, 2, "{held} is a real second fix attempt, still held");
+    }
+}
+
 #[test]
 fn nudge_then_routine_work_counts_a_false_nag() {
     let tp = transcript("fn1", &[ADVISOR, OWNER, SONNET]);
