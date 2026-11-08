@@ -27,7 +27,10 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicBool, AtomicU64,
+    Ordering::{Relaxed, SeqCst},
+};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -117,6 +120,10 @@ pub struct Cfg {
     pub idle_ttl_ms: u64,
     /// Largest snapshot written.
     pub snapshot_max: usize,
+    /// Age after which a snapshot is removed.
+    pub snapshot_ttl_ms: u64,
+    /// Most snapshot files kept.
+    pub snapshot_max_files: usize,
 }
 
 impl Cfg {
@@ -145,6 +152,8 @@ impl Cfg {
             max_sessions: num("transcript.max_indexes") as usize,
             idle_ttl_ms: num("transcript.idle_ttl_ms"),
             snapshot_max: num("transcript.snapshot_max_bytes") as usize,
+            snapshot_ttl_ms: num("transcript.snapshot_ttl_ms"),
+            snapshot_max_files: num("transcript.snapshot_max_files") as usize,
         }
     }
 }
@@ -550,6 +559,27 @@ struct Slot {
     data: Mutex<Session>,
     bytes: AtomicU64,
     last_used_ms: AtomicU64,
+    /// Set (under the `busy` lock) when the slot leaves the map. A retired slot never starts another refresh and its
+    /// bytes are never counted again, so the map holds at most one slot per path and the total cannot leak.
+    retired: AtomicBool,
+}
+
+impl Slot {
+    /// Take the slot out of service when it is idle (nobody refreshes it). False when a request is in flight.
+    fn claim(&self) -> bool {
+        let busy = lock(&self.busy);
+        if *busy {
+            return false;
+        }
+        self.retired.store(true, SeqCst);
+        true
+    }
+
+    /// Take the slot out of service even when a request is in flight (the session ended); that request gives its bytes back.
+    fn force_retire(&self) {
+        let _busy = lock(&self.busy);
+        self.retired.store(true, SeqCst);
+    }
 }
 
 struct BusyGuard<'a>(&'a Slot);
@@ -748,16 +778,20 @@ impl Store {
     pub fn shrink(&self, target: usize) {
         let cfg = self.cfg();
         while self.bytes() > target {
-            let victim = {
-                let mut map = lock(&self.slots);
-                let oldest = map.iter().min_by_key(|(_, s)| s.last_used_ms.load(Relaxed)).map(|(k, _)| k.clone());
-                oldest.and_then(|k| map.remove(&k).map(|s| (k, s)))
-            };
-            match victim {
+            match self.take_victim(None) {
                 Some((k, s)) => self.retire(&k, &s, &cfg),
                 None => break,
             }
         }
+    }
+
+    /// Remove the least recently used session nobody is refreshing from the map (never `keep`). None when there is none.
+    fn take_victim(&self, keep: Option<&Path>) -> Option<(PathBuf, Arc<Slot>)> {
+        let mut map = lock(&self.slots);
+        let mut order: Vec<(&PathBuf, u64)> = map.iter().filter(|(k, _)| Some(k.as_path()) != keep).map(|(k, s)| (k, s.last_used_ms.load(Relaxed))).collect();
+        order.sort_by_key(|(_, t)| *t);
+        let key = order.into_iter().find(|(k, _)| map.get(*k).is_some_and(|s| s.claim())).map(|(k, _)| k.clone())?;
+        map.remove(&key).map(|s| (key, s))
     }
 
     /// Bytes all sessions hold now.
@@ -769,8 +803,8 @@ impl Store {
     pub fn with<R>(&self, path: &Path, now_ms: u64, f: impl FnOnce(&View) -> R) -> Result<R, Unsure> {
         let cfg = self.cfg();
         let deadline = Instant::now() + cfg.wait;
-        let slot = self.slot(path, now_ms, &cfg);
-        {
+        let slot = loop {
+            let slot = self.slot(path, now_ms, &cfg);
             let mut busy = lock(&slot.busy);
             if *busy {
                 self.stats.waits.fetch_add(1, Relaxed);
@@ -783,14 +817,24 @@ impl Store {
                 }
                 busy = slot.cv.wait_timeout(busy, left).unwrap_or_else(|e| e.into_inner()).0;
             }
+            if slot.retired.load(SeqCst) {
+                // left the map while this request waited: the map's slot (or a new one) is the one to use
+                continue;
+            }
             *busy = true;
-        }
+            drop(busy);
+            break slot;
+        };
         let _flight = BusyGuard(&slot);
         let mut sess = lock(&slot.data);
         let refreshed = self.refresh(&mut sess, path, &cfg, deadline);
         let now_bytes = sess.bytes() as u64;
         let before = slot.bytes.swap(now_bytes, Relaxed);
         self.adjust_total(before, now_bytes);
+        if slot.retired.load(SeqCst) {
+            // the session ended during this refresh: its bytes are no longer anyone's
+            self.adjust_total(slot.bytes.swap(0, Relaxed), 0);
+        }
         refreshed?;
         let out = f(&View { s: &sess, stats: &self.stats });
         drop(sess);
@@ -810,16 +854,21 @@ impl Store {
         let mut retired: Vec<(PathBuf, Arc<Slot>)> = Vec::new();
         let slot = {
             let mut map = lock(&self.slots);
-            let idle: Vec<PathBuf> =
-                map.iter().filter(|(_, s)| now_ms.saturating_sub(s.last_used_ms.load(Relaxed)) > cfg.idle_ttl_ms).map(|(k, _)| k.clone()).collect();
+            let idle: Vec<PathBuf> = map
+                .iter()
+                .filter(|(_, s)| now_ms.saturating_sub(s.last_used_ms.load(Relaxed)) > cfg.idle_ttl_ms)
+                .filter(|(_, s)| s.claim())
+                .map(|(k, _)| k.clone())
+                .collect();
             for k in idle {
                 if let Some(s) = map.remove(&k) {
                     retired.push((k, s));
                 }
             }
             if !map.contains_key(path) && map.len() >= cfg.max_sessions.max(1) {
-                let oldest = map.iter().min_by_key(|(_, s)| s.last_used_ms.load(Relaxed)).map(|(k, _)| k.clone());
-                if let Some(k) = oldest
+                let mut order: Vec<(PathBuf, u64)> = map.iter().map(|(k, s)| (k.clone(), s.last_used_ms.load(Relaxed))).collect();
+                order.sort_by_key(|(_, t)| *t);
+                if let Some(k) = order.into_iter().map(|(k, _)| k).find(|k| map.get(k).is_some_and(|s| s.claim()))
                     && let Some(s) = map.remove(&k)
                 {
                     retired.push((k, s));
@@ -833,6 +882,7 @@ impl Store {
                         data: Mutex::new(Session::default()),
                         bytes: AtomicU64::new(0),
                         last_used_ms: AtomicU64::new(now_ms),
+                        retired: AtomicBool::new(false),
                     })
                 })
                 .clone()
@@ -855,12 +905,7 @@ impl Store {
 
     fn enforce_global(&self, cfg: &Cfg, keep: &Path) {
         while self.total_bytes.load(Relaxed) as usize > cfg.global_budget {
-            let victim = {
-                let mut map = lock(&self.slots);
-                let oldest = map.iter().filter(|(k, _)| k.as_path() != keep).min_by_key(|(_, s)| s.last_used_ms.load(Relaxed)).map(|(k, _)| k.clone());
-                oldest.and_then(|k| map.remove(&k).map(|s| (k, s)))
-            };
-            match victim {
+            match self.take_victim(Some(keep)) {
                 Some((k, s)) => self.retire(&k, &s, cfg),
                 None => break,
             }
@@ -872,6 +917,7 @@ impl Store {
         let cfg = self.cfg();
         let gone = lock(&self.slots).remove(path);
         if let Some(s) = gone {
+            s.force_retire();
             self.adjust_total(s.bytes.swap(0, Relaxed), 0);
             let _ = cfg;
         }
@@ -889,6 +935,7 @@ impl Store {
                 n += 1;
             }
         }
+        persist::sweep(&self.snap_dir(), cfg.snapshot_ttl_ms, cfg.snapshot_max_files);
         n
     }
 
@@ -965,7 +1012,15 @@ impl Store {
 
     /// Adopt the snapshot of this transcript when every stamp still matches.
     fn try_snapshot(&self, s: &mut Session, path: &Path, file: &File, meta: &std::fs::Metadata, cfg: &Cfg) -> bool {
-        let Some(snap) = persist::read(&self.snap_dir(), path, cfg.snapshot_max) else { return false };
+        let snap = match persist::read(&self.snap_dir(), path, cfg.snapshot_max) {
+            Ok(snap) => snap,
+            Err(persist::Miss::Absent) => return false,
+            Err(persist::Miss::Unusable) => {
+                // there is a snapshot and it is corrupt, over the cap or of another format or configuration
+                self.stats.snapshot_misses.fetch_add(1, Relaxed);
+                return false;
+            }
+        };
         let fits = |snap: &persist::Snap| snap.id == (meta.dev(), meta.ino()) && snap.offset <= meta.len() && meta.len() - snap.offset <= cfg.horizon;
         if !fits(&snap) {
             self.stats.snapshot_misses.fetch_add(1, Relaxed);
@@ -1013,7 +1068,7 @@ impl Store {
         s.offset = from;
         s.id = Some((meta.dev(), meta.ino()));
         s.built = true;
-        let read = self.fold(s, file, cfg, from, size, true)?;
+        let read = self.fold(s, file, cfg, from, size)?;
         self.stats.cold_bytes.fetch_add(read, Relaxed);
         s.seen_size = size;
         finish(s, file, cfg).map_err(io)?;
@@ -1025,7 +1080,7 @@ impl Store {
         let size = meta.len();
         let grew = size.saturating_sub(s.seen_size);
         let from = s.offset;
-        let read = self.fold(s, file, cfg, from, size, false)?;
+        let read = self.fold(s, file, cfg, from, size)?;
         self.stats.refresh_bytes.fetch_add(read, Relaxed);
         self.stats.appended_bytes.fetch_add(grew, Relaxed);
         s.seen_size = size;
@@ -1036,7 +1091,7 @@ impl Store {
 
     /// Read `[from, size)` line by line and fold the complete lines into the facts; the unterminated last line becomes the
     /// pending overlay. Returns the bytes consumed.
-    fn fold(&self, s: &mut Session, file: &File, cfg: &Cfg, from: u64, size: u64, building: bool) -> Result<u64, Unsure> {
+    fn fold(&self, s: &mut Session, file: &File, cfg: &Cfg, from: u64, size: u64) -> Result<u64, Unsure> {
         let io = |e: std::io::Error| Unsure::Io(e.kind());
         let mut r = LineReader::new(file, cfg.read, from, size);
         s.pending.clear();
@@ -1058,7 +1113,7 @@ impl Store {
             }
             let text = String::from_utf8_lossy(r.bytes());
             s.ingest(cfg, line.off, &text, false);
-            if building && s.bytes() > cfg.session_budget {
+            if s.bytes() > cfg.session_budget {
                 s.trim(cfg, size);
             }
         }
@@ -1113,14 +1168,19 @@ pub fn global() -> &'static Store {
 struct MemOwner;
 
 impl crate::mem::Owner for MemOwner {
+    // A memory poll never creates the store: until a check asks it a question there is nothing to count or shrink.
     fn bytes(&self) -> usize {
-        global().bytes()
+        global_if_started().map_or(0, Store::bytes)
     }
     fn shrink(&self, target: usize) {
-        global().shrink(target);
+        if let Some(st) = global_if_started() {
+            st.shrink(target);
+        }
     }
     fn recycle(&self) {
-        global().shrink(0);
+        if let Some(st) = global_if_started() {
+            st.shrink(0);
+        }
     }
 }
 

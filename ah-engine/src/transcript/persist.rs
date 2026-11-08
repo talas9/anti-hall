@@ -113,13 +113,46 @@ pub(super) fn write(dir: &Path, path: &Path, s: &Session, max: usize) -> Wrote {
     }
 }
 
+/// Why [`read`] gave no snapshot.
+pub(super) enum Miss {
+    /// There is no snapshot file for the transcript (a first touch).
+    Absent,
+    /// There is one and it cannot be used: unreadable, corrupt, over the cap, another version, configuration or path.
+    Unusable,
+}
+
 /// The snapshot of `path`, when one exists, is not over the cap, and was written by this format version under this defaults
 /// generation for this very path.
-pub(super) fn read(dir: &Path, path: &Path, max: usize) -> Option<Snap> {
+pub(super) fn read(dir: &Path, path: &Path, max: usize) -> Result<Snap, Miss> {
     let file = file_for(dir, path);
-    if std::fs::metadata(&file).ok()?.len() as usize > max {
-        return None;
+    let meta = std::fs::metadata(&file).map_err(|_| Miss::Absent)?;
+    if meta.len() as usize > max {
+        return Err(Miss::Unusable);
     }
-    let snap: Snap = serde_json::from_slice(&std::fs::read(&file).ok()?).ok()?;
-    (snap.v == defaults::num("transcript.snapshot_version") && snap.generation == config_stamp() && snap.path == path.display().to_string()).then_some(snap)
+    let bytes = std::fs::read(&file).map_err(|_| Miss::Unusable)?;
+    let snap: Snap = serde_json::from_slice(&bytes).map_err(|_| Miss::Unusable)?;
+    if snap.v == defaults::num("transcript.snapshot_version") && snap.generation == config_stamp() && snap.path == path.display().to_string() {
+        Ok(snap)
+    } else {
+        Err(Miss::Unusable)
+    }
+}
+
+/// Remove the snapshots older than `ttl_ms` and, beyond `max_files`, the oldest ones. Only files with the snapshot extension are
+/// touched; a snapshot is a cache of a transcript, so a removed one costs one cold build. Returns how many were removed.
+pub(super) fn sweep(dir: &Path, ttl_ms: u64, max_files: usize) -> usize {
+    let ext = defaults::text("transcript.snapshot_ext");
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let now = std::time::SystemTime::now();
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> =
+        rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(ext)).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
+    files.sort_by_key(|(t, _)| std::cmp::Reverse(*t)); // newest first
+    let mut removed = 0;
+    for (i, (t, p)) in files.iter().enumerate() {
+        let aged = now.duration_since(*t).is_ok_and(|age| age.as_millis() as u64 > ttl_ms);
+        if (aged || i >= max_files) && std::fs::remove_file(p).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }

@@ -7,6 +7,7 @@ use crate::transcript_support::*;
 use ah_engine::transcript::store::{Cfg, Store, Unsure};
 use ah_engine::transcript::{Cut, FactKind};
 use serde_json::json;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -224,6 +225,78 @@ fn over_the_session_budget_the_oldest_facts_go_and_covered_from_rises() {
     })
     .unwrap();
     assert!(st.stats().partial >= 1);
+}
+
+#[test]
+fn a_large_append_stays_within_the_session_budget() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &prompt_line(0, 100));
+    let mut c = cfg();
+    c.session_budget = 16 * 1024;
+    let st = store(c);
+    st.with(&f, 0, |_| ()).unwrap();
+    // one refresh now has far more new facts than the budget holds (a long gap, or a snapshot load)
+    let more: String = (1..=200).map(|i| prompt_line(i, 500)).collect();
+    std::fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(more.as_bytes()).unwrap();
+    st.with(&f, 1, |v| {
+        assert!(v.bytes() <= 16 * 1024, "the session holds {} over its budget after one big append", v.bytes());
+        assert!(v.covered_from() > 0);
+    })
+    .unwrap();
+    assert!(st.stats().bytes <= 16 * 1024);
+}
+
+#[test]
+fn eviction_during_a_waiting_or_refreshing_request_neither_leaks_bytes_nor_splits_the_flight() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..30).map(|j| prompt_line(j, 400)).collect::<String>());
+    let mut c = cfg();
+    c.wait = Duration::from_secs(5);
+    let st = Arc::new(store(c));
+    let (s2, f2) = (st.clone(), f.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        s2.with(&f2, 0, |_| {
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        })
+        .unwrap();
+    });
+    rx.recv().unwrap();
+    let (s3, f3) = (st.clone(), f.clone());
+    let waiter = std::thread::spawn(move || s3.with(&f3, 1, |_| ()).unwrap());
+    std::thread::sleep(Duration::from_millis(80));
+    st.shrink(0); // the memory registry's recycle, with one request in flight and one waiting
+    holder.join().unwrap();
+    waiter.join().unwrap();
+    assert_eq!(st.stats().cold_builds, 1, "one flight per path: the eviction never opened a second session");
+    st.shrink(0);
+    let s = st.stats();
+    assert_eq!((s.sessions, s.bytes), (0, 0), "the byte count must follow the map: {s:?}");
+}
+
+#[test]
+fn ending_a_session_during_its_refresh_releases_its_bytes() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..30).map(|j| prompt_line(j, 400)).collect::<String>());
+    let st = Arc::new(store(cfg()));
+    let (s2, f2) = (st.clone(), f.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        s2.with(&f2, 0, |_| {
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        })
+        .unwrap();
+    });
+    rx.recv().unwrap();
+    st.drop_session(&f);
+    holder.join().unwrap();
+    let s = st.stats();
+    assert_eq!((s.sessions, s.bytes), (0, 0), "{s:?}");
 }
 
 #[test]
@@ -458,4 +531,43 @@ fn a_missing_or_empty_transcript_is_unsure_not_an_error_of_the_caller() {
     assert_eq!(st.with(&t.path("nope.jsonl"), 0, |_| ()).unwrap_err(), Unsure::Missing);
     write(&t.path("empty.jsonl"), "");
     assert_eq!(st.with(&t.path("empty.jsonl"), 0, |_| ()).unwrap_err(), Unsure::Missing);
+}
+
+#[test]
+fn a_corrupt_snapshot_is_counted_as_a_miss_and_the_sweep_caps_the_snapshot_directory() {
+    let t = Tmp::new("ts");
+    let snap = t.path("snap");
+    let mut c = cfg();
+    c.snapshot_max_files = 2;
+    let files: Vec<_> = (0..4)
+        .map(|i| {
+            let f = t.path(&format!("s{i}.jsonl"));
+            write(&f, &prompt_line(i, 20));
+            f
+        })
+        .collect();
+    let first = Store::with_cfg(c.clone(), Some(snap.clone()));
+    for f in &files {
+        first.with(f, 0, |_| ()).unwrap();
+    }
+    first.persist_all();
+    let names = |d: &std::path::Path| std::fs::read_dir(d).unwrap().count();
+    assert_eq!(names(&snap), 2, "the sweep keeps the newest snapshot_max_files");
+    // corrupt what is left, then a restart: a counted miss and a cold build, not a silent one
+    for e in std::fs::read_dir(&snap).unwrap().flatten() {
+        std::fs::write(e.path(), b"{not json").unwrap();
+    }
+    let second = Store::with_cfg(c.clone(), Some(snap.clone()));
+    for f in &files {
+        second.with(f, 0, |_| ()).unwrap();
+    }
+    assert_eq!(second.stats().snapshot_misses, 2, "the two corrupt snapshots are counted");
+    // a zero ttl removes every snapshot older than it at the next sweep
+    c.snapshot_ttl_ms = 0;
+    c.snapshot_max_files = 100;
+    std::thread::sleep(Duration::from_millis(5));
+    let third = Store::with_cfg(c, Some(snap.clone()));
+    third.with(&files[0], 0, |_| ()).unwrap();
+    third.persist_all();
+    assert_eq!(names(&snap), 0, "every snapshot is older than a zero ttl");
 }

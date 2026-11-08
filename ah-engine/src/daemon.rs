@@ -907,7 +907,7 @@ pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u6
         if let Some(store) = crate::transcript::store::global_if_started() {
             store.publish(m);
         }
-        crate::memstat::note_burst(crate::memstat::heap().peak);
+        crate::memstat::note_burst_sampled();
         static BURSTS_PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seen = crate::memstat::bursts();
         let was = BURSTS_PUBLISHED.swap(seen, std::sync::atomic::Ordering::Relaxed);
