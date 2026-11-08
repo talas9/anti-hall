@@ -90,18 +90,25 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
     });
     let shown = move |n: u8| Signal::derive(move || screen.get() == n && cfg.with(Option::is_some));
     let hide = move |n: u8| move || screen.get() != n;
+    let boot = expect_context::<Arc<Boot>>();
     view! {
-        <main class="main ops-main" hidden=hide(1)>
-            <Notice cfg=cfg failed=failed />
-            <AccountsScreen active=shown(1) cfg=cfg />
-        </main>
-        <main class="main ops-main" hidden=hide(2)>
-            <UpdatesScreen />
-        </main>
-        <main class="main ops-main" hidden=hide(3)>
-            <Notice cfg=cfg failed=failed />
-            <LogsScreen active=shown(3) cfg=cfg />
-        </main>
+        {boot.screen_on("accounts").then(|| view! {
+            <main class="main ops-main" hidden=hide(1)>
+                <Notice cfg=cfg failed=failed />
+                <AccountsScreen active=shown(1) cfg=cfg />
+            </main>
+        })}
+        {boot.screen_on("updates").then(|| view! {
+            <main class="main ops-main" hidden=hide(2)>
+                <UpdatesScreen />
+            </main>
+        })}
+        {boot.screen_on("logs").then(|| view! {
+            <main class="main ops-main" hidden=hide(3)>
+                <Notice cfg=cfg failed=failed />
+                <LogsScreen active=shown(3) cfg=cfg />
+            </main>
+        })}
     }
 }
 
@@ -208,13 +215,15 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
                         {a.codex.signed_in.then(|| view! { <p class="soft-note">{tx("ops_codex_no_details")}</p> })}
                         <p class="soft-note">{tx("ops_codex_usage")}</p>
                     </section>
-                    <section class="card ops-card ops-later" aria-disabled="true">
-                        <div class="ops-card-head">
-                            <strong>{tx("ops_swap_title")}</strong>
-                            <span class="pill">{tx("ops_swap_later")}</span>
-                        </div>
-                        <p class="soft-note">{tx("ops_swap_hint")}</p>
-                    </section>
+                    {expect_context::<Arc<Boot>>().switch("swap_account").then(|| view! {
+                        <section class="card ops-card ops-later" aria-disabled="true">
+                            <div class="ops-card-head">
+                                <strong>{tx("ops_swap_title")}</strong>
+                                <span class="pill">{tx("ops_swap_later")}</span>
+                            </div>
+                            <p class="soft-note">{tx("ops_swap_hint")}</p>
+                        </section>
+                    })}
                 </div>
                 <section class="card ops-card">
                     <div class="ops-card-head">

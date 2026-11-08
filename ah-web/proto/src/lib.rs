@@ -392,6 +392,93 @@ pub struct Boot {
     /// The Health and Topology screens' settings.
     #[serde(default)]
     pub topo: TopoCfg,
+    /// The views in nav order (`web.screens`).
+    #[serde(default)]
+    pub screens: Vec<ScreenDef>,
+    /// Optional page parts by name (`web.switches`); a name that is not listed is off.
+    #[serde(default)]
+    pub switches: BTreeMap<String, bool>,
+    /// The figures of the top strip, in order (`web.strip_pills`).
+    #[serde(default)]
+    pub strip_pills: Vec<String>,
+    /// Seconds the decision ribbon covers (`web.ribbon_window_s`).
+    #[serde(default)]
+    pub ribbon_window_s: u64,
+    /// Slots of the decision ribbon (`web.ribbon_buckets`).
+    #[serde(default)]
+    pub ribbon_buckets: usize,
+}
+
+/// One view of the nav (`web.screens`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScreenDef {
+    /// Which view: the page knows a fixed set of ids; others are ignored.
+    pub id: String,
+    /// The `web.ui` key of its nav label.
+    pub label: String,
+    /// The line icon's name.
+    pub icon: String,
+    /// False: not in the nav and not rendered.
+    pub enabled: bool,
+}
+
+/// The view ids the page can render.
+pub const KNOWN_SCREENS: [&str; 8] = ["agents", "live", "reports", "health", "logs", "settings", "accounts", "updates"];
+
+impl Boot {
+    /// The views the nav shows, in order: enabled, known to the page, each id once.
+    pub fn nav(&self) -> Vec<&ScreenDef> {
+        let mut seen = Vec::new();
+        self.screens
+            .iter()
+            .filter(|s| s.enabled && KNOWN_SCREENS.contains(&s.id.as_str()) && !seen.contains(&s.id.as_str()) && {
+                seen.push(s.id.as_str());
+                true
+            })
+            .collect()
+    }
+
+    /// Whether the view `id` is shown (and so rendered).
+    pub fn screen_on(&self, id: &str) -> bool {
+        self.nav().iter().any(|s| s.id == id)
+    }
+
+    /// The view an address names: `wanted` when it is shown, else the first shown one (so a link to a switched-off view lands home).
+    pub fn resolve_screen(&self, wanted: &str) -> String {
+        let nav = self.nav();
+        nav.iter().find(|s| s.id == wanted).or(nav.first()).map(|s| s.id.clone()).unwrap_or_default()
+    }
+
+    /// Whether the optional part `name` is on.
+    pub fn switch(&self, name: &str) -> bool {
+        self.switches.get(name).copied().unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod screens_tests {
+    use super::*;
+
+    fn def(id: &str, enabled: bool) -> ScreenDef {
+        ScreenDef { id: id.into(), label: format!("nav_{id}"), icon: id.into(), enabled }
+    }
+
+    #[test]
+    fn a_switched_off_screen_is_not_in_the_nav_and_a_link_to_it_lands_home() {
+        let b = Boot { screens: vec![def("agents", true), def("live", false), def("health", true), def("nowhere", true), def("health", true)], ..Boot::default() };
+        let ids: Vec<&str> = b.nav().iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["agents", "health"], "off, unknown and repeated entries are not shown");
+        assert!(b.screen_on("health") && !b.screen_on("live") && !b.screen_on("nowhere"));
+        assert_eq!(b.resolve_screen("live"), "agents");
+        assert_eq!(b.resolve_screen("health"), "health");
+    }
+
+    #[test]
+    fn the_order_is_the_lists_and_a_switch_not_listed_is_off() {
+        let b = Boot { screens: vec![def("logs", true), def("agents", true)], switches: [("search".to_string(), true)].into(), ..Boot::default() };
+        assert_eq!(b.nav().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["logs", "agents"]);
+        assert!(b.switch("search") && !b.switch("compose"));
+    }
 }
 
 /// The Live screen's settings (`web.live_*`).

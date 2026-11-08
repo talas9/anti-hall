@@ -176,6 +176,11 @@ async fn index(
         web_version: env!("AH_BUILD_VERSION").to_string(),
         number: s.number(),
         topo: s.topo(),
+        screens: s.screens.clone(),
+        switches: s.switches.clone(),
+        strip_pills: s.strip_pills.clone(),
+        ribbon_window_s: s.ribbon_window_s,
+        ribbon_buckets: s.ribbon_buckets,
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot)
@@ -828,6 +833,39 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
+    }
+
+    /// `web.screens` drives the nav: the shipped list shows six views in its order, the cut views are switched off, and turning one
+    /// off in the list removes it (and its deep link) from what the page renders.
+    #[test]
+    fn web_screens_drive_the_nav() {
+        let (app, _, _) = fixture();
+        let s = app.settings();
+        let boot = Boot {
+            screens: s.screens.clone(),
+            switches: s.switches.clone(),
+            ..Boot::default()
+        };
+        let ids: Vec<&str> = boot.nav().iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["agents", "health", "logs", "settings", "accounts", "updates"]
+        );
+        assert!(!boot.screen_on("live") && !boot.screen_on("reports"));
+        for off in ["graph_tab", "search", "compose", "swap_account"] {
+            assert!(!boot.switch(off), "{off} ships off");
+        }
+        let mut cut = boot.clone();
+        cut.screens.retain(|x| x.id != "logs");
+        assert!(!cut.screen_on("logs"));
+        assert_eq!(cut.resolve_screen("logs"), "agents");
+        for def in &boot.screens {
+            assert!(
+                s.ui.contains_key(&def.label),
+                "nav label key {} is in web.ui",
+                def.label
+            );
+        }
     }
 
     #[tokio::test]
