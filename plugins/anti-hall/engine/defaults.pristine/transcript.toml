@@ -224,8 +224,8 @@ value = "attachment"
 # ---- bounded transcript reads (transcript::scan, T-3 spike fix) ----
 
 [transcript.scan_peak_budget_bytes]
-doc = "The most the daemon's heap may rise above where it stood when four requests (two Stop, two UserPromptSubmit) read one 100 MB and one 300 MB transcript at once, the per-session state that stays (the walk of the agent scan, the evidence and task lines) included. An end-to-end guard (tests/it/transcript_scan_peak.rs), not a runtime limit; measured 2026-11 at 15-18 MB (release, macOS and CI ubuntu alike): about 19 MB of that is per-session state that stays (the walk of the agent scan 10 MB, the evidence lines and walk 8 MB), the same at 100 MB and 300 MB, so it does not grow with the transcript. The per-reader gate that fails on the old whole-window reads is transcript.reader_peak_budget_bytes."
-value = 25165824
+doc = "The most the daemon's heap may rise above where it stood when four requests (two Stop, two UserPromptSubmit) read one 100 MB and one 300 MB transcript at once, the per-session state that stays (the walk of the agent scan, the evidence and task lines) included. An end-to-end guard (tests/it/transcript_scan_peak.rs), not a runtime limit; measured 2026-11 at 15-18 MB (release, macOS and CI ubuntu alike): about 19 MB of that is per-session state that stays (the walk of the agent scan 10 MB, the evidence lines and walk 8 MB), the same at 100 MB and 300 MB, so it does not grow with the transcript. The kept state is removed by the L4 store lane (#637); until it lands this guard fails at 16 MiB by design. The per-reader gate that fails on the old whole-window reads is transcript.reader_peak_budget_bytes."
+value = 16777216
 min = 1048576
 unit = "bytes"
 
