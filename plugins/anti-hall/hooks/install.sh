@@ -150,8 +150,8 @@ stale_notice() {
     # a helper after it is reaped, so `d` records the pid of the last REAPED helper, set right after its `wait` returns (never at
     # the fork): the trap kills `$!` unless it is the probe's pid (the subshell starts with it in `$!`) or `d`. A live helper is
     # therefore always killed and a reaped pid never is. The helper is sent KILL, not TERM: the parent's TERM can arrive just after the
-# helper forked but before it execs `sleep`, while it still carries this shell's inherited TERM trap, and the signal is swallowed
-# (the sleep then outlives the hook); KILL cannot be trapped (the one exception: a TERM between a `wait` returning and `d=$!` signals a
+    # helper forked but before it execs `sleep`, while it still carries this shell's inherited TERM trap, and the signal is swallowed
+    # (the sleep then outlives the hook); KILL cannot be trapped (the one exception: a TERM between a `wait` returning and `d=$!` signals a
     # just-reaped pid, a no-op unless that pid was already reused).
     d=
     ( trap '[ "$!" = "$pp" ] || [ "$!" = "$d" ] || kill -KILL "$!" 2>/dev/null; exit 0' TERM
