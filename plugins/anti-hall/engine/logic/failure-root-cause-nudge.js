@@ -9,30 +9,30 @@
 
 // Split on top-level separators only: outside quotes, backticks, $(...) and ${...}; null when quoting is unbalanced.
 function fnSplitTop(cmd, seps) {
-  var out = [], cur = '', i = 0, depth = 0, quote = '', n = cmd.length;
+  var out = [], cur = [], i = 0, depth = 0, quote = '', n = cmd.length;
   while (i < n) {
     var c = cmd[i];
-    if (quote === "'") { cur += c; if (c === "'") quote = ''; i++; continue; }
-    if (c === '\\') { cur += c + (cmd[i + 1] || ''); i += 2; continue; }
+    if (quote === "'") { cur.push(c); if (c === "'") quote = ''; i++; continue; }
+    if (c === '\\') { cur.push(c + (cmd[i + 1] || '')); i += 2; continue; }
     if (quote === '"') {
-      cur += c;
+      cur.push(c);
       if (c === '"') quote = '';
-      else if (c === '$' && cmd[i + 1] === '(') { depth++; cur += '('; i++; }
+      else if (c === '$' && cmd[i + 1] === '(') { depth++; cur.push('('); i++; }
       i++; continue;
     }
-    if (quote === '`') { cur += c; if (c === '`') quote = ''; i++; continue; }
-    if (c === "'" || c === '"' || c === '`') { quote = c; cur += c; i++; continue; }
-    if (c === '(' || c === '{') { depth++; cur += c; i++; continue; }
-    if (c === ')' || c === '}') { if (depth > 0) depth--; cur += c; i++; continue; }
+    if (quote === '`') { cur.push(c); if (c === '`') quote = ''; i++; continue; }
+    if (c === "'" || c === '"' || c === '`') { quote = c; cur.push(c); i++; continue; }
+    if (c === '(' || c === '{') { depth++; cur.push(c); i++; continue; }
+    if (c === ')' || c === '}') { if (depth > 0) depth--; cur.push(c); i++; continue; }
     if (depth === 0) {
       var hit = null;
       for (var k = 0; k < seps.length; k++) { if (cmd.startsWith(seps[k], i)) { hit = seps[k]; break; } }
-      if (hit) { out.push(cur); cur = ''; i += hit.length; continue; }
+      if (hit) { out.push(cur.join('')); cur = []; i += hit.length; continue; }
     }
-    cur += c; i++;
+    cur.push(c); i++;
   }
   if (quote) return null;
-  out.push(cur);
+  out.push(cur.join(''));
   return out;
 }
 

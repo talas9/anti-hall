@@ -10,8 +10,8 @@
 // Splits `cmd` into simple commands: { words: [string], sep: the operator before it, bodies: [heredoc body] }. A word keeps its
 // quotes removed and its $(...) / `...` text in place; a substitution's own text is also returned as a nested script.
 function bkParse(cmd) {
-  var segs = [], words = [], bodies = [], subs = [], cur = '', has = false, sep = ';', skips = [], i = 0, n = cmd.length;
-  function endWord() { if (has) words.push(cur); cur = ''; has = false; }
+  var segs = [], words = [], bodies = [], subs = [], cur = [], has = false, sep = ';', skips = [], i = 0, n = cmd.length;
+  function endWord() { if (has) words.push(cur.join('')); cur = []; has = false; }
   function endSeg(nextSep) {
     endWord();
     if (words.length > 0 || bodies.length > 0) segs.push({ words: words, sep: sep, bodies: bodies });
@@ -40,11 +40,11 @@ function bkParse(cmd) {
     var skip = skips.length > 0 && skips[0].at <= i ? skips.shift() : null;
     if (skip) { i = Math.max(i, skip.to); endSeg(';'); continue; }
     var c = cmd[i];
-    if (c === '\\') { if (i + 1 < n) { cur += cmd[i + 1]; has = true; } i += 2; continue; }
-    if (c === "'") { var e1 = skipQuote(i, "'"); cur += cmd.slice(i + 1, e1); has = true; i = e1 + 1; continue; }
+    if (c === '\\') { if (i + 1 < n) { cur.push(cmd[i + 1]); has = true; } i += 2; continue; }
+    if (c === "'") { var e1 = skipQuote(i, "'"); cur.push(cmd.slice(i + 1, e1)); has = true; i = e1 + 1; continue; }
     if (c === '"') {
       var e2 = skipQuote(i, '"'), inner = cmd.slice(i + 1, e2), j = 0;
-      cur += inner; has = true;
+      cur.push(inner); has = true;
       while ((j = inner.indexOf('$(', j)) >= 0) {
         var pe = skipParen2(inner, j);
         subs.push(inner.slice(j + 2, pe)); j = pe + 1;
@@ -59,11 +59,11 @@ function bkParse(cmd) {
     }
     if (c === '$' && cmd[i + 1] === '(') {
       var pe2 = skipParen(i);
-      cur += cmd.slice(i, Math.min(pe2 + 1, n)); has = true; sub(i + 2, pe2); i = pe2 + 1; continue;
+      cur.push(cmd.slice(i, Math.min(pe2 + 1, n))); has = true; sub(i + 2, pe2); i = pe2 + 1; continue;
     }
     if (c === '`') {
       var e3 = cmd.indexOf('`', i + 1); if (e3 < 0) e3 = n;
-      cur += cmd.slice(i, Math.min(e3 + 1, n)); has = true; sub(i + 1, e3); i = e3 + 1; continue;
+      cur.push(cmd.slice(i, Math.min(e3 + 1, n))); has = true; sub(i + 1, e3); i = e3 + 1; continue;
     }
     if (c === '#' && !has) { var nl = cmd.indexOf('\n', i); i = nl < 0 ? n : nl; continue; }
     if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<') {
@@ -76,12 +76,12 @@ function bkParse(cmd) {
     }
     if (c === ';' || c === '\n' || c === '(' || c === ')') { endSeg(';'); i++; continue; }
     if (c === '&') {
-      if (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>') { cur += c; has = true; i++; continue; }
+      if (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>') { cur.push(c); has = true; i++; continue; }
       endSeg(';'); i += cmd[i + 1] === '&' ? 2 : 1; continue;
     }
     if (c === '|') { endSeg(cmd[i + 1] === '|' ? ';' : '|'); i += cmd[i + 1] === '|' || cmd[i + 1] === '&' ? 2 : 1; continue; }
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i++; continue; }
-    cur += c; has = true; i++;
+    cur.push(c); has = true; i++;
   }
   endSeg(';');
   return { segs: segs, subs: subs };
