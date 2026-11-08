@@ -502,3 +502,25 @@ fn zz_scan_digest() {
         eprintln!("DIGEST {p} tail {tail}: {} bytes {:016x}", out.len(), h.finish());
     }
 }
+
+#[test]
+#[ignore = "diagnostic: AH_WALK_SRC=<a.jsonl:b.jsonl> prints what the store's agent digests hold per transcript (AH_HORIZON overrides the horizons)"]
+fn zz_store_agent_bytes() {
+    let Ok(list) = std::env::var("AH_WALK_SRC") else { return };
+    for p in list.split(':') {
+        let mut cfg = crate::transcript::store::Cfg::from_defaults();
+        if let Some(h) = std::env::var("AH_HORIZON").ok().and_then(|h| h.parse::<u64>().ok()) {
+            cfg.horizon = h;
+            cfg.agent_horizon = h;
+        }
+        cfg.agent_budget = usize::MAX;
+        cfg.session_budget = usize::MAX / 2;
+        let st = crate::transcript::store::Store::with_cfg(cfg, Some(std::env::temp_dir().join("ah-agent-bytes-snap")));
+        let t0 = std::time::Instant::now();
+        let r = st.with(std::path::Path::new(p), 0, |v| {
+            let a = v.agent_digests();
+            (a.bytes(), a.counts(), a.covered_from, v.size(), v.bytes())
+        });
+        eprintln!("AGENTBYTES {p}: {r:?} in {:?}", t0.elapsed());
+    }
+}

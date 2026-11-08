@@ -1789,10 +1789,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `transcript.agent_answered_calls_max` | `4096` |  | count | Most answered tool calls a session remembers, for a further result of the same call (the oldest is forgotten first). |
+| `transcript.agent_answered_calls_max` | `1024` |  | count | Most answered tool calls a session remembers, for a further result of the same call (the oldest is forgotten first). |
 | `transcript.agent_budget_bytes` | `3145728` |  | bytes | Bytes of agent-scan digests one session may hold. Over it the oldest digests are dropped and the agent coverage mark rises (a window starting before it is read afresh). Counted in the session's bytes and in transcript.global_budget_bytes. |
 | `transcript.agent_call_bytes` | `160` |  | bytes | Bytes charged for one remembered call besides its id, name and kept input (the record and its slot in the order queue). |
-| `transcript.agent_horizon_bytes` | `16777216` |  | bytes | How far behind the end of a transcript the store keeps the agent-scan digests (what each line contributes to the agent walk). It covers the widest agent-scan window (agent_scan.wide_tail_bytes plus its agent_scan.window_quantum_pct rounding); a scan of a window that starts earlier is read afresh. |
+| `transcript.agent_horizon_bytes` | `75497472` |  | bytes | How far behind the end of a transcript the store keeps the agent-scan digests (what each line contributes to the agent walk). It covers the widest agent-scan window the checks ask for (silent_nudge.scan_bytes and stale_note.scan_bytes, 64 MiB, plus the agent_scan.window_quantum_pct rounding of 10%); a cold build reads this far back when it is beyond transcript.horizon_bytes. A scan of a window that starts earlier is read afresh. |
 | `transcript.agent_map_max` | `256` |  | count | Most agents the keyed agent map holds (launch offset, terminal or not). It outlives the horizon; the oldest-inserted agent goes first. |
 | `transcript.agent_open_calls_max` | `4096` |  | count | Most unanswered tool calls a session remembers for matching their results. Over it the oldest is forgotten and the agent coverage mark rises past it, so no window is answered as if that call were unseen. |
 | `transcript.agent_stamp_prefix` | `agent_scan.` |  |  | Settings prefix whose values the agent-scan digests depend on: a change of any of them rebuilds the digests (and a snapshot made under other values starts them again at its offset). |

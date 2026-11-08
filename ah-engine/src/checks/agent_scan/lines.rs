@@ -25,7 +25,6 @@ use crate::defaults;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 
 /// A time as the walk holds it (NaN included), stored by its bits so NaN survives a snapshot.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,97 +66,126 @@ impl<T> Got<T> {
     }
 }
 
-mod arc_value {
-    //! `Option<Arc<Value>>` through serde (the `rc` feature is not enabled).
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use serde_json::Value;
-    use std::sync::Arc;
-    pub fn serialize<S: Serializer>(v: &Option<Arc<Value>>, s: S) -> Result<S::Ok, S::Error> {
-        v.as_deref().serialize(s)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Arc<Value>>, D::Error> {
-        Ok(Option::<Value>::deserialize(d)?.map(Arc::new))
+/// Which of the tool lists the scan reads a call's name is on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Class {
+    launch: bool,
+    resume: bool,
+    send: bool,
+    delivery: bool,
+    stop: bool,
+}
+
+/// The class of a tool name (on no list for a missing name).
+fn class_of(name: Option<&str>) -> Class {
+    let Some(n) = name else { return Class::default() };
+    Class {
+        launch: in_list("agent_scan.launch_tools", n),
+        resume: in_list("agent_scan.resume_tools", n),
+        send: in_list("agent_scan.send_tools", n),
+        delivery: in_list("agent_scan.delivery_tools", n),
+        stop: n == defaults::text("agent_scan.stop_tool"),
     }
 }
 
-/// The call a result answers, as the store saw it when it read the result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The call a result answers, as the store saw it when it read the result. Its name, input and description are not kept: the
+/// few an answer is made of are read again from the call's line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallRef {
     /// Offset of the line that made the call.
     pub off: u64,
-    /// The tool's name.
-    pub name: Option<String>,
-    /// The call's input, kept only for a launch or a delivery call while the walk would still hold it.
-    #[serde(with = "arc_value")]
-    pub input: Option<Arc<Value>>,
+    /// Which of the scan's tool lists the call's name is on ([`class_of`]).
+    pub class: Class,
 }
 
 /// A call the store has read and not forgotten.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct CallEntry {
     off: u64,
-    name: Option<String>,
-    #[serde(with = "arc_value")]
-    input: Option<Arc<Value>>,
+    class: Class,
+    /// A hash of the full tool name (a call registered again under another name is told by it).
+    name_hash: u64,
     /// An answer of it was read past as not delivery evidence (the walk's `dropped_ids`).
     dropped: bool,
 }
 
-/// The calls the store matches results to: the open ones (no answer read yet) and the most recently answered ones.
+impl CallEntry {
+    fn bytes(&self) -> usize {
+        defaults::num("transcript.agent_call_bytes") as usize
+    }
+}
+
+/// The calls the store matches results to, keyed by the 128-bit digest of their id: the open ones (no answer read yet) and the
+/// most recently answered ones.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "CallsSer", into = "CallsSer")]
 pub struct Calls {
-    open: HashMap<String, CallEntry>,
-    open_order: VecDeque<(u64, String)>,
-    answered: HashMap<String, CallEntry>,
-    answered_order: VecDeque<(u64, String)>,
-    /// Bytes of the entries, kept as they change.
-    #[serde(skip)]
+    open: HashMap<u128, CallEntry>,
+    open_order: VecDeque<(u64, u128)>,
+    answered: HashMap<u128, CallEntry>,
+    answered_order: VecDeque<(u64, u128)>,
     bytes: usize,
 }
 
-/// Bytes one entry holds: `transcript.agent_call_bytes` for the record and its order slot, plus its id twice, its name and its input.
-fn entry_bytes(id: &str, e: &CallEntry) -> usize {
-    defaults::num("transcript.agent_call_bytes") as usize
-        + id.len() * 2
-        + e.name.as_ref().map_or(0, String::len)
-        + e.input.as_deref().map_or(0, crate::transcript::facts::value_bytes)
+/// [`Calls`] as stored: the live entries in order, with their keys as two halves.
+#[derive(Serialize, Deserialize)]
+struct CallsSer {
+    open: Vec<(u64, u64, CallEntry)>,
+    answered: Vec<(u64, u64, CallEntry)>,
+}
+
+impl From<Calls> for CallsSer {
+    fn from(c: Calls) -> CallsSer {
+        let live = |order: &VecDeque<(u64, u128)>, map: &HashMap<u128, CallEntry>| {
+            order.iter().filter_map(|(off, k)| map.get(k).filter(|e| e.off == *off).map(|e| ((*k >> 64) as u64, *k as u64, *e))).collect()
+        };
+        CallsSer { open: live(&c.open_order, &c.open), answered: live(&c.answered_order, &c.answered) }
+    }
+}
+
+impl From<CallsSer> for Calls {
+    fn from(s: CallsSer) -> Calls {
+        let mut c = Calls::default();
+        for (hi, lo, e) in s.open {
+            c.put_open((u128::from(hi) << 64) | u128::from(lo), e);
+        }
+        for (hi, lo, e) in s.answered {
+            c.put_answered((u128::from(hi) << 64) | u128::from(lo), e);
+        }
+        c
+    }
 }
 
 impl Calls {
-    fn get(&self, id: &str) -> Option<&CallEntry> {
-        self.open.get(id).or_else(|| self.answered.get(id))
+    fn get(&self, k: u128) -> Option<&CallEntry> {
+        self.open.get(&k).or_else(|| self.answered.get(&k))
     }
 
-    /// Count the entries again (after a snapshot load).
-    fn recount(&mut self) {
-        self.bytes = self.open.iter().chain(self.answered.iter()).map(|(k, v)| entry_bytes(k, v)).sum();
-    }
-
-    fn put_open(&mut self, id: &str, e: CallEntry) {
-        self.bytes += entry_bytes(id, &e);
-        self.open_order.push_back((e.off, id.to_string()));
-        if let Some(old) = self.open.insert(id.to_string(), e) {
-            self.bytes = self.bytes.saturating_sub(entry_bytes(id, &old));
+    fn put_open(&mut self, k: u128, e: CallEntry) {
+        self.bytes += e.bytes();
+        self.open_order.push_back((e.off, k));
+        if let Some(old) = self.open.insert(k, e) {
+            self.bytes = self.bytes.saturating_sub(old.bytes());
         }
     }
 
-    fn put_answered(&mut self, id: &str, e: CallEntry) {
-        self.bytes += entry_bytes(id, &e);
-        self.answered_order.push_back((e.off, id.to_string()));
-        if let Some(old) = self.answered.insert(id.to_string(), e) {
-            self.bytes = self.bytes.saturating_sub(entry_bytes(id, &old));
+    fn put_answered(&mut self, k: u128, e: CallEntry) {
+        self.bytes += e.bytes();
+        self.answered_order.push_back((e.off, k));
+        if let Some(old) = self.answered.insert(k, e) {
+            self.bytes = self.bytes.saturating_sub(old.bytes());
         }
     }
 
-    fn take_open(&mut self, id: &str) -> Option<CallEntry> {
-        let e = self.open.remove(id)?;
-        self.bytes = self.bytes.saturating_sub(entry_bytes(id, &e));
+    fn take_open(&mut self, k: u128) -> Option<CallEntry> {
+        let e = self.open.remove(&k)?;
+        self.bytes = self.bytes.saturating_sub(e.bytes());
         Some(e)
     }
 
-    fn take_answered(&mut self, id: &str) -> Option<CallEntry> {
-        let e = self.answered.remove(id)?;
-        self.bytes = self.bytes.saturating_sub(entry_bytes(id, &e));
+    fn take_answered(&mut self, k: u128) -> Option<CallEntry> {
+        let e = self.answered.remove(&k)?;
+        self.bytes = self.bytes.saturating_sub(e.bytes());
         Some(e)
     }
 
@@ -165,36 +193,35 @@ impl Calls {
     /// returned (a window that holds one cannot be answered: its result would be read as a result of an unseen call).
     fn trim(&mut self, limit: u64, open_max: usize, answered_max: usize) -> Option<u64> {
         let mut lost = None;
-        while let Some((off, id)) = self.open_order.front().cloned() {
-            let over = self.open.len() > open_max.max(1);
-            if off >= limit && !over {
+        while let Some((off, k)) = self.open_order.front().copied() {
+            if off >= limit && self.open.len() <= open_max.max(1) {
                 break;
             }
             self.open_order.pop_front();
-            if self.open.get(&id).is_some_and(|e| e.off == off) {
-                self.take_open(&id);
+            if self.open.get(&k).is_some_and(|e| e.off == off) {
+                self.take_open(k);
                 if off >= limit {
                     lost = Some(lost.map_or(off, |l: u64| l.max(off)));
                 }
             }
         }
-        while let Some((off, id)) = self.answered_order.front().cloned() {
+        while let Some((off, k)) = self.answered_order.front().copied() {
             if off >= limit && self.answered.len() <= answered_max.max(1) {
                 break;
             }
             self.answered_order.pop_front();
-            if self.answered.get(&id).is_some_and(|e| e.off == off) {
-                self.take_answered(&id);
+            if self.answered.get(&k).is_some_and(|e| e.off == off) {
+                self.take_answered(k);
             }
         }
-        // the order queues keep stale entries of answered or re-registered calls until they reach the front: compact them
+        // the order queues keep stale slots of answered or re-registered calls until they reach the front: compact them
         if self.open_order.len() > self.open.len() + open_max.max(1) {
             let open = &self.open;
-            self.open_order.retain(|(off, id)| open.get(id).is_some_and(|e| e.off == *off));
+            self.open_order.retain(|(off, k)| open.get(k).is_some_and(|e| e.off == *off));
         }
         if self.answered_order.len() > self.answered.len() + answered_max.max(1) {
             let answered = &self.answered;
-            self.answered_order.retain(|(off, id)| answered.get(id).is_some_and(|e| e.off == *off));
+            self.answered_order.retain(|(off, k)| answered.get(k).is_some_and(|e| e.off == *off));
         }
         lost
     }
@@ -251,17 +278,31 @@ impl TextF {
     }
 }
 
-/// One content block of a user line that the replay needs.
+/// One result block of a user line that the replay needs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Block {
     /// Position of the block in the line's block list (to read its texts again).
     idx: u32,
     tuid: Option<String>,
-    tool_result: bool,
     is_error: bool,
     gone: bool,
     call: Option<CallRef>,
     texts: Vec<TextF>,
+}
+
+/// One step a line contributes, in the order the walk takes them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum Part {
+    Att(Box<Att>),
+    /// An earlier call (its offset) this line registers again under another name after an answer of it was dropped.
+    Conflict(u64),
+    /// A TaskStop call: `(task_id, tool_use id)`.
+    Stop(Box<(String, Option<String>)>),
+    /// An id a terminal notification names.
+    Notif(Box<str>),
+    Idle(Box<Idle>),
+    Spawn(Box<(Spawn, Option<CallRef>)>),
+    Block(Box<Block>),
 }
 
 /// What one line contributes to the walk.
@@ -272,66 +313,33 @@ pub struct ALine {
     /// Reaching the line raises Unsupported whatever came before.
     err: bool,
     ts: Ts,
-    att: Option<Att>,
-    /// `(tool_use id, description)` of the Agent calls.
-    descs: Vec<(String, String)>,
-    /// `(task_id, tool_use id)` of the TaskStop calls.
-    stops: Vec<(String, Option<String>)>,
-    /// Offsets of earlier calls this line registers again under another name after an answer was dropped.
-    conflicts: Vec<u64>,
-    /// Ids a terminal notification of the line names.
-    notif_terminal: Vec<String>,
-    idles: Vec<Idle>,
-    spawn: Option<(Spawn, Option<CallRef>)>,
     /// `toolUseResult.agentId`, when it is an agent id.
     sid: Option<String>,
-    blocks: Vec<Block>,
+    parts: Vec<Part>,
 }
 
 impl ALine {
     fn new(off: u64) -> ALine {
-        ALine {
-            off,
-            err: false,
-            ts: Ts(f64::NAN),
-            att: None,
-            descs: Vec::new(),
-            stops: Vec::new(),
-            conflicts: Vec::new(),
-            notif_terminal: Vec::new(),
-            idles: Vec::new(),
-            spawn: None,
-            sid: None,
-            blocks: Vec::new(),
-        }
+        ALine { off, err: false, ts: Ts(f64::NAN), sid: None, parts: Vec::new() }
     }
 
     fn is_empty(&self) -> bool {
-        !self.err
-            && self.att.is_none()
-            && self.descs.is_empty()
-            && self.stops.is_empty()
-            && self.conflicts.is_empty()
-            && self.notif_terminal.is_empty()
-            && self.idles.is_empty()
-            && self.spawn.is_none()
-            && self.blocks.is_empty()
+        !self.err && self.parts.is_empty()
     }
 
-    /// Bytes this digest holds, estimated (`fixed` per digest plus every record, string and kept input it owns).
+    fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.parts.iter().filter_map(|p| if let Part::Block(b) = p { Some(&**b) } else { None })
+    }
+
+    fn spawn(&self) -> Option<&(Spawn, Option<CallRef>)> {
+        self.parts.iter().find_map(|p| if let Part::Spawn(s) = p { Some(&**s) } else { None })
+    }
+
+    /// Bytes this digest holds, estimated (`fixed` per digest plus every record and string it owns).
     fn bytes(&self, fixed: usize) -> usize {
         use std::mem::size_of;
         let s = |x: &String| x.capacity();
         let os = |x: &Option<String>| x.as_ref().map_or(0, String::capacity);
-        let call = |c: &Option<CallRef>| c.as_ref().map_or(0, |c| os(&c.name) + c.input.as_deref().map_or(0, crate::transcript::facts::value_bytes));
-        let att = self.att.as_ref().map_or(0, |a| {
-            size_of::<Att>()
-                + s(&a.task_id)
-                + match &a.kind {
-                    AttKind::Running { output_file, description, task_type, shell_kind, .. } => s(output_file) + s(description) + s(task_type) + s(shell_kind),
-                    _ => 0,
-                }
-        });
         let text = |t: &TextF| {
             size_of::<TextF>()
                 + t.launch.as_ref().map_or(0, |(a, b)| os(a) + s(b))
@@ -344,16 +352,28 @@ impl ALine {
                     _ => 0,
                 }
         };
-        fixed
-            + att
-            + self.descs.iter().map(|(a, b)| size_of::<(String, String)>() + s(a) + s(b)).sum::<usize>()
-            + self.stops.iter().map(|(a, b)| size_of::<(String, Option<String>)>() + s(a) + os(b)).sum::<usize>()
-            + self.conflicts.capacity() * size_of::<u64>()
-            + self.notif_terminal.iter().map(|a| size_of::<String>() + s(a)).sum::<usize>()
-            + self.idles.iter().map(|i| size_of::<Idle>() + s(&i.id)).sum::<usize>()
-            + self.spawn.as_ref().map_or(0, |(sp, c)| size_of::<(Spawn, Option<CallRef>)>() + s(&sp.name) + s(&sp.agent_id) + os(&sp.tuid) + call(c))
-            + os(&self.sid)
-            + self.blocks.iter().map(|b| size_of::<Block>() + os(&b.tuid) + call(&b.call) + b.texts.iter().map(text).sum::<usize>()).sum::<usize>()
+        let part = |p: &Part| {
+            size_of::<Part>()
+                + match p {
+                    Part::Att(a) => {
+                        size_of::<Att>()
+                            + s(&a.task_id)
+                            + match &a.kind {
+                                AttKind::Running { output_file, description, task_type, shell_kind, .. } => {
+                                    s(output_file) + s(description) + s(task_type) + s(shell_kind)
+                                }
+                                _ => 0,
+                            }
+                    }
+                    Part::Conflict(_) => 0,
+                    Part::Stop(st) => size_of::<(String, Option<String>)>() + s(&st.0) + os(&st.1),
+                    Part::Notif(a) => a.len(),
+                    Part::Idle(i) => size_of::<Idle>() + s(&i.id),
+                    Part::Spawn(sp) => size_of::<(Spawn, Option<CallRef>)>() + s(&sp.0.name) + s(&sp.0.agent_id) + os(&sp.0.tuid),
+                    Part::Block(b) => size_of::<Block>() + os(&b.tuid) + b.texts.iter().map(text).sum::<usize>(),
+                }
+        };
+        fixed + os(&self.sid) + self.parts.iter().map(part).sum::<usize>()
     }
 }
 
@@ -376,12 +396,11 @@ fn id_hash(id: &str) -> u64 {
 pub trait Resolve {
     /// The call `id`, or `None` when it was not seen.
     fn call(&mut self, id: &str) -> Option<CallRef>;
-    /// The call `id` is answered by this line: `pinned` when its input is read again (a launch, or a retained result), `dropped`
-    /// when the answer was read past as not delivery evidence.
-    fn answered(&mut self, _id: &str, _pinned: bool, _dropped: bool) {}
-    /// A call registered by this line (`input` given for a launch or a delivery tool). Returns the offset of an earlier call this
-    /// registers again under another name after one of its answers was dropped.
-    fn register(&mut self, _id: &str, _name: Option<&str>, _input: Option<&Value>) -> Option<u64> {
+    /// The call `id` is answered by this line; `dropped` when the answer was read past as not delivery evidence.
+    fn answered(&mut self, _id: &str, _dropped: bool) {}
+    /// A call registered by this line. Returns the offset of an earlier call this registers again under another name after one of
+    /// its answers was dropped.
+    fn register(&mut self, _id: &str, _name: Option<&str>) -> Option<u64> {
         None
     }
     /// The call is an ordinary one this digest may leave as a [`Span`].
@@ -398,38 +417,29 @@ struct Live<'a> {
     commit: bool,
 }
 
-fn keeps_input(name: Option<&str>) -> bool {
-    name.is_some_and(|n| in_list("agent_scan.delivery_tools", n) || in_list("agent_scan.launch_tools", n))
-}
-
 impl Resolve for Live<'_> {
     fn call(&mut self, id: &str) -> Option<CallRef> {
-        self.calls.get(id).map(|e| CallRef { off: e.off, name: e.name.clone(), input: e.input.clone() })
+        self.calls.get(super::id_key(id)).map(|e| CallRef { off: e.off, class: e.class })
     }
-    fn answered(&mut self, id: &str, pinned: bool, dropped: bool) {
+    fn answered(&mut self, id: &str, dropped: bool) {
         if !self.commit {
             return;
         }
-        let e = self.calls.take_open(id).or_else(|| self.calls.take_answered(id));
-        if let Some(mut e) = e {
-            if !pinned {
-                e.input = None;
-            }
+        let k = super::id_key(id);
+        if let Some(mut e) = self.calls.take_open(k).or_else(|| self.calls.take_answered(k)) {
             e.dropped |= dropped;
-            self.calls.put_answered(id, e);
+            self.calls.put_answered(k, e);
         }
     }
-    fn register(&mut self, id: &str, name: Option<&str>, input: Option<&Value>) -> Option<u64> {
-        let conflict = self.calls.get(id).filter(|p| p.name.as_deref() != name && p.dropped).map(|p| p.off);
+    fn register(&mut self, id: &str, name: Option<&str>) -> Option<u64> {
+        let k = super::id_key(id);
+        let h = name.map_or(0, id_hash);
+        let conflict = self.calls.get(k).filter(|p| p.name_hash != h && p.dropped).map(|p| p.off);
         if self.commit {
-            self.calls.take_answered(id);
-            let e = CallEntry {
-                off: self.off,
-                name: name.map(str::to_string),
-                input: if keeps_input(name) { input.map(|i| Arc::new(i.clone())) } else { None },
-                dropped: false,
-            };
-            self.calls.put_open(id, e);
+            self.calls.take_answered(k);
+            // the walk's `dropped_ids` is per id, not per registration: a drop stays with the id
+            let dropped = self.calls.get(k).is_some_and(|p| p.dropped);
+            self.calls.put_open(k, CallEntry { off: self.off, class: class_of(name), name_hash: h, dropped });
         }
         conflict
     }
@@ -443,11 +453,7 @@ impl Resolve for Live<'_> {
 fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> Option<ALine> {
     let pre = prefilter();
     let fl = if pre.fast {
-        let fl = pre.flags_bytes(raw);
-        if !fl.any() {
-            return None;
-        }
-        fl
+        pre.flags_bytes(raw)
     } else {
         let s = String::from_utf8_lossy(raw);
         pre.flags_str(js_trim(&s))
@@ -511,53 +517,35 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
         } else {
             AttKind::Other
         };
-        a.att = Some(Att { task_id: task_id.to_string(), kind });
+        a.parts.push(Part::Att(Box::new(Att { task_id: task_id.to_string(), kind })));
     }
 
     let content = prop(&entry, "message").and_then(|m| prop(m, "content"));
     let etype = sprop(&entry, "type");
 
-    if fl.tool_use
-        && etype == Some("assistant")
+    if etype == Some("assistant")
         && let Some(Value::Array(blocks)) = content
     {
-        for b in blocks {
-            if sprop(b, "type") == Some("tool_use")
-                && let Some(id) = sprop(b, "id")
-                && let Some(prev) = r.register(id, sprop(b, "name"), prop(b, "input"))
-            {
-                a.conflicts.push(prev);
-            }
-        }
-    }
-    if fl.agent_tu
-        && etype == Some("assistant")
-        && let Some(Value::Array(blocks)) = content
-    {
-        for b in blocks {
-            if sprop(b, "type") == Some("tool_use")
-                && sprop(b, "name") == Some(defaults::text("agent_scan.agent_tool"))
-                && let Some(id) = sprop(b, "id")
-            {
-                let desc = prop(b, "input").and_then(|i| sprop(i, "description")).unwrap_or("");
-                if !desc.is_empty() {
-                    a.descs.push((id.to_string(), desc.to_string()));
+        if fl.tool_use {
+            for b in blocks {
+                if sprop(b, "type") == Some("tool_use")
+                    && let Some(id) = sprop(b, "id")
+                    && let Some(prev) = r.register(id, sprop(b, "name"))
+                {
+                    a.parts.push(Part::Conflict(prev));
                 }
             }
         }
-    }
-    if fl.taskstop
-        && etype == Some("assistant")
-        && let Some(Value::Array(blocks)) = content
-    {
-        for b in blocks {
-            if sprop(b, "type") == Some("tool_use")
-                && sprop(b, "name") == Some(defaults::text("agent_scan.stop_tool"))
-                && let Some(inp) = prop(b, "input")
-                && let Some(tid) = sprop(inp, "task_id")
-                && !tid.is_empty()
-            {
-                a.stops.push((tid.to_string(), sprop(b, "id").map(str::to_string)));
+        if fl.taskstop {
+            for b in blocks {
+                if sprop(b, "type") == Some("tool_use")
+                    && sprop(b, "name") == Some(defaults::text("agent_scan.stop_tool"))
+                    && let Some(inp) = prop(b, "input")
+                    && let Some(tid) = sprop(inp, "task_id")
+                    && !tid.is_empty()
+                {
+                    a.parts.push(Part::Stop(Box::new((tid.to_string(), sprop(b, "id").map(str::to_string)))));
+                }
             }
         }
     }
@@ -571,18 +559,20 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
                     && !t.is_empty()
                     && is_terminal_status(&s)
                 {
-                    a.notif_terminal.push(t);
+                    a.parts.push(Part::Notif(t.into_boxed_str()));
                 }
             }
         }
     }
     if fl.idle {
-        a.idles = idle_candidates(&entry, entry_ts);
+        a.parts.extend(idle_candidates(&entry, entry_ts).into_iter().map(|i| Part::Idle(Box::new(i))));
     }
     if etype != Some("user") {
+        a.parts.shrink_to_fit();
         return (!a.is_empty()).then_some(a);
     }
 
+    let mut spawn_tuid: Option<String> = None;
     if let Some(tur) = prop(&entry, "toolUseResult")
         && sprop(tur, "status") == Some("teammate_spawned")
         && let Some(name) = sprop(tur, "name")
@@ -592,7 +582,11 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
     {
         let tuid = sprop(tr, "tool_use_id");
         let call = tuid.and_then(|t| r.call(t));
-        a.spawn = Some((Spawn { name: name.to_string(), agent_id: sprop(tur, "agent_id").unwrap_or("").to_string(), tuid: tuid.map(str::to_string) }, call));
+        spawn_tuid = tuid.map(str::to_string);
+        a.parts.push(Part::Spawn(Box::new((
+            Spawn { name: name.to_string(), agent_id: sprop(tur, "agent_id").unwrap_or("").to_string(), tuid: tuid.map(str::to_string) },
+            call,
+        ))));
     }
     a.sid = prop(&entry, "toolUseResult").and_then(|t| sprop(t, "agentId")).filter(|s| pats().hex_id.is_match(s)).map(str::to_string);
 
@@ -607,7 +601,6 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
             vec![&synthetic]
         }
     };
-    let spawn_tuid = a.spawn.as_ref().and_then(|(s, _)| s.tuid.clone());
     for (idx, block) in blocks.into_iter().enumerate() {
         if !truthy(Some(block)) {
             continue;
@@ -625,10 +618,10 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
             continue;
         }
         let call = tuid.and_then(|t| r.call(t));
-        let class = |list: &str| call.as_ref().is_none_or(|c| c.name.as_deref().is_some_and(|n| in_list(list, n)));
-        let (launch_c, resume_c, send_c) = (fl.launch && class("agent_scan.launch_tools"), class("agent_scan.resume_tools"), class("agent_scan.send_tools"));
-        let delivery = call.as_ref().is_none_or(|c| c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n)));
-        let stop = call.as_ref().is_none_or(|c| c.name.as_deref() == Some(defaults::text("agent_scan.stop_tool")));
+        let class = |f: fn(&Class) -> bool| call.as_ref().is_none_or(|c| f(&c.class));
+        let (launch_c, resume_c, send_c) = (fl.launch && class(|c| c.launch), class(|c| c.resume), class(|c| c.send));
+        let delivery = class(|c| c.delivery);
+        let stop = class(|c| c.stop);
         let tf: Vec<TextF> = texts
             .iter()
             .map(|t| TextF {
@@ -646,26 +639,17 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
             .collect();
         let gone = tuid.is_some() && texts.iter().any(|t| lower_contains(t, defaults::text("agent_scan.stop_gone_text")));
         let is_error = prop(block, "is_error") == Some(&Value::Bool(true));
-        // what the walk does with the answer: pin the call (a launch, a retained result) or drop it (an ordinary call)
-        let mut pinned = false;
-        let mut dropped = false;
-        for t in &tf {
-            if t.launch.as_ref().is_some_and(|(idm, _)| a.sid.is_some() || idm.is_some()) {
-                pinned = true;
-            }
-            if matches!(t.resume, Got::Ok(Some(_))) || t.queued != Got::Ok(false) || matches!(t.inbox, Got::Ok(Some(_))) || t.resume == Got::Unsupported {
-                continue;
-            }
-            if delivery {
-                pinned = true;
-            } else {
-                dropped = true;
-            }
+        // an answer read past as not delivery evidence: the walk's `dropped_ids`
+        let dropped = !delivery
+            && tf.iter().any(|t| {
+                !(matches!(t.resume, Got::Ok(Some(_)) | Got::Unsupported)
+                    || t.queued != Got::Ok(false)
+                    || matches!(t.inbox, Got::Ok(Some(_)) | Got::Unsupported))
+            });
+        if let Some(t) = tuid {
+            r.answered(t, dropped);
         }
         let ordinary = call.is_some() && !delivery && !stop && tf.iter().all(TextF::trivial) && tuid != spawn_tuid.as_deref();
-        if let Some(t) = tuid {
-            r.answered(t, pinned, dropped);
-        }
         if ordinary
             && r.spannable()
             && let (Some(t), Some(c)) = (tuid, call.as_ref())
@@ -673,16 +657,9 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
             spans.push(Span { off, call_off: c.off, id: id_hash(t) });
             continue;
         }
-        // a call whose input no answer reads is not kept with the digest
-        let keep_input = tf.iter().any(|t| t.launch.is_some()) || delivery;
-        let call = call.map(|mut c| {
-            if !keep_input {
-                c.input = None;
-            }
-            c
-        });
-        a.blocks.push(Block { idx: idx as u32, tuid: tuid.map(str::to_string), tool_result: true, is_error, gone, call, texts: tf });
+        a.parts.push(Part::Block(Box::new(Block { idx: idx as u32, tuid: tuid.map(str::to_string), is_error, gone, call, texts: tf })));
     }
+    a.parts.shrink_to_fit();
     (!a.is_empty()).then_some(a)
 }
 
@@ -815,7 +792,6 @@ impl AgentState {
     /// Recount the bytes held (after a snapshot load, and at every trim).
     pub fn recount(&mut self, fixed: usize) {
         self.kept_bytes = self.lines.iter().map(|l| l.bytes(fixed)).sum::<usize>() + self.spans.len() * std::mem::size_of::<Span>();
-        self.calls.recount();
         self.pending_bytes = self.pending.as_ref().map_or(0, |l| l.bytes(fixed)) + self.pending_spans.len() * std::mem::size_of::<Span>();
     }
 
@@ -892,9 +868,10 @@ impl AgentState {
         (self.lines.len(), self.spans.len())
     }
 
-    /// The walk a fresh scan of the window that starts at `s` (lines starting after it; every line when `s` is 0) builds.
-    /// `oversize` is the offsets of the lines the store skipped as over the cap; `reread(off)` reads the line at `off` again.
-    pub(super) fn replay(&self, s: u64, oversize: &[u64], reread: &mut dyn FnMut(u64) -> Option<Vec<u8>>) -> Result<super::Res<Walk>, Miss> {
+    /// The walk a fresh scan of the window that starts at `s` (lines starting after it; every line when `s` is 0) builds, with
+    /// the calls whose input it reads (`(id, offset of the call's line)`: [`input_at`] gives it). `oversize` is the offsets of the
+    /// lines the store skipped as over the cap; `reread(off)` reads the line at `off` again.
+    pub(super) fn replay(&self, s: u64, oversize: &[u64], reread: &mut dyn FnMut(u64) -> Option<Vec<u8>>) -> Result<super::Res<(Walk, Vec<Load>)>, Miss> {
         if self.stamp != config_stamp() || defaults::num("agent_scan.max_line_bytes") != defaults::num("transcript.max_line_bytes") {
             return Err(Miss::Config);
         }
@@ -914,7 +891,7 @@ impl AgentState {
         }
         let lines: Vec<&ALine> = self.lines.iter().chain(self.pending.iter()).filter(|l| keeps(l.off)).collect();
         for l in &lines {
-            let out = l.blocks.iter().filter_map(|b| b.call.as_ref()).chain(l.spawn.as_ref().and_then(|(_, c)| c.as_ref())).any(|c| !keeps(c.off));
+            let out = l.blocks().filter_map(|b| b.call.as_ref()).chain(l.spawn().and_then(|(_, c)| c.as_ref())).any(|c| !keeps(c.off));
             if out {
                 straddled.push(l.off);
             }
@@ -926,15 +903,15 @@ impl AgentState {
             let Some(raw) = reread(*off) else { return Err(Miss::Reread) };
             let mut by_id: HashMap<String, CallRef> = HashMap::new();
             if let Some(l) = lines.iter().find(|l| l.off == *off) {
-                for b in &l.blocks {
+                for b in l.blocks() {
                     if let (Some(t), Some(c)) = (&b.tuid, &b.call) {
-                        by_id.insert(t.clone(), c.clone());
+                        by_id.insert(t.clone(), *c);
                     }
                 }
-                if let Some((sp, Some(c))) = &l.spawn
+                if let Some((sp, Some(c))) = l.spawn()
                     && let Some(t) = &sp.tuid
                 {
-                    by_id.insert(t.clone(), c.clone());
+                    by_id.insert(t.clone(), *c);
                 }
             }
             let line_spans: Vec<Span> = self.spans.iter().chain(self.pending_spans.iter()).filter(|sp| sp.off == *off).copied().collect();
@@ -950,6 +927,7 @@ impl AgentState {
         order.dedup();
         let by_off: HashMap<u64, &ALine> = lines.iter().map(|l| (l.off, *l)).collect();
         let mut w = Walk::new();
+        let mut loads: Vec<Load> = Vec::new();
         for (i, off) in order.iter().enumerate() {
             if i.is_multiple_of(defaults::num("agent_scan.cut_check_lines").max(1) as usize) && crate::deadline::cut_due() {
                 return Ok(Err(super::Unsupported));
@@ -959,12 +937,12 @@ impl AgentState {
                 None => by_off.get(off).copied(),
             };
             if let Some(l) = l
-                && let Err(e) = apply(&mut w, l, &keeps)
+                && let Err(e) = apply(&mut w, l, &keeps, &mut loads)
             {
                 return Ok(Err(e));
             }
         }
-        Ok(Ok(w))
+        Ok(Ok((w, loads)))
     }
 }
 
@@ -979,181 +957,210 @@ impl Resolve for Window {
     fn call(&mut self, id: &str) -> Option<CallRef> {
         let keeps = |off: u64| self.s == 0 || off > self.s;
         if let Some(c) = self.by_id.get(id) {
-            return keeps(c.off).then(|| c.clone());
+            return keeps(c.off).then_some(*c);
         }
         let h = id_hash(id);
         // an ordinary call inside the window: the digest leaves its answer as it would (no name reads as no list)
-        self.spans.iter().find(|sp| sp.id == h).and_then(|sp| keeps(sp.call_off).then_some(CallRef { off: sp.call_off, name: None, input: None }))
+        self.spans.iter().find(|sp| sp.id == h).and_then(|sp| keeps(sp.call_off).then_some(CallRef { off: sp.call_off, class: Class::default() }))
     }
 }
 
-/// One digest applied to the walk, as [`Walk::line_flagged`] applies its line (offsets stand for line numbers: only their order is read).
-fn apply(w: &mut Walk, l: &ALine, keeps: &dyn Fn(u64) -> bool) -> super::Res<()> {
+/// One digest applied to the walk, as [`Walk::line_flagged`] applies its line (offsets stand for line numbers: only their order is
+/// read). A call whose input `finish` reads (a launch's, a retained result's) is added to `loads`.
+fn apply(w: &mut Walk, l: &ALine, keeps: &dyn Fn(u64) -> bool, loads: &mut Vec<Load>) -> super::Res<()> {
+    fn seen<'a>(c: &'a Option<CallRef>, keeps: &dyn Fn(u64) -> bool) -> Option<&'a CallRef> {
+        c.as_ref().filter(|c| keeps(c.off))
+    }
     if l.err {
         return Err(super::Unsupported);
     }
     let seq = l.off;
     let entry_ts = l.ts.0;
-    if let Some(att) = &l.att {
-        match &att.kind {
-            AttKind::Running { t, output_file, description, task_type, shell_kind } => {
-                if !w.launched.has(&att.task_id) {
-                    let t = t.clone().res()?.0;
-                    w.launched.set(
-                        &att.task_id,
-                        Rec {
-                            adopted: true,
-                            output_file: output_file.clone(),
-                            description: description.clone(),
-                            launched_at_ms: t,
-                            tool_use_id: None,
-                            resumed_at_ms: None,
-                            teammate: false,
-                            last_seen_ms: f64::NAN,
-                            pending_message: false,
-                            task_type: task_type.clone(),
-                            shell_kind: shell_kind.clone(),
-                            spawn_input: None,
-                        },
-                    );
-                }
-            }
-            AttKind::Terminal => w.mark_terminal(&att.task_id, seq, entry_ts),
-            AttKind::Other => {}
-        }
-    }
-    if l.conflicts.iter().any(|p| keeps(*p)) {
-        return Err(super::Unsupported);
-    }
-    for (id, desc) in &l.descs {
-        w.desc_by_tool_use.insert(id.clone(), desc.clone());
-    }
-    for (tid, tuid) in &l.stops {
-        w.stops.push(Stop { id: tid.clone(), seq, tool_use_id: tuid.clone(), ts: entry_ts });
-    }
-    for t in &l.notif_terminal {
-        w.mark_terminal(t, seq, entry_ts);
-    }
-    let mut idles = Vec::new();
-    for i in &l.idles {
-        if !w.team_info.has(&i.id) {
-            continue;
-        }
-        if let Some(ts) = i.ts.clone().res()? {
-            idles.push((i.id.clone(), ts.0));
-        }
-    }
-    for (id, ts) in idles {
-        w.team_event(&id, "idle", ts, seq);
-    }
-    fn seen<'a>(c: &'a Option<CallRef>, keeps: &dyn Fn(u64) -> bool) -> Option<&'a CallRef> {
-        c.as_ref().filter(|c| keeps(c.off))
-    }
-    if let Some((sp, call)) = &l.spawn {
-        let answers = seen(call, keeps).is_none_or(|c| c.name.as_deref().is_some_and(|n| in_list("agent_scan.launch_tools", n)));
-        if answers {
-            w.team_event(&sp.name, "spawn", entry_ts, seq);
-            w.team_info.set(&sp.name, TeamInfo { tool_use_id: sp.tuid.clone(), agent_id: sp.agent_id.clone() });
-        }
-    }
-    for b in &l.blocks {
-        let tuid = b.tuid.as_deref();
-        if b.tool_result
-            && b.is_error
-            && let Some(id) = tuid
-        {
-            w.errored.insert(id);
-        }
-        if b.tool_result
-            && let Some(id) = tuid
-        {
-            w.answered.insert(id);
-        }
-        if b.tool_result
-            && b.gone
-            && let Some(id) = tuid
-        {
-            w.gone.insert(id);
-        }
-        let call = seen(&b.call, keeps);
-        let answers = |list: &str| call.is_none_or(|c| c.name.as_deref().is_some_and(|n| in_list(list, n)));
-        let mut pinned = false;
-        for (ti, t) in b.texts.iter().enumerate() {
-            if b.tool_result
-                && answers("agent_scan.launch_tools")
-                && let Some((idm, of)) = &t.launch
-                && let Some(id) = l.sid.clone().or_else(|| idm.clone())
-            {
-                w.launched.set(
-                    &id,
-                    Rec {
-                        adopted: false,
-                        output_file: of.clone(),
-                        description: String::new(),
-                        launched_at_ms: entry_ts,
-                        tool_use_id: tuid.map(str::to_string),
-                        resumed_at_ms: None,
-                        teammate: false,
-                        last_seen_ms: f64::NAN,
-                        pending_message: false,
-                        task_type: String::new(),
-                        shell_kind: String::new(),
-                        spawn_input: None,
-                    },
-                );
-                pinned = true;
-            }
-            let resume = if b.tool_result && answers("agent_scan.resume_tools") { t.resume.clone().res()? } else { None };
-            if let Some((rid, full)) = resume {
-                if full {
-                    w.resume_full.insert(rid.clone());
-                }
-                w.resume_seq.set(&rid, seq);
-                if entry_ts.is_finite() {
-                    w.resume_ts.insert(rid, entry_ts);
-                } else {
-                    w.resume_ts.remove(&rid);
-                }
-                continue;
-            }
-            if t.queued.clone().res()? {
-                continue;
-            }
-            let inbox = if b.tool_result && answers("agent_scan.send_tools") { t.inbox.clone().res()? } else { None };
-            if let Some(name) = inbox {
-                w.team_event(&name, "send", entry_ts, seq);
-                continue;
-            }
-            if b.tool_result {
-                if let Some(c) = call
-                    && !c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n))
-                {
-                    if let Some(id) = tuid {
-                        w.dropped_ids.insert(id);
+    for p in &l.parts {
+        match p {
+            Part::Att(att) => match &att.kind {
+                AttKind::Running { t, output_file, description, task_type, shell_kind } => {
+                    if !w.launched.has(&att.task_id) {
+                        let t = t.clone().res()?.0;
+                        w.launched.set(
+                            &att.task_id,
+                            Rec {
+                                adopted: true,
+                                output_file: output_file.clone(),
+                                description: description.clone(),
+                                launched_at_ms: t,
+                                tool_use_id: None,
+                                resumed_at_ms: None,
+                                teammate: false,
+                                last_seen_ms: f64::NAN,
+                                pending_message: false,
+                                task_type: task_type.clone(),
+                                shell_kind: shell_kind.clone(),
+                                spawn_input: None,
+                            },
+                        );
                     }
-                    continue;
                 }
-                w.other_bytes += t.len;
-                if w.other_bytes > defaults::num("agent_scan.retain_bytes") {
+                AttKind::Terminal => w.mark_terminal(&att.task_id, seq, entry_ts),
+                AttKind::Other => {}
+            },
+            Part::Conflict(prev) => {
+                if keeps(*prev) {
                     return Err(super::Unsupported);
                 }
-                w.others.push(Other {
-                    tool_use_id: tuid.map(str::to_string),
-                    text: String::new(),
-                    seq,
-                    ts: entry_ts,
-                    off: l.off,
-                    at: Some((b.idx, ti as u32, t.len)),
-                });
-                pinned = true;
             }
-        }
-        // the inputs `finish` reads: a launch's (spawnInput) and a retained result's call (namesAgent)
-        if pinned && let (Some(t), Some(c)) = (tuid, call) {
-            w.tool_uses.insert(t, ToolUse { name: c.name.clone(), input: c.input.clone(), off: c.off, used: std::cell::Cell::new(0) });
+            Part::Stop(st) => w.stops.push(Stop { id: st.0.clone(), seq, tool_use_id: st.1.clone(), ts: entry_ts }),
+            Part::Notif(t) => w.mark_terminal(t, seq, entry_ts),
+            Part::Idle(i) => {
+                if w.team_info.has(&i.id)
+                    && let Some(ts) = i.ts.clone().res()?
+                {
+                    w.team_event(&i.id, "idle", ts.0, seq);
+                }
+            }
+            Part::Spawn(sp) => {
+                let (sp, call) = &**sp;
+                let call = seen(call, keeps);
+                if call.is_none_or(|c| c.class.launch) {
+                    // its description, when the call is in the window (read again from the call's line)
+                    if let (Some(t), Some(c)) = (sp.tuid.as_deref(), call) {
+                        loads.push(Load { id: t.to_string(), off: c.off, tool: false });
+                    }
+                    w.team_event(&sp.name, "spawn", entry_ts, seq);
+                    w.team_info.set(&sp.name, TeamInfo { tool_use_id: sp.tuid.clone(), agent_id: sp.agent_id.clone() });
+                }
+            }
+            Part::Block(b) => apply_block(w, l, b, seen(&b.call, keeps), loads)?,
         }
     }
     Ok(())
+}
+
+/// One result block of a line ([`apply`]); `call` is its call when it lies inside the window.
+fn apply_block(w: &mut Walk, l: &ALine, b: &Block, call: Option<&CallRef>, loads: &mut Vec<Load>) -> super::Res<()> {
+    let (seq, entry_ts) = (l.off, l.ts.0);
+    let tuid = b.tuid.as_deref();
+    if let Some(id) = tuid {
+        if b.is_error {
+            w.errored.insert(id);
+        }
+        w.answered.insert(id);
+        if b.gone {
+            w.gone.insert(id);
+        }
+    }
+    let answers = |f: fn(&Class) -> bool| call.is_none_or(|c| f(&c.class));
+    let mut pinned = false;
+    for (ti, t) in b.texts.iter().enumerate() {
+        if answers(|c| c.launch)
+            && let Some((idm, of)) = &t.launch
+            && let Some(id) = l.sid.clone().or_else(|| idm.clone())
+        {
+            w.launched.set(
+                &id,
+                Rec {
+                    adopted: false,
+                    output_file: of.clone(),
+                    description: String::new(),
+                    launched_at_ms: entry_ts,
+                    tool_use_id: tuid.map(str::to_string),
+                    resumed_at_ms: None,
+                    teammate: false,
+                    last_seen_ms: f64::NAN,
+                    pending_message: false,
+                    task_type: String::new(),
+                    shell_kind: String::new(),
+                    spawn_input: None,
+                },
+            );
+            pinned = true;
+        }
+        let resume = if answers(|c| c.resume) { t.resume.clone().res()? } else { None };
+        if let Some((rid, full)) = resume {
+            if full {
+                w.resume_full.insert(rid.clone());
+            }
+            w.resume_seq.set(&rid, seq);
+            if entry_ts.is_finite() {
+                w.resume_ts.insert(rid, entry_ts);
+            } else {
+                w.resume_ts.remove(&rid);
+            }
+            continue;
+        }
+        if t.queued.clone().res()? {
+            continue;
+        }
+        let inbox = if answers(|c| c.send) { t.inbox.clone().res()? } else { None };
+        if let Some(name) = inbox {
+            w.team_event(&name, "send", entry_ts, seq);
+            continue;
+        }
+        if let Some(c) = call
+            && !c.class.delivery
+        {
+            if let Some(id) = tuid {
+                w.dropped_ids.insert(id);
+            }
+            continue;
+        }
+        w.other_bytes += t.len;
+        if w.other_bytes > defaults::num("agent_scan.retain_bytes") {
+            return Err(super::Unsupported);
+        }
+        w.others.push(Other { tool_use_id: tuid.map(str::to_string), text: String::new(), seq, ts: entry_ts, off: l.off, at: Some((b.idx, ti as u32, t.len)) });
+        pinned = true;
+    }
+    // the inputs `finish` reads: a launch's (spawnInput) and a retained result's call (namesAgent), read again from the call's line
+    if pinned
+        && let (Some(t), Some(c)) = (tuid, call)
+        && w.tool_uses.insert(t, ToolUse { name: None, input: None, off: c.off, used: std::cell::Cell::new(0) }).is_none()
+    {
+        loads.push(Load { id: t.to_string(), off: c.off, tool: true });
+    }
+    Ok(())
+}
+
+/// A call whose name, input or description the answer is made of: read again from its line by [`call_at`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Load {
+    /// The call id.
+    pub id: String,
+    /// Offset of the call's line.
+    pub off: u64,
+    /// The walk holds the call (its name and input are read); otherwise only its description is.
+    pub tool: bool,
+}
+
+/// What the line of a call says about it, as the walk reads it there: its name, its input, and its description when the line
+/// holds the Agent word and the call is an Agent call with a description.
+pub struct CallText {
+    /// The tool's name.
+    pub name: Option<String>,
+    /// The call's input.
+    pub input: Option<Value>,
+    /// The description the walk keys by the call id.
+    pub desc: Option<String>,
+}
+
+/// The call `id` as its line (read again) holds it: the last `tool_use` block of that id (a later block of the same id replaces an
+/// earlier one in the walk). `None` when the line holds no such block (it is not the line the digest was made from).
+pub fn call_at(raw: &[u8], id: &str) -> Option<CallText> {
+    let s = String::from_utf8_lossy(raw);
+    let line = js_trim(&s);
+    let agent_word = if prefilter().fast { prefilter().flags_bytes(raw).agent_tu } else { prefilter().flags_str(line).agent_tu };
+    let entry = parse_json(line).ok()??;
+    if sprop(&entry, "type") != Some("assistant") {
+        return None;
+    }
+    let Some(Value::Array(blocks)) = prop(&entry, "message").and_then(|m| prop(m, "content")) else { return None };
+    let b = blocks.iter().rev().find(|b| sprop(b, "type") == Some("tool_use") && sprop(b, "id") == Some(id))?;
+    let name = sprop(b, "name");
+    let desc = (agent_word && name == Some(defaults::text("agent_scan.agent_tool")))
+        .then(|| prop(b, "input").and_then(|i| sprop(i, "description")).unwrap_or(""))
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    Some(CallText { name: name.map(str::to_string), input: prop(b, "input").cloned(), desc })
 }
 
 /// The text a retained result held: its line read again at `o.off`, block `at.0`, text `at.1`, which must be `at.2` bytes long.

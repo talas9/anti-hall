@@ -1468,16 +1468,18 @@ fn scan_store(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Optio
     if size == 0 {
         return None;
     }
-    let s = size - window_len(size, tail);
     let id = (m.dev(), m.ino());
     let replayed = crate::transcript::store::global().with(std::path::Path::new(path), now_ms() as u64, |v| {
-        if v.size() != size || v.file_id() != Some(id) {
+        // the store refreshed after this handle was measured: a file that only grew is the same file, read at its newer size
+        if v.size() < size || v.file_id() != Some(id) {
             return Err(lines::Miss::Reread);
         }
+        let size = v.size();
+        let s = size - window_len(size, tail);
         let oversize = v.oversize();
-        v.agent_digests().replay(s, &oversize, &mut |off| line_at(file, off, size))
+        v.agent_digests().replay(s, &oversize, &mut |off| line_at(file, off, size)).map(|r| r.map(|w| (w, size)))
     });
-    let walk = match replayed {
+    let ((mut walk, loads), size) = match replayed {
         Err(u) => {
             crate::load::note_count("agent_scan_store", "result", u.code());
             return None;
@@ -1492,6 +1494,23 @@ fn scan_store(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Optio
         }
         Ok(Ok(Ok(w))) => w,
     };
+    // what the answer reads of a call (a launch's spawnInput and description, a delivery call's name and input, a teammate's
+    // description), read again from each call's line
+    for l in loads {
+        let Some(c) = line_at(file, l.off, size).and_then(|raw| lines::call_at(&raw, &l.id)) else {
+            crate::load::note_count("agent_scan_store", "result", "reread");
+            return None;
+        };
+        if let Some(d) = c.desc {
+            walk.desc_by_tool_use.insert(l.id.clone(), d);
+        }
+        if l.tool
+            && let Some(t) = walk.tool_uses.get_mut(&l.id)
+        {
+            t.name = c.name;
+            t.input = c.input.map(std::sync::Arc::new);
+        }
+    }
     let mut load = |o: &Other| o.at.and_then(|at| line_at(file, o.off, size).and_then(|raw| lines::text_at(&raw, at)));
     match finish_with(&walk, 0, path, opts, &mut load) {
         Ok(Some(scan)) => {

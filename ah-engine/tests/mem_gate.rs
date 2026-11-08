@@ -326,6 +326,18 @@ fn run_phase(name: &'static str, root: &Path, src: &Path, sessions_n: usize, sec
             eprintln!("GATE {name} check_peak {:>6.1} MB  {} (calls {})", peak / MB, v["labels"]["check"].as_str().unwrap_or("?"), v["count"]);
         }
     }
+    // how the agent scans were answered: from the store's digests (hit) or read afresh, by reason
+    {
+        let m = &counters["meta"]["metrics"];
+        let line: Vec<String> = ["counters"]
+            .iter()
+            .filter_map(|k| m[*k].as_array())
+            .flatten()
+            .filter(|r| matches!(r.get("name").and_then(Value::as_str), Some("agent_scan_store" | "agent_scan_degraded")))
+            .map(|r| format!("{}{} {}", r["name"].as_str().unwrap_or("?"), r["labels"], r["value"]))
+            .collect();
+        eprintln!("GATE {name} agent scans {}", line.join(", "));
+    }
     let mut r = std::mem::take(&mut *res.lock().unwrap());
     r.appended_bytes = appended.load(Ordering::Relaxed);
     r.hooks = hooks.load(Ordering::Relaxed);

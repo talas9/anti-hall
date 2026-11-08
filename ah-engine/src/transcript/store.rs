@@ -1088,7 +1088,9 @@ impl Store {
             s.recount_maps();
         }
         let io = |e: std::io::Error| Unsure::Io(e.kind());
-        let start = size.saturating_sub(cfg.horizon);
+        // the agent digests may reach further back than the facts (the widest agent-scan window): the build reads from there, the
+        // facts before the fact horizon are dropped again by the trim below
+        let start = size.saturating_sub(cfg.horizon.max(cfg.agent_horizon));
         let mut from = start;
         if start > 0 {
             // a window starting inside a line drops the rest of that line, as readTail does; a window that starts at a line start keeps it
