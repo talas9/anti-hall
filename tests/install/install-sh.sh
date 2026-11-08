@@ -194,7 +194,7 @@ t_a_failing_probe_leaves_no_orphan_sleep_helper() {
 t_parallel_sessions_in_one_home_each_get_their_notice() {
   newhome conc; write_lock "$good"; fake_client ''
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
-  mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 0.2\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
   k=0; while [ $k -lt 5 ]; do
     rm -f "$st/install-json.notice" "$st/install-stale.notice" 2>/dev/null
