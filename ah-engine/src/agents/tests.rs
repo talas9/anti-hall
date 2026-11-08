@@ -931,7 +931,7 @@ fn a_dead_watcher_gets_one_exact_rearm_line_even_with_no_background_work_and_is_
     let rows = arm_reminders(&h);
     assert_eq!(rows.len(), 1, "one prompt, then the cooldown holds: {rows:?}");
     let t = rows[0]["text"].as_str().unwrap();
-    assert!(t.contains("~/.anti-hall/ah-engine/bin/ah-hook agents wake-watch --auto 2>&1") && t.contains("1800000") && t.contains("re-arm"), "{t}");
+    assert!(t.contains("~/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto 2>&1") && t.contains("1800000") && t.contains("re-arm"), "{t}");
     // once the cooldown has passed (and the first line was taken) it is asked again
     take_queue(&h, "s1");
     ticks_unarmed(&h, &mut st, &[n + 30 * MIN]);
