@@ -52,22 +52,22 @@ fn dump_files(dir: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
 fn list() -> Value {
     let dir = dumps_dir();
     let me = crate::burst::identity();
-    let id = me["build_id"].as_str();
+    let id = at(me, "build_id").as_str();
     let rows: Vec<Value> = dump_files(&dir)
         .iter()
         .map(|(p, m)| {
             let doc: Option<Value> = std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok());
-            let b = doc.as_ref().map_or(Value::Null, |d| d["build"].clone());
+            let b = doc.as_ref().map_or(Value::Null, |d| at(d, "build").clone());
             json!({
                 "file": p.display().to_string(), "age_s": m.elapsed().map_or(0, |d| d.as_secs()),
-                "event": doc.as_ref().map(|d| d["event"].clone()), "growth_bytes": doc.as_ref().map(|d| d["trigger"]["growth_bytes"].clone()),
-                "version": b["version"], "build_id": b["build_id"],
+                "event": doc.as_ref().map(|d| at(d, "event").clone()), "growth_bytes": doc.as_ref().map(|d| at(at(d, "trigger"), "growth_bytes").clone()),
+                "version": at(&b, "version"), "build_id": at(&b, "build_id"),
             })
         })
         .collect();
     json!({
         "dumps_dir": dir.display().to_string(), "dumps": rows, "this_binary": me,
-        "symbols_found": id.and_then(|i| locate(i, me["exe"].as_str())).map(|p| p.display().to_string()),
+        "symbols_found": id.and_then(|i| locate(i, at(me, "exe").as_str())).map(|p| p.display().to_string()),
         "symbols_dir": symbols_dir().display().to_string(),
         "how": defaults::render("diagnostics.msg_symbolize_how", &[("flag", &defaults::text("diagnostics.symbolize_flag"))]),
     })
@@ -127,27 +127,27 @@ fn symbolize(file: Option<&str>) -> Value {
     let Some(doc) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
         return json!({"error": defaults::render("diagnostics.msg_symbolize_bad_dump", &[("file", &path.display())])});
     };
-    let build = doc["build"].clone();
-    let (id, exe) = (build["build_id"].as_str(), build["exe"].as_str());
+    let build = at(&doc, "build").clone();
+    let (id, exe) = (at(&build, "build_id").as_str(), at(&build, "exe").as_str());
     let found = id.and_then(|i| locate(i, exe));
     let mut doc = doc;
     let Some(sym) = found else {
         let hint = defaults::render(
             "diagnostics.msg_symbolize_no_symbols",
-            &[("id", &id.unwrap_or("none")), ("version", &build["version"].as_str().unwrap_or("?")), ("dir", &symbols_dir().display())],
+            &[("id", &id.unwrap_or("none")), ("version", &at(&build, "version").as_str().unwrap_or("?")), ("dir", &symbols_dir().display())],
         );
         return json!({"file": path.display().to_string(), "build": build, "symbols": null, "hint": hint});
     };
     let Some(image) = image_of(&sym) else { return json!({"error": defaults::render("diagnostics.msg_symbolize_unreadable", &[("file", &sym.display())])}) };
     // the unresolved frames of this build's own binary: (ip, offset) as numbers
-    let base = hex(&build["image_base"]);
+    let base = hex(at(&build, "image_base"));
     let mut want: Vec<(u64, u64)> = Vec::new();
-    for site in doc["sites"].as_array().into_iter().flatten() {
-        for f in site["frames"].as_array().into_iter().flatten() {
-            if f["function"].is_null()
+    for site in at(&doc, "sites").as_array().into_iter().flatten() {
+        for f in at(site, "frames").as_array().into_iter().flatten() {
+            if at(f, "function").is_null()
                 && base.is_some()
-                && hex(&f["image_base"]) == base
-                && let (Some(ip), Some(off)) = (hex(&f["ip"]), hex(&f["offset"]))
+                && hex(at(f, "image_base")) == base
+                && let (Some(ip), Some(off)) = (hex(at(f, "ip")), hex(at(f, "offset")))
             {
                 // the call site is the byte before the return address, as the dump's own lookup takes it
                 let site = (ip.saturating_sub(1), off.saturating_sub(1));
@@ -159,12 +159,12 @@ fn symbolize(file: Option<&str>) -> Value {
     }
     let lines = resolve(&image, &build, &want);
     let mut resolved = 0u64;
-    if let Some(sites) = doc["sites"].as_array_mut() {
+    if let Some(sites) = doc.get_mut("sites").and_then(Value::as_array_mut) {
         for site in sites {
-            for f in site["frames"].as_array_mut().into_iter().flatten() {
-                if f["function"].is_null()
-                    && hex(&f["image_base"]) == base
-                    && let Some(ip) = hex(&f["ip"]).map(|v| v.saturating_sub(1))
+            for f in site.get_mut("frames").and_then(Value::as_array_mut).into_iter().flatten() {
+                if at(f, "function").is_null()
+                    && hex(at(f, "image_base")) == base
+                    && let Some(ip) = hex(at(f, "ip")).map(|v| v.saturating_sub(1))
                     && let Some(l) = lines.as_ref().ok().and_then(|m| m.get(&ip))
                 {
                     f["resolved"] = json!(l);
@@ -173,12 +173,16 @@ fn symbolize(file: Option<&str>) -> Value {
             }
         }
     }
-    let mut out =
-        json!({"file": path.display().to_string(), "build": build, "symbols": sym.display().to_string(), "resolved_frames": resolved, "sites": doc["sites"]});
+    let mut out = json!({"file": path.display().to_string(), "build": build, "symbols": sym.display().to_string(), "resolved_frames": resolved, "sites": at(&doc, "sites")});
     if let Err(e) = lines {
         out["error"] = json!(e);
     }
     out
+}
+
+/// `v[key]` that never panics: a missing key (or a `v` that is no object) reads as null.
+fn at<'a>(v: &'a Value, key: &str) -> &'a Value {
+    v.get(key).unwrap_or(&Value::Null)
 }
 
 fn hex(v: &Value) -> Option<u64> {
@@ -187,7 +191,7 @@ fn hex(v: &Value) -> Option<u64> {
 
 /// Run the platform's resolver over `addrs` (call-site ip, offset into the image): one output line per address, keyed by ip.
 fn resolve(image: &Path, build: &Value, addrs: &[(u64, u64)]) -> Result<std::collections::BTreeMap<u64, String>, String> {
-    let os = build["os"].as_str().unwrap_or(std::env::consts::OS);
+    let os = at(build, "os").as_str().unwrap_or(std::env::consts::OS);
     // literal keys, one per platform (a key built with format! is invisible to the defaults-keys scan)
     let tpl = match os {
         "macos" => defaults::list("diagnostics.symbolize_cmd_macos"),
@@ -198,9 +202,9 @@ fn resolve(image: &Path, build: &Value, addrs: &[(u64, u64)]) -> Result<std::col
     if addrs.is_empty() {
         return Ok(std::collections::BTreeMap::new());
     }
-    let arch = build["arch"].as_str().unwrap_or(std::env::consts::ARCH);
+    let arch = at(build, "arch").as_str().unwrap_or(std::env::consts::ARCH);
     let arch = defaults::list("diagnostics.symbolize_arch").iter().find_map(|p| p.split_once('=').filter(|(k, _)| *k == arch).map(|(_, v)| v)).unwrap_or(arch);
-    let base = build["image_base"].as_str().unwrap_or("0x0");
+    let base = at(build, "image_base").as_str().unwrap_or("0x0");
     let mut cmd = std::process::Command::new(program);
     for a in rest {
         match *a {

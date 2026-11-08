@@ -68,7 +68,8 @@ pub fn parse<R: Read + Seek>(r: &mut R, cap: u64) -> Option<BuildId> {
 fn read_up_to<R: Read>(r: &mut R, buf: &mut [u8]) -> usize {
     let mut got = 0;
     while got < buf.len() {
-        match r.read(&mut buf[got..]) {
+        let Some(rest) = buf.get_mut(got..) else { break };
+        match r.read(rest) {
             Ok(0) | Err(_) => break,
             Ok(n) => got += n,
         }
@@ -103,8 +104,8 @@ fn macho<R: Read + Seek>(r: &mut R, head: &[u8], cap: u64) -> Option<BuildId> {
         }
         if cmd == LC_UUID && len >= 24 {
             let u = cmds.get(at + 8..at + 24)?;
-            let h: String = u.iter().map(|b| format!("{b:02X}")).collect();
-            return Some(BuildId { kind: Kind::MachoUuid, id: format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32]) });
+            let part = |r: std::ops::Range<usize>| u.get(r).unwrap_or_default().iter().map(|b| format!("{b:02X}")).collect::<String>();
+            return Some(BuildId { kind: Kind::MachoUuid, id: format!("{}-{}-{}-{}-{}", part(0..4), part(4..6), part(6..8), part(8..10), part(10..16)) });
         }
         at += len;
     }

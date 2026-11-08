@@ -189,9 +189,9 @@ pub fn set_dump_dir(dir: Option<PathBuf>) {
 /// Test seam: forget the window state left by earlier tests of the same process (base, peak, start, requests in flight), as a fresh
 /// process has it, so a test's outcome never depends on which test ran before it.
 pub fn forget_window() {
-    for a in [&WIN_BASE, &WIN_PEAK, &WIN_START] {
-        a.store(0, Relaxed);
-    }
+    WIN_BASE.store(0, Relaxed);
+    WIN_PEAK.store(0, Relaxed);
+    WIN_START.store(0, Relaxed);
     INFLIGHT.store(0, Relaxed);
 }
 
@@ -275,9 +275,9 @@ fn sample(bytes: usize) {
         return;
     }
     let mut buf = [0usize; FRAME_CAP];
-    let n = capture(&mut buf[..FRAMES.load(Relaxed).min(FRAME_CAP)]);
-    if n > 0 {
-        t.record(&buf[..n], bytes as u64);
+    let n = buf.get_mut(..FRAMES.load(Relaxed).min(FRAME_CAP)).map_or(0, capture);
+    if let Some(stack) = buf.get(..n).filter(|s| !s.is_empty()) {
+        t.record(stack, bytes as u64);
     }
     BUSY.with(|b| b.set(false));
 }
@@ -293,7 +293,7 @@ impl Table {
         let n = self.slots.len();
         for k in 0..n {
             let i = (h as usize).wrapping_add(k) % n;
-            let s = &self.slots[i];
+            let Some(s) = self.slots.get(i) else { return };
             let e = s.epoch.load(Acquire);
             if e == cur {
                 if s.hash.load(Relaxed) == h {
@@ -307,7 +307,9 @@ impl Table {
                 // a slot of an older window, now mine alone until `epoch` is published
                 let d = ips.len().min(self.per);
                 for (j, ip) in ips.iter().take(d).enumerate() {
-                    self.frames[i * self.per + j].store(*ip, Relaxed);
+                    if let Some(cell) = self.frames.get(i * self.per + j) {
+                        cell.store(*ip, Relaxed);
+                    }
                 }
                 s.depth.store(d, Relaxed);
                 s.hash.store(h, Relaxed);
@@ -428,7 +430,7 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
                 continue;
             }
             let d = s.depth.load(Relaxed).min(t.per);
-            let ips: Vec<usize> = (0..d).map(|j| t.frames[i * t.per + j].load(Relaxed)).collect();
+            let ips: Vec<usize> = (0..d).map(|j| t.frames.get(i * t.per + j).map_or(0, |a| a.load(Relaxed))).collect();
             let (bytes, samples) = (s.bytes.load(Relaxed), s.samples.load(Relaxed));
             // the window rolled and another thread took the slot while it was read: drop the torn row
             if s.epoch.load(Acquire) == e {
@@ -444,11 +446,11 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
             let mut frames: Vec<_> = ips.iter().map(|ip| symbolize(*ip)).collect();
             // drop the allocator's own leading frames when the binary has symbols
             let internal = |f: &serde_json::Value| {
-                f["function"].as_str().is_some_and(|n| {
+                f.get("function").and_then(serde_json::Value::as_str).is_some_and(|n| {
                     n.contains("burst::") || n.contains("memstat::") || n.contains("__rust_alloc") || n.contains("alloc::alloc::") || n.contains("GlobalAlloc")
                 })
             };
-            while frames.len() > 1 && internal(&frames[0]) {
+            while frames.len() > 1 && frames.first().is_some_and(internal) {
                 frames.remove(0);
             }
             json!({"sampled_bytes": bytes, "samples": samples, "frames": frames})
@@ -531,12 +533,14 @@ fn demangle(s: &str) -> String {
     let Some(mut rest) = t.strip_prefix("ZN") else { return s.to_string() };
     let mut parts = Vec::new();
     while let Some(i) = rest.find(|c: char| !c.is_ascii_digit()) {
-        let Ok(n) = rest[..i].parse::<usize>() else { break };
-        if i == 0 || rest.len() < i + n {
+        let Some(Ok(n)) = rest.get(..i).map(str::parse::<usize>) else { break };
+        let Some(end) = i.checked_add(n) else { break };
+        let (Some(part), Some(after)) = (rest.get(i..end), rest.get(end..)) else { break };
+        if i == 0 {
             break;
         }
-        parts.push(rest[i..i + n].to_string());
-        rest = &rest[i + n..];
+        parts.push(part.to_string());
+        rest = after;
     }
     if parts.last().is_some_and(|l| l.starts_with('h') && l.len() == 17) {
         parts.pop();
