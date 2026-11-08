@@ -125,8 +125,5 @@ delivery.rs | PENDING | delivery.pending_sessions_max sessions (the oldest is ev
 dispatch/mod.rs | OWED_NOTICE | at most one (session, notice, flag) per thread, taken at the start and the end of every dispatcher call | the could-not-run notice a call owes until its final outcome is settled (#473)
 funnel.rs | REQUEST | thread-local; holds one (session, project) pair, set by funnel::request at the start of a dispatch request and cleared when its guard drops | the identity of the request in flight, for a shed answer that has no payload
 currency.rs | LOGGED | one entry (the key of the line last logged), replaced on change; never grows | the engine currency job's log rate limit
-<<<<<<< HEAD
 transcript/store.rs | Store.slots | transcript.max_indexes sessions (the least recently used leaves at the cap and after transcript.idle_ttl_ms); each session is bounded by transcript.session_budget_bytes and all together by transcript.global_budget_bytes, and is registered as the transcript_store memory holder | the per-session transcript fact stores
-=======
 checks/taskstate/memo.rs | MEMO | at most taskstate.memo_entries keys (0 = off), least recently used dropped first on insert; an answer the caller rejects, or computed while the file changed, is removed at once; every key is one state of one transcript file, so a changed file stops matching | per-request shared reconstruction of a transcript's task list for the Stop checks; values are type-erased answers with no size, so a byte-weighted registry holder needs a sizing trait first; registry follow-up
->>>>>>> origin/dev
