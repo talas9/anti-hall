@@ -1640,6 +1640,16 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     if soft_scripts > 0 {
         sh.telemetry.with_metrics(|m| m.add("script_soft", &[], soft_scripts));
     }
+    let lim = crate::script::take_limit_counts();
+    if lim != crate::script::LimitCounts::default() {
+        sh.telemetry.with_metrics(|m| {
+            m.add("script_limit_trips", &[("kind", "soft")], lim.soft_trips);
+            m.add("script_limit_trips", &[("kind", "hard")], lim.hard_trips);
+            m.add("script_unloads", &[], lim.unloads);
+            m.add("script_reloads", &[], lim.reloads);
+            m.add("script_module_loads", &[], lim.module_loads);
+        });
+    }
     let gone_skips = crate::deadline::take_client_gone_skips();
     if gone_skips > 0 {
         sh.telemetry.with_metrics(|m| m.add("client_gone_skipped", &[], gone_skips));

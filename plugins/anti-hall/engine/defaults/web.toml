@@ -220,8 +220,8 @@ doc = "Engine CPU (parts per thousand of one core) at which the CPU pill turns r
 value = 100
 
 [web.pulse_mem_warn_mb]
-doc = "Engine memory footprint (MB) at which the MEM pill turns amber (the engine's soft memory limit)."
-value = 125
+doc = "Engine memory footprint (MB) at which the MEM pill turns amber (the engine's soft memory limit, mem.global_soft_bytes)."
+value = 150
 
 [web.pulse_mem_bad_mb]
 doc = "Engine memory footprint (MB) at which the MEM pill turns red (the engine's hard memory limit)."
@@ -654,12 +654,12 @@ doc = "For an engine whose pulse has no footprint, the header reads it from the 
 value = 15000
 
 [web.health_cpu_soft_permille]
-doc = "Engine CPU soft bar, parts per thousand of one core (the engine's normal-load budget: 2 percent)."
-value = 20
+doc = "Engine CPU soft bar, parts per thousand of one core: the engine's own soft budget diagnostics.budget_cpu_pct (5 percent). It was 2 percent while the engine warned at 5, so the Health screen and the engine disagreed about the same CPU reading."
+value = 50
 
 [web.health_cpu_hard_permille]
-doc = "Engine CPU hard bar, parts per thousand of one core (4 percent)."
-value = 40
+doc = "Engine CPU hard bar, parts per thousand of one core: the engine's own hard limit diagnostics.budget_cpu_hard_pct (10 percent), where it starts shedding pure-advice checks. It was 4 percent, so the banner showed DEGRADED at a load the engine treats as normal."
+value = 100
 
 [web.health_holders_max]
 doc = "Most memory holders listed on the Health screen."
