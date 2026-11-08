@@ -40,7 +40,7 @@ doc = "Where the off switch of the session wake-watch is read from (agents.wakeW
 value = { section = "agents", key = "wakeWatch", env = "ANTIHALL_AGENT_WAKE_WATCH", aliases = [], option = "", default = true }
 
 [agent_tracker.wake_setting_devswarm]
-doc = "Off switch of a DevSwarm workspace's wake-watch (devswarm.wakeWatch, default on). Off, a workspace is no longer reported as unarmed and is told once (signal monitor_off) that the watcher is switched off. A main session follows agent_tracker.wake_setting instead."
+doc = "Workspace wake-watch switch (default on): off never arms it, cron fallback stays. Off, a workspace is no longer reported as unarmed and is told once (signal monitor_off) that the watcher is switched off. A main session follows agent_tracker.wake_setting instead."
 value = { section = "devswarm", key = "wakeWatch", env = "", aliases = [], option = "devswarm_wake_watch", default = true }
 
 [agent_tracker.wake_verb]
