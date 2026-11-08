@@ -134,14 +134,15 @@ stale_notice() {
     && { [ ! -e "$bindir/$engine_name" ] || [ -n "$(find "$derr" -newer "$bindir/$engine_name" 2>/dev/null)" ]; }; then dfail=1; fi
   # defaults.error is never removed: only an engine that fails to load the defaults NOW makes the "guards are NOT running" notice true
   if [ "$dfail" = 1 ] && [ -x "$bindir/$engine_name" ]; then
+    # per-invocation watchdog file (the setting is the prefix): parallel sessions in one HOME never share it; cleared before the fork so a
+    # SIGKILLed earlier run that left its file (pid reuse) can never make the pid read below kill a stale process
+    wdp=$state/$(c install.file_probe_watchdog).$$
+    rm -f "$wdp" 2>/dev/null
     env "$(c env.plugin_root)=$root" "$bindir/$engine_name" "$(c install.defaults_probe_verb)" >/dev/null 2>&1 </dev/null &
     pp=$!
     # watchdog: TERM after defaults_probe_ms, KILL after a further defaults_probe_grace_ms (an engine that ignores TERM must not hold
     # SessionStart); the whole probe is bounded by the two settings (under 1 s together by default: every hook fails open in under 1 s).
     # Each sleep helper records its own pid so it can be killed by that pid (no pgrep needed).
-    # per-invocation file (the setting is the prefix): parallel sessions in one HOME never share it, and only this run's own
-    # pid file is ever read; cleaned on every exit path
-    wdp=$state/$(c install.file_probe_watchdog).$$
     trap 'rm -f "$wdp" 2>/dev/null; exit 0' HUP INT TERM
     t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
     t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')

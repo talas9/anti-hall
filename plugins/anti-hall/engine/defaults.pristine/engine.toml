@@ -1431,12 +1431,12 @@ value = "config"
 
 [install.defaults_probe_ms]
 doc = "Milliseconds the defaults probe may run before it is sent TERM. A probe that does not finish in time is not taken as a failure: the notice stays silent. Together with defaults_probe_grace_ms and install.hook_overhead_allowance_ms it must stay under install.hook_budget_ms (every hook fails open in under 1 s)."
-value = 500
+value = 400
 min = 100
 max = 5000
 
 [install.defaults_probe_grace_ms]
-doc = "Milliseconds the defaults probe gets, after the TERM sent at defaults_probe_ms, before it is killed (KILL). The probe is bounded by defaults_probe_ms plus this (650 ms by default), so an engine that ignores TERM cannot hold SessionStart."
+doc = "Milliseconds the defaults probe gets, after the TERM sent at defaults_probe_ms, before it is killed (KILL). The probe is bounded by defaults_probe_ms plus this (550 ms by default), so an engine that ignores TERM cannot hold SessionStart."
 value = 150
 min = 0
 max = 5000
