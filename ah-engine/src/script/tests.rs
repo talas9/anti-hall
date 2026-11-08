@@ -3628,6 +3628,24 @@ mod claim_evidence_guard {
         }
     }
 
+    // GH #650: a PR's check rollup read through the GitHub CLI earlier in the turn is the evidence a "checks passed" claim needs
+    #[test]
+    fn a_checks_claim_backed_by_the_pr_check_rollup_of_this_turn_passes_and_a_plain_pr_view_does_not() {
+        let mk = |cmd: &str, reply: &str| {
+            vec![
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("{\"statusCheckRollup\": [{\"conclusion\": \"SUCCESS\"}]}"),
+                assistant("m2", reply, &[]),
+            ]
+        };
+        let r = "All checks passed on the PR.";
+        assert_eq!(stop("ce-roll-view", &mk("gh pr view 12 --json statusCheckRollup", r), r, &[], json!({})).0, ALLOW);
+        assert_eq!(stop("ce-roll-api", &mk("gh api repos/o/r/commits/abc/check-runs", r), r, &[], json!({})).0, ALLOW);
+        assert!(blocked(&stop("ce-roll-plain", &mk("gh pr view 12 --json title", r), r, &[], json!({})).0).is_some(), "a view without the rollup is no check");
+        assert!(blocked(&stop("ce-roll-ls", &mk("ls -la", r), r, &[], json!({})).0).is_some(), "an unrelated command still holds the claim");
+    }
+
     #[test]
     fn a_claim_backed_by_an_api_call_or_another_runner_of_this_turn_passes_and_a_bare_one_is_held() {
         let mk = |cmd: &str, reply: &str| {
