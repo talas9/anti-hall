@@ -74,6 +74,9 @@ fn start() -> Result<Running, String> {
         .arg(engine)
         .arg("--socket")
         .arg(paths::socket())
+        // the effective web.require_token (the owner's override included): ah-web reads only the shipped file itself
+        .arg("--require-token")
+        .arg(defaults::raw("web.require_token").as_bool().unwrap_or(true).to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
