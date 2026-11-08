@@ -317,14 +317,17 @@ pub fn hint_text(key: &str) -> String {
     defaults::render(key, &[("state_dir", &state_dir), ("env_dir", &defaults::env_name("dir")), ("env_mem", &defaults::env_of("daemon.mem_mb").unwrap_or(""))])
 }
 
-/// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}.
-pub fn record_failure(kind: &str, code: &str, reason: &str) {
+/// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}. True when the record was written; false
+/// when the state directory cannot be written (then no crash-loop rule can count this failure either).
+pub fn record_failure(kind: &str, code: &str, reason: &str) -> bool {
     let (class, hint) = classify(code);
     let v = json!({"ts": now_ms(), "class": if class == Class::Env {"env"} else {"permanent"}, "kind": kind, "code": code, "hint": hint, "reason": reason});
     if let Err(e) = crate::atomic::write(state_file("failure"), v.to_string()) {
         // without the record no advisory is ever shown; the log still has the failure itself
         log_event_or_stderr("health", "failure_record_write_failed", &format!("{kind}/{code}: {e}"));
+        return false;
     }
+    true
 }
 
 pub(crate) fn read_json(key: &str) -> Option<Value> {
@@ -616,6 +619,10 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
     }
 }
 
+/// Tests that move the state directory (a process-wide env var), or need it to stay put, take turns on this.
+#[cfg(test)]
+pub(crate) static STATE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ---- crash-loop protection (daemon deaths) -------------------------------------------------------
 
 fn halted(key: &str) -> Option<Duration> {
@@ -659,7 +666,7 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
     let n = count_recent_after_trip(&crashy(), cfg.crash_window);
     // a binary that exits at once leaves no crash event, so the starts themselves are counted too: this many in this window
     // is a loop whatever the daemon reported
-    let starts = count_recent_after_trip(&["client_spawn_attempt"], cfg.spawn_window);
+    let starts = count_recent_after_trip(&defaults::list("health.spawn_kinds"), cfg.spawn_window);
     if n < cfg.crash_n && starts < cfg.spawn_n {
         return false;
     }
@@ -1244,8 +1251,7 @@ mod tests {
 
     impl StuckLog {
         fn new(name: &str) -> StuckLog {
-            static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+            let turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
             let dir = std::env::temp_dir().join(format!("ah-health-flush-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `TURN` first.

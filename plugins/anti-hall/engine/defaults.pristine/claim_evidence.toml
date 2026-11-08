@@ -24,6 +24,14 @@ value = { section = "guards", key = "claimEvidenceTelemetry", type = "boolean", 
 doc = "Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading."
 value = { section = "guards", key = "claimEvidenceStrict", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_STRICT", option = "", default = true }
 
+[claim_evidence.log_read_counts]
+doc = "Switch guards.claimEvidenceLogRead (default on): a read of a log or output file this turn (claim_evidence.log_read_res: cat, grep, tail, head, sed -n) backs a claim that carries a figure when every figure of the claim (claim_evidence.figure_re) appears in the transcript's tool output (GH #376). Off restores the earlier reading: only a command of the row's `needs` list backs a claim. A claim without a figure is never backed by a read alone."
+value = { section = "guards", key = "claimEvidenceLogRead", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_LOG_READ", option = "", default = true }
+
+[metric.claim_evidence_log_read_ok]
+doc = "Claims the claim-evidence guard let pass because a read of a log or output file this turn showed the claimed figure (claim_evidence.log_read_counts; GH #376), by claim kind."
+value = { kind = "counter", unit = "claims", labels = ["claim"] }
+
 [metric.claim_evidence_suppressor_rejected]
 doc = "Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427)."
 value = { kind = "counter", unit = "candidates", labels = ["reason"] }
@@ -246,13 +254,13 @@ value = "suppressed ({reason}): \"{quote}\" ({claim})"
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
 
 [claim_evidence.claims]
-doc = "The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. With no tool call at all this turn, every row fires."
+doc = "The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. check: short words naming a command that would satisfy the row, written into the block advice (msg_satisfy; keep it under 58 characters). With no tool call at all this turn, every row fires."
 value = [
-  { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|gh\s+pr\s+(?:view|status)\s[^\n]*?statusCheckRollup|gh\s+api\s[^\n]*?check-(?:runs|suites)|\S*test\S*\.(?:sh|js|py))\b'] },
-  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
-  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', needs = [] },
-  { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', needs = [] },
-  { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', needs = [] },
+  { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', check = "a test runner, gh pr checks or a log read showing it", needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|gh\s+pr\s+(?:view|status)\s[^\n]*?statusCheckRollup|gh\s+api\s[^\n]*?check-(?:runs|suites)|\S*test\S*\.(?:sh|js|py))\b'] },
+  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', check = "gh pr view, git ls-remote or curl of the live URL", needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
+  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', check = "any tool call that shows it", needs = [] },
+  { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', check = "any tool call that shows it", needs = [] },
+  { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', check = "any tool call that shows it", needs = [] },
 ]
 
 [claim_evidence.msg_claim_what]
@@ -262,6 +270,56 @@ value = "\"{quote}\" ({claim}) has no matching check run this turn."
 [claim_evidence.msg_claim_instead]
 doc = "Rule 1 advice."
 value = "run the check and show its result, or say it was not verified."
+
+[claim_evidence.msg_satisfy]
+doc = "Rule 1 advice when the claim row names a check: says what would satisfy it. Placeholders: {check} (the row's `check` text). The whole advice must stay within 115 characters or the block text moves to a details file."
+value = "show a check that counts ({check}), or say it was not verified."
+
+[claim_evidence.log_read_res]
+doc = "Commands (Rust syntax, matched case-sensitively so git's HEAD is not head) that read a log or output file: a read verb (cat, grep, egrep, rg, tail, head, sed -n) followed by an argument. One run this turn, with the claimed figure in the transcript's tool output, backs a claim (claim_evidence.log_read_counts)."
+value = ['\b(?:cat|grep|egrep|rg|tail|head|sed\s+-n)\s+[^|;&\n]*\S']
+
+[claim_evidence.figure_re]
+doc = "A figure inside a claim (Rust syntax): a number, thousands commas allowed. Every figure of the held claim's words must appear as a count in the tool output (claim_evidence.output_pass_res, output_fail_res, output_bare_res) for a log read to back it (claim_evidence.log_read_counts); a claim with no figure is not backed by a read."
+value = '\d[\d,]*'
+
+[claim_evidence.output_pass_res]
+doc = "Where a figure in tool output is a PASS count (Rust syntax, case-insensitive; whitespace on one line only): a whole number next to a pass word in either order ('57 passed', '57 passing', 'passed: 57', '# pass 57'). A pass claim is backed by these (claim_evidence.log_read_counts); each match is read for its number with claim_evidence.figure_re."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:passed|passing)\b',
+  '\b(?:passed|pass|passing)[:=]?[ \t]*\d[\d,]*\b',
+  '#[ \t]*pass[ \t]+\d[\d,]*\b',
+]
+
+[claim_evidence.output_fail_res]
+doc = "Where a figure in tool output is a FAIL count (Rust syntax, case-insensitive, one line): '3 failed', '3 failing', '3 failures', 'failed: 3', '# fail 3', '3 tests failed', 'errors=2', '2 errors'. Any of them above 0 in an output stops a bare 'N tests' count in that output from backing a pass claim."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:failed|failing|failures?)\b',
+  '\b(?:failed|fail|failing|failures?)[:=]?[ \t]*\d[\d,]*\b',
+  '#[ \t]*fail[ \t]+\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+tests?[ \t]+failed\b',
+  '\berrors?[:=]?[ \t]*\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+errors?\b',
+]
+
+[claim_evidence.output_bare_res]
+doc = "Where a figure in tool output is a bare test or check count with no pass / fail word (Rust syntax, case-insensitive, one line): '57 tests', '3 checks', '# tests 57', 'Tests run: 57' (Maven), '57 examples' (rspec), 'tests failed out of 57' (ctest). It backs a PASS claim only when the same output shows no fail count above 0."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:tests?|checks?)\b',
+  '#[ \t]*tests[ \t]+\d[\d,]*\b',
+  '\btests[ \t]+run:[ \t]*\d[\d,]*\b',
+  '\btests[ \t]+failed[ \t]+out[ \t]+of[ \t]+\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+examples?\b',
+]
+
+[claim_evidence.output_listing_res]
+doc = "Output that is not a finished passing run (a list of tests, a run header, a failed unittest run) (Rust syntax, case-insensitive): 'cargo test -- --list' ends with '57 tests, 0 benchmarks'. Also 'running 57 tests' and 'Starting 57 tests across' (a header before the results) and 'Ran 57 tests in 0.1s' followed by FAILED. A bare count (claim_evidence.output_bare_res) starting inside one of these is not a finished passing run and backs nothing."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+tests?,[ \t]*\d[\d,]*[ \t]+benchmarks?\b',
+  '\brunning[ \t]+\d[\d,]*[ \t]+tests?\b',
+  '\bstarting[ \t]+\d[\d,]*[ \t]+tests?\b',
+  '\bran[ \t]+\d[\d,]*[ \t]+tests?[ \t]+in\b[^\n]*\n\s*failed\b',
+]
 
 # ---- rule 2: pushed is not done -----------------------------------------------------------------------------
 
