@@ -223,7 +223,7 @@ pub fn teammates(path: &str, tail: f64) -> String {
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes") as u64) else { return "null".into() };
+    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes")) else { return "null".into() };
     let found = crate::checks::idle_agent_sweep::scan::finished_teammates(lines.by_ref());
     // a line too long to hold may have carried a notice: the answer is then unknown, never "none finished"
     if lines.skipped() > 0 {
@@ -245,7 +245,7 @@ pub fn codex_agents(path: &str, tail: f64) -> String {
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes") as u64) else { return "null".into() };
+    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes")) else { return "null".into() };
     let found = crate::checks::idle_agent_sweep::codex::finished(lines.by_ref());
     if lines.skipped() > 0 {
         crate::load::note_count("transcript_line_skipped_oversize", "reader", "codex_agents");

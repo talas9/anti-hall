@@ -386,6 +386,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/checks/guardkit/ojson.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/checks/session/jval.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     ("src/jev/question.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
+    ("src/script/host.rs", "f.write_str(", "a serde visitor's type description (a developer diagnostic)"),
     // ---- git output and flag layouts ------------------------------------------------------------------------------
     // ---- layouts of generated output and the wire --------------------------------------------------------------------
     ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),

@@ -1013,7 +1013,7 @@ impl Walk {
         // (b) a terminal notification, in any of its three shapes.
         if has_notif {
             for text in notification_texts(&entry) {
-                for bm in pats().block.captures_iter(&text) {
+                for bm in pats().block.captures_iter(text) {
                     let body = bm.get(1).map_or("", |m| m.as_str());
                     let tid = pats().task_id.captures(body).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let st = pats().status.captures(body).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
@@ -1093,12 +1093,12 @@ impl Walk {
                 if is_tool_result
                     && has_launch
                     && self.answers(tuid, "agent_scan.launch_tools")
-                    && trim_start(&text).starts_with(defaults::text("agent_scan.launch_text"))
+                    && trim_start(text).starts_with(defaults::text("agent_scan.launch_text"))
                 {
-                    let idm = pats().agent_id.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
+                    let idm = pats().agent_id.captures(text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let sid = prop(&entry, "toolUseResult").and_then(|t| sprop(t, "agentId")).filter(|s| pats().hex_id.is_match(s)).map(str::to_string);
                     if let Some(id) = sid.or(idm) {
-                        let of = pats().output_file.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())).unwrap_or_default();
+                        let of = pats().output_file.captures(text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())).unwrap_or_default();
                         self.rel();
                         self.launched.set(
                             &id,
@@ -1119,7 +1119,7 @@ impl Walk {
                         );
                     }
                 }
-                let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(&text)? } else { None };
+                let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(text)? } else { None };
                 if let Some((rid, full)) = resume {
                     self.rel();
                     if full {
@@ -1133,10 +1133,10 @@ impl Walk {
                     }
                     continue;
                 }
-                if is_queued_result(&text)? {
+                if is_queued_result(text)? {
                     continue;
                 }
-                let inbox = if is_tool_result && self.answers(tuid, "agent_scan.send_tools") { parse_inbox_send(&text)? } else { None };
+                let inbox = if is_tool_result && self.answers(tuid, "agent_scan.send_tools") { parse_inbox_send(text)? } else { None };
                 if let Some(name) = inbox {
                     self.team_event(&name, "send", entry_ts, seq);
                     continue;

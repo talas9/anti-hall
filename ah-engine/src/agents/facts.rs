@@ -273,11 +273,7 @@ pub(crate) fn replay_turns(a: &mut Agent, since: u64) {
     let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, std::io::Read::take(f, end - start));
     let mut buf: Vec<u8> = Vec::new();
     let mut first = start > 0; // it may start mid-line
-    loop {
-        let l = match agent_scan::read_line_bounded(&mut rd, &mut buf, defaults::num("agent_scan.max_line_bytes")) {
-            Ok(Some(l)) => l,
-            Ok(None) | Err(_) => break,
-        };
+    while let Ok(Some(l)) = agent_scan::read_line_bounded(&mut rd, &mut buf, defaults::num("agent_scan.max_line_bytes")) {
         if std::mem::take(&mut first) || l.oversize {
             continue;
         }

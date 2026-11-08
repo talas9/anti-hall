@@ -4304,7 +4304,7 @@ fn ingest_cutting_a_window_inside_a_multibyte_character_still_reads_the_whole_li
             let mut a = fresh_agent(&p);
             facts::ingest(&mut a, t0 + 10);
             assert!(a.partial, "the read began mid-line");
-            assert!(a.last_output_ms >= t0 + 1, "the whole line after the cut one was read");
+            assert!(a.last_output_ms > t0, "the whole line after the cut one was read");
             return;
         }
     }

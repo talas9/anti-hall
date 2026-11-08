@@ -498,15 +498,7 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
         // measured by serializing into a counter and cloned only when it stays, so a huge input (a written file) is never copied
         let big = tu.get("input").is_some_and(|i| json_len(i) > cap);
         let input = if big { Value::Null } else { tu.get("input").cloned().unwrap_or(Value::Null) };
-        r.tool_uses.push(ToolUse {
-            id: str_of(tu, "id").map(str::to_string),
-            name,
-            input,
-            input_truncated: big,
-            msg_id: msg_id.clone(),
-            seq,
-            ts_ms: r.ts_ms,
-        });
+        r.tool_uses.push(ToolUse { id: str_of(tu, "id").map(str::to_string), name, input, input_truncated: big, msg_id: msg_id.clone(), seq, ts_ms: r.ts_ms });
     }
     if str_of(&e, "type") == Some("user")
         && let Some(Value::Array(c)) = e.get("message").and_then(|m| m.get("content"))

@@ -389,7 +389,7 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
         // (b) terminal notifications, in every transcript shape.
         if has_notif {
             for text in notification_texts(&entry) {
-                for m in r.notification_block.captures_iter(&text) {
+                for m in r.notification_block.captures_iter(text) {
                     let body = &m[1];
                     let tid = r.task_id.captures(body).map(|c| c[1].to_string());
                     let status = r.status.captures(body).map(|c| c[1].to_string());
@@ -458,20 +458,20 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
                     && text.trim_start_matches(is_js_space).starts_with(launch_phrase)
                 {
                     let sid = entry.get("toolUseResult").and_then(|t| str_of(t, "agentId")).filter(|id| r.hex_id.is_match(id)).map(str::to_string);
-                    let idm = r.agent_id.captures(&text).map(|c| c[1].to_string());
+                    let idm = r.agent_id.captures(text).map(|c| c[1].to_string());
                     if let Some(id) = sid.or(idm) {
                         sc.launched.insert(id);
                     }
                 }
-                if b.is_tool_result && sc.answers(b.tuid, "idle_sweep.resume_tools") && is_resume_result(&text) {
+                if b.is_tool_result && sc.answers(b.tuid, "idle_sweep.resume_tools") && is_resume_result(text) {
                     continue;
                 }
-                if is_queued_message(&text) {
+                if is_queued_message(text) {
                     continue;
                 }
                 if b.is_tool_result
                     && sc.answers(b.tuid, "idle_sweep.send_tools")
-                    && let Some(name) = inbox_target(&text)
+                    && let Some(name) = inbox_target(text)
                 {
                     sc.event(&name, Kind::Send, ts, seq, "");
                 }
