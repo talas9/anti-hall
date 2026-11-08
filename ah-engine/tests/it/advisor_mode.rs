@@ -507,6 +507,13 @@ fn a_pin_bump_merge_helper_is_not_a_second_fix_dispatch() {
     assert_eq!(dispatch("fx2", &tp, "Merge fix/404 and bump the submodule pin for #404", &off).0, 0, "pin bump merge helper");
     assert_eq!(dispatch("fx2", &tp, "Advance the gitlink for #404 fix", &off).0, 0, "gitlink advance");
     assert_eq!(dispatch("fx2", &tp, "Fix #404 again", &off).0, 2, "a real second fix attempt is still held");
+    // the exemption must not swallow a real second fix whose text merely mentions a pin or a gitlink (each in its own session: a held dispatch is let through on its retry)
+    for (i, held) in ["Fix #404 again and update the pin", "Fix gitlink parser crash #404", "Update the cert pin validation to fix #404 failing"].iter().enumerate() {
+        let sid = format!("fx2h{i}");
+        let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
+        assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+        assert_eq!(dispatch(&sid, &tp, held, &off).0, 2, "{held} is a real second fix attempt, still held");
+    }
 }
 
 #[test]
