@@ -619,6 +619,10 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
     }
 }
 
+/// Tests that move the state directory (a process-wide env var), or need it to stay put, take turns on this.
+#[cfg(test)]
+pub(crate) static STATE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ---- crash-loop protection (daemon deaths) -------------------------------------------------------
 
 fn halted(key: &str) -> Option<Duration> {
@@ -1247,8 +1251,7 @@ mod tests {
 
     impl StuckLog {
         fn new(name: &str) -> StuckLog {
-            static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+            let turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
             let dir = std::env::temp_dir().join(format!("ah-health-flush-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `TURN` first.

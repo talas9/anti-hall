@@ -60,6 +60,12 @@ pub fn kickstart(guarded: bool) -> bool {
         return false;
     }
     let Some(home) = defaults::env_var("home").filter(|h| !h.is_empty()).map(PathBuf::from) else { return false };
+    let kind = defaults::text("units.kickstart_log_kind");
+    if crate::client::supervisor_unhealthy_marked() {
+        // an earlier ask was accepted and nothing answered: the client starts the daemon itself until the marker expires
+        crate::health::log_event(kind, defaults::text("units.kickstart_skipped"), "");
+        return false;
+    }
     let Some(m) = units::manager(std::env::consts::OS) else { return false };
     let env = crate::reqenv::RequestEnv::capture();
     if units::RealSys::new(&home, &env).guarded() || !unit_matches_client(&home, m) {
@@ -70,11 +76,13 @@ pub fn kickstart(guarded: bool) -> bool {
     let Some((prog, rest)) = argv.split_first() else { return false };
     let mut cmd = std::process::Command::new(prog);
     cmd.args(rest);
-    let kind = defaults::text("units.kickstart_log_kind");
     let ran = crate::proc::run(cmd, defaults::text("units.cmd_what"), limit, defaults::millis("units.kickstart_poll_ms"))
         .ok()
         .is_some_and(|o| o.status.code() == Some(0));
     crate::health::log_event(kind, defaults::text(if ran { "units.kickstart_asked" } else { "units.kickstart_failed" }), &argv.join(" "));
+    if !ran {
+        crate::client::mark_supervisor_unhealthy(); // a failing command is not asked again by every call
+    }
     ran
 }
 

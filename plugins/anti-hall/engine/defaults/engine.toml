@@ -210,6 +210,10 @@ value = "cold-guard.notice"
 doc = "Short-lived client marker: when a hook client finds the daemon absent or hung, other clients skip connecting until this expires."
 value = "daemon.down.until"
 
+[files.supervisor_unhealthy_marker]
+doc = "Short-lived client marker (units.unhealthy_ttl_ms): the service manager accepted an ask to start the engine unit but no daemon answered, so clients start the daemon themselves until this expires. Doctor reports it."
+value = "supervisor.unhealthy.until"
+
 [files.slow_streak]
 doc = "Client marker holding the count of consecutive slow (late) daemon replies and when the streak began; a normal reply removes it."
 value = "daemon.slow.streak"

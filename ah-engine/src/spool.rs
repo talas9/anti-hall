@@ -317,7 +317,7 @@ pub fn write(cwd: &str, verb: &str, args: &str, session: &str) -> Outcome {
         match client::exchange(&sock, req.as_bytes(), deadline) {
             Exch::Reply(Kind::Ok, body) => return Outcome::Answered(body),
             Exch::Reply(Kind::Err, why) => return Outcome::Refused(why),
-            Exch::Absent if !spawned => spawned = client::start_daemon(true).is_some(),
+            Exch::Absent if !spawned => spawned = client::start_daemon(true, "spool").is_some(),
             _ => {}
         }
         if n < retries {

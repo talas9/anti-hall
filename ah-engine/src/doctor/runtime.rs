@@ -350,6 +350,9 @@ pub fn daemon_section(doc: &mut Doc) {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();
         doc.bad(defaults::render("doctor_msg.crashloop", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));
     }
+    if let Some(left) = crate::client::supervisor_unhealthy_remaining() {
+        doc.warnl(defaults::render("doctor_msg.supervisor_unhealthy", &[("secs", &(left.as_secs() + 1))]));
+    }
     if let Some(left) = health::breaker_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();
         doc.warnl(defaults::render("doctor_msg.breaker", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));
