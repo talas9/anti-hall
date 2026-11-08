@@ -181,6 +181,8 @@ async fn index(
         strip_pills: s.strip_pills.clone(),
         ribbon_window_s: s.ribbon_window_s,
         ribbon_buckets: s.ribbon_buckets,
+        load_timeout_ms: s.load_timeout_ms,
+        stale_after_ms: s.stale_after_ms,
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot)

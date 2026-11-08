@@ -5,6 +5,7 @@
 //! whether anything moves.
 mod health;
 mod live;
+mod load;
 mod manage;
 mod ops;
 mod route;
@@ -641,13 +642,17 @@ fn App(boot: Boot) -> impl IntoView {
                             </div>
                         </section>
                     })}
+                    <load::StaleNote failed=Signal::derive(move || conn.get() == Conn::Reconnecting) last_ok=Signal::derive(move || snap.with(|s| s.generated_ms)) />
                     <section class="tree" hidden=move || graph.get()>
                         <div class="tree-cols" aria-hidden="true">
                             <span class="twist-sp"></span>
                             <div class="row-cols"><span class="dot-sp"></span><span class="c-name">{tx("col_name")}</span><span class="c-kind">{tx("col_kind")}</span><span class="c-hb" title=hb_tip.clone()>{tx("col_hb")}</span><span class="c-brief">{tx("col_brief")}</span></div>
                             <span class="kebab-sp"></span>
                         </div>
-                        <Show when=move || rows.with(|r| r.is_empty())>
+                        <Show when=move || rows.with(|r| r.is_empty()) && conn.get() != Conn::Live>
+                            <load::Skel shape="tree" />
+                        </Show>
+                        <Show when=move || rows.with(|r| r.is_empty()) && conn.get() == Conn::Live>
                             <p class="empty">{tx("empty")}</p>
                         </Show>
                         <For each=move || rows.get() key=|r| format!("{}|{}|{}", r.key, r.depth, r.kids) children=move |r| view! { <TreeLine row=r by_id=by_id current=current collapsed=collapsed /> } />

@@ -124,6 +124,8 @@ pub struct Settings {
     pub strip_pills: Vec<String>,
     pub ribbon_window_s: u64,
     pub ribbon_buckets: usize,
+    pub load_timeout_ms: u64,
+    pub stale_after_ms: u64,
     pub live_checks_max: usize,
     pub live_events_max: usize,
     pub live_rate_window_s: u64,

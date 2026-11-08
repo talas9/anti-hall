@@ -407,6 +407,39 @@ pub struct Boot {
     /// Slots of the decision ribbon (`web.ribbon_buckets`).
     #[serde(default)]
     pub ribbon_buckets: usize,
+    /// How long a view shows its skeleton before it says the load failed (`web.load_timeout_ms`).
+    #[serde(default)]
+    pub load_timeout_ms: u64,
+    /// How long a view's data may go without a fresh read before it is marked stale (`web.stale_after_ms`).
+    #[serde(default)]
+    pub stale_after_ms: u64,
+}
+
+/// What a view that loads data draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Load {
+    /// The data is here.
+    Data,
+    /// Nothing yet and still within the timeout: the skeleton of the final layout.
+    Skeleton,
+    /// The read failed, or took longer than the timeout: an error line with a retry.
+    Error,
+}
+
+/// The state of a view's first load: data wins; else a failed read or a wait past `timeout_ms` is an error; else the skeleton.
+pub fn load_state(have: bool, failed: bool, waited_ms: u64, timeout_ms: u64) -> Load {
+    if have {
+        Load::Data
+    } else if failed || waited_ms >= timeout_ms {
+        Load::Error
+    } else {
+        Load::Skeleton
+    }
+}
+
+/// Whether data already on screen has stopped updating: the last read failed, or none succeeded for `after_ms`.
+pub fn is_stale(failed: bool, last_ok_ms: u64, now_ms: u64, after_ms: u64) -> bool {
+    last_ok_ms > 0 && (failed || now_ms.saturating_sub(last_ok_ms) >= after_ms)
 }
 
 /// One view of the nav (`web.screens`).
@@ -463,6 +496,34 @@ impl Boot {
     /// Whether the optional part `name` is on.
     pub fn switch(&self, name: &str) -> bool {
         self.switches.get(name).copied().unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    #[test]
+    fn a_view_shows_its_skeleton_before_data_and_the_error_after_the_timeout() {
+        assert_eq!(load_state(false, false, 0, 8000), Load::Skeleton);
+        assert_eq!(load_state(false, false, 7999, 8000), Load::Skeleton);
+        assert_eq!(load_state(false, false, 8000, 8000), Load::Error);
+        assert_eq!(load_state(false, true, 10, 8000), Load::Error);
+        assert_eq!(load_state(true, true, 99999, 8000), Load::Data);
+    }
+
+    #[test]
+    fn data_that_stops_updating_is_stale_by_a_failed_read_or_by_silence() {
+        assert!(!is_stale(false, 1000, 5000, 20000), "fresh");
+        assert!(is_stale(true, 1000, 2000, 20000), "a failed read");
+        assert!(
+            is_stale(false, 1000, 21000, 20000),
+            "no read for too long (a hung request)"
+        );
+        assert!(
+            !is_stale(true, 0, 99999, 20000),
+            "nothing was ever shown, so nothing is stale"
+        );
     }
 }
 

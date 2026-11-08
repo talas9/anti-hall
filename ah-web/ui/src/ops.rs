@@ -73,9 +73,9 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
     let cfg = RwSignal::new(None::<OpsCfg>);
     let loading = RwSignal::new(false);
     let failed = RwSignal::new(false);
-    // the numbers are fetched the first time a screen opens; a failure is tried again when a screen is opened again
-    Effect::new(move |_| {
-        if screen.get() == 0 || cfg.with_untracked(Option::is_some) || loading.get_untracked() {
+    // the numbers are fetched the first time a screen opens; a failure is tried again when a screen is opened again or on Retry
+    let load = move || {
+        if cfg.with_untracked(Option::is_some) || loading.get_untracked() {
             return;
         }
         loading.set(true);
@@ -87,6 +87,11 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
             }
             loading.set(false);
         });
+    };
+    Effect::new(move |_| {
+        if screen.get() != 0 {
+            load();
+        }
     });
     let shown = move |n: u8| Signal::derive(move || screen.get() == n && cfg.with(Option::is_some));
     let hide = move |n: u8| move || screen.get() != n;
@@ -94,7 +99,7 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
     view! {
         {boot.screen_on("accounts").then(|| view! {
             <main class="main ops-main" hidden=hide(1)>
-                <Notice cfg=cfg failed=failed />
+                <Notice cfg=cfg failed=failed retry=load />
                 <AccountsScreen active=shown(1) cfg=cfg />
             </main>
         })}
@@ -105,7 +110,7 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
         })}
         {boot.screen_on("logs").then(|| view! {
             <main class="main ops-main" hidden=hide(3)>
-                <Notice cfg=cfg failed=failed />
+                <Notice cfg=cfg failed=failed retry=load />
                 <LogsScreen active=shown(3) cfg=cfg />
             </main>
         })}
@@ -114,12 +119,8 @@ pub fn OpsScreens(screen: RwSignal<u8>) -> impl IntoView {
 
 /// "Loading" or "could not load" until the config is here.
 #[component]
-fn Notice(cfg: RwSignal<Option<OpsCfg>>, failed: RwSignal<bool>) -> impl IntoView {
-    view! {
-        <Show when=move || cfg.with(Option::is_none)>
-            <p class="soft-note">{move || if failed.get() { tx("ops_failed") } else { tx("ops_loading") }}</p>
-        </Show>
-    }
+fn Notice(cfg: RwSignal<Option<OpsCfg>>, failed: RwSignal<bool>, retry: impl Fn() + Copy + Send + Sync + 'static) -> impl IntoView {
+    view! { <crate::load::Pending have=Signal::derive(move || cfg.with(Option::is_some)) failed=failed.into() endpoint=OPS_CFG_PATH retry=retry /> }
 }
 
 // ---------------------------------------------------------------------------------------------------------------- Accounts
@@ -186,7 +187,7 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
         <p class="soft-note">{tx("ops_accounts_hint")}</p>
         <Show when=move || failed.get()><p class="fb fb-bad" role="status">{tx("ops_failed")}</p></Show>
         {move || {
-            let (Some(a), Some(c)) = (data.get(), cfg.get()) else { return view! { <p class="soft-note">{tx("ops_loading")}</p> }.into_any() };
+            let (Some(a), Some(c)) = (data.get(), cfg.get()) else { return view! { <crate::load::Skel /> }.into_any() };
             let stale = a.usage_read_ms > 0 && now_ms().saturating_sub(a.usage_read_ms) > c.stale_ms;
             let buckets = a.buckets.clone();
             let cost = a.cost_rows.clone();
