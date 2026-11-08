@@ -180,13 +180,16 @@ t_a_failing_probe_leaves_no_orphan_sleep_helper() {
   # a probe value no other process uses, so only this run's own helper can match (parallel jobs run `sleep 0.500` etc.)
   awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 437"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e437.toml" && mv "$tmp/e437.toml" "$plug/engine/defaults/engine.toml"
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
-  mkdir -p "$st/bin"; printf '#!/bin/sh\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  # the probe runs 0.2 s then fails, so the watchdog has certainly forked its TERM-stage helper before the parent stops it
+  mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 0.2\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
   # sleep shim: every `sleep` this hook run starts records its own pid, so the check is on the helpers THIS run created (no system-wide count)
   mkdir -p "$tmp/shim"; : >"$tmp/sleeppids"
   printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
-  # the probe exits at once; none of the watchdog's sleep helpers may outlive the hook call (bounded poll: the overhead allowance setting)
-  PATH="$tmp/shim:$PATH" hook s1 SessionStart >/dev/null
+  # none of the watchdog's sleep helpers may outlive the hook call (bounded poll: the overhead allowance setting)
+  oldpath=$PATH; PATH="$tmp/shim:$PATH"; export PATH
+  hook s1 SessionStart >/dev/null
+  PATH=$oldpath; export PATH
   grep -q 'cannot load' "$tmp/out" || return 1
   [ -s "$tmp/sleeppids" ] || { echo "shim recorded no sleep: the test would prove nothing" >&2; return 1; }
   n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
