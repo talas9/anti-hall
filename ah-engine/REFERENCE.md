@@ -13728,11 +13728,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `mem_gate.burst_bytes` | `20971520` |  | bytes | A heap burst (heap_burst_total) is a rise of the live heap by more than this within mem_gate.burst_window_ms (counted in heap_burst_total). |
 | `mem_gate.burst_window_ms` | `1000` |  | ms | Window within which a rise of the live heap by mem_gate.burst_bytes counts as a burst. |
+| `mem_gate.ci_enforce` | `0` |  |  | 1 makes the memory gate on a generated transcript (tests/mem_gate.rs, part of the regular test job) fail the build when a bar is missed; 0 only reports the numbers. Flip it to 1 in the change that moves the last transcript reader onto the store. |
+| `mem_gate.ci_run_secs` | `40` |  | s | How long each phase of the CI memory gate replays hook payloads. |
 | `mem_gate.parse_ratio_max_permille` | `1050` |  | permille | Gate bar: bytes the transcript store parsed divided by bytes appended to the transcripts, in permille (1000 = every byte parsed once). |
 | `mem_gate.peak_footprint_mb` | `150` |  | MB | Gate bar: the peak physical footprint of the scratch daemon during the gate (under the 200 MB rss_cap). |
 | `mem_gate.run_secs` | `600` |  | s | How long each phase of the memory gate (the big transcripts, then the 5 MB control) replays hook payloads. |
 | `mem_gate.sessions` | `4` |  | count | How many sessions (clones of the largest transcript) the memory gate drives at once, one stream of UserPromptSubmit and Stop payloads each. |
 | `mem_gate.size_delta_mb` | `8` |  | MB | Gate bar: the peak heap with the big transcripts minus the peak heap with the 5 MB control must stay under this. The difference isolates the term that grows with the transcript size from the non-transcript peaks. |
+| `mem_gate.synth_mb` | `300` |  | MB | Size of the generated transcript the CI memory gate builds at test time (nothing is committed). |
 
 ### mem.toml / mem
 
