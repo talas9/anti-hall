@@ -7,6 +7,7 @@ use crate::transcript_support::*;
 use ah_engine::transcript::store::{Cfg, Store, Unsure};
 use ah_engine::transcript::{Cut, FactKind};
 use serde_json::json;
+use std::io::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -224,6 +225,78 @@ fn over_the_session_budget_the_oldest_facts_go_and_covered_from_rises() {
     })
     .unwrap();
     assert!(st.stats().partial >= 1);
+}
+
+#[test]
+fn a_large_append_stays_within_the_session_budget() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &prompt_line(0, 100));
+    let mut c = cfg();
+    c.session_budget = 16 * 1024;
+    let st = store(c);
+    st.with(&f, 0, |_| ()).unwrap();
+    // one refresh now has far more new facts than the budget holds (a long gap, or a snapshot load)
+    let more: String = (1..=200).map(|i| prompt_line(i, 500)).collect();
+    std::fs::OpenOptions::new().append(true).open(&f).unwrap().write_all(more.as_bytes()).unwrap();
+    st.with(&f, 1, |v| {
+        assert!(v.bytes() <= 16 * 1024, "the session holds {} over its budget after one big append", v.bytes());
+        assert!(v.covered_from() > 0);
+    })
+    .unwrap();
+    assert!(st.stats().bytes <= 16 * 1024);
+}
+
+#[test]
+fn eviction_during_a_waiting_or_refreshing_request_neither_leaks_bytes_nor_splits_the_flight() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..30).map(|j| prompt_line(j, 400)).collect::<String>());
+    let mut c = cfg();
+    c.wait = Duration::from_secs(5);
+    let st = Arc::new(store(c));
+    let (s2, f2) = (st.clone(), f.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        s2.with(&f2, 0, |_| {
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        })
+        .unwrap();
+    });
+    rx.recv().unwrap();
+    let (s3, f3) = (st.clone(), f.clone());
+    let waiter = std::thread::spawn(move || s3.with(&f3, 1, |_| ()).unwrap());
+    std::thread::sleep(Duration::from_millis(80));
+    st.shrink(0); // the memory registry's recycle, with one request in flight and one waiting
+    holder.join().unwrap();
+    waiter.join().unwrap();
+    assert_eq!(st.stats().cold_builds, 1, "one flight per path: the eviction never opened a second session");
+    st.shrink(0);
+    let s = st.stats();
+    assert_eq!((s.sessions, s.bytes), (0, 0), "the byte count must follow the map: {s:?}");
+}
+
+#[test]
+fn ending_a_session_during_its_refresh_releases_its_bytes() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..30).map(|j| prompt_line(j, 400)).collect::<String>());
+    let st = Arc::new(store(cfg()));
+    let (s2, f2) = (st.clone(), f.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        s2.with(&f2, 0, |_| {
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        })
+        .unwrap();
+    });
+    rx.recv().unwrap();
+    st.drop_session(&f);
+    holder.join().unwrap();
+    let s = st.stats();
+    assert_eq!((s.sessions, s.bytes), (0, 0), "{s:?}");
 }
 
 #[test]
