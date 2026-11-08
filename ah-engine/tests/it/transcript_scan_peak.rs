@@ -99,6 +99,8 @@ fn stop_extra() -> serde_json::Value {
 
 struct Rig {
     dir: PathBuf,
+    /// A copy of the plugin whose `transcript.max_concurrent_scans` the latency run sets (`None`: the repository's plugin as is).
+    plugin: Option<PathBuf>,
 }
 
 impl Rig {
@@ -110,11 +112,11 @@ impl Rig {
         std::fs::write(dir.join("proj/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         // the Stop channel on, with the setting a user can switch on: a Stop note then walks the transcript back to the last typed prompt
         std::fs::write(dir.join("home/.anti-hall/settings.json"), r#"{"context":{"stopAdditionalContext":true}}"#).unwrap();
-        Rig { dir }
+        Rig { dir, plugin: None }
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let plugin = self.plugin.clone().unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"));
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
@@ -283,4 +285,116 @@ fn four_concurrent_requests_on_a_big_transcript_stay_under_the_budget_and_do_not
     assert!(small < budget, "100 MB transcript: heap peak +{small} bytes is over the budget {budget}");
     assert!(big < budget, "300 MB transcript: heap peak +{big} bytes is over the budget {budget}");
     assert!(big <= small + budget / 4, "the peak grows with the transcript: +{small} bytes at 100 MB, +{big} bytes at 300 MB");
+}
+
+// ---- latency of the scan turn: `AH_SCAN_LATENCY=1 cargo test --release -- --ignored scan_turn_latency` ----
+
+fn percentile(v: &mut [u128], p: f64) -> u128 {
+    v.sort_unstable();
+    v[(((v.len() - 1) as f64) * p).round() as usize]
+}
+
+impl Rig {
+    /// The plugin copied here with `transcript.max_concurrent_scans` set to `max`.
+    fn with_max_scans(&mut self, max: u32) {
+        let dst = self.dir.join("plugin");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        assert!(Command::new("cp").arg("-R").arg(&src).arg(&dst).status().unwrap().success());
+        for d in ["defaults", "defaults.pristine"] {
+            let f = dst.join("engine").join(d).join("transcript.toml");
+            let t = std::fs::read_to_string(&f).unwrap();
+            let at = t.find("[transcript.max_concurrent_scans]").unwrap();
+            let v = at + t[at..].find("value = ").unwrap();
+            let end = v + t[v..].find('\n').unwrap();
+            std::fs::write(&f, format!("{}value = {max}{}", &t[..v], &t[end..])).unwrap();
+        }
+        self.plugin = Some(dst);
+    }
+
+    /// Four requests (two Stop, two UserPromptSubmit) sent together on a transcript of `mb` MB, `rounds` times (a line is appended
+    /// between rounds, so the first is cold and the rest are warm). The milliseconds each took from send to exit: (stop, ups).
+    fn burst_latencies(&self, mb: usize, rounds: usize) -> (Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>) {
+        let map = self.map();
+        let t = self.dir.join("t0.jsonl");
+        write_transcript(&t, mb);
+        let small = self.dir.join("small.jsonl");
+        write_transcript(&small, 4);
+        let pl = |n: &str, path: &Path, extra: serde_json::Value| {
+            let mut v = serde_json::json!({"session_id": n, "transcript_path": path.to_string_lossy(), "cwd": self.dir.join("proj").to_string_lossy()});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v
+        };
+        self.hook(&map, "Stop", &pl("warm-0", &small, stop_extra())).wait().unwrap();
+        self.wait_up();
+        self.hook(&map, "Stop", &pl("warm-1", &small, stop_extra())).wait().unwrap();
+        let (mut cold_s, mut cold_u, mut warm_s, mut warm_u) = (vec![], vec![], vec![], vec![]);
+        for round in 0..rounds {
+            if round > 0 {
+                let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+                writeln!(f, r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"round {round}"}}]}}}}"#).unwrap();
+            }
+            let plan = [
+                ("Stop", pl(&format!("lat-0-{round}"), &t, stop_extra())),
+                ("UserPromptSubmit", pl(&format!("lat-1-{round}"), &t, serde_json::json!({"prompt": "carry on"}))),
+                ("Stop", pl(&format!("lat-2-{round}"), &t, stop_extra())),
+                ("UserPromptSubmit", pl(&format!("lat-3-{round}"), &t, serde_json::json!({"prompt": "and again"}))),
+            ];
+            let mut kids: Vec<std::process::Child> = plan.iter().map(|(ev, _)| self.spawn_hook(&map, ev)).collect();
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let start = std::time::Instant::now();
+            for (k, (_, p)) in kids.iter_mut().zip(&plan) {
+                Rig::send(k, p);
+            }
+            let mut took: Vec<Option<u128>> = vec![None; 4];
+            while took.iter().any(Option::is_none) {
+                for (i, k) in kids.iter_mut().enumerate() {
+                    if took[i].is_none() && k.try_wait().unwrap().is_some() {
+                        took[i] = Some(start.elapsed().as_millis());
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            for (i, (ev, _)) in plan.iter().enumerate() {
+                let ms = took[i].unwrap();
+                match (round == 0, *ev == "Stop") {
+                    (true, true) => cold_s.push(ms),
+                    (true, false) => cold_u.push(ms),
+                    (false, true) => warm_s.push(ms),
+                    (false, false) => warm_u.push(ms),
+                }
+            }
+        }
+        (cold_s, cold_u, warm_s, warm_u)
+    }
+}
+
+#[test]
+#[ignore = "a latency measurement, not a gate: AH_SCAN_LATENCY=1, run in release"]
+fn scan_turn_latency() {
+    if std::env::var_os("AH_SCAN_LATENCY").is_none() {
+        return;
+    }
+    let mb: usize = std::env::var("AH_SCAN_LATENCY_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+    let trials: usize = std::env::var("AH_SCAN_LATENCY_TRIALS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    for max in [0u32, 1, 2] {
+        let (mut cs, mut cu, mut ws, mut wu) = (vec![], vec![], vec![], vec![]);
+        for trial in 0..trials {
+            let mut rig = Rig::new(&format!("lat{max}-{trial}"));
+            rig.with_max_scans(max);
+            let (a, b, c, d) = rig.burst_latencies(mb, 4);
+            cs.extend(a);
+            cu.extend(b);
+            ws.extend(c);
+            wu.extend(d);
+        }
+        for (name, v) in [("cold Stop", &mut cs), ("cold UPS", &mut cu), ("warm Stop", &mut ws), ("warm UPS", &mut wu)] {
+            eprintln!(
+                "LAT max_concurrent_scans={max} {name}: n={} p50={} ms p95={} ms max={} ms",
+                v.len(),
+                percentile(v, 0.5),
+                percentile(v, 0.95),
+                v.iter().max().unwrap()
+            );
+        }
+    }
 }

@@ -735,15 +735,3 @@ value = "SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1"
 [telemetry.sql_update_event]
 doc = "SQL: rewrite one stored event row (?4 = its id) with the replayed completion's time (?1), kind (?2) and data (?3)."
 value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
-
-[metric.transcript_scan_peak_bytes]
-doc = "The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size."
-value = { kind = "histogram", unit = "bytes", labels = ["check"] }
-
-[metric.transcript_scan_waits]
-doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
-value = { kind = "counter", unit = "requests", labels = [] }
-
-[metric.transcript_scan_turn_bypassed]
-doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
-value = { kind = "counter", unit = "requests", labels = [] }
