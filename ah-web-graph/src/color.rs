@@ -44,3 +44,13 @@ pub fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
 pub fn rgba_css(c: [f32; 4]) -> String {
     format!("rgba({},{},{},{})", (c[0] * 255.0).round(), (c[1] * 255.0).round(), (c[2] * 255.0).round(), c[3])
 }
+
+/// Whether the page shows its dark scheme now: `data-theme` on the root element when set, else the system setting.
+pub fn page_dark() -> bool {
+    let attr = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()).and_then(|e| e.get_attribute("data-theme"));
+    match attr.as_deref() {
+        Some("light") => false,
+        Some("dark") => true,
+        _ => web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten()).is_none_or(|m| m.matches()),
+    }
+}

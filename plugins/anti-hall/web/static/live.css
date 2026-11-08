@@ -22,7 +22,7 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 12px; }
 .tl-ev, .tl-rule { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-age { margin-left: auto; color: var(--dim); white-space: nowrap; }
 .tl-allow { --tl: var(--green); } .tl-advise { --tl: var(--amber); } .tl-block { --tl: var(--red); }
-.tl-inject { --tl: oklch(0.76 0.13 245); } .tl-travel { --tl: var(--cyan); } .tl-action { --tl: var(--violet); }
+.tl-inject { --tl: var(--tl-inject); } .tl-travel { --tl: var(--cyan); } .tl-action { --tl: var(--violet); }
 .live-panel { display: flex; flex-direction: column; gap: 6px; }
 .live-panel .live-rows { max-height: none; }
 @media (max-width: 720px) { .live-stats { grid-template-columns: 1fr 1fr; } .live-top { grid-column: 1 / -1; } .live-cols { display: none; } }
@@ -38,7 +38,7 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 12px; }
 .live .ahg-view { background-color: var(--deep);  }
 /* Jev (the AI): its own violet, never red or green. off = grey baseline, shadow = outline only, on = solid, judging = glow. */
 .live .ahg-node[data-kind="jev"] { overflow: visible; border-color: color-mix(in oklch, var(--k) 60%, transparent); }
-.live .ahg-node[data-kind="jev"][data-status="off"] { --k: oklch(0.55 0.02 270) !important; opacity: .65; border-color: var(--line-2, var(--line)); }
+.live .ahg-node[data-kind="jev"][data-status="off"] { --k: var(--jev-off) !important; opacity: .65; border-color: var(--line-2, var(--line)); }
 .live .ahg-node[data-kind="jev"][data-status="shadow"] { background: transparent; border: 1.5px dashed color-mix(in oklch, var(--k) 75%, transparent); box-shadow: none; }
 .live .ahg-node[data-kind="jev"][data-status="on"] { background: color-mix(in oklch, var(--ahg-panel) 92%, var(--k)); }
 .live .ahg-node[data-kind="jev"][data-status="judging"] { background: color-mix(in oklch, var(--ahg-panel) 85%, var(--k)); box-shadow: none; transition: box-shadow .4s; }

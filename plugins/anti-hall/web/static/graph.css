@@ -40,7 +40,7 @@
   .ahg-node {
     position: absolute; box-sizing: border-box; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 12px; cursor: pointer;
     border-radius: 12px; border: 1px solid var(--ahg-line); text-align: left;
-    background: color-mix(in oklch, var(--ahg-panel) 88%, transparent); box-shadow: var(--shadow-float, 0 8px 24px rgb(0 0 0 / 20%));
+    background: color-mix(in oklch, var(--ahg-panel) 88%, transparent); box-shadow: 0 8px 24px var(--shadow-float, rgb(0 0 0 / 20%));
     transition: box-shadow .2s, border-color .2s;
   }
   .ahg-node:focus-visible { outline: 2px solid var(--k); outline-offset: 2px; }
@@ -100,7 +100,7 @@
   /* action menu + confirm: native popovers anchored to the node card (top layer, so the world transform never distorts them) */
   .ahg-pop {
     inset: auto; margin: 0; padding: 6px; min-width: 190px; border: 1px solid var(--ahg-line); border-radius: 12px; color: var(--ahg-text);
-    background: color-mix(in oklch, var(--ahg-panel) 96%, transparent); box-shadow: var(--shadow-float, 0 8px 24px rgb(0 0 0 / 20%));
+    background: color-mix(in oklch, var(--ahg-panel) 96%, transparent); box-shadow: 0 8px 24px var(--shadow-float, rgb(0 0 0 / 20%));
     font: 13px var(--ahg-sans); position: fixed;
   }
   @supports (position-area: right) {
