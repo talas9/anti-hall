@@ -4361,6 +4361,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
 | `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
 | `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
+| `silent_nudge.msg_rt_block_instead` | `stop it, or extend it with a reason: agents nudge <child> other "<reason>".` |  |  | What to do about a block-tier agent (kept within the visible action length). |
+| `silent_nudge.msg_rt_block_what` | `{names}{more} past the runtime block step: Stop stays blocked until you act.` |  |  | What the block-tier runtime Stop block says; {names} the agents with their runtime, {more} the remainder. |
 | `silent_nudge.msg_rt_instead` | `stop it, or extend it with a stated reason (agents nudge <child> other "<reas...` |  |  | What to do about an escalated agent. |
 | `silent_nudge.msg_rt_item` | `'{name}' (running {dur})` |  |  | One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes). |
 | `silent_nudge.msg_rt_what` | `{names}{more} still running past the runtime block step, not finished and not...` |  |  | What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder. |
@@ -4373,6 +4375,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
 | `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
+| `silent_nudge.rt_block_cap` | `25` |  |  | How many times per session the block-tier runtime step (agent_nudge.runtime block_tier) may block the coordinator's Stop (0 = never block). Counted apart from rt_stop_cap, so a repeated-reminder escalation cannot use it up. It is a safety valve: the block lifts at once when the agent is stopped or extended, so a Stop is not held for good if neither works. |
+| `silent_nudge.rt_block_state_file` | `runtime-block-stops.json` |  |  | Per-session count of the block-tier runtime Stop blocks given, under the engine state directory. |
 | `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
 | `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
 | `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |

@@ -870,7 +870,7 @@ fn publish_escalations(env: &Env, st: &State) {
         .nudges
         .values()
         .filter(|n| n.runtime_escalated || rt_blocking(n, now))
-        .map(|n| json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders}))
+        .map(|n| json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders, "block": rt_blocking(n, now)}))
         .collect();
     let path = env.dir().join(defaults::raw("agent_nudge.runtime_escalation").str_field("file"));
     let body = json!({"rows": rows}).to_string();
@@ -1176,6 +1176,8 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
     if class == ans("snooze") || class == ans("other") {
         if class == ans("other") || !text.is_empty() {
             n.reason.clone_from(&text);
+        } else if runtime {
+            n.reason.clear(); // a stale reason from an earlier message must not stand in for the one this extension did not give
         }
         let asked = Some(asked_min).filter(|m| *m > 0 && class == ans("snooze")).unwrap_or(lim("snooze_default_min"));
         let mut min = asked.clamp(lim("snooze_min_min"), lim("snooze_max_min"));

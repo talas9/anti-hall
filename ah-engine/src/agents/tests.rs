@@ -4617,6 +4617,58 @@ fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
     assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "block"), ("action", "extend")]), 1);
 }
 
+/// GH #689 review P1-1/P1-2: the block step keeps blocking every Stop until the owner acts (stop or extend), on its own count so a
+/// repeated-reminder escalation cannot use it up, and the block reads as an order in the house format, never "advisory".
+#[test]
+fn rt_block_step_blocks_every_stop_until_extended_and_never_says_advisory() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt689-block");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let mut k = 0;
+    let mut at = |st: &mut State, m: u64| {
+        k += 1;
+        rt_tick(&h, &child, st, n + m * MIN, k)
+    };
+    at(&mut st, 20);
+    let e = at(&mut st, 123);
+    assert_eq!(rt_fired("block"), 1, "the block step fired");
+    at(&mut st, 124); // the escalation is published by the next follow
+    let stops: Vec<String> = (0..3).map(|_| rt_stop(&h)).collect();
+    for (i, s) in stops.iter().enumerate() {
+        assert!(s.contains("\"decision\":\"block\""), "Stop {i} is still blocked until the owner acts: {s}");
+        assert!(!s.to_lowercase().contains("advisory") && !s.contains("auto-killed"), "an order, not advisory: {s}");
+        assert!(s.contains("Stop stays blocked until you act") && s.contains("stop it, or extend it"), "the fact and the action in view: {s}");
+    }
+    let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
+    at(&mut st, 126);
+    assert!(!rt_stop(&h).contains("decision"), "an extended block step lets the Stop pass");
+}
+
+/// GH #689 review P2: a runtime extension with no stated reason holds only the shortest time even when an earlier `wrong` report left
+/// text in the nudge's reason.
+#[test]
+fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt689-stale");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "an old explanation", "min": 0})).unwrap();
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "", "min": 60})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    let nd = st.nudges.get("abc").expect("the nudge stays open");
+    assert!(nd.reason.is_empty(), "the stale reason is dropped: {:?}", nd.reason);
+    assert_eq!(nd.snooze_min, 10, "no reason = the shortest hold (snooze_min_min), not the asked 60");
+}
+
 /// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
 #[test]
 fn rt_msg_and_wrong_are_counted_per_step() {
