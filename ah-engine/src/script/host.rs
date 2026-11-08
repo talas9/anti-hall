@@ -893,9 +893,17 @@ pub fn metric_add(name: &str, labels: &str, by: f64) {
 /// byte position of the line in the file; `text` is `null` for a line over `lineMax` bytes (never stored) or not valid UTF-8.
 /// `null` when the file cannot be read.
 pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
-    let mut lines: Vec<serde_json::Value> = Vec::new();
-    tail_scan(path, window, line_max, |at, text| lines.push(serde_json::json!([at, text])))?;
-    Some(serde_json::json!({ "lines": lines }).to_string())
+    // the answer is written as the lines are read: no list of values beside the text (the window was held three times over)
+    let mut out: Vec<u8> = br#"{"lines":["#.to_vec();
+    let mut first = true;
+    tail_scan(path, window, line_max, |at, text| {
+        if !std::mem::take(&mut first) {
+            out.push(b',');
+        }
+        crate::discard::harmless(serde_json::to_writer(&mut out, &(at, text))); // keep: a write into a Vec cannot fail
+    })?;
+    out.extend_from_slice(b"]}");
+    String::from_utf8(out).ok()
 }
 
 /// `tailEntries(path, windowBytes, lineMax, keep, maxLines)`: the newest `maxLines` lines of [`tail_lines`], each parsed as JSON by the engine and cut down

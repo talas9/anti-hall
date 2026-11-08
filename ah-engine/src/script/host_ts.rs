@@ -217,14 +217,20 @@ pub(super) fn answer<S: AsRef<str>>(items: &[S], truncated: bool) -> String {
 /// but never stopped, in the order the scan lists them: `{"teammates":[{"name","idleSinceMs"}]}`; `null` when the file is
 /// missing, unreadable or empty; `{"unsure":true}` for a relative path or anything JavaScript might read differently.
 pub fn teammates(path: &str, tail: f64) -> String {
-    use crate::checks::guardkit::tail::tail_lines;
+    use crate::checks::guardkit::tail::tail_lines_bounded;
     if !path.starts_with('/') {
         return unsure();
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((lines, _)) = tail_lines(path, n) else { return "null".into() };
-    match crate::checks::idle_agent_sweep::scan::finished_teammates(lines) {
+    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes") as u64) else { return "null".into() };
+    let found = crate::checks::idle_agent_sweep::scan::finished_teammates(lines.by_ref());
+    // a line too long to hold may have carried a notice: the answer is then unknown, never "none finished"
+    if lines.skipped() > 0 {
+        crate::load::note_count("transcript_line_skipped_oversize", "reader", "teammates");
+        return unsure();
+    }
+    match found {
         Ok(v) => json!({"teammates": v.iter().map(|f| json!({"name": f.name, "idleSinceMs": f.idle_since_ms})).collect::<Vec<_>>()}).to_string(),
         Err(_) => unsure(),
     }
@@ -233,14 +239,19 @@ pub fn teammates(path: &str, tail: f64) -> String {
 /// `codex_agents(path, tail)`: JSON text. The agents a Codex rollout tail shows finished but never closed, in the order the
 /// rollout first spawned them: `{"agents":[{"id","label","idleSinceMs"}]}`; `null` and `{"unsure":true}` as [`teammates`].
 pub fn codex_agents(path: &str, tail: f64) -> String {
-    use crate::checks::guardkit::tail::tail_lines;
+    use crate::checks::guardkit::tail::tail_lines_bounded;
     if !path.starts_with('/') {
         return unsure();
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((lines, _)) = tail_lines(path, n) else { return "null".into() };
-    match crate::checks::idle_agent_sweep::codex::finished(lines) {
+    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes") as u64) else { return "null".into() };
+    let found = crate::checks::idle_agent_sweep::codex::finished(lines.by_ref());
+    if lines.skipped() > 0 {
+        crate::load::note_count("transcript_line_skipped_oversize", "reader", "codex_agents");
+        return unsure();
+    }
+    match found {
         Ok(v) => json!({"agents": v.iter().map(|a| json!({"id": a.id, "label": a.label, "idleSinceMs": a.idle_since_ms})).collect::<Vec<_>>()}).to_string(),
         Err(_) => unsure(),
     }
