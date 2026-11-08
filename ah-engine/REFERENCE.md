@@ -6630,7 +6630,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.codex_label_project` | `project` |  |  | The label of the project's Codex directory. |
 | `doctor_msg.codex_launcher_missing` | `Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine do...` |  |  | A Codex registration still invokes the retired anti-hall shell launcher, and that launcher is missing. Placeholders: label, file. |
 | `doctor_msg.codex_missing` | `Codex hooks.json ({label}) missing — run `ah-engine install-codex`` |  |  | There is no Codex hooks file. Placeholder: {label}. |
-| `doctor_msg.codex_node_entries` | `Codex hooks.json ({label}: {file}) still runs {n} Node-era anti-hall hook(s) ...` |  |  | The Codex hooks file still runs Node-era anti-hall hooks (`node .../hooks/<name>.js`), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command). |
+| `doctor_msg.codex_node_entries` | `Codex hooks.json ({label}: {file}) still runs {n} Node-era anti-hall hook(s) ...` |  |  | The Codex hooks file still runs Node-era anti-hall hooks (a `node` command per hook script), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command). |
 | `doctor_msg.codex_none` | `Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped` |  |  | No Codex configuration was found. |
 | `doctor_msg.codex_unwired` | `Codex hooks.json ({label}) present but no anti-hall hooks found — run `ah-eng...` |  |  | The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}. |
 | `doctor_msg.codex_wired` | `Codex hooks.json ({label}) has anti-hall hooks registered` |  |  | The Codex hooks file registers anti-hall's hooks. Placeholder: {label}. |
@@ -6842,7 +6842,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.state_unwritable` | `state directory {dir} is not writable ({err}) - Fix: chmod u+w {dir}, or remo...` |  |  | ST-03. Placeholders: {dir}, {err}. |
 | `doctor_msg.state_windows_mount` | `{dir} is on a Windows drive ({mount}); file locks and sockets are unreliable ...` |  |  | ST-07. Placeholders: {dir}, {mount}. |
 | `doctor_msg.statusline_dispatcher_missing` | `statusline.js dispatcher missing` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
-| `doctor_msg.statusline_installed` | `the anti-hall statusLine in {label} is the retired Node form: the script it r...` |  |  | A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node .../statusline.js` command; that script no longer ships, so the status line is blank until this is removed. |
+| `doctor_msg.statusline_installed` | `the anti-hall statusLine in {label} is the retired Node form: the script it r...` |  |  | A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node` command for its statusline script; that script no longer ships, so the status line is blank until this is removed. |
 | `doctor_msg.statusline_no_output` | `statusline.js produced no output (exit {code})` |  |  | The statusline printed nothing, or failed. Placeholder: {code}. |
 | `doctor_msg.statusline_none` | `no anti-hall statusLine is configured (the statusline is optional; nothing to...` |  |  | No statusLine is configured. |
 | `doctor_msg.statusline_one_line` | `statusline rendered only 1 line — line 2 (context gauge) did NOT render despi...` |  |  | The statusline printed only one line although the payload carried a context window. |
@@ -6896,7 +6896,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `entry_audit.allow` | `26 items` |  |  | What the audit lets through, each with its reason. |
+| `entry_audit.allow` | `27 items` |  |  | What the audit lets through, each with its reason. |
 | `entry_audit.cmd_files` | `12 items` |  |  | Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults (engine/defaults.pristine is a byte-identical copy, compared by the deploy kit, so it is not scanned twice), skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file. |
 | `entry_audit.file_exts` | `.sh, .js, .mjs, .cjs, .py` |  |  | Extensions (with the dot, lower case) that make a file a script for the files section and for the launcher directories. |
 | `entry_audit.generators` | `3 entries, 3 entries` |  |  | Every generator of files the engine itself writes outside the plugin tree: the service units. |
