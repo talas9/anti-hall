@@ -114,6 +114,13 @@ fn write_transcript(dir: &Path, name: &str, big: usize) -> PathBuf {
     p
 }
 
+/// The overlay of this file: the kept walk (`agent_scan.use_store = 0`; with the store, the default, no walk is kept) plus `extra`.
+fn kept(extra: &[(&str, Value)]) {
+    let mut v: Vec<(&str, Value)> = vec![("agent_scan.use_store", json!(0))];
+    v.extend(extra.iter().cloned());
+    ah_engine::defaults::set_overlay(&v);
+}
+
 fn scan_res(p: &Path, kept: bool) -> Res<Option<Scan>> {
     let (path, tail, o) = (p.to_str().unwrap(), 64 * MIB as u64, Opts { now_ms: NOW, ignore_unanswered_stops: false });
     if kept { scan_transcript(path, tail, &o) } else { scan_transcript_uncached(path, tail, &o) }
@@ -138,6 +145,8 @@ fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
     // SAFETY: the one test that reads the environment, and the only thread running when it is set (it is set first).
     unsafe { std::env::set_var("HOME", &dir) };
     ah_engine::defaults::init().unwrap();
+    // the `kept = true` scans below are the kept walk, which `agent_scan.use_store = 0` selects (the store, the default, keeps no walk)
+    kept(&[]);
     let plain = write_transcript(&dir, "plain.jsonl", 0);
     let huge = write_transcript(&dir, "huge.jsonl", 20 * MIB);
     // warm every lazy table once, so the measurement below sees the read and not the one-time set-up
@@ -160,14 +169,14 @@ fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
     assert_eq!(counts().1, 1);
 
     // off (0): the old read, the whole line buffered (the cause of #436)
-    ah_engine::defaults::set_overlay(&[("agent_scan.max_line_bytes", json!(0))]);
+    kept(&[("agent_scan.max_line_bytes", json!(0))]);
     let (opts, tail) = (Opts { now_ms: NOW, ignore_unanswered_stops: false }, 64 * MIB as u64);
     let (got, peak) = peak_of(|| scan_transcript_uncached(huge.to_str().unwrap(), tail, &opts));
     // the whole line is parsed too, and the parse may decline it (the check then defers to Node): that is the old behaviour
     eprintln!("off: scan result is_ok={}", got.is_ok());
     assert!(peak >= 20 * MIB, "off: peak {peak} B; the whole line is held again");
     assert_eq!(counts(), (0, 0), "off: nothing is skipped or degraded");
-    ah_engine::defaults::set_overlay(&[]);
+    kept(&[]);
     a_padded_completion_past_the_bound_makes_the_scan_unknown_and_the_bound_off_still_reads_it(&dir);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -221,10 +230,10 @@ fn a_padded_completion_past_the_bound_makes_the_scan_unknown_and_the_bound_off_s
         assert_eq!(scan_res(&p, kept).unwrap_err(), Unsupported, "kept={kept}");
         assert_eq!(counts(), (1, 1), "kept={kept}");
     }
-    ah_engine::defaults::set_overlay(&[("agent_scan.max_line_bytes", json!(0))]);
+    kept(&[("agent_scan.max_line_bytes", json!(0))]);
     for kept in [false, true] {
         let s = scan(&p, kept).unwrap();
         assert!(s.terminal.contains(&agent), "kept={kept}: off switch: the completion is read again");
     }
-    ah_engine::defaults::set_overlay(&[]);
+    kept(&[]);
 }

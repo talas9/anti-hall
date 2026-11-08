@@ -99,7 +99,7 @@ fn same(path: &Path, what: &str) {
 
 #[test]
 fn a_growing_transcript_scans_the_same_as_a_fresh_read_at_every_step() {
-    store_mode();
+    let _mode = store_mode();
     let dir = scratch("grow");
     let path = dir.join("t.jsonl");
     let body = session().join("\n") + "\n";
@@ -140,7 +140,7 @@ fn a_rewritten_or_shrunk_transcript_is_walked_afresh() {
     let path = dir.join("t.jsonl");
     let lines = session();
     // the store (the default) must notice a shrunk, rewritten or replaced file as the kept walk does
-    store_mode();
+    let _mode = store_mode();
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     same(&path, "first");
     // shrunk: the kept offset is past the end
@@ -155,7 +155,7 @@ fn a_rewritten_or_shrunk_transcript_is_walked_afresh() {
     std::fs::write(&path, other.join("\n") + "\n").unwrap();
     same(&path, "rewritten");
     // replaced by another file at the same path (a new inode)
-    store_mode();
+    set_use_store(1, &[]);
     std::fs::remove_file(&path).unwrap();
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
     same(&path, "replaced");
@@ -225,7 +225,7 @@ fn running(s: &Option<Scan>) -> usize {
 
 #[test]
 fn a_sliding_window_reads_only_what_was_appended_and_answers_as_a_fresh_scan() {
-    kept_mode(&[]);
+    let _mode = kept_locked();
     let s = slide("slide-within", 20);
     for ignore in [false, true] {
         settle(&s, ignore);
@@ -249,32 +249,51 @@ fn a_sliding_window_reads_only_what_was_appended_and_answers_as_a_fresh_scan() {
 }
 
 /// The exact window (no quantum): the tests of the window edge below move it one line at a time.
-fn exact_window() {
-    quantum(0);
+/// The overlay is process-wide and the tests of this file need different modes, so a test holds this lock for its whole run (under
+/// nextest each test has its own process; under `cargo test` they share one).
+static MODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock() -> std::sync::MutexGuard<'static, ()> {
+    MODE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn quantum(pct: u64) {
+fn exact_window() -> std::sync::MutexGuard<'static, ()> {
+    quantum(0)
+}
+
+fn quantum(pct: u64) -> std::sync::MutexGuard<'static, ()> {
+    let g = lock();
     kept_mode(&[("agent_scan.window_quantum_pct", json!(pct))]);
+    g
 }
 
-/// The tests that count the kept walk's bytes and rebuilds run with `agent_scan.use_store = 0`, which selects it: with the store on (the default) the scan is answered from
-/// the transcript store's digests and no walk is kept, so the byte and rebuild counts below have nothing to count. The store's own
-/// answers are compared with a fresh scan in `agent_scan/tests.rs` and `tests/it/transcript_store.rs`.
-fn store_mode() {
-    ah_engine::defaults::init().unwrap();
-    ah_engine::defaults::set_overlay(&[("agent_scan.use_store", json!(1))]);
+fn store_mode() -> std::sync::MutexGuard<'static, ()> {
+    let g = lock();
+    set_use_store(1, &[]);
+    g
 }
 
-fn kept_mode(extra: &[(&str, Value)]) {
+fn set_use_store(on: u64, extra: &[(&str, Value)]) {
     ah_engine::defaults::init().unwrap();
-    let mut values: Vec<(&str, Value)> = vec![("agent_scan.use_store", json!(0))];
+    let mut values: Vec<(&str, Value)> = vec![("agent_scan.use_store", json!(on))];
     values.extend(extra.iter().cloned());
     ah_engine::defaults::set_overlay(&values);
 }
 
+/// Switch to the kept walk (`agent_scan.use_store = 0`) without taking the lock: the caller holds it.
+fn kept_mode(extra: &[(&str, Value)]) {
+    set_use_store(0, extra);
+}
+
+fn kept_locked() -> std::sync::MutexGuard<'static, ()> {
+    let g = lock();
+    kept_mode(&[]);
+    g
+}
+
 #[test]
 fn a_sliding_window_that_loses_a_launch_is_rebuilt_and_answers_as_the_exact_window() {
-    exact_window();
+    let _mode = exact_window();
     let s = slide("slide-loses", 1);
     settle(&s, false);
     let (kept, fresh, _) = scans(&s, false);
@@ -296,7 +315,7 @@ fn a_sliding_window_that_loses_a_launch_is_rebuilt_and_answers_as_the_exact_wind
 
 #[test]
 fn a_sliding_window_that_loses_the_call_of_an_answer_it_still_holds_answers_as_the_exact_window() {
-    exact_window();
+    let _mode = exact_window();
     let dir = scratch("slide-straddle");
     let path = dir.join("t.jsonl");
     let call =
@@ -326,7 +345,7 @@ fn a_sliding_window_that_loses_the_call_of_an_answer_it_still_holds_answers_as_t
 
 #[test]
 fn a_sliding_window_that_loses_a_pending_call_whose_answer_then_arrives_answers_as_the_exact_window() {
-    exact_window();
+    let _mode = exact_window();
     let dir = scratch("slide-straddle-new");
     let path = dir.join("t.jsonl");
     let call =
@@ -359,7 +378,7 @@ fn a_quantized_window_slides_past_a_launch_without_a_rebuild_and_answers_as_a_fr
     // the same transcript as the exact-window test, a line at a time: an exact window passes the launch after one line and the walk
     // that holds it is rebuilt at every step after; the quantized start moves once per quantum (about 20 lines here), so over twelve
     // lines it moves at most once and at most one scan reads more than the appended line
-    quantum(10);
+    let _mode = quantum(10);
     let s = slide("slide-quantum", 1);
     settle(&s, false);
     let mut rebuilds = 0;
@@ -383,7 +402,7 @@ fn a_quantized_window_slides_past_a_launch_without_a_rebuild_and_answers_as_a_fr
 
 #[test]
 fn real_transcripts_cut_at_many_points_scan_the_same() {
-    store_mode();
+    let _mode = store_mode();
     let Some(corpus) = std::env::var_os("AH_SCAN_CORPUS") else { return };
     let dir = scratch("corpus");
     let copy = dir.join("c.jsonl");
@@ -428,7 +447,7 @@ fn verdict(s: &Option<Scan>) -> String {
 /// fresh scan of the same window at every step: the whole answer must be the same. Skipped when unset.
 #[test]
 fn real_transcripts_sliding_through_a_window_scan_the_same() {
-    store_mode();
+    let _mode = store_mode();
     let Some(corpus) = std::env::var_os("AH_SCAN_SLIDE") else { return };
     let num = |k: &str, d: u64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let tail = num("AH_SCAN_SLIDE_TAIL", 64 * 1024 * 1024);
@@ -499,7 +518,7 @@ fn real_transcripts_sliding_through_a_window_scan_the_same() {
 /// borrowed one the stop is invisible and the agent reads as running forever.
 #[test]
 fn a_taskstop_after_a_resume_leaves_the_agent_terminal() {
-    store_mode();
+    let _mode = store_mode();
     let dir = scratch("resume-stop");
     let path = dir.join("t.jsonl");
     let agent = format!("a{:015x}", 1);
