@@ -285,7 +285,41 @@ pub fn heap() -> Heap {
 /// Start a new peak window: the peak becomes the current live size (so a status call can report the peak since the
 /// previous one).
 pub fn reset_peak() {
+    note_burst(PEAK.load(Relaxed));
     PEAK.store(LIVE.load(Relaxed), Relaxed);
+}
+
+/// The burst detector's window: when it started (ms since the epoch), the live heap then, the highest heap seen since.
+struct BurstWindow {
+    start_ms: u64,
+    base_live: u64,
+    max_peak: u64,
+}
+
+static BURST: std::sync::Mutex<BurstWindow> = std::sync::Mutex::new(BurstWindow { start_ms: 0, base_live: 0, max_peak: 0 });
+static BURSTS: AtomicU64 = AtomicU64::new(0);
+
+/// Bursts counted so far: times the live heap rose by more than `mem_gate.burst_bytes` within `mem_gate.burst_window_ms`.
+pub fn bursts() -> u64 {
+    BURSTS.load(Relaxed)
+}
+
+/// Feed the burst detector the heap now and `peak` (the highest heap since the last look: [`reset_peak`] passes the peak it is
+/// about to forget, so a status poll cannot hide a spike). Called as each request's checks finish.
+pub fn note_burst(peak: u64) {
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let live = LIVE.load(Relaxed);
+    let (window_ms, burst_bytes) = (crate::defaults::num("mem_gate.burst_window_ms"), crate::defaults::num("mem_gate.burst_bytes"));
+    let mut w = BURST.lock().unwrap_or_else(|e| e.into_inner());
+    if now_ms.saturating_sub(w.start_ms) > window_ms {
+        *w = BurstWindow { start_ms: now_ms, base_live: live, max_peak: live.max(peak) };
+        return;
+    }
+    w.max_peak = w.max_peak.max(peak).max(live);
+    if w.max_peak.saturating_sub(w.base_live) > burst_bytes {
+        BURSTS.fetch_add(1, Relaxed);
+        *w = BurstWindow { start_ms: now_ms, base_live: live, max_peak: live };
+    }
 }
 
 #[cfg(test)]

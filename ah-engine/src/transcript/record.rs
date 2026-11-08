@@ -14,11 +14,12 @@
 
 use crate::defaults;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Which of the three transcript shapes carried a task-notification
 ///.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Shape {
     /// A `user` entry: `message.content` as a string or as `text` blocks.
     User,
@@ -29,7 +30,7 @@ pub enum Shape {
 }
 
 /// One `<task-notification>` block.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     /// Which shape carried it.
     pub shape: Shape,
@@ -70,7 +71,7 @@ impl Notification {
 
 /// A `task_status` attachment, which a compaction writes for each live background agent
 /// (`hooks/lib/agent-scan.js`, step a0).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStatus {
     /// Record number of the entry.
     pub seq: u64,
@@ -87,7 +88,7 @@ pub struct TaskStatus {
 }
 
 /// One tool use found in an entry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolUse {
     /// The `tool_use` block's `id`, when it has a string one.
     pub id: Option<String>,
@@ -107,7 +108,7 @@ pub struct ToolUse {
 
 /// One event of the task tools, in transcript order: enough to rebuild a task list as
 /// `hooks/lib/task-state.js` `reconstructTasks` does.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TaskEvent {
     /// A use of one of `transcript.task_tools`.
     Use(ToolUse),
@@ -128,7 +129,7 @@ pub enum TaskEvent {
 /// newest of each: `collectTextFromEntryDedup` repeats no text, `collectTextFromEntryLegacy` is byte-identical to the
 /// pre-3e72bf3 hook, which repeats text read from `message.content`; the regex path and a stored loop-safety hash
 /// depend on the legacy one).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assistant {
     /// The extracted text.
     pub text: String,
@@ -143,7 +144,7 @@ pub struct Assistant {
 }
 
 /// The last typed user prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prompt {
     /// The prompt text.
     pub text: String,

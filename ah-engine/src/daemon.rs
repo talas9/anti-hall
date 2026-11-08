@@ -903,6 +903,16 @@ pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u6
         });
     }
     t.with_metrics(|m| {
+        if let Some(store) = crate::transcript::store::global_if_started() {
+            store.publish(m);
+        }
+        crate::memstat::note_burst(crate::memstat::heap().peak);
+        static BURSTS_PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seen = crate::memstat::bursts();
+        let was = BURSTS_PUBLISHED.swap(seen, std::sync::atomic::Ordering::Relaxed);
+        if seen > was {
+            m.add("heap_burst_total", &[], seen - was);
+        }
         let l = [("check", check), ("size", size.as_str())];
         m.add("check_bytes_read", &l, bytes);
         m.add("check_cpu_us", &[("check", check)], cpu);
@@ -2254,6 +2264,7 @@ pub fn serve(start_reason: &str) {
     crate::dispatch::sweep_stale_spool();
 
     crate::mem::register_defaults_leak();
+    crate::transcript::store::register_mem();
     let rules_path = paths::rules_file();
     let host_rules = crate::layers::load_host_rules(&rules_path, defaults::env_var("rules").is_some()).map(|(r, _)| r).unwrap_or_default();
     let mut sh = Shared::new(cfg, &crate::version(), host_rules, rules_path);

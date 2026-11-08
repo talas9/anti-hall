@@ -1783,7 +1783,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `transcript.agent_map_max` | `256` |  | count | Most agents the keyed agent map holds (launch offset, terminal or not). It outlives the horizon; the oldest-inserted agent goes first. |
+| `transcript.agent_tools` | `Agent, Task` |  |  | Names of the tools that launch an agent; a use of one is recorded in the keyed agent map under its tool-use id. |
 | `transcript.assistant_text_max_bytes` | `1048576` |  | bytes | Longest last-assistant text kept; the rest is cut at a character boundary and flagged. |
+| `transcript.cold_build_permits` | `1` |  | count | Cold builds (a first touch with no usable snapshot, or a rebuild after a rewrite) that may run at once in the whole process, so sessions that start together share one read buffer and never hold N windows. |
 | `transcript.ev_role_assistant` | `assistant` |  |  | The role of an assistant transcript entry. |
 | `transcript.ev_role_attachment` | `attachment` |  |  | The role of a hook attachment transcript entry. |
 | `transcript.ev_role_user` | `user` |  |  | The role of a user transcript entry. |
@@ -1799,24 +1802,44 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `transcript.evidence_read_chunk_bytes` | `65536` |  | bytes | Bytes read at a time while looking for the newline that ends the cut first line of a window. |
 | `transcript.evidence_walk_idle_ms` | `30000` |  | ms | How long a kept evidence walk may sit unused before it is dropped (it is only asked about within the script run that made it). |
 | `transcript.evidence_walk_max_entries` | `16` |  | count | How many evidence walks (`ah.transcript.evidenceWalk`, the claim ledger's) are kept at once: one per script run in flight, replaced by the next walk of the same worker. The least recently used is dropped first, and a question about a dropped walk makes the check fail open. |
+| `transcript.fact_fixed_bytes` | `96` |  | bytes | Bytes charged to the budgets for every fact on top of its strings and JSON values (the record itself). |
+| `transcript.fact_text_max_bytes` | `32768` |  | bytes | Longest assistant text a stored fact keeps; the rest is cut at a character boundary and flagged. A reader that needs a whole long reply streams the file instead. |
 | `transcript.final_statuses` | `completed failed stopped` |  |  | Task-notification statuses the DevSwarm idle gate treats as final, case-insensitive. |
 | `transcript.fingerprint_bytes` | `256` |  | bytes | Leading bytes of the file hashed to notice a rewritten or rotated transcript. |
+| `transcript.global_budget_bytes` | `25165824` |  | bytes | Bytes all session stores may hold together; over it the least recently used sessions are evicted (their snapshot is written first). |
+| `transcript.horizon_bytes` | `67108864` |  | bytes | How far behind the end of a transcript the store keeps facts (the widest window any consumer asks for). A cold build reads this much at most; older facts are dropped, except the keyed task and agent maps. |
 | `transcript.idle_ttl_ms` | `21600000` |  | ms | How long the registry keeps an index nobody asked for; a dropped index is rebuilt from the file on the next request. |
 | `transcript.initial_window_bytes` | `1572864` |  | bytes | Bytes read from the end of a transcript the first time it is indexed (a long transcript is never read from the start). |
 | `transcript.malformed_kind` | `malformed` |  |  | Kind name that counts non-empty lines that are not a JSON object. |
 | `transcript.max_indexes` | `32` |  |  | Most transcripts the registry indexes at once; the least recently used one is dropped beyond this. |
 | `transcript.max_kinds` | `64` |  |  | Most distinct record kinds counted separately; further kinds are counted under the overflow kind. |
+| `transcript.max_line_bytes` | `4194304` |  | bytes | Longest transcript line the store parses; a longer line is skipped (counted in transcript_store_oversize_lines) and a query whose window covers it answers unsure. |
 | `transcript.max_update_bytes` | `8388608` |  | bytes | Most appended bytes one refresh reads; when more than this was appended since the last refresh the index skips ahead to the newest bytes and counts a gap instead of stalling the hook. |
 | `transcript.msg_io` | `Cannot read the transcript {path}: {err}.` |  |  | Printed when a transcript cannot be read; {path} and {err} are filled in. |
+| `transcript.msg_unsure` | `The transcript store cannot answer ({why}); the caller defers.` |  |  | Printed when a transcript question is left unsure; {why} is one of the transcript.unsure_* words. |
 | `transcript.msg_walk_lost` | `No evidence walk is kept for this check run.` |  |  | Thrown by `ah.transcript.walkHas` / `walkNumbers` when the thread has no kept evidence walk (it was never made, or the memory registry dropped it). |
 | `transcript.msg_walk_which` | `Unknown evidence walk text {which}; expected evidence or withLast.` |  |  | Thrown by `ah.transcript.walkHas` / `walkNumbers` for a text other than `evidence` or `withLast`; {which} is the name given. |
 | `transcript.non_prompt_prefixes` | `<task-notification, <command-, <local-command, <system-reminder` |  |  | Text starts that mark a user entry as injected, not typed. |
 | `transcript.notifications_kept` | `2048` |  |  | How many of the newest task-notification blocks the index keeps. |
 | `transcript.overflow_kind` | `other` |  |  | Kind name that collects records whose type is missing or not a string, and kinds beyond the limit. |
+| `transcript.oversize_head_bytes` | `256` |  | bytes | Leading bytes of a skipped oversize line that are kept (enough to classify its kind); the rest is read past and dropped. |
+| `transcript.oversize_kept` | `64` |  | count | Most skipped-line offsets remembered per session; past it the oldest is forgotten and `covered_from` rises past it. |
 | `transcript.prompt_max_bytes` | `65536` |  | bytes | Longest last typed prompt kept; the rest is cut at a character boundary and flagged. |
+| `transcript.read_buf_bytes` | `65536` |  | bytes | Size of the one fixed buffer the transcript store reads a file with. A reader never holds a window: it reads this much at a time and parses each byte once. |
 | `transcript.recent_tool_uses` | `64` |  |  | How many of the newest tool uses of any tool the index keeps. |
+| `transcript.session_budget_bytes` | `2097152` |  | bytes | Bytes of facts and keyed maps one session may hold. Over it the oldest facts are evicted and `covered_from` rises; a query whose window starts before it answers unsure (counted in transcript_store_partial). |
+| `transcript.snapshot_dir` | `tstore` |  |  | Directory under the state directory that holds the restart snapshots of the session stores. |
+| `transcript.snapshot_ext` | `.json` |  |  | File extension of a session store snapshot. |
+| `transcript.snapshot_max_bytes` | `4194304` |  | bytes | Largest snapshot written or loaded; a session over it is not saved and costs one cold build after a restart. |
+| `transcript.snapshot_version` | `1` |  |  | Version of the snapshot format; a snapshot of another version is ignored. |
+| `transcript.stamp_prefix` | `transcript.` |  |  | Prefix of the settings whose values stamp a restart snapshot: a snapshot is used only when none of them changed since it was written. |
+| `transcript.tail_probe_bytes` | `64` |  | bytes | Bytes hashed just before a session's offset to notice an in-place rewrite that keeps the start of the file. |
+| `transcript.task_create_tool` | `TaskCreate` |  |  | Name of the tool that creates a task; its result carries the new task's id. |
+| `transcript.task_created_re` | `Task #(\d+) created` |  |  | Regular expression whose first group is the task id in a create result. |
 | `transcript.task_events` | `4096` |  |  | How many of the newest task-tool uses and results the index keeps. |
+| `transcript.task_ids_max` | `2048` |  | count | Most task-tool use ids remembered, so a tool result can be recognised as a task tool's result. |
 | `transcript.task_input_max_bytes` | `65536` |  | bytes | Largest serialized task-tool input kept as is; a larger input is replaced by null and flagged. |
+| `transcript.task_map_max` | `1024` |  | count | Most tasks the keyed task map holds (subject, status, owner, blocked-by). It outlives the horizon, which is what lets the store replace a long backward walk for task subjects; the oldest-inserted task goes first. |
 | `transcript.task_result_max_bytes` | `1024` |  | bytes | Longest task-tool result text kept; the rest is cut at a character boundary and flagged. |
 | `transcript.task_statuses_kept` | `256` |  |  | How many of the newest task_status attachments (agents re-injected by a compaction) the index keeps. |
 | `transcript.task_tools` | `TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet` |  |  | Names of the task tools whose uses and string results are kept in order, so a task list can be rebuilt from the index. |
@@ -1826,6 +1849,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `transcript.tasks_cache_probe_bytes` | `4096` |  | bytes | Bytes the first look for the newline that ends the cut first line of a window reads (a line is usually shorter); each further look reads twice as much, up to transcript.evidence_read_chunk_bytes. |
 | `transcript.terminal_statuses` | `completed failed stopped killed cancelled canceled` |  |  | Task-notification statuses that mean an agent has ended, case-insensitive. |
 | `transcript.tool_input_max_bytes` | `4096` |  | bytes | Largest serialized tool input kept as is for a recent tool use; a larger input is replaced by null and flagged. |
+| `transcript.unsure_busy` | `busy` |  |  | Short word for a question left unsure because another request held the session or a cold build was running. |
+| `transcript.unsure_io` | `io` |  |  | Short word for a question left unsure because the transcript could not be read. |
+| `transcript.unsure_missing` | `missing` |  |  | Short word for a question left unsure because the transcript is missing or empty. |
+| `transcript.unsure_partial` | `partial` |  |  | Short word for a question left unsure because the window starts before what the store still holds or covers a skipped line. |
+| `transcript.wait_ms` | `2000` |  | ms | How long a request waits for another request's refresh of the same session, or for a cold-build permit, before it answers unsure instead of reading the file itself. |
 
 ### gitcache.toml / gitcache
 
@@ -13694,6 +13722,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `files.mem_log` | `mem.ndjson` |  |  | Per-request memory log file name (state directory). |
 | `files.mem_snapshot` | `mem-snapshot.json` |  |  | Cap-trip memory snapshot file name (state directory). |
 
+### diagnostics.toml / mem_gate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mem_gate.burst_bytes` | `20971520` |  | bytes | A heap burst (heap_burst_total) is a rise of the live heap by more than this within mem_gate.burst_window_ms (counted in heap_burst_total). |
+| `mem_gate.burst_window_ms` | `1000` |  | ms | Window within which a rise of the live heap by mem_gate.burst_bytes counts as a burst. |
+| `mem_gate.parse_ratio_max_permille` | `1050` |  | permille | Gate bar: bytes the transcript store parsed divided by bytes appended to the transcripts, in permille (1000 = every byte parsed once). |
+| `mem_gate.peak_footprint_mb` | `150` |  | MB | Gate bar: the peak physical footprint of the scratch daemon during the gate (under the 200 MB rss_cap). |
+| `mem_gate.run_secs` | `600` |  | s | How long each phase of the memory gate (the big transcripts, then the 5 MB control) replays hook payloads. |
+| `mem_gate.sessions` | `4` |  | count | How many sessions (clones of the largest transcript) the memory gate drives at once, one stream of UserPromptSubmit and Stop payloads each. |
+| `mem_gate.size_delta_mb` | `8` |  | MB | Gate bar: the peak heap with the big transcripts minus the peak heap with the 5 MB control must stay under this. The difference isolates the term that grows with the transcript size from the non-transcript peaks. |
+
 ### mem.toml / mem
 
 | Key | Default | Env override | Unit | What it is |
@@ -13802,6 +13842,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mem.tasks_cache_hard_bytes` | `12582912` |  | bytes | Bytes of kept transcript task lines at which an insert is refused (the answer is returned, not kept) and the cache is recycled. |
 | `mem.tasks_cache_low_water_pct` | `80` |  |  | Percent of mem.tasks_cache_soft_bytes the kept transcript task lines are evicted down to when the soft limit is reached. |
 | `mem.tasks_cache_soft_bytes` | `6291456` |  | bytes | Bytes of kept transcript task lines held before the least recently used are dropped down to the low-water mark. |
+| `mem.transcript_store_hard_bytes` | `33554432` |  | bytes | Bytes of the per-session transcript fact stores past which every session is dropped (each is rebuilt from its transcript on the next request). |
+| `mem.transcript_store_low_water_pct` | `75` |  |  | Percent of mem.transcript_store_soft_bytes the stores are evicted down to when the soft limit is reached. |
+| `mem.transcript_store_soft_bytes` | `25165824` |  | bytes | Bytes of the per-session transcript fact stores (the `transcript_store` holder) logged as a soft excursion; the least recently used sessions are evicted down to the low-water mark. |
 | `mem.transcript_tail_hard_bytes` | `8388608` |  | bytes | Bytes of cached transcript-tail answers at which an insert is refused (the answer is returned, not kept) and the cache is recycled. |
 | `mem.transcript_tail_low_water_pct` | `80` |  |  | Percent of mem.transcript_tail_soft_bytes the transcript-tail cache is evicted down to when the soft limit is reached. |
 | `mem.transcript_tail_max_entries` | `256` |  |  | Transcript-tail answers the cache keeps at most; past it the least recently used is dropped first. |
@@ -15008,6 +15051,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `evidence_cache_rebuild` | counter | lookups | reason | Why a transcript evidence lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place). |
 | `evidence_walk` | counter | walks | result | Evidence walks (the claim ledger's `ah.transcript.evidenceWalk`) the memory registry refused to keep, so the check deferred. |
 | `fail_open` | counter | events | reason, check | Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict). |
+| `heap_burst_total` | counter | bursts |  | Times the live heap rose by more than mem_gate.burst_bytes within mem_gate.burst_window_ms (a transient allocation spike, whatever caused it). |
 | `hook_calls` | counter | requests | event | Hook requests served, by hook event. |
 | `hook_latency_us` | histogram | us | event | Wall time to serve a hook request inside the daemon, by hook event. |
 | `hook_phase_us` | histogram | us | event, phase | Where the time of a hook call goes, by hook event and phase: the client's connect, request-to-ACK, ACK-to-response; the daemon's queue wait, judging and delivery (reply written to ACK(res)); the launcher's startup. |
@@ -15053,6 +15097,23 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
+| `transcript_read_buf_max_bytes` | gauge | bytes |  | The most memory any transcript reader held at once (its fixed buffer plus the longest line kept); the memory gate bounds it by transcript.read_buf_bytes plus transcript.max_line_bytes. |
+| `transcript_store_appended_bytes` | counter | bytes |  | Bytes the transcripts grew by between incremental refreshes. |
+| `transcript_store_bytes` | gauge | bytes |  | Bytes the session stores hold now. |
+| `transcript_store_cold_builds` | counter | builds |  | Session stores built from the transcript file (a first touch with no usable snapshot, or a rebuild). |
+| `transcript_store_cold_bytes` | counter | bytes |  | Transcript bytes the cold builds read. |
+| `transcript_store_evictions` | counter | sessions |  | Session stores dropped by a budget, the session cap or the idle TTL. |
+| `transcript_store_oversize_lines` | counter | lines |  | Transcript lines skipped by the store because they were longer than transcript.max_line_bytes. |
+| `transcript_store_partial` | counter | questions |  | Transcript questions answered unsure because the window starts before what the store holds or covers a skipped line. |
+| `transcript_store_rebuilds` | counter | builds |  | Session stores rebuilt because the transcript was truncated, rotated or rewritten. |
+| `transcript_store_refresh_bytes` | counter | bytes |  | Transcript bytes the incremental refreshes parsed; divided by transcript_store_appended_bytes it is 1.0 when every byte is parsed once. |
+| `transcript_store_sessions` | gauge | sessions |  | Session stores held now. |
+| `transcript_store_snapshot_loads` | counter | snapshots |  | Restart snapshots loaded on a first touch (the store then parsed only the bytes appended since). |
+| `transcript_store_snapshot_misses` | counter | snapshots |  | Restart snapshots found but not usable (the file changed, the defaults changed, or the format differs). |
+| `transcript_store_snapshot_skipped` | counter | snapshots |  | Restart snapshots not written because they were over transcript.snapshot_max_bytes. |
+| `transcript_store_snapshot_writes` | counter | snapshots |  | Restart snapshots written. |
+| `transcript_store_wait_timeouts` | counter | requests |  | Waits that gave up after transcript.wait_ms and answered unsure. |
+| `transcript_store_waits` | counter | requests |  | Requests that found a refresh of their session already in flight and waited for it. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
 | `sqlite_alloc_routing` | counter | starts | result | SQLite allocator routing attempts at daemon start (storage.sqlite_use_global_allocator on), by result: routed (SQLite now allocates through the engine's allocator) or failed (SQLite had already started; it stays on the C library's). |
