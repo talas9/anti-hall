@@ -7,8 +7,8 @@
 # the process as a whole. `ah-engine status --memory` shows every holder against these numbers.
 
 [mem.global_soft_bytes]
-doc = "SOFT limit (125 MB, owner decision 2026-10-23; a limit, not a target). Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
-value = 131072000
+doc = "SOFT limit (150 MB; was 125 MB, owner decision 2026-10-23, raised 2026-11-08 by memory plan C phase 0: the live steady footprint measured 119.7 MB with spikes of 40-90 MB, so 125 MB left the daemon at the edge and every tick past it shrank the regex cache and the other holders again; a limit, not a target, and the 100 MB target is diagnostics.mem_target_mb). Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
+value = 157286400
 min = 1048576
 unit = "bytes"
 
