@@ -256,8 +256,8 @@ doc = "A live self-test the engine does not decide: the check defers this payloa
 value = "{check}: the engine does not decide this self-test, so it was not exercised here"
 
 [doctor_msg.statusline_installed]
-doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}."
-value = "legacy anti-hall statusLine still configured ({label}) -> uninstall-statusline can clean it up"
+doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node .../statusline.js` command; that script no longer ships, so the status line is blank until this is removed."
+value = "the anti-hall statusLine in {label} is the retired Node form: the script it runs no longer ships, so the status line is blank - Fix (main session): ~/.anti-hall/ah-engine/bin/ah-engine uninstall-statusline (it restores the settings backup the old installer kept)"
 
 [doctor_msg.statusline_set]
 doc = "A custom statusline is configured. Placeholders: {label}, {command}."
@@ -265,7 +265,7 @@ value = "statusline set ({label}) -> {command}…"
 
 [doctor_msg.statusline_none]
 doc = "No statusLine is configured."
-value = "no anti-hall statusLine configured (installer retired)"
+value = "no anti-hall statusLine is configured (the statusline is optional; nothing to fix)"
 
 [doctor_msg.workflow_found]
 doc = "Saved Workflow templates exist. Placeholder: {files}."
@@ -308,8 +308,8 @@ doc = "A repair row that did nothing. Placeholders: {id}, {msg}."
 value = "skipped [{id}] {msg}"
 
 [doctor_msg.unhandled_flag]
-doc = "A flag of the Node doctor that the engine doctor does not handle. Placeholder: {flag}."
-value = "{flag} is not handled by the engine doctor yet (D81); run the Node doctor for it"
+doc = "A flag of the retired Node doctor that the engine doctor does not handle. Placeholder: {flag}."
+value = "{flag} is not handled by the engine doctor; it was skipped"
 
 [doctor_msg.head_environment]
 doc = "The heading of the environment section."
@@ -767,7 +767,7 @@ value = "Node witness"
 
 [doctor_msg.bin_missing]
 doc = "BIN-01. Placeholders: {path}, {bootstrap}."
-value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} --download -v"
+value = "engine binary not installed at {path}: hook calls pass through unchecked, so the guards are not running (an ah-engine on PATH, or the optional Node backup, is used when present) - Fix: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_not_file]
 doc = "BIN-02. Placeholders: {path}, {kind}, {bootstrap}."
@@ -825,9 +825,13 @@ value = "{path} was not installed by the bootstrap (a local build); the bootstra
 doc = "BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}."
 value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {bootstrap} --download -v"
 
+[doctor_l.msg_engine_defaults_unloadable]
+doc = "The engine runs and reports a version but cannot load this plugin's defaults (a plugin update it predates): every hook call is handed back unchecked. Placeholders: {have}, {detail} (the engine's first error line), {bootstrap}."
+value = "engine {have} is installed but cannot load this plugin's settings ({detail}), so the guards are NOT running and every hook call passes through unchecked - Fix: run `ah-hook install -v`, or: sh {bootstrap} --download -v (a failure is logged in ~/.anti-hall/ah-engine/bootstrap.log)"
+
 [doctor_msg.bin_version_differs]
 doc = "BIN-09. Placeholders: {have}, {want}, {bootstrap}."
-value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} --download -v"
+value = "engine {have} is installed but the plugin pins {want}; it updates by itself at a session start only when the engine.bootstrap setting is on - Fix: run `ah-hook install -v`, or: sh {bootstrap} --download -v (a failure is logged in ~/.anti-hall/ah-engine/bootstrap.log)"
 
 [doctor_msg.bin_no_run]
 doc = "BIN-12. Placeholders: {path}, {why}, {bootstrap}."
@@ -851,7 +855,7 @@ value = "the lock has no version"
 
 [doctor_msg.lock_no_asset]
 doc = "BIN-10. Placeholder: {triple}."
-value = "the plugin's ah-engine.lock has no build for {triple}; the Node hooks stay in use - Fix: none, this platform is not released yet"
+value = "the plugin's ah-engine.lock has no build for {triple}, so no engine can be installed here and hook calls pass through unchecked (the optional Node backup, when installed, decides instead) - Fix: none, this platform is not released yet"
 
 [doctor_msg.why_signal]
 doc = "A program died of a signal. Placeholders: {sig}, {err}."
@@ -972,7 +976,7 @@ value = "daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix
 
 [doctor_msg.breaker]
 doc = "DMN-09. Placeholders: {secs}, {reason}."
-value = "client circuit breaker open for {secs}s more ({reason}); hooks use the Node fallback meanwhile - Fix: after fixing the cause: ah-engine reset"
+value = "client circuit breaker open for {secs}s more ({reason}); hook calls pass through unchecked meanwhile (the optional Node backup, when installed, decides instead) - Fix: after fixing the cause: ah-engine reset"
 
 [doctor_msg.failure_recorded]
 doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
@@ -1325,13 +1329,24 @@ value = "not a file"
 # ---- the statusline render check ----------------------------------------------------------------------------------------------------
 
 [doctor.statusline_dispatcher]
-doc = "The statusline dispatcher script, relative to the plugin root; the render check requires it to be installed."
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
 value = "../anti-hall-node/statusline/statusline.js"
 
 [doctor.statusline_rich]
-doc = "The line-1 renderer script, relative to the plugin root."
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
 value = "../anti-hall-node/statusline/statusline-rich.js"
 
+[doctor_msg.statusline_dispatcher_missing]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "statusline.js dispatcher missing"
+
+[doctor_msg.statusline_rich_ok]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "statusline-rich.js (line-1 renderer) present"
+
+[doctor_msg.statusline_rich_bad]
+doc = "Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it."
+value = "statusline-rich.js missing — line 1 falls back to the simple renderer"
 
 [doctor.statusline_sample]
 doc = "The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string."
@@ -1341,10 +1356,6 @@ value = "{\"workspace\":{\"current_dir\":{cwd}},\"cwd\":{cwd},\"model\":{\"displ
 doc = "How many lines the statusline must print for the render check to pass (line 1 plus the context gauge on line 2)."
 value = 2
 min = 1
-
-[doctor_msg.statusline_dispatcher_missing]
-doc = "The statusline dispatcher script is not installed."
-value = "statusline.js dispatcher missing"
 
 [doctor_msg.statusline_renders]
 doc = "The statusline printed both lines. Placeholder: {n}."
@@ -1357,16 +1368,6 @@ value = "statusline rendered only 1 line — line 2 (context gauge) did NOT rend
 [doctor_msg.statusline_no_output]
 doc = "The statusline printed nothing, or failed. Placeholder: {code}."
 value = "statusline.js produced no output (exit {code})"
-
-[doctor_msg.statusline_rich_ok]
-doc = "The line-1 renderer script is present."
-value = "statusline-rich.js (line-1 renderer) present"
-
-[doctor_msg.statusline_rich_bad]
-doc = "The line-1 renderer script is missing."
-value = "statusline-rich.js missing — line 1 falls back to the simple renderer"
-
-# ---- OMC, Codex and other plugins ---------------------------------------------------------------------------------------------------
 
 [doctor.omc_probe_session]
 doc = "The session id the OMC loop probe presents (a loop pinned to another session does not count)."
@@ -1483,6 +1484,10 @@ value = "Codex hooks.json ({label}) has anti-hall hooks registered"
 [doctor_msg.codex_launcher_missing]
 doc = "A Codex registration still invokes the retired anti-hall shell launcher, and that launcher is missing. Placeholders: label, file."
 value = "Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine doctor --repair`"
+
+[doctor_msg.codex_node_entries]
+doc = "The Codex hooks file still runs Node-era anti-hall hooks (`node .../hooks/<name>.js`), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command)."
+value = "Codex hooks.json ({label}: {file}) still runs {n} Node-era anti-hall hook(s) (first: {first}); they fail on every call because the scripts no longer ship, so no Codex guard runs - Fix: ah-engine install-codex --global (it replaces them and keeps a backup)"
 
 [doctor_msg.codex_unwired]
 doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
@@ -2356,6 +2361,40 @@ value = 1
 doc = "Prefix of the scratch file the doctor creates (and removes) to test that a directory is writable."
 value = ".doctor-probe-"
 
+[doctor_l.probe_defaults_load]
+doc = "1 (default): before ah-hook doctor hands over to the engine's doctor it also runs a verb that loads this plugin's defaults (doctor_l.defaults_probe_cmd): an engine that answers `version` but cannot load them (a plugin update it predates) is reported as such, and the built-in diagnosis runs instead. 0: only `version` is probed."
+value = 1
+min = 0
+max = 1
+
+[doctor_l.launcher_health_with_engine]
+doc = "1 (default): when ah-hook doctor hands over to the engine's doctor it first runs its own install-health checks (Node entries in the hooks files, Node launchers in ~/.anti-hall/bin, the retired statusLine, the client binary) and shows them only when they find something; a failing check keeps the exit code at 1. 0: the engine's doctor alone."
+value = 1
+min = 0
+max = 1
+
+[doctor.codex_node_entries]
+doc = "1 (default): the engine doctor reports Codex hook commands that still run a Node-era anti-hall script (doctor.codex_node_entry_re) as a failure, with the command that replaces them. 0: only the old 'no anti-hall hooks found' check."
+value = 1
+min = 0
+max = 1
+
+[doctor.codex_node_entry_re]
+doc = "A Codex hooks.json command (backslashes already turned into slashes) that runs a Node-era anti-hall hook: `node` followed by a path under an anti-hall directory that ends in a .js file. The scripts no longer ship."
+value = '\bnode\b[^|&;]*/anti-hall/[^|&;]*\.js'
+
+[metric.doctor_codex_node_entries]
+doc = "Codex hooks files the engine doctor found still running Node-era anti-hall hook scripts."
+value = { kind = "counter", unit = "count", labels = [] }
+
+[metric.doctor_statusline_skipped]
+doc = "Engine doctor runs that skipped the statusline render check because no statusLine running `ah-hook statusline` is configured."
+value = { kind = "counter", unit = "runs", labels = [] }
+
+[doctor_l.defaults_probe_cmd]
+doc = "The engine arguments ah-hook doctor runs (after the binary) to prove the engine can load this plugin's defaults: the verb must read them and exit 0 when it can, and exit non-zero when it cannot. Not read-only: a failed load rewrites the engine's defaults.error note."
+value = ["config"]
+
 [doctor_l.run_s]
 doc = "Hard limit for one command the doctor runs (the engine's version, git)."
 value = 5
@@ -2395,6 +2434,30 @@ value = ["ps", "-p", "{pid}", "-o", "command="]
 [doctor_l.hook_files]
 doc = "The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. Relative paths cover the current project."
 value = ["{root}/hooks/hooks.json", "{root}/codex/hooks/hooks.json", "{home}/.codex/hooks.json", ".codex/hooks.json", "{home}/.claude/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/codex/hooks/hooks.json"]
+
+[doctor_l.registry_key_prefix]
+doc = "The keys of the host's installed-plugins registry that are anti-hall's; only the installPath of those is judged for Node entry paths among the host's cache copies."
+value = "anti-hall@"
+
+[doctor_l.host_cache_marks]
+doc = "A hooks file whose path holds one of these is a host cache copy: judged only when it is in a registered installPath or the running plugin root; any other is reported as information (an old version dir an upgrade left behind)."
+value = ["/.claude/plugins/cache/", "/.codex/plugins/cache/"]
+
+[doctor_l.codex_cache_marks]
+doc = "The subset of the host cache marks that belong to Codex. Codex records no install path (its config.toml holds only an enabled flag per plugin), so in these caches only the newest version dir (by semver) of a plugin is judged; older version dirs an upgrade left behind are reported as information. Layout under the mark: <marketplace>/<plugin>/<version>/."
+value = ["/.codex/plugins/cache/"]
+
+[doctor_l.msg_health_other_cache]
+doc = "Information line. Placeholders: {n}, {first}."
+value = "{n} older anti-hall copy(ies) in the host's plugin cache are not the registered install and are not judged (first: {first})"
+
+[doctor_l.msg_health_other_cache_unmatched]
+doc = "Information line when the host's registry has no anti-hall entry and the run did not start from a cache copy, so no copy can be told apart as the install. Placeholders: {n}, {first}."
+value = "{n} anti-hall copy(ies) in the host's plugin cache were not judged because no registered install was found to match them against (first: {first}); one of them may be the install in use"
+
+[doctor_l.msg_health_other_cache_codex]
+doc = "Information line for Codex cache version dirs older than the newest. Placeholders: {n}, {first}."
+value = "{n} older anti-hall version dir(s) in the Codex plugin cache are not judged (first: {first}); Codex records no install path, so only the newest version dir of the plugin is judged"
 
 [doctor_l.msg_builtin_daemon_note]
 doc = "Informational line of the built-in doctor."
@@ -2442,7 +2505,7 @@ value = "{file} still runs {n} hook command(s) through the retired shell wrapper
 
 [doctor_l.msg_health_node_entry]
 doc = "Placeholders: {file}, {n}, {first}."
-value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: update the plugin, or ah-engine doctor --repair"
+value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: in a plugin hooks.json, update the plugin; in the Codex hooks file run `ah-engine install-codex --global` (it replaces the entries and keeps a backup; --repair does not rewrite them)"
 
 [doctor_l.msg_health_hooks_ok]
 doc = "Placeholder: {file}."
@@ -2458,7 +2521,7 @@ value = "the plugin ships no shell file besides hooks/install.sh"
 
 [doctor_l.msg_health_shim_bad]
 doc = "Placeholders: {path}, {first}."
-value = "{path} is not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine doctor --repair regenerates it, or move it aside and the next session recreates it"
+value = "{path} is a retired Node launcher, not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine doctor --repair moves it to <state>/retired/ (nothing is deleted)"
 
 [doctor_l.msg_health_shims_ok]
 doc = "Placeholders: {n}, {dir}."

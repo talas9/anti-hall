@@ -158,9 +158,9 @@ function bbMarker(p) {
   var home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
   if (!home) return null;
-  var paths = ah.cfg('agent_tracker.paths'), key = '', max = ah.cfg('agent_reminders.key_max');
-  for (var i = 0; i < id.length && i < max; i++) key += /[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_';
-  var rel = ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key + ah.cfg('burn.marker_ext');
+  var paths = ah.cfg('agent_tracker.paths'), key = [], max = ah.cfg('agent_reminders.key_max');
+  for (var i = 0; i < id.length && i < max; i++) key.push(/[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_');
+  var rel = ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key.join('') + ah.cfg('burn.marker_ext');
   var marker = ah.path.join(home, rel);
   if (ah.fs.size(marker) === null) return null;
   var raw = ah.fs.readText(marker), m;

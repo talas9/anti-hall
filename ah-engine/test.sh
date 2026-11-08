@@ -80,7 +80,7 @@ if [ "$rc" -eq 0 ]; then
   fi
 fi
 if [ "$rc" -eq 0 ]; then
-  sh tests/wrapper.sh && sh tests/bootstrap.sh
+  sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
   rc=$?
 fi
 sleep 0.3

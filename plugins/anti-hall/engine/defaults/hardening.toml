@@ -366,3 +366,7 @@ value = 3
 [diag.daemon_busy_prefix]
 doc = "Report note prefix of the daemon's own split of its BUSY replies (status busy_by_reason)."
 value = "daemon busy_by_reason"
+
+[common.log_tail_lines]
+doc = "Lines of the daemon's event log a failing bar copies into the report (why a daemon went away)."
+value = 20

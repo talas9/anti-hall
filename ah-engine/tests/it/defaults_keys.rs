@@ -170,8 +170,15 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     literals.extend(shipped.iter().filter(|k| k.starts_with("script.prewarm_")).cloned());
     // Retired fields from the immutable pristine schema remain required by defaults::load's
     // repair path. Keep this list explicit: newly unused fields must still fail the audit.
+    // The last published engine (0.2.1) also refuses a plugin whose defaults lack burn.report_heredoc_re, burn.send_chain_re,
+    // burn.send_heredoc_opener_re, common.log_tail_lines, git_audit.event, statusline.chip_label, statusline.ctx_mark or
+    // task_guard.prune_advisory (`missing_key`, and every hook then passes), so those stay shipped though 0.3.0 no longer reads them.
     let compatibility: BTreeSet<&str> = [
         "act.msg_no_session",
+        "burn.report_heredoc_re",
+        "burn.send_chain_re",
+        "burn.send_heredoc_opener_re",
+        "common.log_tail_lines",
         "devswarm_prompt.escape_marker",
         "devswarm_role.pg_frame_head",
         "devswarm_role.pg_frame_indent",
@@ -179,12 +186,18 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         "devswarm_role.pg_frame_override",
         "devswarm_role.pg_frame_why",
         "devswarm_role.pg_why",
+        "doctor.statusline_dispatcher",
+        "doctor.statusline_rich",
+        "doctor_msg.statusline_dispatcher_missing",
+        "doctor_msg.statusline_rich_bad",
+        "doctor_msg.statusline_rich_ok",
         "git.block_emoji",
         "git.block_mark",
         "git.label_allowed",
         "git.label_instead",
         "git.label_override",
         "git.label_why",
+        "git_audit.event",
         "guardkit.brief_why",
         "mesh_write.cause_not_registered",
         "mesh_write.heal_cooldown_flag",
@@ -210,6 +223,9 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         "nested_spawn.summary",
         "routine.sweep_step_files",
         "routine.sweep_step_units",
+        "statusline.chip_label",
+        "statusline.ctx_mark",
+        "task_guard.prune_advisory",
         "tasklist_guard.details_label",
         "update.zero_version",
     ]

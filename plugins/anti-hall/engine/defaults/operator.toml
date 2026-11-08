@@ -1769,3 +1769,11 @@ value = "[{n} keys]"
 doc = "Deepest nesting read back when a default is rendered in `--json`."
 value = 64
 min = 8
+
+[statusline.ctx_mark]
+doc = "Before the context percentage."
+value = "● "
+
+[statusline.chip_label]
+doc = "The version chip label."
+value = "AH: V"

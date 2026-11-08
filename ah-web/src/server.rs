@@ -1,5 +1,5 @@
-//! The HTTP side: loopback only, a Host check against DNS rebinding, a session cookie minted from the one-time token in the
-//! printed address, the page, its files and the event stream.
+//! The HTTP side: loopback only, a Host check against DNS rebinding, an Origin check on state-changing requests, a session cookie
+//! minted from the one-time token in the printed address (unless web.require_token is false), the page, its files and the event stream.
 use crate::app::App;
 use crate::data;
 use crate::model::Out;
@@ -66,6 +66,9 @@ fn ct_eq(a: &str, b: &str) -> bool {
 }
 
 pub(crate) fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
+    if !app.token_required() {
+        return true; // web.require_token = false: nothing to present
+    }
     let name = app.settings().cookie_name.clone();
     headers
         .get_all(header::COOKIE)
@@ -80,16 +83,19 @@ pub(crate) fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
 async fn guard(State(app): State<Shared>, req: Request, next: Next) -> Response {
     app.touch();
     let s = app.settings();
-    let host_ok = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .is_some_and(|h| {
-            let (name, port) = h.rsplit_once(':').unwrap_or((h, ""));
-            port == app.port.to_string() && (name == s.bind_host || name == "localhost")
-        });
-    if !host_ok {
-        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    if s.check_host {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok());
+        if !crate::reject::host_ok(&app, &s, host) {
+            crate::reject::count(&app, &s, &s.reject_reason_host);
+            return StatusCode::MISDIRECTED_REQUEST.into_response();
+        }
+    }
+    if s.check_origin && !crate::reject::origin_ok(&app, &s, req.method(), req.headers()) {
+        crate::reject::count(&app, &s, &s.reject_reason_origin);
+        return (StatusCode::FORBIDDEN, s.msg_bad_origin.clone()).into_response();
     }
     let mut resp = next.run(req).await;
     if let Ok(v) = HeaderValue::from_str(&s.csp) {
@@ -129,7 +135,8 @@ async fn index(
     headers: HeaderMap,
 ) -> Response {
     let s = app.settings();
-    if let Some(t) = q.t.as_deref()
+    if app.token_required()
+        && let Some(t) = q.t.as_deref()
         && ct_eq(t, &app.token)
     {
         let cookie = format!(
@@ -828,6 +835,192 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
+    }
+
+    /// A real server on an ephemeral loopback port (the settings of the shipped web.toml), with or without the token; its state
+    /// directory is a fresh temp one. Returns the port and the state directory.
+    async fn serve(require_token: bool) -> (u16, PathBuf) {
+        let root = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let config = root.join("engine/defaults/web.toml");
+        let settings = crate::cfg::Settings::load(&config).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state = std::env::temp_dir().join(format!(
+            "ah-web-test-{}-{port}-{require_token}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&state).unwrap();
+        let token = if require_token { "test-token" } else { "" };
+        let app = Arc::new(App::new(
+            settings,
+            config,
+            root,
+            PathBuf::new(),
+            PathBuf::new(),
+            token.into(),
+            port,
+        ));
+        app.state.set(state.clone()).unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router(app)).await.unwrap();
+        });
+        (port, state)
+    }
+
+    /// One raw HTTP/1.1 request; the status code and the whole reply text.
+    async fn send(
+        port: u16,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+    ) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut req =
+            format!("{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: 2\r\n");
+        if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+            req.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
+        }
+        for (k, v) in headers {
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str("\r\n{}");
+        let mut c = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        c.write_all(req.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8_lossy(&out).into_owned();
+        let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap();
+        (status, text)
+    }
+
+    fn page() -> String {
+        let root = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let s = crate::cfg::Settings::load(&root.join("engine/defaults/web.toml")).unwrap();
+        format!("/static/{}", s.index_file)
+    }
+
+    fn journal(state: &FsPath) -> String {
+        std::fs::read_to_string(state.join("obs-counters.log")).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn token_required_keeps_refusing_without_the_cookie() {
+        let (port, _) = serve(true).await;
+        assert_eq!(send(port, "GET", &page(), &[]).await.0, 401);
+        assert_eq!(send(port, "GET", "/", &[]).await.0, 401);
+        let cookie = ("Cookie", "ah_web_session=test-token".to_string());
+        assert_eq!(
+            send(port, "GET", &page(), std::slice::from_ref(&cookie))
+                .await
+                .0,
+            200
+        );
+        // the token in the address still sets the cookie
+        let (st, text) = send(port, "GET", "/?t=test-token", &[]).await;
+        assert_eq!(st, 303);
+        assert!(
+            text.to_lowercase()
+                .contains("set-cookie: ah_web_session=test-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn token_off_needs_no_cookie_anywhere() {
+        let (port, _) = serve(false).await;
+        assert_eq!(send(port, "GET", &page(), &[]).await.0, 200);
+        assert_eq!(send(port, "GET", "/", &[]).await.0, 200);
+        // a pkg path answers 404 for a missing file, not 401
+        assert_eq!(send(port, "GET", "/pkg/none.js", &[]).await.0, 404);
+        // an API route reaches its handler (the action menu refuses the empty request in JSON) instead of 401
+        let (st, text) = send(port, "POST", "/api/action", &[]).await;
+        assert_eq!(st, 200, "{text}");
+        // a stale `?t=` is ignored, not a redirect
+        assert_eq!(send(port, "GET", "/?t=anything", &[]).await.0, 200);
+    }
+
+    #[tokio::test]
+    async fn foreign_host_is_refused_and_counted_with_or_without_the_token() {
+        for token in [true, false] {
+            let (port, state) = serve(token).await;
+            let (st, _) = send(port, "GET", &page(), &[("Host", "evil.example:80".into())]).await;
+            assert_eq!(st, 421);
+            let wrong_port = format!("127.0.0.1:{}", port.wrapping_add(1));
+            assert_eq!(send(port, "GET", "/", &[("Host", wrong_port)]).await.0, 421);
+            let j = journal(&state);
+            assert_eq!(
+                j.lines()
+                    .filter(|l| l.starts_with("web_request_rejected\thost\t"))
+                    .count(),
+                2,
+                "{j}"
+            );
+            // the loopback names pass
+            let ok = format!("localhost:{port}");
+            assert_ne!(send(port, "GET", "/", &[("Host", ok)]).await.0, 421);
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_origin_post_is_refused_and_counted_same_origin_passes() {
+        for token in [true, false] {
+            let (port, state) = serve(token).await;
+            let cookie = ("Cookie", "ah_web_session=test-token".to_string());
+            let with = |o: (&'static str, String)| {
+                if token {
+                    vec![cookie.clone(), o]
+                } else {
+                    vec![o]
+                }
+            };
+            for (name, value) in [
+                ("Origin", "http://evil.example".to_string()),
+                ("Origin", "null".to_string()),
+                (
+                    "Origin",
+                    format!("http://127.0.0.1:{}", port.wrapping_add(1)),
+                ),
+                ("Referer", "http://evil.example/page".to_string()),
+            ] {
+                let (st, _) = send(port, "POST", "/api/action", &with((name, value.clone()))).await;
+                assert_eq!(st, 403, "{name}: {value}");
+            }
+            let j = journal(&state);
+            assert_eq!(
+                j.lines()
+                    .filter(|l| l.starts_with("web_request_rejected\torigin\trefused\t1\t"))
+                    .count(),
+                4,
+                "{j}"
+            );
+            for (name, value) in [
+                ("Origin", format!("http://127.0.0.1:{port}")),
+                ("Origin", format!("http://localhost:{port}")),
+                ("Referer", format!("http://127.0.0.1:{port}/#view")),
+            ] {
+                let (st, text) =
+                    send(port, "POST", "/api/action", &with((name, value.clone()))).await;
+                assert_eq!(st, 200, "{name}: {value}: {text}");
+            }
+            // no Origin at all (a command-line client) passes; a cross-origin GET is not state-changing
+            let (st, _) = send(
+                port,
+                "POST",
+                "/api/action",
+                &if token { vec![cookie.clone()] } else { vec![] },
+            )
+            .await;
+            assert_eq!(st, 200);
+            let (st, _) = send(
+                port,
+                "GET",
+                "/",
+                &with(("Origin", "http://evil.example".into())),
+            )
+            .await;
+            assert_ne!(st, 403);
+        }
     }
 
     #[tokio::test]

@@ -64,6 +64,8 @@ newhome() { HOME=$tmp/home.$1; export HOME; rm -rf "$HOME"; mkdir -p "$HOME"; }
 engine() { printf '%s' "$HOME/.anti-hall/ah-engine/bin/ah-engine"; }
 logf() { cat "$HOME/.anti-hall/ah-engine/bootstrap.log" 2>/dev/null || true; }
 run() { AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=x86_64 AH_BOOTSTRAP_UNAME_R=5.15.0 AH_BOOTSTRAP_LIBC=gnu inst --lock "$tmp/lock" "$@"; }
+# the automatic form (opted in): silent, exit 0, rate limited. The explicit form (no --auto) reports a failure on stderr and exits non-zero.
+runa() { AH_ENGINE_BOOTSTRAP=1 run --auto "$@"; }
 
 t_good() {
   newhome good; write_lock "$tmp/lock" "$ver" "$triple" "$good"
@@ -89,11 +91,12 @@ t_keeps_previous() {
 }
 t_wrong_hash() {
   newhome bad; write_lock "$tmp/lock" "$ver" "$triple" "0000000000000000000000000000000000000000000000000000000000000000"
-  run || return 1
+  run 2>"$tmp/err" && return 1   # explicit: a failure exits non-zero and says why
+  grep -q 'sha256_mismatch' "$tmp/err" || return 1
   [ ! -e "$(engine)" ] || return 1
   logf | grep -q 'why=sha256_mismatch' || return 1
-  # Rate limited: an immediate retry does not hit the network again (no new log line).
-  before=$(logf | wc -l); run
+  # Rate limited (the automatic form): an immediate retry does not hit the network again (no new log line).
+  before=$(logf | wc -l); runa
   [ "$before" = "$(logf | wc -l)" ] || return 1
   # The wrapper still answers through the Node fallback with no engine: SessionStart with the real list must not fail.
   ls "$tmp/home.bad/.anti-hall/ah-engine/bin" | grep -q . && return 1
@@ -101,23 +104,37 @@ t_wrong_hash() {
 }
 t_offline() {
   newhome off; write_lock "$tmp/lock" "$ver" "$triple" "$good"
-  AH_ENGINE_RELEASE_BASE=http://127.0.0.1:1 run || return 1
+  AH_ENGINE_RELEASE_BASE=http://127.0.0.1:1 runa || return 1
   [ ! -e "$(engine)" ] || return 1
   logf | grep -q 'why=download_failed' || return 1
-  # Within the retry window a retry stays quiet; once it passes (and the network is back) the engine installs.
-  before=$(logf | wc -l); run
+  # Within the retry window an automatic retry stays quiet; once it passes (and the network is back) the engine installs.
+  before=$(logf | wc -l); runa
   [ "$before" = "$(logf | wc -l)" ] && [ ! -e "$(engine)" ] || return 1
-  AH_BOOTSTRAP_RETRY_S=0 run || return 1
+  AH_BOOTSTRAP_RETRY_S=0 runa || return 1
   # An installed engine is untouched when a later attempt is offline.
   [ -x "$(engine)" ] || return 1
   write_lock "$tmp/lock" 9.8.9 "$triple" "$good"
-  AH_BOOTSTRAP_RETRY_S=0 AH_ENGINE_RELEASE_BASE=http://127.0.0.1:1 run || return 1
+  AH_BOOTSTRAP_RETRY_S=0 AH_ENGINE_RELEASE_BASE=http://127.0.0.1:1 runa || return 1
   [ "$("$(engine)" version)" = "$ver" ]
+}
+# An explicit `ah-hook install` ignores the retry window of an earlier automatic attempt, says why it failed on stderr (the text the
+# notice tells the user to run it for), and exits non-zero; "already current" stays silent with exit 0.
+t_explicit_install_reports_and_ignores_the_window() {
+  newhome expl2; write_lock "$tmp/lock" "$ver" "$triple" "$good"
+  AH_ENGINE_RELEASE_BASE=http://127.0.0.1:1 runa || return 1       # the automatic attempt fails quietly and starts the window
+  [ -f "$HOME/.anti-hall/ah-engine/bootstrap.attempt" ] && [ ! -e "$(engine)" ] || return 1
+  AH_ENGINE_RELEASE_BASE=http://127.0.0.1:1 run 2>"$tmp/err" && return 1
+  grep -q 'did not complete (download_failed)' "$tmp/err" && grep -q 'bootstrap.log' "$tmp/err" || return 1
+  logf | grep -q 'event=explicit_fail why=download_failed' || return 1
+  run || return 1                                                  # the network is back: the explicit run installs inside the window
+  [ -x "$(engine)" ] || return 1
+  before=$(logf | wc -l); run 2>"$tmp/err" || return 1             # already current: silent, exit 0
+  [ "$before" = "$(logf | wc -l)" ] && [ ! -s "$tmp/err" ]
 }
 t_unmanaged_untouched() {
   newhome unm; write_lock "$tmp/lock" "$ver" "$triple" "$good"
   mkdir -p "$HOME/.anti-hall/ah-engine/bin"; printf '#!/bin/sh\necho mine\n' >"$(engine)"; chmod 755 "$(engine)"
-  run || return 1
+  run 2>/dev/null && return 1   # nothing it did not install is replaced; an explicit run says so (non-zero)
   [ "$("$(engine)")" = mine ]
 }
 t_targets() {
@@ -137,16 +154,16 @@ t_wsl() {
 }
 t_unknown_arch() {
   newhome arch; write_lock "$tmp/lock" "$ver" "$triple" "$good"
-  AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=riscv64 inst --lock "$tmp/lock" || return 1
-  AH_BOOTSTRAP_UNAME_S=FreeBSD AH_BOOTSTRAP_UNAME_M=x86_64 inst --lock "$tmp/lock" || return 1
-  [ ! -e "$(engine)" ] && [ "$(logf | grep -c 'why=unsupported_platform')" = 2 ] &&
+  AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=riscv64 inst --lock "$tmp/lock" 2>/dev/null && return 1
+  AH_BOOTSTRAP_UNAME_S=FreeBSD AH_BOOTSTRAP_UNAME_M=x86_64 inst --lock "$tmp/lock" 2>/dev/null && return 1
+  [ ! -e "$(engine)" ] && [ "$(logf | grep -c 'event=skip why=unsupported_platform')" = 2 ] &&
   [ "$(AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=riscv64 inst --print-target)" = unsupported ]
 }
 t_no_lock_or_bad_lock() {
   newhome nolock
-  inst --lock "$tmp/does-not-exist" || return 1
+  inst --lock "$tmp/does-not-exist" 2>/dev/null && return 1
   printf 'not json' >"$tmp/lock"
-  run || return 1
+  run 2>/dev/null && return 1
   [ ! -e "$(engine)" ] && logf | grep -q 'why=bad_lock_schema'
 }
 t_opt_out() {
@@ -202,7 +219,7 @@ t_hand_built_untouched() {
   run || return 1
   printf '#!/bin/sh\necho local-build\n' >"$(engine)"; chmod 755 "$(engine)"
   write_lock "$tmp/lock" 9.8.8 "$triple" "$s2"
-  AH_BOOTSTRAP_RETRY_S=0 run || return 1
+  AH_BOOTSTRAP_RETRY_S=0 run 2>/dev/null && return 1   # nothing replaced: an explicit run fails (the automatic form stays quiet)
   [ "$("$(engine)")" = local-build ] && logf | grep -q 'event=skip_local_build'
 }
 t_version_check_gets_the_plugin_root() {
@@ -227,7 +244,7 @@ t_shared_install_lock() {
   integ="$st/bin/ah-hook --plugin-root $repo/plugins/anti-hall integrity"
   sleep 60 & h=$!; tok="$h $(date +%s)"
   AH_ENGINE_DIR=$st $integ lock "$tok" || { kill "$h"; return 1; }
-  AH_ENGINE_INSTALL_LOCK_WAIT_S=1 run || { kill "$h"; return 1; }
+  AH_ENGINE_INSTALL_LOCK_WAIT_S=1 run 2>/dev/null && { kill "$h"; return 1; }
   held_ok=1
   { [ ! -e "$(engine)" ] && [ ! -f "$st/bootstrap.attempt" ] && logf | grep -q 'event=skip_install_lock_held'; } || held_ok=0
   AH_ENGINE_DIR=$st $integ unlock "$tok"; kill "$h" 2>/dev/null; wait "$h" 2>/dev/null
@@ -244,7 +261,7 @@ t_hanging_binary_is_bounded() {
   tar -czf "$tmp/www/ah-engine-v$v/$n.tar.gz" -C "$tmp/pkg5" "$n"
   write_lock "$tmp/lock" "$v" "$triple" "$(sha_of "$tmp/www/ah-engine-v$v/$n.tar.gz")"
   t0=$(date +%s)
-  AH_BOOTSTRAP_RUN_S=2 run || return 1
+  AH_BOOTSTRAP_RUN_S=2 run 2>/dev/null && return 1
   t1=$(date +%s)
   [ $((t1 - t0)) -le 15 ] && [ ! -e "$(engine)" ] && logf | grep -q 'why=version_check_timed_out' && [ ! -d "$HOME/.anti-hall/ah-engine/bootstrap.lock" ]
 }
@@ -259,6 +276,7 @@ check t_version_check_gets_the_plugin_root
 check t_wrong_hash
 check t_offline
 check t_unmanaged_untouched
+check t_explicit_install_reports_and_ignores_the_window
 check t_targets
 check t_wsl
 check t_unknown_arch

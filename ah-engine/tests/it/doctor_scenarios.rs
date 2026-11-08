@@ -458,7 +458,7 @@ fn bin_07_08_09_marker_digest_and_versions() {
     sc2.stub_engine("0.0.9");
     sc2.marker("0.0.9");
     let d = sc2.doctor(&[]);
-    d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "next session start"]);
+    d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "only when the engine.bootstrap setting is on"]);
     assert_eq!(
         d.section("Engine install").into_iter().filter(|l| !l.contains("this doctor is engine")).collect::<Vec<_>>(),
         sc2.shell().section("Engine install")
@@ -472,7 +472,7 @@ fn bin_10_15_the_lock() {
     sc.stub_engine("0.1.0");
     sc.write_lock("0.1.0", &["riscv64-unknown-linux-gnu".to_string()]);
     let d = sc.doctor(&[]);
-    d.has("warn", &["the plugin's ah-engine.lock has no build for", "the Node hooks stay in use"]);
+    d.has("warn", &["the plugin's ah-engine.lock has no build for", "no engine can be installed here"]);
     fs::remove_file(sc.plugin.join("ah-engine.lock")).unwrap();
     let d = sc.doctor(&[]);
     d.has("warn", &["ah-engine.lock is missing or unreadable at", "No such file or directory (os error 2)"]);
@@ -784,7 +784,7 @@ fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     fs::remove_file(state.join("crashloop.until")).unwrap();
     fs::write(state.join("breaker.until"), (now_ms() + 60_000).to_string()).unwrap();
     let d = sc.doctor(&[]);
-    d.has("warn", &["client circuit breaker open for", "hooks use the Node fallback meanwhile"]);
+    d.has("warn", &["client circuit breaker open for", "hook calls pass through unchecked meanwhile"]);
     assert_eq!(d.code, 0);
     // an expired cooldown is not reported
     fs::write(state.join("breaker.until"), (now_ms() - 1000).to_string()).unwrap();
@@ -1713,4 +1713,61 @@ fn sto_01_journal_and_split_stores_are_reported_as_unsupported_legacy() {
     sc.put(".anti-hall/settings.json", br#"{"doctor":{"legacy_stores_report":0}}"#);
     let off = sc.finish(c);
     off.lacks("legacy journal backend");
+}
+
+// ---- FW-3: an upgrade from the Node era ------------------------------------------------------------------------------------------
+
+#[test]
+fn fw3_no_statusline_is_info_and_nothing_points_into_the_unpublished_node_tree() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    // the published layout has no Node tree beside the plugin
+    fs::remove_dir_all(sc.root.join("anti-hall-node")).ok();
+    let d = sc.doctor(&[]);
+    d.lacks("dispatcher missing");
+    d.lacks("statusline-rich");
+    d.has("info", &["no anti-hall statusLine is configured"]);
+}
+
+#[test]
+fn fw3_the_retired_node_statusline_is_named_with_the_command_that_clears_it() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.put(".claude/settings.json", br#"{"statusLine":{"type":"command","command":"node \"/x/plugins/anti-hall/statusline/statusline.js\""}}"#);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["retired Node form", "status line is blank", "uninstall-statusline"]);
+    d.lacks("dispatcher missing");
+}
+
+#[test]
+fn fw3_codex_hooks_that_still_run_node_era_scripts_are_named_not_called_absent() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let node = |p: &str| format!("node \\\"{p}\\\"");
+    let file = format!(
+        "{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{}\"}}]}}],\"PreToolUse\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{}\"}}]}}]}}}}",
+        node("/h/.claude/plugins/cache/anti-hall/anti-hall/0.203.3/hooks/stop-guard.js"),
+        node("/repo/plugins/anti-hall/hooks/git-guard.js"),
+    );
+    sc.put(".codex/hooks.json", file.as_bytes());
+    let d = sc.doctor(&[]);
+    d.has("bad", &["still runs 2 Node-era anti-hall hook(s)", "install-codex --global", "stop-guard.js"]);
+    d.lacks("no anti-hall hooks found");
+    // a hooks file with no anti-hall entries at all keeps the old finding; the thin client entry is not a Node-era entry
+    sc.put(".codex/hooks.json", br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}"#);
+    let d = sc.doctor(&[]);
+    d.lacks("Node-era anti-hall hook");
+    d.has("warn", &["no anti-hall hooks found"]);
+}
+
+#[test]
+fn fw3_the_codex_installer_pattern_covers_both_node_era_command_shapes() {
+    ah_engine::defaults::init().unwrap();
+    let re = regex::Regex::new(ah_engine::defaults::text("codex_install.hook_group_re")).unwrap();
+    // `install-codex.js` run from a repo clone, and from a plugin-cache version directory (the form that was not matched before)
+    assert!(re.is_match("node \"/h/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/hooks/verify-first-full.js\""));
+    assert!(re.is_match("node \"/h/.claude/plugins/cache/anti-hall/anti-hall/0.203.3/hooks/verify-first-full.js\""));
+    // the thin client and an unrelated hook
+    assert!(re.is_match("\"/h/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex"));
+    assert!(!re.is_match("node \"/h/other-tool/hooks/lint.js\""));
 }

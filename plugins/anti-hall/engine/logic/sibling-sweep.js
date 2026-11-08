@@ -231,9 +231,9 @@ function swReadTurn(path) {
 // ---- state, telemetry, the reminder ----
 
 function swSafe(s, max) {
-  var out = '';
-  for (var i = 0; i < s.length && i < max; i++) out += /[A-Za-z0-9._-]/.test(s.charAt(i)) ? s.charAt(i) : '_';
-  return out;
+  var out = [];
+  for (var i = 0; i < s.length && i < max; i++) out.push(/[A-Za-z0-9._-]/.test(s.charAt(i)) ? s.charAt(i) : '_');
+  return out.join('');
 }
 
 function swStateRel(session, agent) {
