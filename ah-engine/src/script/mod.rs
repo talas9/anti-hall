@@ -500,7 +500,7 @@ fn load_check(ctx: &Context, modules: &mut HashMap<String, (PathBuf, u64, u128)>
     // include's module scope, compiled once per runtime, instead of carrying its own copy of the include
     let shared = own.first().and_then(|(path, ..)| {
         let stem = path.file_stem()?.to_str()?.to_string();
-        shared_scope().filter(|m| m.includes.contains(&stem.as_str())).map(|_| stem)
+        defaults::raw("script.shared_includes").strings().contains(&stem.as_str()).then_some(stem)
     });
     let rest: &[(PathBuf, u64, u128)] = if shared.is_some() { &own[1..] } else { &own[..] };
     let mut src = String::new();
@@ -510,8 +510,7 @@ fn load_check(ctx: &Context, modules: &mut HashMap<String, (PathBuf, u64, u128)>
     }
     let body = if shared.is_some() && rest.is_empty() {
         // the check IS the shared script: its entry is the module's own
-        // `shared` is only `Some` when `shared_scope()` is, so the entry template is there
-        defaults::fill(shared_scope().map_or("", |m| m.module_entry), &[("entry", &entry)])
+        defaults::render("script.module_entry", &[("entry", &entry)])
     } else {
         defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)])
     };
@@ -534,28 +533,6 @@ fn load_check(ctx: &Context, modules: &mut HashMap<String, (PathBuf, u64, u128)>
     })
 }
 
-/// The settings of the shared-include feature. Read through `defaults::optional`, which the build does not require: a feature added
-/// after the pinned pristine copy was released must not make that fallback unloadable.
-struct SharedScope {
-    includes: Vec<&'static str>,
-    scope: &'static str,
-    module_entry: &'static str,
-    global: &'static str,
-    no_evaluator: &'static str,
-}
-
-/// The shared-include settings, or `None` unless every one of them is in the active defaults (a pristine copy that predates them):
-/// then no include is shared and each check carries its own copy spliced in front of it, as before the feature.
-fn shared_scope() -> Option<SharedScope> {
-    Some(SharedScope {
-        includes: defaults::optional("script.shared_includes")?.strings(),
-        scope: defaults::optional("script.module_scope")?.as_str()?,
-        module_entry: defaults::optional("script.module_entry")?.as_str()?,
-        global: defaults::optional("script.modules_global")?.as_str()?,
-        no_evaluator: defaults::optional("script.msg_no_evaluator")?.as_str()?,
-    })
-}
-
 /// The evaluator of shared include `module` (`script.module_scope`): the include compiled once into this runtime, kept under
 /// `script.modules_global`, and rebuilt only when its file changed. A check's body evaluated through it sees every declaration of the
 /// include, with live bindings, exactly as if the include were spliced in front of it.
@@ -565,12 +542,11 @@ fn ensure_module<'js>(
     module: &str,
     file: &(PathBuf, u64, u128),
 ) -> Result<(Function<'js>, bool), String> {
-    let cfg = shared_scope().ok_or_else(|| format!("{module}: the shared-include settings are not in the active defaults"))?;
-    let reg: rquickjs::Object = match c.globals().get(cfg.global) {
+    let reg: rquickjs::Object = match c.globals().get(defaults::text("script.modules_global")) {
         Ok(o) => o,
         Err(_) => {
             let o = rquickjs::Object::new(c.clone()).map_err(|e| e.to_string())?;
-            c.globals().set(cfg.global, o.clone()).map_err(|e| e.to_string())?;
+            c.globals().set(defaults::text("script.modules_global"), o.clone()).map_err(|e| e.to_string())?;
             o
         }
     };
@@ -580,9 +556,9 @@ fn ensure_module<'js>(
         return Ok((f, false));
     }
     let text = std::fs::read_to_string(&file.0).map_err(|e| format!("{}: {e}", file.0.display()))?;
-    let scope = defaults::fill(cfg.scope, &[("source", &text)]);
+    let scope = defaults::render("script.module_scope", &[("source", &text)]);
     let f: JsValue = c.eval(scope).catch(c).map_err(|e| format!("{module}: {e}"))?;
-    let f = f.into_function().ok_or_else(|| defaults::fill(cfg.no_evaluator, &[("module", &module)]))?;
+    let f = f.into_function().ok_or_else(|| defaults::render("script.msg_no_evaluator", &[("module", &module)]))?;
     reg.set(module, f.clone()).map_err(|e| e.to_string())?;
     modules.insert(module.to_string(), file.clone());
     Ok((f, true))

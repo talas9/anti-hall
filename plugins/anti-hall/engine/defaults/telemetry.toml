@@ -328,22 +328,6 @@ value = { kind = "counter", unit = "requests", labels = [] }
 doc = "Script calls that used more thread CPU than their SOFT limit (script.time_limit_ms); only warned about, the call was not cut."
 value = { kind = "counter", unit = "calls", labels = [] }
 
-[metric.script_limit_trips]
-doc = "Times a worker interpreter's memory limit acted: kind `soft` unloaded the least recently called checks down to the low-water mark (mem.quickjs_soft_bytes), kind `hard` recycled the interpreter (mem.quickjs_hard_bytes). Steady load on a limit sized to the working set keeps both at zero."
-value = { kind = "counter", unit = "trips", labels = ["kind"] }
-
-[metric.script_unloads]
-doc = "Checks unloaded from a worker interpreter because its memory limit was reached."
-value = { kind = "counter", unit = "checks", labels = [] }
-
-[metric.script_reloads]
-doc = "Checks rebuilt from their source on the next call after the memory limit unloaded them: the cost of a limit set under the working set (each is a read, parse and compile). Flat at zero under steady load when the limit fits."
-value = { kind = "counter", unit = "checks", labels = [] }
-
-[metric.script_module_loads]
-doc = "Shared includes (script.shared_includes) compiled into a worker interpreter: once per interpreter and file version, not once per check that builds on them."
-value = { kind = "counter", unit = "modules", labels = [] }
-
 [metric.panics]
 doc = "Request-handler panics that were contained."
 value = { kind = "counter", unit = "panics", labels = [] }

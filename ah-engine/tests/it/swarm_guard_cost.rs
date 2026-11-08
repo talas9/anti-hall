@@ -309,10 +309,10 @@ fn a_failing_swarm_guard_still_fails_open_when_the_engine_runs_on_the_pristine_c
     assert_eq!(out.matches("swarm-guard guard could not run").count(), 1, "exactly one notice: {out}");
 }
 
-/// The pristine copy predates the shared-include settings (`script.shared_includes` and its scope, entry, global and message keys):
-/// the engine must still load it and answer, with every check carrying its own copy of its includes (the legacy splice). Here the
-/// editable `script.toml` is malformed and no last-known-good copy exists, so the engine runs on `defaults.pristine`, and the
-/// owner's cap still refuses an over-cap spawn there (a true positive, not only a fail-open).
+/// The pinned pristine `script.toml` predates the shared-include settings; they ship in `script_shared.toml`, mirrored in the pristine
+/// copy, so the engine loads it and answers. Here the editable `script.toml` is malformed and no last-known-good copy exists, so the
+/// engine runs on `defaults.pristine`, and the owner's cap still refuses an over-cap spawn there (a true positive, not only a
+/// fail-open).
 #[test]
 fn an_over_cap_spawn_is_still_refused_when_the_engine_runs_on_the_pristine_copy() {
     let h = scratch("cost-pristine-cap");
@@ -324,7 +324,9 @@ fn an_over_cap_spawn_is_still_refused_when_the_engine_runs_on_the_pristine_copy(
     copy_tree(&src.join("engine"), &plugin.join("engine"));
     copy_tree(&src.join("hooks"), &plugin.join("hooks"));
     let pristine = std::fs::read_to_string(plugin.join("engine/defaults.pristine/script.toml")).unwrap();
-    assert!(!pristine.contains("shared_includes"), "the pinned pristine copy predates the shared-include settings");
+    assert!(!pristine.contains("shared_includes"), "the pinned pristine script.toml predates the shared-include settings");
+    let shared = std::fs::read_to_string(plugin.join("engine/defaults.pristine/script_shared.toml")).unwrap();
+    assert!(shared.contains("script.shared_includes"), "the pristine copy carries the shared-include settings in script_shared.toml");
     std::fs::write(plugin.join("engine/defaults/script.toml"), "[script\nnot toml").unwrap();
     let root = plugin.to_string_lossy().into_owned();
     let (code, out, err) = run(

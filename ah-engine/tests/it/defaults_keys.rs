@@ -324,14 +324,3 @@ fn every_metric_and_impact_kind_the_source_records_is_registered() {
         }
     }
 }
-
-/// A key read only through `defaults::optional` is not required at load, so the pinned pristine copy (which predates the
-/// shared-include settings) still loads; the same keys are shipped by the editable defaults.
-#[test]
-fn keys_read_through_optional_are_not_required_at_load() {
-    let required: BTreeSet<&str> = ah_engine::defaults::required().iter().map(|(k, _)| *k).collect();
-    for k in ["script.shared_includes", "script.module_scope", "script.module_entry", "script.modules_global", "script.msg_no_evaluator"] {
-        assert!(!required.contains(k), "{k} must stay optional (the pristine fallback lacks it)");
-        assert!(ah_engine::defaults::has(k), "{k} is shipped by the editable defaults");
-    }
-}

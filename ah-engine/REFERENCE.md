@@ -8323,9 +8323,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.lock_max_held` | `2` |  |  | Most cross-process locks (`ah.state.lock`) a script may hold at once in one call. A script that nests two takes them in one fixed order and releases the inner one first. |
 | `script.lock_wait_max_ms` | `5000` |  | ms | Longest wait a script may ask `ah.state.lock` for in place of its group's wait. |
 | `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
-| `script.module_entry` | `typeof {entry} === 'function' ? {entry} : undefined` |  |  | What the check of a shared include's own name evaluates through that include's evaluator: the include's entry function (placeholder {entry}, script.entry). |
-| `script.module_scope` | `(function () {\n{source}\n;return function (__src) { return eval(__src); };\n...` |  |  | How a shared include (`script.shared_includes`) is compiled into a worker interpreter: its source as the body of a function that returns an evaluator, so its declarations stay private to the module and a check's body evaluated through the evaluator sees them. Placeholder: {source}. |
-| `script.modules_global` | `__ah_modules` |  |  | Global object in which each worker interpreter keeps the evaluators of its shared includes, by script name. |
 | `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
 | `script.msg_call_error` | `{name}.{func} check={check} event={event}: {error}` |  |  | Reason logged when a loaded script call fails. Placeholders: {name}, {func}, {check}, {event}, {error}. |
 | `script.msg_dead_root` | `state write skipped, no live git work tree at {root}` |  |  | Event-log line when a scripted state write is skipped because its project root is not a live git work tree or project root (for example an archived workspace whose folder was removed); no directory is created. Placeholder: {root}. |
@@ -8335,7 +8332,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_guard_down` | `anti-hall: the {check} guard could not run ({why}), so this call went through...` |  |  | The notice the user sees, once per session and check, when a check that failed open let a call through unchecked. Placeholders: {check}, {why}. |
 | `script.msg_invalid_pattern` | `invalid pattern {src}` |  |  | Error a script sees when it hands `ah.re.*` a pattern that does not compile. |
 | `script.msg_no_entry` | `{check}: the script defines no {entry} function` |  |  | Reason logged (then the failure policy applies) when a check's script defines no entry function. Placeholders: {check}, {entry}. |
-| `script.msg_no_evaluator` | `{module}: the shared include defines no evaluator` |  |  | Reason logged when a shared include (script.shared_includes) does not evaluate to its evaluator function. Placeholder: {module}. |
 | `script.msg_no_request` | `no request state` |  |  | Error a host function raises when it is called outside a check call (no request state). |
 | `script.msg_no_script` | `no script file` |  |  | Reason logged (then the failure policy applies) when a check whose logic is a script has no script file. |
 | `script.msg_not_number` | `{key} is not a number` |  |  | Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number. |
@@ -8360,7 +8356,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.regex_scratch_bytes` | `40960` |  | bytes | Estimated search scratch (lazy-DFA transition tables and caches) ONE worker thread holds per cached `ah.re.*` pattern. The regex crate keeps it per thread inside the compiled pattern and cannot report its size, so a cache entry weighs its compiled program plus daemon.workers times this. Measured 2026-10-23 on the real-payload replay (system allocator, stack-logged live heap): about 21 MB of search scratch across 130 patterns and 4 workers, about 40 KiB per pattern and thread; lowering script.regex_dfa_size_limit from 512 KiB to 64 KiB changed the plateau by under 1 MB, so most caches stay far under the cap. |
 | `script.regex_size_limit` | `2097152` |  | bytes | Largest compiled program one `ah.re.*` pattern may have (regex builder size_limit); a pattern past it does not compile and the script sees the invalid-pattern error. The largest shipped pattern compiles to about 0.3 MB. |
 | `script.registry_global` | `__ahCheckEntries` |  |  | Global object of the shared context that holds each loaded check's entry function, by check name. |
-| `script.shared_includes` | `command, git` |  |  | Scripts, among those named in `script.includes` (and checks of the same name), that are compiled ONCE per worker interpreter instead of once per check built on them. Each is evaluated as the body of one function (`script.module_scope`); a check built on it evaluates its own files inside that scope (so it sees every declaration of the include with live bindings, as when the include was spliced in front of it) and the check of the same name answers from the include's own entry. Before this, command.js (231 KB) was compiled into each of the five checks that build on it plus the command check, and git.js (157 KB) into git-audit plus the git check, in each of the worker interpreters, and every reload after the memory limit unloaded one compiled it again. A script is listed here only if it keeps no per-check state other than what a call sets and clears itself (command.js `cmdBegin`/`cmdEnd`, git.js its per-call state). |
 | `script.stack_bytes` | `262144` |  | bytes | Largest interpreter stack one script call may use. |
 | `script.sweep_max_remove` | `200` |  |  | Most files one `ah.state.sweep` call may delete, whatever the script asks for. |
 | `script.tail_buf_bytes` | `65536` |  | bytes | Size of the buffer `ah.transcript.tailLines` reads a file through. |
@@ -8381,6 +8376,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.write_why_link` | `symbolic link below the write root` |  |  | Refusal reason of a scripted write that would pass through a symbolic link below the write root. |
 | `script.write_why_path` | `path outside the allowed shape` |  |  | Refusal reason of a scripted write whose path is absolute, outside the write root, too long, or has an empty, `.` or `..` part. |
 | `script.write_why_size` | `text over the size cap` |  |  | Refusal reason of a scripted write whose text is over script.write_max_bytes. |
+
+### script_shared.toml / script
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `script.module_entry` | `typeof {entry} === 'function' ? {entry} : undefined` |  |  | What the check of a shared include's own name evaluates through that include's evaluator: the include's entry function (placeholder {entry}, script.entry). |
+| `script.module_scope` | `(function () {\n{source}\n;return function (__src) { return eval(__src); };\n...` |  |  | How a shared include (`script.shared_includes`) is compiled into a worker interpreter: its source as the body of a function that returns an evaluator, so its declarations stay private to the module and a check's body evaluated through the evaluator sees them. Placeholder: {source}. |
+| `script.modules_global` | `__ah_modules` |  |  | Global object in which each worker interpreter keeps the evaluators of its shared includes, by script name. |
+| `script.msg_no_evaluator` | `{module}: the shared include defines no evaluator` |  |  | Reason logged when a shared include (script.shared_includes) does not evaluate to its evaluator function. Placeholder: {module}. |
+| `script.shared_includes` | `command, git` |  |  | Scripts, among those named in `script.includes` (and checks of the same name), that are compiled ONCE per worker interpreter instead of once per check built on them. Each is evaluated as the body of one function (`script.module_scope`); a check built on it evaluates its own files inside that scope (so it sees every declaration of the include with live bindings, as when the include was spliced in front of it) and the check of the same name answers from the include's own entry. Before this, command.js (231 KB) was compiled into each of the five checks that build on it plus the command check, and git.js (157 KB) into git-audit plus the git check, in each of the worker interpreters, and every reload after the memory limit unloaded one compiled it again. A script is listed here only if it keeps no per-check state other than what a call sets and clears itself (command.js `cmdBegin`/`cmdEnd`, git.js its per-call state). |
 
 ### mcp_reaper.toml / env
 
@@ -15054,11 +15059,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `schedule_cpu_us` | counter | us | job | CPU time (microseconds) the threads that ran a scheduled job used, by job; a subprocess job's own CPU is not in it. Divide by schedule_runs for the mean per run. |
 | `schedule_missed` | counter | runs | job | Runs that caught up a missed window or skipped it, by job (D33). |
 | `schedule_runs` | counter | runs | job, status | Scheduled runs that finished, by job and status (ok, failed, timeout, planned, skipped) (D33). |
-| `script_limit_trips` | counter | trips | kind | Times a worker interpreter's memory limit acted: kind `soft` unloaded the least recently called checks down to the low-water mark (mem.quickjs_soft_bytes), kind `hard` recycled the interpreter (mem.quickjs_hard_bytes). Steady load on a limit sized to the working set keeps both at zero. |
-| `script_module_loads` | counter | modules |  | Shared includes (script.shared_includes) compiled into a worker interpreter: once per interpreter and file version, not once per check that builds on them. |
-| `script_reloads` | counter | checks |  | Checks rebuilt from their source on the next call after the memory limit unloaded them: the cost of a limit set under the working set (each is a read, parse and compile). Flat at zero under steady load when the limit fits. |
 | `script_soft` | counter | calls |  | Script calls that used more thread CPU than their SOFT limit (script.time_limit_ms); only warned about, the call was not cut. |
-| `script_unloads` | counter | checks |  | Checks unloaded from a worker interpreter because its memory limit was reached. |
 | `settings_value_invalid` | counter | values | file | Settings numbers outside the f64 range (such as 1e400, which JavaScript reads as Infinity) found in a settings file (#569), by file (guardkit.settings_file, guardkit.claude_settings_file, guardkit.skip_file, guardkit.migration_markers_file, guardkit.jev_legacy_file). Each one invalidates only its own key (the next source, then the default, answers); the rest of the file still counts. Counted once per file change. Lifetime. |
 | `slow_replies` | counter | replies |  | Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors. |
 | `spool_applied` | counter | writes |  | Spooled writes the daemon applied (D24). |
@@ -15175,6 +15176,10 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `mesh_store_backend_skipped` | counter | stores | site, backend | Partition stores the engine did not read because they are held in the journal backend, by site and backend. |
 | `mesh_summary_read_failed` | counter | reads | site | Store reads of the summary projection that failed and read as empty (Node's fail-open), by site. |
 | `mesh_summary_settings_unreadable` | counter | reads | key | Summary settings read while the settings file was one the engine cannot parse but JavaScript can, by key. |
+| `script_limit_trips` | counter | trips | kind | Times a worker interpreter's memory limit acted: kind `soft` unloaded the least recently called checks down to the low-water mark (mem.quickjs_soft_bytes), kind `hard` recycled the interpreter (mem.quickjs_hard_bytes). Steady load on a limit sized to the working set keeps both at zero. |
+| `script_module_loads` | counter | modules |  | Shared includes (script.shared_includes) compiled into a worker interpreter: once per interpreter and file version, not once per check that builds on them. |
+| `script_reloads` | counter | checks |  | Checks rebuilt from their source on the next call after the memory limit unloaded them: the cost of a limit set under the working set (each is a read, parse and compile). Flat at zero under steady load when the limit fits. |
+| `script_unloads` | counter | checks |  | Checks unloaded from a worker interpreter because its memory limit was reached. |
 | `rt_edges` | counter | edges |  | Workspace state changes emitted. |
 | `rt_reconcile_repairs` | counter | edges |  | Changes a full reconcile found that the event path had not already applied: the health measure of the realtime event layer (close to 0 is healthy). |
 | `rt_shadow_mismatches` | counter | mismatches |  | Differences between the engine's workspace state and the Node witness's. |
