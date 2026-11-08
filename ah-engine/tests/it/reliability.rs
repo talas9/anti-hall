@@ -464,7 +464,7 @@ fn ah_hook_wrapper_failfast_no_daemon_hung_daemon_and_restart_loop() {
     assert_twenty_wrappers_exit(&down);
     assert_eq!(down.spawn_attempt_count(), 1, "fresh marker should make concurrent no-daemon wrappers skip spawning");
 
-    let hung = Env::new("wrap-hung", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
+    let hung = Env::new("wrap-hung", &[("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "3000"), ("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&hung, || None);
     let (code, out, dt) = wrapper_once(&hung);
     println!("TIMING wrapper hung-daemon wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
@@ -640,7 +640,7 @@ fn wrapper_fails_open_under_one_second_with_no_daemon() {
 #[test]
 fn wrapper_fails_open_under_one_second_when_daemon_accepts_and_never_replies() {
     let _timing = wrapper_timing_lock();
-    let e = Env::new("wraphung", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
+    let e = Env::new("wraphung", &[("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "3000"), ("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&e, || None);
     let (out, code, dt) = e.wrapper_hook(DENY_IN);
     println!("TIMING wrapper hung-daemon separate wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
@@ -654,7 +654,7 @@ fn wrapper_fails_open_under_one_second_when_daemon_accepts_and_never_replies() {
 #[test]
 fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
     let _timing = wrapper_timing_lock();
-    let high = Env::new("wrapenvdeadline-high", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "5000"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
+    let high = Env::new("wrapenvdeadline-high", &[("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "3000"), ("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "5000"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&high, || None);
     let (out, code, dt) = high.wrapper_hook(DENY_IN);
     println!("TIMING wrapper hung-daemon env-deadline-5000-clamped wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
@@ -664,7 +664,7 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
     assert!(high.fresh_down_marker(), "wrapper killed client before it wrote the daemon-down marker");
     assert_eq!(high.spawn_attempt_count(), 0, "a slow daemon is never restarted");
 
-    let lower = Env::new("wrapenvdeadline-low", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "200"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
+    let lower = Env::new("wrapenvdeadline-low", &[("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "3000"), ("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "200"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&lower, || None);
     let (out, code, dt) = lower.wrapper_hook(DENY_IN);
     println!("TIMING wrapper hung-daemon env-deadline-200 wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
@@ -680,7 +680,7 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
 #[test]
 fn twenty_parallel_wrappers_leave_no_clients_alive_after_two_seconds() {
     let _timing = wrapper_timing_lock();
-    let e = Env::new_no_prime("wrap20", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
+    let e = Env::new_no_prime("wrap20", &[("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "3000"), ("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&e, || None);
     let mut children: Vec<_> = (0..20)
         .map(|_| {
