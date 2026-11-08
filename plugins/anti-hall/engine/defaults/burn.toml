@@ -214,3 +214,15 @@ value = '''^[\x20-\x7e]+$'''
 [burn.max_cmd_chars]
 doc = "Longest command (characters) the breaker will judge while it holds; a longer one is not allowed (bounds the work of every pattern)."
 value = 4000
+
+[burn.report_heredoc_re]
+doc = "A heredoc opener with a QUOTED delimiter (its body is inert data, nothing expands). JavaScript syntax; tested on the first line of a report-writing command that has a body; group 2 is the delimiter, which must end the body with nothing after it."
+value = '''<<-?\s*([\x27"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$'''
+
+[burn.send_chain_re]
+doc = "What chains a second command onto a send line (after quoted text is blanked and a heredoc opener removed): `;`, `&`, a pipe, a backtick, `$(` or a redirect. Regular expression (Rust syntax)."
+value = '''[;&|`<>]|\$\('''
+
+[burn.send_heredoc_opener_re]
+doc = "A heredoc opener with a QUOTED delimiter at the end of a send line. Regular expression (Rust syntax)."
+value = '''\s*<<-?\s*(["'])[A-Za-z_][A-Za-z0-9_]*\1\s*$'''

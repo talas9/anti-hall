@@ -1788,3 +1788,11 @@ value = "anomaly"
 doc = "A census file older than this many seconds is not shown (it would claim a state that no longer holds)."
 value = 900
 unit = "s"
+
+[statusline.ctx_mark]
+doc = "Before the context percentage."
+value = "● "
+
+[statusline.chip_label]
+doc = "The version chip label."
+value = "AH: V"

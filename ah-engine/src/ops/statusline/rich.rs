@@ -669,9 +669,17 @@ mod consistency_tests {
     fn no_mark_before_context_and_no_duplicate_separators() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults/operator.toml");
         let toml = std::fs::read_to_string(path).unwrap();
-        for k in ["ctx_mark", "usage_sep", "usage_ctx_gap"] {
+        // `statusline.ctx_mark` stays shipped for the published 0.2.1 engine (it refuses defaults without it), so the check is that
+        // this engine's render path never reads it, and that the other two retired keys are still gone.
+        for k in ["usage_sep", "usage_ctx_gap"] {
             assert!(!toml.contains(&format!("[statusline.{k}]")), "{k} must be gone");
         }
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ops/statusline/rich.rs")).unwrap();
+        let prod = &src[..src.find("#[cfg(test)]").expect("test module marker")];
+        for k in ["ctx_mark", "usage_sep", "usage_ctx_gap"] {
+            assert!(!prod.contains(&format!("statusline.{k}")), "{k} read");
+        }
+        assert!(prod.contains("{}% ctx{}"));
         assert_ne!(defaults::text("statusline.activity_marker"), defaults::text("statusline.bar_fill"));
     }
 }

@@ -11,6 +11,11 @@ val() { # val <key>: the value of `key = ...` in the config, quotes stripped
   sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$cfg" | head -n 1 | sed 's/^"//; s/"[[:space:]]*$//'
 }
 dir=$(val dir); max_files=$(val max_files); max_bytes=$(val max_non_image_bytes); images=$(val image_extensions)
+headroom_pct=$(val min_headroom_pct)
+case ${headroom_pct:-0} in
+  '' | *[!0-9]*) echo "plugin-dir-limits: min_headroom_pct must be a whole number, got '$headroom_pct' (in $cfg)" >&2; exit 2 ;;
+esac
+headroom=$((max_bytes * ${headroom_pct:-0} / 100))
 if [ -z "$dir" ] || [ -z "$max_files" ] || [ -z "$max_bytes" ]; then
   echo "plugin-dir-limits: cannot read the limits from $cfg" >&2
   exit 2
@@ -38,6 +43,9 @@ while IFS= read -r f; do
   size=$(wc -c <"$root/$f" | tr -d ' ')
   if [ "$size" -ge "$max_bytes" ]; then
     echo "FAIL: $f is $size bytes, non-image files must be under $max_bytes" >&2
+    big=$((big + 1))
+  elif [ "$size" -ge $((max_bytes - headroom)) ]; then
+    echo "FAIL: $f is $size bytes, within $headroom bytes of the $max_bytes limit: split it before it goes over (a small edit would break the plugin directory gate)" >&2
     big=$((big + 1))
   fi
 done <<EOF2
