@@ -297,6 +297,21 @@ fn run_phase(name: &'static str, root: &Path, src: &Path, sessions_n: usize, sec
         ah_engine::discard::harmless(t.join());
     }
     let counters = phase.json(&["query", "counters", "--limit", "5000"]);
+    // which check held the most (the gate's own diagnosis: the bars above are about the engine, this names the reader)
+    {
+        let m = &counters["meta"]["metrics"];
+        let mut rows: Vec<(f64, String)> = ["counters", "gauges", "histograms"]
+            .iter()
+            .filter_map(|k| m[*k].as_array())
+            .flatten()
+            .filter(|r| matches!(r.get("name").and_then(Value::as_str), Some("check_mem_peak_bytes")))
+            .map(|r| (r.get("value").or_else(|| r.get("max")).and_then(Value::as_f64).unwrap_or(0.0), r.to_string()))
+            .collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, row) in rows.iter().take(8) {
+            eprintln!("GATE {name} check_mem_peak_bytes {row}");
+        }
+    }
     let mut r = std::mem::take(&mut *res.lock().unwrap());
     r.appended_bytes = appended.load(Ordering::Relaxed);
     r.hooks = hooks.load(Ordering::Relaxed);

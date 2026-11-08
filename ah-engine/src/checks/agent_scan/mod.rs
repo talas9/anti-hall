@@ -337,19 +337,49 @@ pub fn extract_texts(node: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// [`extract_texts`], borrowed: a large tool result is read where it sits in the parsed line, never copied.
+fn extract_text_refs<'a>(node: &'a Value, out: &mut Vec<&'a str>) {
+    match node {
+        Value::String(s) => out.push(s),
+        Value::Array(a) => a.iter().for_each(|x| extract_text_refs(x, out)),
+        Value::Object(o) => {
+            if let Some(Value::String(t)) = o.get("text") {
+                out.push(t);
+            }
+            if let Some(c) = o.get("content") {
+                extract_text_refs(c, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `text.toLowerCase().includes(needle)` without the lower-cased copy when both are ASCII (a copy of a multi-megabyte tool result
+/// otherwise); any other text takes the copy, so the answer is the same for every input.
+fn lower_contains(text: &str, needle: &str) -> bool {
+    if !(text.is_ascii() && needle.is_ascii()) {
+        return text.to_lowercase().contains(needle);
+    }
+    let (t, n) = (text.as_bytes(), needle.as_bytes());
+    if n.is_empty() {
+        return true;
+    }
+    t.windows(n.len()).any(|w| w.iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b))
+}
+
 /// `notificationTexts(entry)` of `companion/lib/devswarm-idle.js`: the texts of this entry that hold a completion notice.
-fn notification_texts(e: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn notification_texts(e: &Value) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
     let content = prop(e, "message").and_then(|m| prop(m, "content"));
     match sprop(e, "type") {
         Some("user") => match content {
-            Some(Value::String(s)) => out.push(s.clone()),
+            Some(Value::String(s)) => out.push(s),
             Some(Value::Array(a)) => {
                 for b in a {
                     if sprop(b, "type") == Some("text")
                         && let Some(t) = sprop(b, "text")
                     {
-                        out.push(t.to_string());
+                        out.push(t);
                     }
                 }
             }
@@ -357,12 +387,12 @@ fn notification_texts(e: &Value) -> Vec<String> {
         },
         Some("attachment") => {
             if let Some(p) = prop(e, "attachment").and_then(|a| sprop(a, "prompt")) {
-                out.push(p.to_string());
+                out.push(p);
             }
         }
         Some("queue-operation") => {
             if let Some(c) = sprop(e, "content") {
-                out.push(c.to_string());
+                out.push(c);
             }
         }
         _ => {}
@@ -975,11 +1005,11 @@ impl Walk {
             if is_tool_result && let Some(id) = tuid {
                 self.answered.insert(id.to_string());
             }
-            let mut texts = Vec::new();
-            extract_texts(block_content, &mut texts);
+            let mut texts: Vec<&str> = Vec::new();
+            extract_text_refs(block_content, &mut texts);
             if is_tool_result
                 && let Some(id) = tuid
-                && texts.iter().any(|t| t.to_lowercase().contains(defaults::text("agent_scan.stop_gone_text")))
+                && texts.iter().any(|t| lower_contains(t, defaults::text("agent_scan.stop_gone_text")))
             {
                 self.gone.insert(id.to_string());
             }
@@ -1050,7 +1080,7 @@ impl Walk {
                     if self.other_bytes > defaults::num("agent_scan.retain_bytes") {
                         return Err(Unsupported);
                     }
-                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text, seq, ts: entry_ts, off: self.cur_off });
+                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text: text.to_string(), seq, ts: entry_ts, off: self.cur_off });
                 }
             }
         }

@@ -4244,3 +4244,69 @@ fn a_rewound_clock_restarts_the_windows_and_the_stall_comes_back() {
     ticks(&h, &mut st, &[back + 16 * MIN, back + 16 * MIN + 30_000]);
     assert!(stalled_flag(&st), "a rewound clock does not hide a stall for ever");
 }
+
+// ---- the streaming transcript read (L4) ---------------------------------------------------------------------------------
+
+fn fresh_agent(path: &Path) -> Agent {
+    Agent { id: "a".into(), path: path.to_string_lossy().to_string(), ..Agent::default() }
+}
+
+#[test]
+fn ingest_reads_complete_lines_only_and_resumes_at_the_half_written_one() {
+    let h = home("ingest-resume");
+    let p = sess(&h, "a");
+    let t0 = now0();
+    let whole = [tool(t0, "m1", 5, "t1", "Edit", json!({"file_path": "/x"})), result(t0 + 1, "t1", "ok", false)];
+    let half = tool(t0 + 2, "m2", 5, "t2", "Edit", json!({"file_path": "/y"}));
+    std::fs::write(&p, format!("{}\n{}", whole.join("\n"), &half[..half.len() / 2])).unwrap();
+    let mut a = fresh_agent(&p);
+    facts::ingest(&mut a, t0 + 10);
+    let consumed = whole.iter().map(|l| l.len() as u64 + 1).sum::<u64>();
+    assert_eq!(a.offset, consumed, "the offset stops after the last newline");
+    assert!(!a.partial && !a.transcript_complete, "a half-written line is not a partial read, and the transcript is not complete");
+    let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+    writeln!(f, "{}", &half[half.len() / 2..]).unwrap();
+    facts::ingest(&mut a, t0 + 20);
+    assert_eq!(a.offset, std::fs::metadata(&p).unwrap().len());
+    assert!(a.transcript_complete, "every line read from the start: complete");
+}
+
+#[test]
+fn ingest_reads_past_an_oversize_line_without_holding_it_and_marks_the_read_partial() {
+    let h = home("ingest-oversize");
+    let p = sess(&h, "a");
+    let t0 = now0();
+    let cap = crate::defaults::num("agent_scan.max_line_bytes") as usize;
+    let huge = result(t0 + 1, "t1", &"x".repeat(cap + 1024), false);
+    let after = tool(t0 + 2, "m2", 5, "t2", "Edit", json!({"file_path": "/y"}));
+    write(&p, &[prompt(t0, "/w"), huge, after]);
+    let mut a = fresh_agent(&p);
+    facts::ingest(&mut a, t0 + 10);
+    assert_eq!(a.offset, std::fs::metadata(&p).unwrap().len(), "the line was read past, not stopped at");
+    assert!(a.partial && !a.transcript_complete, "a skipped line makes the read partial");
+    assert!(a.last_output_ms >= t0 + 2, "the line after it was still read");
+}
+
+#[test]
+fn ingest_cutting_a_window_inside_a_multibyte_character_still_reads_the_whole_lines_after_it() {
+    let h = home("ingest-cut");
+    let p = sess(&h, "a");
+    let t0 = now0();
+    let first_read = crate::defaults::raw("agent_tracker.limits").get("first_read_bytes").and_then(crate::defaults::V::as_integer).unwrap() as usize;
+    let last = tool(t0 + 1, "m1", 5, "t1", "Edit", json!({"file_path": "/x"}));
+    // a first line of two-byte characters, long enough that the first-read window starts inside one of them
+    for pad in 0..2 {
+        let first = json!({"type": "user", "timestamp": iso(t0), "cwd": "/w", "message": {"role": "user", "content": format!("{}{}", "ö".repeat(first_read), "x".repeat(pad))}}).to_string();
+        write(&p, &[first, last.clone()]);
+        let bytes = std::fs::read(&p).unwrap();
+        let at = bytes.len() - first_read;
+        if bytes[at] & 0xC0 == 0x80 {
+            let mut a = fresh_agent(&p);
+            facts::ingest(&mut a, t0 + 10);
+            assert!(a.partial, "the read began mid-line");
+            assert!(a.last_output_ms >= t0 + 1, "the whole line after the cut one was read");
+            return;
+        }
+    }
+    panic!("no padding put the window start inside a character");
+}

@@ -399,3 +399,9 @@ doc = "Longest a request waits for its turn at reading a transcript window (also
 value = 1500
 min = 0
 unit = "ms"
+
+[transcript.result_parse_max_bytes]
+doc = "Longest tool-result text a parsed transcript line keeps for the fact readers (the head: a task id or a notice sits at its start). A result can be megabytes; the rest is cut at a character boundary before it is copied."
+value = 65536
+min = 1024
+unit = "bytes"

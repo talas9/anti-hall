@@ -494,13 +494,14 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
     collect_tool_uses(&e, &mut found);
     for tu in found {
         let name = str_of(tu, "name").unwrap_or_default().to_string();
-        let input = tu.get("input").cloned().unwrap_or(Value::Null);
         let cap = if task_tools.contains(&name.as_str()) { task_input_cap } else { input_cap };
-        let big = serde_json::to_vec(&input).map_or(0, |v| v.len()) > cap;
+        // measured by serializing into a counter and cloned only when it stays, so a huge input (a written file) is never copied
+        let big = tu.get("input").is_some_and(|i| json_len(i) > cap);
+        let input = if big { Value::Null } else { tu.get("input").cloned().unwrap_or(Value::Null) };
         r.tool_uses.push(ToolUse {
             id: str_of(tu, "id").map(str::to_string),
             name,
-            input: if big { Value::Null } else { input },
+            input,
             input_truncated: big,
             msg_id: msg_id.clone(),
             seq,
@@ -514,7 +515,17 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
             if str_of(it, "type") == Some("tool_result")
                 && let Some(id) = str_of(it, "tool_use_id")
             {
-                r.tool_results.push((id.to_string(), it.get("content").and_then(Value::as_str).unwrap_or("").to_string()));
+                // only the head of a result is kept: the consumers read a task id or a notice at its start, and a result can be megabytes
+                let mut text = it.get("content").and_then(Value::as_str).unwrap_or("");
+                let max = defaults::num("transcript.result_parse_max_bytes") as usize;
+                if text.len() > max {
+                    let mut cut = max;
+                    while !text.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    text = &text[..cut];
+                }
+                r.tool_results.push((id.to_string(), text.to_string()));
             }
         }
     }
@@ -538,6 +549,22 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
     }
     r.prompt = prompt_of(&e);
     r
+}
+
+/// Bytes `v` takes serialized, counted without building the text.
+fn json_len(v: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len();
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut c = Count(0);
+    if serde_json::to_writer(&mut c, v).is_err() { 0 } else { c.0 }
 }
 
 /// Cut `s` to at most `max` bytes at a character boundary; true when it was cut.
