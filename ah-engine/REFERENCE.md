@@ -1138,7 +1138,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.commit_cluster_value_flags` | `mFCct` |  |  | Short commit flags that take a value inside a cluster (-m, -F, -C, -c, -t). |
 | `git.commit_creating` | `9 items` |  |  | Subcommands that create a commit, where self-credit and handover checks apply. |
 | `git.commit_expansion_allow` | `^\$\([ \t]*cat[ \t]*<<, ^\$\([ \t]*:[ \t]*\)` |  |  | Regular expressions tested against the text that starts at an expansion; a match means the expansion is a form the guard already reads (a heredoc substitution, or the `$(:)` stand-in the guard puts where it already scanned a heredoc body), so it is not refused. |
-| `git.commit_expansion_patterns` | `\$[A-Za-z_{], \$\(, `` |  |  | Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. |
+| `git.commit_expansion_patterns` | `\$[A-Za-z_{], \$\(, `` |  |  | Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. Each pattern is matched at the start of the expansion within the whole text, so a pattern with lookbehind, \b, \B or a `^` alternative is dropped (counted, and named once per session in an advisory) while the other patterns keep working. |
 | `git.commit_hash_len` | `40` |  |  | Length of a full commit hash, used to shorten it in messages. |
 | `git.commit_hash_short` | `12` |  |  | Length a commit hash is shortened to in messages. |
 | `git.commit_long` | `48 items` |  |  | Long options of the commit subcommand, for resolving abbreviations in reused-message checks. |
@@ -1150,6 +1150,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.credit_label_gh_words` | `2` |  |  | How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`). |
 | `git.credit_session_keys` | `claude-session` |  |  | Trailer keys (lowercase) whose line credits an AI tool whatever its value is, e.g. a session trailer a coding assistant appends (GH #457). Checked in commit messages, reused messages, gh bodies and the audit. |
 | `git.credit_url_markers` | `claude.ai/code/session` |  |  | URL fragments of an AI tool's session link (GH #457). In a commit message a line that is only the link, or a trailer key and the link, counts as a credit; in a gh body the link anywhere does (see gh_body_markers). |
+| `git.expansion_advisory_state_prefix` | `git-expansion-advisory-` |  |  | File name prefix of the per-session stamp that records the dropped-expansion-pattern advisory was shown (git.expansion_pattern_advisory), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it. |
+| `git.expansion_pattern_advisory` | `anti-hall git guard config: ignored git.commit_expansion_patterns entries tha...` |  |  | Advisory (shown once per session) naming the git.commit_expansion_patterns entries the guard dropped because they are not valid or look before the match start (lookbehind, \b, \B, `^`); the other patterns and every other git check keep working. Placeholder: {shown} (the dropped patterns, quoted). |
 | `git.expansion_shown_chars` | `12` |  | chars | How many characters of the expansion the refusal shows. |
 | `git.file_write_tip` | `\nTip: this file's content was scanned as shell. Write the file with the Writ...` |  |  | Added to a block when the command writes a file with shell text: the file was scanned as shell. |
 | `git.find_exec_flags` | `-exec, -execdir, -ok, -okdir` |  |  | find actions that run a command. |
@@ -5271,6 +5273,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.js_parse_max_depth` | `2000` |  |  | The deepest bracket nesting of a transcript line the engine reads the way JSON.parse does when serde_json's 128-level limit rejects it (JavaScript's own stack ends far past it). A deeper line cannot be read and leaves the scan unsure. |
 | `taskstate.list_id_env` | `CLAUDE_CODE_TASK_LIST_ID` |  |  | Name of the environment variable Claude Code reads to put a session's tasks in a NAMED list (`<store_base>/<list id>/`) instead of `session-<8>`. The R-pair spawn-by-id check reads that named list as THE list when the variable is set to a valid id and its directory exists (even empty: Claude Code then keeps the session's tasks only there, and the `session-<8>` directory is left empty). Forwarded to the checks by `request_env.allow`. Unset, or a value that is not a valid id, or no such directory: the `store_dir_names` candidates apply. |
 | `taskstate.list_id_re` | `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` |  |  | A valid named-list id (one directory name under the store: starts with a letter, digit or underscore, then letters, digits, `_`, `.` or `-`; never a path). |
+| `taskstate.memo_entries` | `16` |  | count | How many task reconstructions of a transcript file the engine remembers, each for one state of the file (its size, modification time, window sizes and variant). The Stop checks task-guard (twice), task-pair-guard and tasklist-guard each rebuild the same task list from the same tail, and a tail cut in the middle of a task's history makes each of them scan back up to taskstate.backfill_exact_bytes; with this memo the first check computes it and the others take its answer. A changed file is read afresh. The least recently used is dropped first. 0 turns the memo off and every check reconstructs for itself. |
 | `taskstate.open_statuses` | `pending, in_progress, in-progress` |  |  | Statuses (lowercase) that make a task open. |
 | `taskstate.pending_statuses` | `pending` |  |  | Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store. |
 | `taskstate.prompt_key_max_lines` | `64` |  |  | How many of the newest user-entry lines of the transcript tail the task guard reads to find the newest real prompt (its key). Tool results are user entries too, so a long run of them is skipped; when the newest this-many are all unusable the whole tail is read, so the key is the same as a full scan gives. 0 reads every user line. |
@@ -14243,6 +14246,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_timeline_max` | `40` |  |  | Rows of the Live screen's timeline strip. |
 | `web.live_top_n` | `5` |  |  | Checks listed in the Live screen's top list. |
 | `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
+| `web.load_tick_ms` | `250` |  | ms | How often a view that is waiting for its first data re-checks whether the load timeout has passed. |
+| `web.load_timeout_ms` | `8000` |  | ms | How long a view shows its loading skeleton before it replaces it with an error line naming the endpoint and a retry action. |
 | `web.log_file` | `ah-web.log` |  |  | File (in the state directory the server was started with) it appends one line to for its start, every signal it receives and its exit with the reason, so a server that disappears says why. Rotated to `<name>.1` at web.log_max_bytes. |
 | `web.log_max_bytes` | `262144` |  |  | Size at which the server's log file is rotated (one old copy is kept). |
 | `web.loopback_names` | `localhost, [::1]` |  |  | Host names the dashboard answers to, besides web.bind_host: the Host header and the Origin must name one of these plus the bound port. |
@@ -14313,12 +14318,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.reject_reason_origin` | `origin` |  |  | The reason name counted for a request refused by the Origin / Referer check. |
 | `web.rejected_counter` | `web_request_rejected` |  |  | Counter kind a refused request (bad Host, bad Origin) is counted under in the shared counter journal; the reason is the name. Shows in `status` accounting. |
 | `web.require_token` | `true` |  |  | Whether the page and its API need the per-session token (the `?t=` address and the session cookie). true = the token is required (shipped default). false = no token is made or asked for, `ah-engine web` prints a plain address, and `/`, `/api/*`, `/static/*` and `/pkg/*` work without a cookie; the Host check (web.check_host) and the Origin check (web.check_origin) still apply. Read once when the server starts: `ah-engine config set web.require_token false` (the owner's override; the engine hands the effective value to the server) and restart it. |
+| `web.ribbon_buckets` | `60` |  |  | How many slots the decision ribbon is divided into. |
+| `web.ribbon_window_s` | `3600` |  | s | Seconds the decision ribbon on the agents view covers (it marks the feed's decisions inside this window). |
+| `web.screens` | `8 items` |  |  | The Command Center's views, in nav order. Each entry: id (which view), label (a web.ui key), icon (a line icon name), enabled (false = hidden from the nav and not rendered; the code stays). Views the page does not know are ignored. Order and visibility are set here, not in the page. |
+| `web.skeleton_rows` | `6` |  |  | How many grey bars a list, table or tree skeleton draws. |
+| `web.skeleton_stats` | `4` |  |  | How many figure blocks the stats skeleton draws above its chart frame. |
 | `web.sse_keepalive_s` | `15` |  |  | Interval of the keep-alive comment on the event stream. |
+| `web.stale_after_ms` | `20000` |  | ms | A view that shows data marks it stale ("stale since HH:MM") when its last read failed or no read succeeded for this long. |
+| `web.stale_tick_ms` | `1000` |  | ms | How often a view that shows data re-checks whether the data has gone stale. |
 | `web.start_poll_ms` | `50` |  |  | Poll interval of that wait. |
 | `web.start_wait_ms` | `8000` |  |  | How long `ah-engine web` waits for a freshly started server to publish its state file. |
 | `web.state_file` | `web.json` |  |  | File (in the engine state directory) the server writes while it runs: pid, port, token and URL. Mode 0600. |
 | `web.static_dir` | `web/static` |  |  | Directory of the page's own files (index, CSS), relative to the plugin root. |
 | `web.step_max_chars` | `240` |  |  | Longest 'doing now' text sent per agent, in characters. |
+| `web.strip_pills` | `cpu, mem, err` |  |  | The figures in the top strip, left to right: cpu, mem, req (requests since start), err. req is a lifetime counter without a threshold, so it is off by default. |
+| `web.switches` | `6 entries` |  |  | Optional page parts. graph_tab: the Graph tab of the agents view (an empty canvas for now). search: the header search box (not wired yet). compose: the Send box of the selected-agent panel (not wired yet). swap_account: the Switch account card of Accounts (not wired yet). topology_toggle: Health can switch to the Topology drawing. tier_switch: the Auto/Full/Lite choice in the sidebar foot. |
 | `web.token_bytes` | `16` |  |  | Random bytes in the per-session token (shown as twice as many hex digits). |
 | `web.topo_action_max_chars` | `4000` |  |  | Longest output text of a Topology action that is returned. |
 | `web.topo_actions` | `7 items` |  |  | The Topology node menus, in order. kind: client, engine, subsystem or store. local: shows the figures the page already has. needs_viewer: only for stores in web.topo_viewers. args: the engine arguments; {pid} is the engine's pid, {viewer} the store's viewer id, {id} the node's id. |
@@ -14331,7 +14345,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
 | `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
 | `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
-| `web.ui` | `266 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `281 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 
@@ -15007,6 +15021,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
 | `git_audit_blocked` | counter | blocks |  | Bash calls the post-call commit check blocked because a commit git just wrote carries an AI credit (PR #469). |
 | `git_blocked` | counter | commands | reason | Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push). |
+| `git_expansion_pattern_dropped` | counter | patterns |  | git.commit_expansion_patterns entries the guard dropped (invalid regex, or one that looks before the match start), counted each time the git tables are built; the user is told once per session. |
 | `git_push_ack_downgraded` | counter | pushes |  | Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default). |
 | `git_push_blocked` | counter | pushes |  | Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457). |
 | `git_push_narrow_unproven` | counter | pushes |  | Pushes read in full because the same Bash call could not be proven to leave what the push publishes unchanged before it runs (a chain, a substitution, another command, an option or an environment prefix before the push; GH #506, PR #524 review). |
@@ -15089,6 +15104,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `stop_channel` | counter | stops | counter, check, model, project | Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime. |
 | `tasks_cache` | counter | lookups | result | Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh). |
 | `tasks_cache_rebuild` | counter | lookups | reason | Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place). |
+| `taskstate_memo` | counter | lookups | result | Task reconstructions asked for by the Stop and prompt checks (`ah.transcript.tasks`): hit (another check already built this state of the file, or is building it), miss (built now) or off (taskstate.memo_entries is 0). |
 | `tel_child_counts` | counter | series | result | Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read). |
 | `tel_dropped` | counter | samples | reason | Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed). |
 | `tel_events` | counter | invocations | k, h, e, o | Telemetry invocations recorded, by kind (k), hook or check (h), hook event (e) and outcome (o) (D78). |
