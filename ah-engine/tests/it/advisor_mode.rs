@@ -498,6 +498,17 @@ fn second_fix_attempt_for_one_issue_needs_a_consult() {
     assert_eq!(stats("fx1")["second_gated"], 1);
 }
 
+// GH #668: a submodule pin (gitlink) bump merge helper is integration work, not a second fix dispatch for the issue it lands
+#[test]
+fn a_pin_bump_merge_helper_is_not_a_second_fix_dispatch() {
+    let off = [("ANTIHALL_ADVISOR_THINKING", "0")];
+    let tp = transcript("fx2", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+    assert_eq!(dispatch("fx2", &tp, "Merge fix/404 and bump the submodule pin for #404", &off).0, 0, "pin bump merge helper");
+    assert_eq!(dispatch("fx2", &tp, "Advance the gitlink for #404 fix", &off).0, 0, "gitlink advance");
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 again", &off).0, 2, "a real second fix attempt is still held");
+}
+
 #[test]
 fn nudge_then_routine_work_counts_a_false_nag() {
     let tp = transcript("fn1", &[ADVISOR, OWNER, SONNET]);

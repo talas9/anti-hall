@@ -65,6 +65,13 @@ function idAdvisory(p, now) {
   return fire ? idMessage(agents, codex, now) : '';
 }
 
+// Delivered turns before the same advisory is sent again (a changed set of idle agents is a new advisory and is sent at once); a
+// repeat the model already holds is counted as suppressed.
+function idRepeatEvery() {
+  var every = ah.settings.num('idle_sweep.num_repeat_every');
+  return isFinite(every) && every > 0 ? every : 0;
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('prompt_emit.judge_child_env')) === '1') return 'allow';
   if (spawn.osHome() === null) { ah.unable('idle-agent-sweep:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no dedupe state to keep
@@ -75,8 +82,10 @@ function decide(p) {
   if (home.guarded !== true) {
     emit = dedupe.shouldEmit({
       sessionId: p.session_id, transcriptPath: p.transcript_path, key: ah.cfg('idle_sweep.dedupe_key'), content: t,
+      keepaliveTurns: idRepeatEvery(),
       normalize: function (x) { return x.replace(new RegExp(ah.cfg('idle_sweep.re_minutes'), 'g'), ''); },
     });
   }
+  if (!emit) ah.metric('misfire_suppressed', ['guard', 'idle-agent-sweep', 'reason', 'repeat_delivered']);
   return emit ? { advisory: text.advisoryJson(ah.cfg('idle_sweep.event'), t) } : 'allow';
 }

@@ -240,7 +240,7 @@ value = [
 
 [advisor.thinking_exempt_re]
 doc = "Regular expression (Rust syntax) of a dispatch description that is routine work even when its brief mentions a thinking word (a mechanical lane)."
-value = '(?i)\b(?:mechanical|rename|reformat|typo|regen\w*|bump (?:the )?version|changelog|status (?:check|poll)|watch(?:er)?|monitor)\b'
+value = '(?i)\b(?:mechanical|rename|reformat|typo|regen\w*|bump (?:the )?version|changelog|status (?:check|poll)|watch(?:er)?|monitor|gitlinks?|merge helper|(?:bump|update|advance)\w*\s+(?:the\s+)?(?:\w+\s+)?(?:submodule\s+)?pins?|submodule\s+(?:pointer|pin|bump))\b'
 
 [advisor.brief_head_bytes]
 doc = "How much of a dispatch prompt (from its start) is classified when the description names no thinking type."
