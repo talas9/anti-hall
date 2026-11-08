@@ -47,7 +47,7 @@ pub const NUMS: &[(&str, u64)] = &[
     ("client.wrapper_extra_ms", 250),
     ("client.wrapper_kill_grace_ms", 200),
     ("client.wrapper_default_timeout_s", 10),
-    ("client.slow_fallback_max_ms", 3000),
+    ("client.slow_fallback_max_ms", 9000),
     ("client.cold_guard_wait_ms", 2000),
     ("client.cold_guard_poll_ms", 50),
     ("dispatch.defer_exit", 75),

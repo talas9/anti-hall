@@ -1702,6 +1702,14 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         SLOW_REPLIES.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("slow_replies", &[]));
         sh.telemetry.with_metrics(|m| m.inc("deadline_soft", &[]));
+        // #684: the client's read timed out at its fail-fast wait (EAGAIN) and it kept waiting; did the late verdict reach it?
+        let taken = match &res {
+            Some(ResWait::Got(..)) => true,
+            Some(ResWait::Missing(_)) => false,
+            None => delivered,
+        };
+        let outcome = defaults::text(if taken { "daemon.wouldblock_outcome_delivered" } else { "daemon.wouldblock_outcome_lost" });
+        sh.telemetry.with_metrics(|m| m.inc("wouldblock_retries", &[("outcome", outcome)]));
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();

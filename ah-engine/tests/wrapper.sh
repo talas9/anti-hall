@@ -1107,7 +1107,8 @@ test_cold_guard_does_not_wait_when_no_daemon_can_start() {
 
 # Codex final N1: the watchdog's slow-window bound is the EFFECTIVE client.slow_fallback_max_ms (env override included), as the
 # engine client computes it. A stand-in that marks itself as waiting on the daemon (the wait file) and denies after 3500 ms is
-# killed at the shipped 3000 ms bound (fail open, rc 0) but must block once the override raises the bound past the deny.
+# killed at a 3000 ms bound (fail open, rc 0) but must block once the override raises the bound past the deny. The shipped bound
+# (#684: 9000 ms, so a CPU-starved daemon's verdict is read) is past the deny too.
 sw_setup() {
   cg_setup 0
   cat >"$cg_dir/slowdeny.sh" <<'ENG'
@@ -1124,15 +1125,16 @@ ENG
 test_slow_window_bound_honours_the_env_override() {
   sw_setup
   ok=1
-  # shipped bound (3000 ms): the late deny is outside the window, the call fails open
-  cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500
+  # a 3000 ms bound: the late deny is outside the window, the call fails open
+  cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500 AH_ENGINE_SLOW_FALLBACK_MAX_MS=3000
   [ "$cg_rc" -eq 0 ] || { ok=0; printf 'slow control: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
   # raised bound: the deny at 3500 ms is inside the effective window and must block
   cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500 AH_ENGINE_SLOW_FALLBACK_MAX_MS=6000
   [ "$cg_rc" -eq 2 ] && grep -q denied-after-wait "$cg_dir/err" || { ok=0; printf 'slow raised: rc=%s ms=%s err=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_dir/err")" >&2; }
-  # an unusable override keeps the shipped bound, as the engine does (defaults::num falls back to the default)
+  # an unusable override keeps the shipped bound (9000 ms, past the deny), as the engine does (defaults::num falls back to the
+  # default): the deny still blocks, where a junk value read as 0 would fail open
   cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500 AH_ENGINE_SLOW_FALLBACK_MAX_MS=junk
-  [ "$cg_rc" -eq 0 ] || { ok=0; printf 'slow junk: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
+  [ "$cg_rc" -eq 2 ] || { ok=0; printf 'slow junk: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
   cg_cleanup
   [ "$ok" -eq 1 ]
 }

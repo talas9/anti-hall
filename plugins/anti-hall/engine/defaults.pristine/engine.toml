@@ -319,10 +319,24 @@ min = 0
 unit = "us"
 
 [daemon.request_hard_ms]
-doc = "HARD deadline of a request, measured from its arrival (less daemon.reply_slack_ms): the point where a scripted check still running is cut and a check not yet started gets no answer: both take the check's failure policy (script.failure_mode_by_check). The SOFT deadline is client.deadline_ms (past it the request is logged as deadline_soft and counted, nothing is cut). A client whose daemon is alive waits for a late reply up to client.slow_fallback_max_ms less client.slow_wait_margin_ms and uses it, so this must stay below that window."
+doc = "HARD wall-clock CEILING of a request, measured from its arrival (less daemon.reply_slack_ms): the point where a scripted check still running is cut and a check not yet started gets no answer: both take the check's failure policy (script.failure_mode_by_check). It only catches a truly hung request: the budget that drops a single check counts that check's own thread CPU (daemon.eval_budget_us, and the script's own CPU limit), so a loaded host that merely delays the worker never drops a verdict (#684: at 2000 ms, load 18-24 failed every Stop guard open). The SOFT wall marks are client.deadline_ms (the client's fail-fast wait) and daemon.request_wall_warn_ms (counted, nothing is cut). A client whose daemon is alive waits for a late reply up to client.slow_fallback_max_ms less client.slow_wait_margin_ms and uses it, so this plus diagnostics.deadline_grace_cap_ms must stay inside that window (a test pins it)."
+value = 8000
+min = 1
+unit = "ms"
+
+[daemon.request_wall_warn_ms]
+doc = "SOFT wall mark of a request (the hard deadline before #684), measured from its arrival: a check that still answers past it is counted verdicts_saved_by_cpu_budget (it would have been dropped when the wall clock was the deadline); nothing is cut here. The HARD wall ceiling is daemon.request_hard_ms."
 value = 2000
 min = 1
 unit = "ms"
+
+[daemon.wouldblock_outcome_delivered]
+doc = "Label value of metric wouldblock_retries for a reply written after the client's fail-fast wait (client.deadline_ms) that the waiting client still read: its read timed out (EAGAIN, os error 35 on macOS) and it kept waiting, as it should."
+value = "delivered"
+
+[daemon.wouldblock_outcome_lost]
+doc = "Label value of metric wouldblock_retries for a late reply (past client.deadline_ms) the client did not take: it had stopped waiting."
+value = "lost"
 
 [daemon.eval_budget_us]
 doc = "HARD thread CPU budget of ONE check: a check that used more than this alone loses its own answer (counted answers_dropped reason `cpu_budget`) and takes its failure policy; the checks after it still run and answer, and the request as a whole is bounded by daemon.request_hard_ms. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
@@ -627,7 +641,7 @@ unit = "ms"
 
 [client.slow_fallback_max_ms]
 doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
-value = 3000
+value = 9000
 env = "AH_ENGINE_SLOW_FALLBACK_MAX_MS"
 min = 0
 unit = "ms"
