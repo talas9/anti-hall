@@ -1434,6 +1434,7 @@ Files:
 | `sibling_sweep.toml` | phrases, hedge and tool lists, messages, limits and the follow-through window of the sibling-sweep check; all read at call time through the config layers, so editing a settings file changes the next call |
 | `handovers.toml` | layout, patterns, caps, severities, messages and search weights of the handover brief tree, read by `handover-hygiene.js`; a changed rule rebuilds every day brief on the next index run |
 | `script.toml` | scripted check logic (D88 spike): the on/off switch, where check scripts and the owner override live, and the per-call time, heap and stack limits of the embedded QuickJS-NG runtime |
+| `script_shared.toml` | the shared includes of the scripted checks (a script compiled once per worker interpreter instead of once per check that builds on it), the message for an include with no evaluator, and the metrics of that path; kept apart so `script.toml` and `telemetry.toml` stay at their pinned bytes |
 | `agent_controls.toml` | patterns, switches, limits and messages of ask-guard, silent-agent-nudge, stale-agent-stop-note and the transcript agent scan they share |
 | `codex_handover.toml` | patterns, switches, limits, file names and messages of the handover and Codex hook ports and the JavaScript-behavior helpers they share |
 | `devswarm_gates.toml` | switches, role and mode variables and the command pre-filter words of the DevSwarm child gate, reply tracker and drain checks |
