@@ -29,45 +29,45 @@ var shellScan = (function () {
     var dashStrip = !!m[1];
     // The delimiter is the FULL shell word with quote removal, as bash reads it; a word that cannot be modelled exactly
     // (unquoted `$` or backtick, unterminated quote, backslash-newline) returns null: no body is skipped, the strict fallback.
-    var j = i + m[0].length - m[2].length, word = '', quoted = false;
+    var j = i + m[0].length - m[2].length, word = [], quoted = false;
     while (j < n && !/[ \t\r\n;&|<>()]/.test(cmd[j])) {
       var ch = cmd[j];
       if (ch === '$' || ch === '`') return null;
       if (ch === "'") {
         var close = cmd.indexOf("'", j + 1);
         if (close === -1) return null;
-        word += cmd.slice(j + 1, close); quoted = true; j = close + 1; continue;
+        word.push(cmd.slice(j + 1, close)); quoted = true; j = close + 1; continue;
       }
       if (ch === '"') {
         var k = j + 1;
         while (k < n && cmd[k] !== '"') {
           if (cmd[k] === '$' || cmd[k] === '`') return null;
-          if (cmd[k] === '\\' && k + 1 < n && '\\"'.indexOf(cmd[k + 1]) >= 0) { word += cmd[k + 1]; k += 2; continue; }
-          word += cmd[k]; k++;
+          if (cmd[k] === '\\' && k + 1 < n && '\\"'.indexOf(cmd[k + 1]) >= 0) { word.push(cmd[k + 1]); k += 2; continue; }
+          word.push(cmd[k]); k++;
         }
         if (k >= n) return null;
         quoted = true; j = k + 1; continue;
       }
       if (ch === '\\') {
         if (j + 1 >= n || cmd[j + 1] === '\n' || cmd[j + 1] === '\r') return null;
-        word += cmd[j + 1]; quoted = true; j += 2; continue;
+        word.push(cmd[j + 1]); quoted = true; j += 2; continue;
       }
-      word += ch; j++;
+      word.push(ch); j++;
     }
-    if (!word) return null;
+    if (!word.join('')) return null;
     var openerEnd = j, lineEnd = cmd.indexOf('\n', openerEnd);
-    if (lineEnd === -1) return { end: n, openerText: cmd.slice(i, n), openerEnd: openerEnd, word: word, quoted: quoted, dashStrip: dashStrip, body: '', terminated: false };
+    if (lineEnd === -1) return { end: n, openerText: cmd.slice(i, n), openerEnd: openerEnd, word: word.join(''), quoted: quoted, dashStrip: dashStrip, body: '', terminated: false };
     var openerText = cmd.slice(i, lineEnd), idx = lineEnd + 1, bodyLines = [], terminated = false;
     while (idx <= n) {
       var nextNl = cmd.indexOf('\n', idx);
       var lineRaw = nextNl === -1 ? cmd.slice(idx) : cmd.slice(idx, nextNl);
       var line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
-      if (line === word) { terminated = true; idx = nextNl === -1 ? n : nextNl + 1; break; }
+      if (line === word.join('')) { terminated = true; idx = nextNl === -1 ? n : nextNl + 1; break; }
       bodyLines.push(line);
       if (nextNl === -1) { idx = n; break; }
       idx = nextNl + 1;
     }
-    return { end: idx, openerText: openerText, openerEnd: openerEnd, lineEnd: lineEnd, word: word, quoted: quoted, dashStrip: dashStrip, body: bodyLines.join('\n'), terminated: terminated };
+    return { end: idx, openerText: openerText, openerEnd: openerEnd, lineEnd: lineEnd, word: word.join(''), quoted: quoted, dashStrip: dashStrip, body: bodyLines.join('\n'), terminated: terminated };
   }
 
   // true when `pos` lies inside an open `$((`, `((` or `$[` whose innermost enclosing context is arithmetic.

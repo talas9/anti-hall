@@ -1716,3 +1716,7 @@ value = { kind = "counter", unit = "takes", labels = ["kind", "result"] }
 [metric.snapshot_error]
 doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes (on a read, the file is replaced), lock: the snapshot lock was busy, cap: taskstate.snapshot_max_files reached, home: no usable home)."
 value = { kind = "counter", unit = "errors", labels = ["kind"] }
+
+[task_guard.prune_advisory]
+doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
+value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"

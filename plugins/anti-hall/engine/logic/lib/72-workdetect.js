@@ -14,19 +14,19 @@ var wd = {
   re: function (key, flags) { return jx.re(key, flags); },
   // Blank the contents of single- and double-quoted spans (delimiters included).
   neutralize: function (cmd) {
-    var out = '', single = false, dbl = false;
+    var out = [], single = false, dbl = false;
     for (var i = 0; i < cmd.length; i++) {
       var c = cmd.charAt(i), hasNext = i + 1 < cmd.length;
-      if (single) { out += ' '; if (c === "'") single = false; continue; }
+      if (single) { out.push(' '); if (c === "'") single = false; continue; }
       if (dbl) {
-        if (c === '\\' && hasNext) { out += '  '; i++; continue; }
-        out += ' ';
+        if (c === '\\' && hasNext) { out.push('  '); i++; continue; }
+        out.push(' ');
         if (c === '"') dbl = false;
         continue;
       }
-      if (c === "'") { single = true; out += ' '; } else if (c === '"') { dbl = true; out += ' '; } else out += c;
+      if (c === "'") { single = true; out.push(' '); } else if (c === '"') { dbl = true; out.push(' '); } else out.push(c);
     }
-    return out;
+    return out.join('');
   },
   fileRedirect: function (s) { return /(?<![0-9&])>{1,2}(?!&)/.test(s); },
   bashWork: function (n) { return wd.re('workdetect.always_work', 'i').test(n) || wd.re('workdetect.command_position', 'i').test(n) || wd.fileRedirect(n); },
