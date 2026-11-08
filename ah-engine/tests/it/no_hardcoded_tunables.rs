@@ -114,6 +114,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/docs.rs", "\"| `{}` |", "row layout of the generated Markdown reference"),
     ("src/docs.rs", "\\n## ", "section headings and intro lines of the generated Markdown reference: the generator's own format"),
+    (
+        "src/sqlalloc.rs",
+        "const HEADER",
+        "bytes in front of every SQLite block that hold its size: 16 keeps the block 16-byte aligned like the system allocator's, an alignment constant, not a tunable",
+    ),
     ("src/memstat.rs", "static JEMALLOC", "the allocator the counters may wrap: a target-gated allocator value, not configuration"),
     ("src/memstat.rs", "static SYSTEM", "the allocator the counters may wrap: the platform allocator value, not configuration"),
     (

@@ -68,7 +68,8 @@ unsafe extern "C" fn x_realloc(p: *mut c_void, n: c_int) -> *mut c_void {
 }
 
 unsafe extern "C" fn x_roundup(n: c_int) -> c_int {
-    (n + 7) & !7
+    // SQLite rounds sizes below 0x7fffff00; wrapping keeps a larger (unreachable) request from panicking across the C boundary
+    n.wrapping_add(7) & !7
 }
 
 unsafe extern "C" fn x_init(_: *mut c_void) -> c_int {

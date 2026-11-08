@@ -1981,7 +1981,7 @@ resource budgets; 0 turns one off. The daemon reports a breach when it begins an
 memory target the footprint is read against: `status --json` shows it as `budget.mem_target_mb` with `budget.over_target`; nothing
 is enforced at it. SQLite allocates through the engine's own allocator (`storage.sqlite_use_global_allocator`, read at daemon
 start; `status --memory` shows `sqlite_global_allocator`), so a database burst's pages go back to the OS as they are freed instead
-of staying in the C library's zones.
+of staying in the C library's zones. The counter `sqlite_alloc_routing` (label `result`) counts the routing attempt at each daemon start (`routed`, or `failed` when SQLite had already started).
 
 **Memory.** `ah-engine status --memory` gives the heap against RSS, the allocator's own figures, the memory budgets of every
 long-lived cache, and `components`: the sizes of the in-memory structures per subsystem (guard state, session counters, rate
