@@ -290,3 +290,24 @@ fn a_failed_widening_handle_never_proves_an_empty_count_complete() {
     assert!(proof.rows.is_none(), "an empty scan of a tail that missed the launch must be unknown, not complete: {:?}", proof.complete);
     assert!(!proof.complete);
 }
+
+#[test]
+fn an_answered_call_gives_up_its_input_unless_a_launch_or_a_retained_result_names_it() {
+    let mut w = Walk::new();
+    let mut seq = 0u64;
+    // a launch: its input is what `spawnInput` reports, so it stays
+    for l in launch_lines("aaaa1111").lines() {
+        feed(&mut w, &mut seq, l.as_bytes()).unwrap();
+    }
+    // an Agent call whose result is not a launch (a foreground agent's answer): nothing reads its input again
+    let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"lfg","name":"Agent","input":{"description":"fg","prompt":"a long prompt"}}]}}"#;
+    let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"lfg","content":"all done"}]}}"#;
+    feed(&mut w, &mut seq, call.as_bytes()).unwrap();
+    assert!(w.tool_uses.get("lfg").unwrap().input.is_some(), "kept while the call is unanswered");
+    feed(&mut w, &mut seq, result.as_bytes()).unwrap();
+    assert!(w.tool_uses.get("lfg").unwrap().input.is_none(), "released once answered");
+    assert!(w.tool_uses.get("laaaa1111").unwrap().input.is_some(), "a launch record names it");
+    let scan = finish(&w, 0, "", &Opts { now_ms: 0.0, ignore_unanswered_stops: false }).unwrap();
+    let row = scan.launched.get("aaaa1111").unwrap();
+    assert_eq!(row.spawn_input.as_deref().and_then(|v| v.get("prompt")).and_then(Value::as_str), Some("w"));
+}

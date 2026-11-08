@@ -718,6 +718,9 @@ impl<V> IdMap<V> {
     fn get(&self, id: &str) -> Option<&V> {
         self.0.get(&id_key(id))
     }
+    fn get_mut(&mut self, id: &str) -> Option<&mut V> {
+        self.0.get_mut(&id_key(id))
+    }
     fn insert(&mut self, id: &str, v: V) -> Option<V> {
         self.0.insert(id_key(id), v)
     }
@@ -779,6 +782,8 @@ struct Walk {
     other_bytes: u64,
     dropped_ids: IdSet,
     tool_uses: IdMap<ToolUse>,
+    /// Tool-use ids whose call input an answer is made of (a launch record or a retained result names them): never released.
+    pinned: IdSet,
     stops: Vec<Stop>,
     errored: IdSet,
     /// Tool-use ids whose result says the task does not exist (already ended).
@@ -826,6 +831,7 @@ impl Walk {
             other_bytes: 0,
             dropped_ids: IdSet::default(),
             tool_uses: IdMap::default(),
+            pinned: IdSet::default(),
             stops: Vec::new(),
             errored: IdSet::default(),
             gone: IdSet::default(),
@@ -1117,6 +1123,9 @@ impl Walk {
                                 spawn_input: None,
                             },
                         );
+                        if let Some(t) = tuid {
+                            self.pinned.insert(t);
+                        }
                     }
                 }
                 let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(text)? } else { None };
@@ -1157,7 +1166,20 @@ impl Walk {
                         return Err(Unsupported);
                     }
                     self.others.push(Other { tool_use_id: tuid.map(str::to_string), text: text.to_string(), seq, ts: entry_ts, off: self.cur_off });
+                    if let Some(t) = tuid {
+                        self.pinned.insert(t);
+                    }
                 }
+            }
+            // The call is answered. Its input is read later only for a launch record that names the call and for a retained result
+            // of it; for every other call (nearly all of them: the walk would hold a copy of each launch prompt of the window) it is
+            // released now.
+            if is_tool_result
+                && let Some(t) = tuid
+                && !self.pinned.contains(t)
+                && let Some(c) = self.tool_uses.get_mut(t)
+            {
+                c.input = None;
             }
         }
         Ok(())
