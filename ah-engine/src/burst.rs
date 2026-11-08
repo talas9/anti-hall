@@ -33,6 +33,7 @@ static WIN_START: AtomicU64 = AtomicU64::new(0);
 static THRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 static WINDOW_MS: AtomicU64 = AtomicU64::new(500);
 static MAX_PER_HOUR: AtomicU64 = AtomicU64::new(0);
+static RATE_WINDOW_MS: AtomicU64 = AtomicU64::new(0);
 static KEEP: AtomicUsize = AtomicUsize::new(1);
 static DUMP_SITES: AtomicUsize = AtomicUsize::new(1);
 static RECENT_MAX: AtomicUsize = AtomicUsize::new(1);
@@ -97,8 +98,10 @@ pub struct Config {
     pub dump_bytes: u64,
     /// Window length.
     pub window_ms: u64,
-    /// Most dumps per hour.
+    /// Most dumps per rate window.
     pub max_per_hour: u64,
+    /// The rate window (an hour).
+    pub rate_window_ms: u64,
     /// Dump files kept (the oldest is overwritten).
     pub keep: usize,
     /// Sites in the table (fixed at the first enable).
@@ -120,6 +123,7 @@ pub fn configure_from_defaults() {
         dump_bytes: num("diagnostics.burst_dump_mb").saturating_mul(1024 * 1024),
         window_ms: num("diagnostics.burst_window_ms"),
         max_per_hour: num("diagnostics.burst_dump_max_per_hour"),
+        rate_window_ms: num("diagnostics.burst_rate_window_ms"),
         keep: num("diagnostics.burst_dump_keep") as usize,
         sites: num("diagnostics.burst_sites_max") as usize,
         frames: num("diagnostics.burst_frames_max") as usize,
@@ -147,6 +151,7 @@ pub fn configure(c: &Config) {
     THRESH.store(c.dump_bytes, Relaxed);
     WINDOW_MS.store(c.window_ms.max(1), Relaxed);
     MAX_PER_HOUR.store(c.max_per_hour, Relaxed);
+    RATE_WINDOW_MS.store(c.rate_window_ms, Relaxed);
     KEEP.store(c.keep.max(1), Relaxed);
     DUMP_SITES.store(c.dump_sites.max(1), Relaxed);
     RECENT_MAX.store(c.recent.max(1), Relaxed);
@@ -316,7 +321,7 @@ pub fn request_end(ctx: &Ctx<'_>) -> Option<Outcome> {
 fn dump(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u64) -> Outcome {
     {
         let mut d = DUMPED.lock().unwrap_or_else(|e| e.into_inner());
-        while d.front().is_some_and(|t| now.saturating_sub(*t) >= 3_600_000) {
+        while d.front().is_some_and(|t| now.saturating_sub(*t) >= RATE_WINDOW_MS.load(Relaxed)) {
             d.pop_front();
         }
         if d.len() as u64 >= MAX_PER_HOUR.load(Relaxed) {
@@ -410,7 +415,7 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
         "unrecorded_sampled_bytes": dropped,
         "sites": sites,
         "allocator": crate::memdiag::allocator_stats(),
-        "note": "sampled_bytes is allocation volume (freed or not) attributed to the stack; where `function` is null the binary is stripped: resolve `image` + `offset` against the separate symbol file",
+        "note": crate::defaults::text("diagnostics.burst_dump_note"),
     })
 }
 
@@ -435,7 +440,7 @@ fn symbolize(ip: usize) -> serde_json::Value {
 
 /// Legacy Rust mangling (`_ZN3foo3bar17h<hash>E`) to `foo::bar`; anything else as it is.
 fn demangle(s: &str) -> String {
-    let t = s.strip_prefix('_').unwrap_or(s);
+    let t = s.trim_start_matches('_');
     let Some(mut rest) = t.strip_prefix("ZN") else { return s.to_string() };
     let mut parts = Vec::new();
     while let Some(i) = rest.find(|c: char| !c.is_ascii_digit()) {

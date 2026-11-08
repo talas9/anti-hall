@@ -709,3 +709,13 @@ min = 1
 [files.burst_dumps_dir]
 doc = "Directory (in the state directory) holding the burst dumps, burst-<n>.json."
 value = "burst-dumps"
+
+[diagnostics.burst_rate_window_ms]
+doc = "The window diagnostics.burst_dump_max_per_hour counts dumps over (an hour by default)."
+value = 3600000
+min = 1000
+unit = "ms"
+
+[diagnostics.burst_dump_note]
+doc = "Reading note written into every burst dump."
+value = "sampled_bytes is allocation volume (freed or not) attributed to the stack; where `function` is null the binary is stripped: resolve `image` + `offset` against the separate symbol file"

@@ -18,7 +18,7 @@ fn synthetic_burst_allocator() -> Vec<Vec<u8>> {
 }
 
 fn cfg() -> Config {
-    Config { on: true, sample_bytes: 256 * 1024, dump_bytes: 16 * 1024 * 1024, window_ms: 60_000, max_per_hour: 1, keep: 2, sites: 128, frames: 24, dump_sites: 16, recent: 4 }
+    Config { on: true, sample_bytes: 256 * 1024, dump_bytes: 16 * 1024 * 1024, window_ms: 60_000, max_per_hour: 1, rate_window_ms: 3_600_000, keep: 2, sites: 128, frames: 24, dump_sites: 16, recent: 4 }
 }
 
 #[test]
@@ -50,4 +50,24 @@ fn a_burst_writes_one_dump_naming_the_allocating_function() {
     drop(black_box((held, held2)));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "still one file");
     std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
+}
+
+/// Cost of the allocation hook: alloc+free pairs of a QuickJS-sized block with the profile off and on (printed; the bound is loose).
+#[test]
+fn the_hook_costs_little_per_allocation() {
+    use std::time::Instant;
+    const N: u64 = 2_000_000;
+    let run = || {
+        let t = Instant::now();
+        for _ in 0..N {
+            black_box(vec![0u8; black_box(4096)]);
+        }
+        t.elapsed().as_nanos() as f64 / N as f64
+    };
+    burst::configure(&Config { on: false, ..cfg() });
+    let off = run();
+    burst::configure(&cfg());
+    let on = run();
+    println!("ns per 4 KiB alloc+free: off {off:.1}, on {on:.1} (sampling every {} KiB)", cfg().sample_bytes / 1024);
+    assert!(on < off * 4.0 + 500.0, "off {off} on {on}");
 }

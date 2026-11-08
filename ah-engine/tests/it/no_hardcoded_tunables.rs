@@ -119,6 +119,10 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "const HEADER",
         "bytes in front of every SQLite block that hold its size: 16 keeps the block 16-byte aligned like the system allocator's, an alignment constant, not a tunable",
     ),
+    ("src/burst.rs", "const FRAME_CAP", "size of the on-stack frame buffer the allocator hook captures into (it cannot allocate); diagnostics.burst_frames_max is the tunable, clamped to it"),
+    ("src/burst.rs", "static SINCE", "per-thread byte counter initialised to zero (the allocator hook cannot allocate or read the config): state, not a tunable"),
+    ("src/burst.rs", "static BUSY", "per-thread re-entrancy flag initialised to false: state, not a tunable"),
+    ("src/burst.rs", "static NOTE", "per-thread list of the checks of the request in progress, empty at start: state, not a tunable"),
     ("src/memstat.rs", "static JEMALLOC", "the allocator the counters may wrap: a target-gated allocator value, not configuration"),
     ("src/memstat.rs", "static SYSTEM", "the allocator the counters may wrap: the platform allocator value, not configuration"),
     (
