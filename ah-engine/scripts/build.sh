@@ -71,3 +71,8 @@ done
 
 echo "artifact: $bin"
 echo "sha256:   $(shasum -a 256 "$bin" | cut -d' ' -f1)"
+# Keep this build's separate symbols next to the engine's state (a burst dump of the installed binary is named from them); not in CI,
+# where package.sh uploads them as the release's symbols artifact. A failure is loud but does not fail the build.
+if [ -z "${CI:-}" ] && [ "${AH_KEEP_SYMBOLS:-1}" != 0 ] && [ "$target" = "$(rustc -vV | sed -n 's/^host: //p')" ]; then
+  "$root/scripts/keep-symbols.sh" "$bin" || echo "build.sh: WARNING: symbols of this build were not kept; a burst dump of it cannot be named" >&2
+fi

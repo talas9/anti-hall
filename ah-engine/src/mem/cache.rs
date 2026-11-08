@@ -37,7 +37,18 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> Owner for
     }
     fn shrink(&self, target: usize) {
         let mut t = self.lock();
-        t.evict_retained_to(target);
+        match self.extra {
+            None => {
+                t.evict_retained_to(target);
+            }
+            Some(f) => {
+                // `bytes()` is the weights plus the measured extra, and the registry's target is on that figure: evict until THAT is at
+                // the target (by weight alone it stops while the extra still holds the cache over it). The extra leaves with its entry.
+                while t.retained_bytes().saturating_add(t.values().iter().map(f).sum::<usize>()) > target && t.pop_lru().is_some() {}
+                let kept = t.retained_bytes();
+                t.evict_retained_to(kept); // compacts the map's storage
+            }
+        }
         self.bytes.store(t.retained_bytes(), SeqCst);
     }
     fn recycle(&self) {

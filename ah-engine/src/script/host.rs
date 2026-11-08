@@ -157,7 +157,7 @@ pub(super) fn regex_totals() -> (u64, u64, u64, u64) {
 }
 
 /// Run `f` on the compiled pattern for `flags` (shared cache, see [`super::recache`]).
-pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
+pub(super) fn with_re<R: super::recache::Kept>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
     let re = super::recache::get(src, flags)?;
     Ok(re.searched(f))
 }

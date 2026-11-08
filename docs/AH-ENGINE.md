@@ -1953,12 +1953,30 @@ real changes means a source changes all the time; the watcher ignores names endi
 
 **Readable stacks.** Release binaries ship stripped; their symbols are built separately (`Cargo.toml`: `debug =
 "line-tables-only"`, `split-debuginfo = "packed"`). A local build leaves `target/<triple>/release/ah-engine.dSYM` (macOS) or
-`ah-engine.dwp` (Linux) beside the binary; a release run uploads them as the workflow artifact `symbols-<triple>`
-(`scripts/package.sh` writes `dist/symbols/ah-engine-v<version>-<triple>.symbols.tar.gz`). They match only the binary of the
+`ah-engine.dwp` (Linux) beside the binary, and `scripts/build.sh` copies them to `<state>/symbols/<build id>/` (`files.symbols_dir`;
+skipped in CI, `AH_KEEP_SYMBOLS=0` turns it off), so they outlive a `cargo clean`; a release run uploads them as the workflow artifact
+`symbols-v<version>-<triple>` (`scripts/package.sh` writes `dist/symbols/ah-engine-v<version>-<triple>.symbols.tar.gz`). They match only the binary of the
 same build (check with `dwarfdump --uuid`). On macOS: `sample <pid> 3 -file s.txt`, then name a frame with
 `atos -o ah-engine.dSYM/Contents/Resources/DWARF/<file> -arch arm64 -l <load address> <address>` (the load address is
 printed on each `???` line of the sample). On Linux: `perf record -g -p <pid>` and `perf report` with the `.dwp` next to the
 binary, or `eu-stack -p <pid>`.
+
+**Burst dumps.** When the counted heap grows by more than `diagnostics.burst_dump_mb` inside one window
+(`diagnostics.burst_window_ms`; a window older than `diagnostics.burst_window_max_ms` when a request begins is opened again, so slow
+growth over an idle gap is no burst; the window also opens at the heap as it is when the profile switches on) the daemon writes one
+`burst-<n>.json` to `files.burst_dumps_dir` naming the allocating stacks, the event and the checks. Every dump carries `build`: the
+engine version, the Mach-O `LC_UUID` / ELF build-id (`build_id`), the image base and the binary's path. The shipped binary is
+stripped, so frames hold `ip` / `offset` and `function: null`; name them with
+
+    ah-engine diag burst-dump                       # the dumps, this binary's id, and whether its symbols are found
+    ah-engine diag burst-dump --symbolize [<dump>]  # the newest dump when none is named
+
+which finds the symbol file whose own id equals the dump's `build_id` (beside the binary the dump names, in
+`<state>/symbols/<build id>/`, or anywhere under `<state>/symbols/` two levels down, so an unpacked release symbols archive works),
+refuses a file of another build, and runs `diagnostics.symbolize_cmd_macos` / `_linux`. By hand, per frame (use `ip` - 1 and `offset` - 1):
+`atos -o ah-engine.dSYM/Contents/Resources/DWARF/ah-engine -arch arm64 -l <build.image_base> <ip>` (macOS) or
+`addr2line -f -C -p -e <unstripped binary or debug file> <offset>` (Linux). Linux note: a `.dwp` of a fully stripped binary has no
+skeleton to resolve against; use an unstripped build of the same build id.
 
 ### Debug mode and resource budgets
 

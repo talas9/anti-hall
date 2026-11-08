@@ -32,6 +32,12 @@ static WIN_PEAK: AtomicU64 = AtomicU64::new(0);
 static WIN_START: AtomicU64 = AtomicU64::new(0);
 static THRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 static WINDOW_MS: AtomicU64 = AtomicU64::new(500);
+static WINDOW_MAX_MS: AtomicU64 = AtomicU64::new(5_000);
+/// Generation of the site table: a slot belongs to the current window only while its `epoch` equals this. Clearing the table is one
+/// increment, so a sample being recorded can never be mixed with a slot another thread is reusing (no slot is rewritten in place).
+static EPOCH: AtomicU64 = AtomicU64::new(1);
+/// `Slot::epoch` while one thread is filling the slot in: others skip it.
+const CLAIMING: u64 = u64::MAX;
 static MAX_PER_HOUR: AtomicU64 = AtomicU64::new(0);
 static RATE_WINDOW_MS: AtomicU64 = AtomicU64::new(0);
 static KEEP: AtomicUsize = AtomicUsize::new(1);
@@ -54,8 +60,8 @@ struct Recent {
 }
 
 struct Slot {
+    epoch: AtomicU64,
     hash: AtomicU64,
-    ready: AtomicBool,
     bytes: AtomicU64,
     samples: AtomicU64,
     depth: AtomicUsize,
@@ -98,6 +104,8 @@ pub struct Config {
     pub dump_bytes: u64,
     /// Window length.
     pub window_ms: u64,
+    /// A window older than this when a request begins is rolled to the current heap, so slow growth over an idle gap is no burst.
+    pub window_max_ms: u64,
     /// Most dumps per rate window.
     pub max_per_hour: u64,
     /// The rate window (an hour).
@@ -122,6 +130,7 @@ pub fn configure_from_defaults() {
         sample_bytes: (num("diagnostics.burst_sample_kb") as usize).saturating_mul(1024),
         dump_bytes: num("diagnostics.burst_dump_mb").saturating_mul(1024 * 1024),
         window_ms: num("diagnostics.burst_window_ms"),
+        window_max_ms: num("diagnostics.burst_window_max_ms"),
         max_per_hour: num("diagnostics.burst_dump_max_per_hour"),
         rate_window_ms: num("diagnostics.burst_rate_window_ms"),
         keep: num("diagnostics.burst_dump_keep") as usize,
@@ -138,18 +147,29 @@ pub fn configure(c: &Config) {
         let per = c.frames.clamp(1, FRAME_CAP);
         TABLE.get_or_init(|| Table {
             slots: (0..c.sites.max(8))
-                .map(|_| Slot { hash: AtomicU64::new(0), ready: AtomicBool::new(false), bytes: AtomicU64::new(0), samples: AtomicU64::new(0), depth: AtomicUsize::new(0) })
+                .map(|_| Slot {
+                    epoch: AtomicU64::new(0),
+                    hash: AtomicU64::new(0),
+                    bytes: AtomicU64::new(0),
+                    samples: AtomicU64::new(0),
+                    depth: AtomicUsize::new(0),
+                })
                 .collect(),
             frames: (0..c.sites.max(8) * per).map(|_| AtomicUsize::new(0)).collect(),
             per,
             dropped: AtomicU64::new(0),
         });
         warm();
+        if !ON.load(Relaxed) {
+            // switched on (or started): the window opens at the heap as it is now, so the first request never counts the whole heap as growth
+            reset_window(crate::memstat::heap().live, now_ms());
+        }
     }
     INTERVAL.store(c.sample_bytes.max(1), Relaxed);
     FRAMES.store(c.frames.clamp(1, FRAME_CAP), Relaxed);
     THRESH.store(c.dump_bytes, Relaxed);
     WINDOW_MS.store(c.window_ms.max(1), Relaxed);
+    WINDOW_MAX_MS.store(c.window_max_ms.max(c.window_ms).max(1), Relaxed);
     MAX_PER_HOUR.store(c.max_per_hour, Relaxed);
     RATE_WINDOW_MS.store(c.rate_window_ms, Relaxed);
     KEEP.store(c.keep.max(1), Relaxed);
@@ -163,10 +183,25 @@ pub fn set_dump_dir(dir: Option<PathBuf>) {
     *DIR_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = dir;
 }
 
+/// Test seam: forget the dumps written so far, so the hourly limit starts empty.
+pub fn forget_dumps() {
+    DUMPED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Where dumps are written (`files.burst_dumps_dir` in the state directory, unless a test redirected it).
+pub fn dump_dir() -> PathBuf {
+    DIR_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| crate::paths::dir().join(crate::defaults::text("files.burst_dumps_dir")))
+}
+
 /// A request starts on this thread.
 pub fn begin() {
     if ON.load(Relaxed) {
         NOTE.with(|n| n.borrow_mut().clear());
+        // a window that outlived `window_max_ms` (an idle gap) holds growth of no burst: open a new one at the heap before this request
+        let (now, start) = (now_ms(), WIN_START.load(Relaxed));
+        if now.saturating_sub(start) > WINDOW_MAX_MS.load(Relaxed) && WIN_START.compare_exchange(start, now, AcqRel, Relaxed).is_ok() {
+            reset_window(crate::memstat::heap().live, now);
+        }
     }
 }
 
@@ -240,39 +275,40 @@ impl Table {
             h = (h ^ *ip as u64).wrapping_mul(0x0100_0000_01b3);
         }
         h |= 1;
+        let cur = EPOCH.load(Acquire);
         let n = self.slots.len();
         for k in 0..n {
             let i = (h as usize).wrapping_add(k) % n;
             let s = &self.slots[i];
-            let cur = s.hash.load(Acquire);
-            let mine = cur == h || (cur == 0 && match s.hash.compare_exchange(0, h, AcqRel, Acquire) {
-                Ok(_) => {
-                    let d = ips.len().min(self.per);
-                    for (j, ip) in ips.iter().take(d).enumerate() {
-                        self.frames[i * self.per + j].store(*ip, Relaxed);
-                    }
-                    s.depth.store(d, Relaxed);
-                    s.ready.store(true, Release);
-                    true
+            let e = s.epoch.load(Acquire);
+            if e == cur {
+                if s.hash.load(Relaxed) == h {
+                    s.bytes.fetch_add(bytes, Relaxed);
+                    s.samples.fetch_add(1, Relaxed);
+                    return;
                 }
-                Err(c) => c == h,
-            });
-            if mine {
-                s.bytes.fetch_add(bytes, Relaxed);
-                s.samples.fetch_add(1, Relaxed);
+            } else if e > cur {
+                return; // the window rolled while this stack was captured: the sample belongs to the old one
+            } else if e != CLAIMING && s.epoch.compare_exchange(e, CLAIMING, AcqRel, Acquire).is_ok() {
+                // a slot of an older window, now mine alone until `epoch` is published
+                let d = ips.len().min(self.per);
+                for (j, ip) in ips.iter().take(d).enumerate() {
+                    self.frames[i * self.per + j].store(*ip, Relaxed);
+                }
+                s.depth.store(d, Relaxed);
+                s.hash.store(h, Relaxed);
+                s.bytes.store(bytes, Relaxed);
+                s.samples.store(1, Relaxed);
+                s.epoch.store(cur, Release);
                 return;
             }
         }
         self.dropped.fetch_add(bytes, Relaxed);
     }
 
+    /// Start a new window: every slot becomes older than the current epoch at once.
     fn clear(&self) {
-        for s in &self.slots {
-            s.ready.store(false, Release);
-            s.bytes.store(0, Relaxed);
-            s.samples.store(0, Relaxed);
-            s.hash.store(0, Release);
-        }
+        EPOCH.fetch_add(1, AcqRel);
         self.dropped.store(0, Relaxed);
     }
 }
@@ -331,11 +367,7 @@ fn dump(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u6
         d.push_back(now);
     }
     let doc = build(ctx, checks, growth, live, now);
-    let dir = DIR_OVERRIDE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap_or_else(|| crate::paths::dir().join(crate::defaults::text("files.burst_dumps_dir")));
+    let dir = dump_dir();
     let keep = KEEP.load(Relaxed);
     let write = || -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(&dir)?;
@@ -372,17 +404,24 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
     use serde_json::json;
     let mut sites = Vec::new();
     let mut dropped = 0;
+    let cur = EPOCH.load(Acquire);
     if let Some(t) = TABLE.get() {
         dropped = t.dropped.load(Relaxed);
         for (i, s) in t.slots.iter().enumerate() {
-            if s.ready.load(Acquire) && s.bytes.load(Relaxed) > 0 {
-                let d = s.depth.load(Relaxed).min(t.per);
-                let ips: Vec<usize> = (0..d).map(|j| t.frames[i * t.per + j].load(Relaxed)).collect();
-                sites.push((s.bytes.load(Relaxed), s.samples.load(Relaxed), ips));
+            let e = s.epoch.load(Acquire);
+            if e != cur || s.bytes.load(Relaxed) == 0 {
+                continue;
+            }
+            let d = s.depth.load(Relaxed).min(t.per);
+            let ips: Vec<usize> = (0..d).map(|j| t.frames[i * t.per + j].load(Relaxed)).collect();
+            let (bytes, samples) = (s.bytes.load(Relaxed), s.samples.load(Relaxed));
+            // the window rolled and another thread took the slot while it was read: drop the torn row
+            if s.epoch.load(Acquire) == e {
+                sites.push((bytes, samples, ips));
             }
         }
     }
-    sites.sort_by(|a, b| b.0.cmp(&a.0));
+    sites.sort_by_key(|a| std::cmp::Reverse(a.0));
     sites.truncate(DUMP_SITES.load(Relaxed));
     let sites: Vec<_> = sites
         .into_iter()
@@ -390,7 +429,9 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
             let mut frames: Vec<_> = ips.iter().map(|ip| symbolize(*ip)).collect();
             // drop the allocator's own leading frames when the binary has symbols
             let internal = |f: &serde_json::Value| {
-                f["function"].as_str().is_some_and(|n| n.contains("burst::") || n.contains("memstat::") || n.contains("__rust_alloc") || n.contains("alloc::alloc::") || n.contains("GlobalAlloc"))
+                f["function"].as_str().is_some_and(|n| {
+                    n.contains("burst::") || n.contains("memstat::") || n.contains("__rust_alloc") || n.contains("alloc::alloc::") || n.contains("GlobalAlloc")
+                })
             };
             while frames.len() > 1 && internal(&frames[0]) {
                 frames.remove(0);
@@ -399,7 +440,7 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
         })
         .collect();
     let mut top = checks.to_vec();
-    top.sort_by(|a, b| b.1.cmp(&a.1));
+    top.sort_by_key(|a| std::cmp::Reverse(a.1));
     let recent: Vec<_> = RECENT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -411,6 +452,7 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
         "trigger": {"growth_bytes": growth, "threshold_bytes": THRESH.load(Relaxed), "window_ms": WINDOW_MS.load(Relaxed), "base_bytes": WIN_BASE.load(Relaxed), "live_bytes": live},
         "checks": top.iter().map(|(c, p)| json!({"check": c, "peak_bytes": p})).collect::<Vec<_>>(),
         "recent_requests": recent,
+        "build": identity(),
         "sample_interval_bytes": INTERVAL.load(Relaxed),
         "unrecorded_sampled_bytes": dropped,
         "sites": sites,
@@ -419,7 +461,37 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
     })
 }
 
+/// Which build wrote a dump: the version, the identity of the running binary (Mach-O `LC_UUID` or ELF build-id, what the separate
+/// symbol file carries too), where its image is loaded and where the binary is, so the dump can be matched to its symbols later
+/// (`ah-engine diag burst-dump --symbolize <dump>`). Read once, at the first dump.
+pub fn identity() -> &'static serde_json::Value {
+    static ID: OnceLock<serde_json::Value> = OnceLock::new();
+    ID.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        let id = exe.as_deref().and_then(crate::buildid::of_file);
+        // SAFETY: Dl_info is plain C data, valid all-zero.
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a writable Dl_info; dladdr only reads the address of this function.
+        let base = if unsafe { libc::dladdr(identity as fn() -> &'static serde_json::Value as *const libc::c_void, &mut info) } != 0 {
+            info.dli_fbase as usize
+        } else {
+            0
+        };
+        serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "build_id": id.as_ref().map(|i| i.id.clone()),
+            "build_id_kind": id.as_ref().map(|i| i.kind.name()),
+            "image_base": format!("{base:#x}"),
+            "exe": exe.as_ref().map(|p| p.display().to_string()),
+            "exe_bytes": exe.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()),
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        })
+    })
+}
+
 fn symbolize(ip: usize) -> serde_json::Value {
+    // SAFETY: Dl_info is plain C data, valid all-zero.
     let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
     // SAFETY: `info` is a writable Dl_info; dladdr only reads the address (the call-site byte before the return address).
     let ok = unsafe { libc::dladdr(ip.saturating_sub(1) as *const libc::c_void, &mut info) } != 0;
@@ -459,6 +531,57 @@ fn demangle(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Threads record two different stacks while the table is cleared over and over: every slot that survives holds ONE whole stack
+    /// (never frames of one and the bytes or frames of the other), and its sampled bytes are a whole number of samples.
+    #[test]
+    fn clearing_while_recording_never_mixes_two_stacks_in_one_site() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let per = 6;
+        let t = std::sync::Arc::new(super::Table {
+            slots: (0..4)
+                .map(|_| super::Slot {
+                    epoch: super::AtomicU64::new(0),
+                    hash: super::AtomicU64::new(0),
+                    bytes: super::AtomicU64::new(0),
+                    samples: super::AtomicU64::new(0),
+                    depth: super::AtomicUsize::new(0),
+                })
+                .collect(),
+            frames: (0..4 * per).map(|_| super::AtomicUsize::new(0)).collect(),
+            per,
+            dropped: super::AtomicU64::new(0),
+        });
+        let stop = std::sync::Arc::new(super::AtomicBool::new(false));
+        let writers: Vec<_> = (1..=3usize)
+            .map(|w| {
+                let (t, stop) = (t.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    let stack = vec![w * 0x1000; per];
+                    while !stop.load(Relaxed) {
+                        t.record(&stack, 7);
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..20_000 {
+            t.clear();
+            std::thread::yield_now();
+        }
+        stop.store(true, Relaxed);
+        for w in writers {
+            w.join().unwrap();
+        }
+        let cur = super::EPOCH.load(Relaxed);
+        for (i, s) in t.slots.iter().enumerate() {
+            if s.epoch.load(Relaxed) != cur {
+                continue;
+            }
+            let frames: Vec<usize> = (0..s.depth.load(Relaxed)).map(|j| t.frames[i * per + j].load(Relaxed)).collect();
+            assert!(frames.windows(2).all(|p| p[0] == p[1]) && frames.len() == per, "one whole stack per site: {frames:?}");
+            assert_eq!(s.bytes.load(Relaxed) % 7, 0, "whole samples only");
+        }
+    }
+
     #[test]
     fn legacy_names_demangle() {
         assert_eq!(super::demangle("__ZN9ah_engine5burst3foo17h0123456789abcdefE"), "ah_engine::burst::foo");

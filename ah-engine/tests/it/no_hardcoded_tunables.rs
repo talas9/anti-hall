@@ -119,8 +119,26 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "const HEADER",
         "bytes in front of every SQLite block that hold its size: 16 keeps the block 16-byte aligned like the system allocator's, an alignment constant, not a tunable",
     ),
-    ("src/burst.rs", "const FRAME_CAP", "size of the on-stack frame buffer the allocator hook captures into (it cannot allocate); diagnostics.burst_frames_max is the tunable, clamped to it"),
-    ("src/burst.rs", "static SINCE", "per-thread byte counter initialised to zero (the allocator hook cannot allocate or read the config): state, not a tunable"),
+    (
+        "src/burst.rs",
+        "const FRAME_CAP",
+        "size of the on-stack frame buffer the allocator hook captures into (it cannot allocate); diagnostics.burst_frames_max is the tunable, clamped to it",
+    ),
+    (
+        "src/burst.rs",
+        "static SINCE",
+        "per-thread byte counter initialised to zero (the allocator hook cannot allocate or read the config): state, not a tunable",
+    ),
+    (
+        "src/burst.rs",
+        "const CLAIMING",
+        "the sentinel epoch of a table slot that one thread is filling in (u64::MAX can never equal a window epoch): a protocol marker of the lock-free table, not a tunable",
+    ),
+    (
+        "src/buildid.rs",
+        "",
+        "the Mach-O and ELF file formats: magic numbers, load-command and note types, header and program-header sizes and field offsets, defined by the formats and read to take a binary's build id; how much of a file is read is `diagnostics.symbols_read_cap_bytes`",
+    ),
     ("src/burst.rs", "static BUSY", "per-thread re-entrancy flag initialised to false: state, not a tunable"),
     ("src/burst.rs", "static NOTE", "per-thread list of the checks of the request in progress, empty at start: state, not a tunable"),
     ("src/memstat.rs", "static JEMALLOC", "the allocator the counters may wrap: a target-gated allocator value, not configuration"),

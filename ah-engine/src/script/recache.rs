@@ -30,11 +30,37 @@ use crate::mem::{BoundedCache, Spec};
 use regex::{Regex, RegexBuilder};
 use std::sync::{Arc, OnceLock};
 
+/// The heap a search RESULT holds (its own allocation, not the regex's). A search is measured as a whole, and what it returns is
+/// heap it kept too, so the result's size is taken off before the rest is counted as the pattern's scratch.
+pub trait Kept {
+    /// Bytes this value holds on the heap.
+    fn kept_bytes(&self) -> usize;
+}
+
+impl Kept for bool {
+    fn kept_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl<T: Kept> Kept for Option<T> {
+    fn kept_bytes(&self) -> usize {
+        self.as_ref().map_or(0, Kept::kept_bytes)
+    }
+}
+
+impl<T: Copy> Kept for Vec<T> {
+    fn kept_bytes(&self) -> usize {
+        self.capacity().saturating_mul(std::mem::size_of::<T>())
+    }
+}
+
 /// A cached pattern and the search scratch it has been MEASURED to hold: the regex crate keeps lazy-DFA caches per thread inside the
-/// compiled pattern and cannot report them, so each search is wrapped in the allocator's per-thread counters and the positive
-/// net growth is added here (a search returns a bool or a few offsets, so the growth is the scratch). The cache reports program +
-/// this, never an estimate.
-pub(super) struct Entry {
+/// compiled pattern and cannot report them, so each search is wrapped in the allocator's per-thread counters and the net change of
+/// the heap, less the heap of the returned result ([`Kept`]), is applied here: growth when a search fills the cache, shrinkage when
+/// it resets it. The total never goes below zero or above `daemon.workers` caches of `script.regex_dfa_size_limit` (what the
+/// compile lets each thread keep), however many searches run. The cache reports program + this, never an estimate.
+pub struct Entry {
     re: Regex,
     scratch: std::sync::atomic::AtomicU64,
 }
@@ -47,15 +73,30 @@ impl std::ops::Deref for Entry {
 }
 
 impl Entry {
-    /// Run `f` (one search) and add the heap it kept to this pattern's scratch.
-    pub(super) fn searched<R>(&self, f: impl FnOnce(&Regex) -> R) -> R {
+    /// The scratch this pattern is measured to hold now.
+    pub fn scratch_bytes(&self) -> usize {
+        self.scratch.load(std::sync::atomic::Ordering::Relaxed) as usize
+    }
+
+    /// Run `f` (one search) and apply the heap the REGEX kept to this pattern's scratch (the result `f` returns is not scratch).
+    pub fn searched<R: Kept>(&self, f: impl FnOnce(&Regex) -> R) -> R {
+        use std::sync::atomic::Ordering::Relaxed;
         let (r, d) = crate::mem::measure(|| f(&self.re));
-        SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        SEARCHES.fetch_add(1, Relaxed);
         if let Some(d) = d {
-            MEASURED_SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if d.retained > 0 {
-                self.scratch.fetch_add(d.retained as u64, std::sync::atomic::Ordering::Relaxed);
-                SCRATCH_BYTES.fetch_add(d.retained as u64, std::sync::atomic::Ordering::Relaxed);
+            MEASURED_SEARCHES.fetch_add(1, Relaxed);
+            let net = d.retained.saturating_sub(i64::try_from(r.kept_bytes()).unwrap_or(i64::MAX));
+            let cap = (defaults::num("daemon.workers")).saturating_mul(defaults::num("script.regex_dfa_size_limit"));
+            let mut before = self.scratch.load(Relaxed);
+            let after = loop {
+                let next = before.saturating_add_signed(net).min(cap);
+                match self.scratch.compare_exchange_weak(before, next, Relaxed, Relaxed) {
+                    Ok(_) => break next,
+                    Err(seen) => before = seen,
+                }
+            };
+            if after > before {
+                SCRATCH_BYTES.fetch_add(after - before, Relaxed);
             }
         }
         r
@@ -149,7 +190,7 @@ pub(super) fn scratch_estimate() -> usize {
 }
 
 /// The compiled pattern for `(src, flags)`, from the shared cache or compiled now.
-pub(super) fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Entry>> {
+pub fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Entry>> {
     let key = (src.to_string(), flags.to_string());
     cache().get_or_compute(&key, || {
         let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;

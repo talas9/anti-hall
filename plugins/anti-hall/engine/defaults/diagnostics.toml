@@ -327,8 +327,8 @@ doc = "Suffixes the `--for` duration of `ctl profile on` accepts, each with its 
 value = { ms = 1, s = 1000, m = 60000, h = 3600000 }
 
 [diagnostics.diag_topics]
-doc = "The topics of `ah-engine diag <topic>`: read-only reports over state the engine already keeps (not feature-gated). `trace` dumps the always-on trace ring."
-value = ["cpu", "mem", "threads", "hooks", "mesh", "jev", "fs", "locks", "trace", "file", "integrity"]
+doc = "The topics of `ah-engine diag <topic>`: read-only reports over state the engine already keeps (not feature-gated). `trace` dumps the always-on trace ring; `burst-dump` lists the burst dumps and, with the symbolize flag, names the frames of one."
+value = ["cpu", "mem", "threads", "hooks", "mesh", "jev", "fs", "locks", "trace", "file", "integrity", "burst-dump"]
 
 [diagnostics.diag_top]
 doc = "Rows shown per ranking in `diag hooks` and `diag fs`."
@@ -680,6 +680,12 @@ doc = "Most burst dumps written per hour; a burst past the limit is counted as b
 value = 4
 min = 0
 
+[diagnostics.burst_window_max_ms]
+doc = "Oldest a measuring window may be when a request begins. A window older than this (an idle gap, with only slow heap growth in it) is opened again at the heap as it is before the request, so growth spread over minutes is never reported as one burst. Never below diagnostics.burst_window_ms."
+value = 5000
+min = 10
+unit = "ms"
+
 [diagnostics.burst_dump_keep]
 doc = "Dump files kept: a ring of this many names, the oldest overwritten."
 value = 8
@@ -718,4 +724,93 @@ unit = "ms"
 
 [diagnostics.burst_dump_note]
 doc = "Reading note written into every burst dump."
-value = "sampled_bytes is allocation volume (freed or not) attributed to the stack; where `function` is null the binary is stripped: resolve `image` + `offset` against the separate symbol file"
+value = "sampled_bytes is allocation volume (freed or not) attributed to the stack; where `function` is null the binary is stripped: run `ah-engine diag burst-dump --symbolize <this file>` (it finds the symbol file of `build.build_id` and names the frames), or resolve `ip` / `offset` by hand with `atos -o <dSYM>/Contents/Resources/DWARF/ah-engine -arch arm64 -l <build.image_base> <ip>` (macOS) or `addr2line -f -C -p -e <debug file> <offset>` (Linux)"
+
+# ---- burst dump symbols --------------------------------------------------------------------------------------------------------------
+
+[files.symbols_dir]
+doc = "Directory (in the state directory) holding the separate symbol files of installed builds, one directory per build id: <symbols_dir>/<build id>/ah-engine.dSYM (macOS) or the debug file (Linux). `scripts/build.sh` copies the symbols of every local release build here, so a burst dump of the installed binary can be named later even after the build tree is cleaned. A downloaded release symbol archive unpacked anywhere under it is found too."
+value = "symbols"
+
+[diagnostics.burst_dump_topic]
+doc = "The `ah-engine diag` topic that lists the burst dumps and symbolizes one."
+value = "burst-dump"
+
+[diagnostics.symbolize_flag]
+doc = "The flag of `diag burst-dump` that names the frames of a dump (`--symbolize [<dump file>]`; the newest dump when no file is named)."
+value = "--symbolize"
+
+[diagnostics.burst_dump_ext]
+doc = "File extension of a burst dump."
+value = "json"
+
+[diagnostics.symbols_suffixes]
+doc = "Name endings of a separate symbol file: beside the binary a dump names (<binary>.dSYM, <binary>.dwp, <binary>.debug) and in the symbols directory. Every candidate is verified by the build id inside it, never by its name."
+value = [".dSYM", ".dwp", ".debug"]
+
+[diagnostics.symbols_dsym_dwarf]
+doc = "Where the DWARF file sits inside a dSYM bundle."
+value = "Contents/Resources/DWARF"
+
+[diagnostics.symbols_scan_depth]
+doc = "Directories below files.symbols_dir that are searched for a symbol file whose build id matches (2 finds an unpacked release archive: <dir>/<archive>/ah-engine.dSYM)."
+value = 2
+min = 0
+max = 8
+
+[diagnostics.symbols_scan_max]
+doc = "Most directory entries visited per search for a symbol file."
+value = 2000
+min = 10
+
+[diagnostics.symbols_read_cap_bytes]
+doc = "Most bytes of a binary's load commands or notes read when its build id is taken (a corrupt size cannot make the read unbounded)."
+value = 1048576
+min = 4096
+unit = "bytes"
+
+[diagnostics.symbolize_cmd_macos]
+doc = "Resolver run over the unresolved frames of a dump on macOS: the program, then its arguments. {file} = the DWARF file of the matching dSYM, {arch} = the architecture name (diagnostics.symbolize_arch), {base} = the dump's build.image_base, {ips} = every call-site address, one argument each. It prints one line per address."
+value = ["atos", "-o", "{file}", "-arch", "{arch}", "-l", "{base}", "{ips}"]
+
+[diagnostics.symbolize_cmd_linux]
+doc = "Resolver run over the unresolved frames of a dump on Linux (same placeholders; {offsets} = every call-site offset into the image). It prints one line per address."
+value = ["addr2line", "-f", "-C", "-p", "-e", "{file}", "{offsets}"]
+
+[diagnostics.symbolize_arch]
+doc = "Rust architecture name = the name the macOS resolver takes."
+value = ["aarch64=arm64", "x86_64=x86_64"]
+
+[diagnostics.symbolize_ms]
+doc = "Longest the resolver may run."
+value = 20000
+min = 100
+unit = "ms"
+
+[diagnostics.msg_symbolize_how]
+doc = "Footer of `diag burst-dump`; {flag} is diagnostics.symbolize_flag."
+value = "name the frames of a dump: ah-engine diag burst-dump {flag} [<dump file>]"
+
+[diagnostics.msg_symbolize_no_dump]
+doc = "Printed when `diag burst-dump --symbolize` finds no dump to read; {dir} is the dumps directory."
+value = "no burst dump in {dir}"
+
+[diagnostics.msg_symbolize_bad_dump]
+doc = "Printed when the named dump cannot be read as JSON; {file} is its path."
+value = "cannot read {file} as a burst dump"
+
+[diagnostics.msg_symbolize_no_symbols]
+doc = "Printed when no symbol file carries the dump's build id; {id} is the id, {version} the engine version of the dump, {dir} the symbols directory."
+value = "no symbol file for build {id} (engine {version}): unpack the release's symbols-v{version}-<triple> archive under {dir}, or rebuild with scripts/build.sh (it keeps the symbols of every local build there)"
+
+[diagnostics.msg_symbolize_no_tool]
+doc = "Printed when no resolver command is set for the dump's operating system {os}."
+value = "no resolver command for {os} (diagnostics.symbolize_cmd_{os})"
+
+[diagnostics.msg_symbolize_failed]
+doc = "Printed when the resolver could not run; {tool} is its program, {err} the reason."
+value = "{tool} failed: {err}"
+
+[diagnostics.msg_symbolize_unreadable]
+doc = "Printed when the symbol file that matches the dump holds no readable DWARF image; {file} is its path."
+value = "cannot read the symbol file {file}"
