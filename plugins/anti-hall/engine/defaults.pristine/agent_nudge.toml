@@ -266,5 +266,5 @@ doc = "Runtime steps a parent reported as wrong (`agents nudge <child> wrong \"<
 value = { kind = "counter", unit = "reports", labels = ["step"] }
 
 [agent_nudge.runtime_setting]
-doc = "Where the switch of the escalating runtime steps is read from (agents.nudgeRuntime, default on): on, a running child that reaches a step of agent_nudge.runtime (minutes or percent of the per-agent token budget) is nudged with that step's wording, the last step blocking the coordinator's next Stop until it stops or extends the child; off, only the unhealthy-signal nudges run."
+doc = "Escalating runtime steps switch (GH #687). Where the switch of the escalating runtime steps is read from (agents.nudgeRuntime, default on): on, a running child that reaches a step of agent_nudge.runtime (minutes or percent of the per-agent token budget) is nudged with that step's wording, the last step blocking the coordinator's next Stop until it stops or extends the child; off, only the unhealthy-signal nudges run."
 value = { section = "agents", key = "nudgeRuntime", env = "ANTIHALL_AGENT_NUDGE_RUNTIME", aliases = [], option = "", default = true }

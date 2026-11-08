@@ -166,8 +166,9 @@ value = [
 ]
 
 [guard_rules.exempt]
-doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry)."
+doc = "Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry), and the block-tier variant of the runtime Stop block (row silent_nudge.runtime)."
 value = [
+  "silent_nudge.msg_rt_block_what",
   "advisor.msg_plan_what_lower",
   "advisor.msg_plan_what_unknown",
   "advisor.msg_retry_what_lower",
