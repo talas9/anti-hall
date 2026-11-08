@@ -14418,6 +14418,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.step_max_chars` | `240` |  |  | Longest 'doing now' text sent per agent, in characters. |
 | `web.strip_pills` | `cpu, mem, err` |  |  | The figures in the top strip, left to right: cpu, mem, req (requests since start), err. req is a lifetime counter without a threshold, so it is off by default. |
 | `web.switches` | `6 entries` |  |  | Optional page parts. graph_tab: the Graph tab of the agents view (an empty canvas for now). search: the header search box (not wired yet). compose: the Send box of the selected-agent panel (not wired yet). swap_account: the Switch account card of Accounts (not wired yet). topology_toggle: Health can switch to the Topology drawing. tier_switch: the Auto/Full/Lite choice in the sidebar foot. |
+| `web.theme` | `dark` |  |  | The colour scheme the page starts in: system (follow the computer's light or dark setting), light or dark. The header switch cycles system, light and dark, and the browser remembers the choice. |
 | `web.token_bytes` | `16` |  |  | Random bytes in the per-session token (shown as twice as many hex digits). |
 | `web.topo_action_max_chars` | `4000` |  |  | Longest output text of a Topology action that is returned. |
 | `web.topo_actions` | `7 items` |  |  | The Topology node menus, in order. kind: client, engine, subsystem or store. local: shows the figures the page already has. needs_viewer: only for stores in web.topo_viewers. args: the engine arguments; {pid} is the engine's pid, {viewer} the store's viewer id, {id} the node's id. |
@@ -14430,7 +14431,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
 | `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
 | `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
-| `web.ui` | `281 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `282 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 
