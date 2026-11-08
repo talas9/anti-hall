@@ -134,6 +134,13 @@ stale_notice() {
     && { [ ! -e "$bindir/$engine_name" ] || [ -n "$(find "$derr" -newer "$bindir/$engine_name" 2>/dev/null)" ]; }; then dfail=1; fi
   # defaults.error is never removed: only an engine that fails to load the defaults NOW makes the "guards are NOT running" notice true
   if [ "$dfail" = 1 ] && [ -x "$bindir/$engine_name" ]; then
+    # the two sleep durations are computed and the signal trap is installed BEFORE the probe forks: a signal after the fork finds the
+    # trap already in place (an empty $pp / $wd in it is harmless: the kills are silenced)
+    t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
+    t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
+    pp=; wd=
+    # a signal to the hook stops the watchdog AND the probe (a TERM-ignoring or hung probe must not outlive the hook)
+    trap 'kill "$wd" 2>/dev/null; kill -KILL "$pp" 2>/dev/null; exit 0' HUP INT TERM
     env "$(c env.plugin_root)=$root" "$bindir/$engine_name" "$(c install.defaults_probe_verb)" >/dev/null 2>&1 </dev/null &
     pp=$!
     # watchdog: TERM after defaults_probe_ms, KILL after a further defaults_probe_grace_ms (an engine that ignores TERM must not hold
@@ -142,14 +149,10 @@ stale_notice() {
     # `$!` already names a helper that was forked: no interleaving of the parent's kill with the helper's fork can leave a helper behind
     # (a TERM before the trap is installed arrives before any helper exists). `$!` still holding the probe's pid or the finished first
     # helper's pid (reaped by the `wait`) means no live helper: skipped.
-    t1=$(awk -v v="$(c install.defaults_probe_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
-    t2=$(awk -v v="$(c install.defaults_probe_grace_ms)" 'BEGIN { printf "%.3f", v / 1000 }')
     s1=; s2=
     ( trap 'h=$!; [ "$h" = "$pp" ] || [ "$h" = "$s1" ] || [ "$h" = "$s2" ] || kill "$h"; exit 0' TERM
       sleep "$t1" & s1=$!; wait "$s1"; kill "$pp"; sleep "$t2" & s2=$!; wait "$s2"; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
     wd=$!
-    # a signal to the hook stops the watchdog AND the probe (a TERM-ignoring or hung probe must not outlive the hook)
-    trap 'kill "$wd" 2>/dev/null; kill -KILL "$pp" 2>/dev/null; exit 0' HUP INT TERM
     wait "$pp" 2>/dev/null; prc=$?
     kill "$wd" 2>/dev/null
     wait "$wd" 2>/dev/null
