@@ -66,8 +66,14 @@ function gitBuildTables() {
   // GH #457: a session trailer key (any value) and a session link on a line of its own or behind a trailer key
   t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
   t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
-  t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
-  // the same patterns, sticky: "does one match AT index k of the whole text", without copying the rest of the text for every k
+  // the patterns are matched sticky at index k of the whole text, so one that looks BEFORE k (lookbehind, a word boundary, a `^`
+  // alternative) would see text it must not: refuse it at load
+  for (const p of c('commit_expansion_patterns')) {
+    if (/\(\?<[=!]|\\[bB]|(?:^|[|(])\^/.test(p)) {
+      throw new Error('git.commit_expansion_patterns: pattern ' + JSON.stringify(p) + ' uses lookbehind, \\b, \\B or ^, which look before the match start; use a pattern that starts at the expansion');
+    }
+  }
+  // sticky: "does one match AT index k of the whole text", without copying the rest of the text for every k
   t.expansionSticky = c('commit_expansion_patterns').map((p) => new RegExp('(?:' + p + ')', 'y'));
   t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
   t.pushSkipOpts = set(c('push_skip_opts'));

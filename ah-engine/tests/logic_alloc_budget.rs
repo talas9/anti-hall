@@ -84,10 +84,10 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
             }
             // wall time too, where the cost of a bad scan is time, not bytes (the table name without `_mib`, then the check)
             let key = table.trim_end_matches("_mib");
-            if let Some(max_ms) = b.get("max_ms").and_then(|t| t.get(key)).and_then(|t| t.get(check)).and_then(toml::Value::as_integer) {
-                if ms > max_ms as u128 {
-                    over.push(format!("{check} on {key}: {ms} ms > {max_ms} ms"));
-                }
+            if let Some(max_ms) = b.get("max_ms").and_then(|t| t.get(key)).and_then(|t| t.get(check)).and_then(toml::Value::as_integer)
+                && ms > max_ms as u128
+            {
+                over.push(format!("{check} on {key}: {ms} ms > {max_ms} ms"));
             }
         }
     }

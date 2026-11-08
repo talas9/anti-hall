@@ -840,7 +840,7 @@ max = 268435456
 # ---- GH #457: unresolved expansion in a commit message, and the pre-push credit backstop -----------------------
 
 [git.commit_expansion_patterns]
-doc = "Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it."
+doc = "Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. Each pattern is matched at the start of the expansion within the whole text, so a pattern with lookbehind, \\b, \\B or a `^` alternative is refused at load with a config error."
 value = ["\\$[A-Za-z_{]", "\\$\\(", "`"]
 
 [git.commit_expansion_allow]
