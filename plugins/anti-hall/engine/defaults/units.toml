@@ -198,8 +198,14 @@ doc = "The file name suffix of a launchd unit."
 value = ".plist"
 
 [units.plist_log]
-doc = "Where launchd sends the unit's stdout and stderr (the daemon writes its own log)."
-value = "/dev/null"
+doc = "File name, in the engine state directory, where launchd sends the unit's stdout and stderr. The daemon writes its own event log; this file holds only what it can say when that log is unwritable (a failure record that could not be written, a panic message). The daemon empties it at start once it is over units.plist_log_max_bytes."
+value = "unit.stderr.log"
+
+[units.plist_log_max_bytes]
+doc = "Size above which the daemon empties the unit's stdout/stderr file (units.plist_log) when it starts, so the file stays bounded."
+value = 262144
+min = 1024
+unit = "bytes"
 
 [units.plist_template]
 doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {supervise} (the units.plist_supervise block, or nothing while maintenance.unitsSupervise is off) {interval} {log}; every value is XML-escaped."
@@ -524,25 +530,19 @@ doc = "The command that starts the engine service now (systemd user manager). {u
 value = ["systemctl", "--user", "start", "{unit}"]
 
 [units.kickstart_timeout_ms]
-doc = "Longest the start command of a client with no daemon may run (within units.kickstart_budget_ms); the child process is killed at the limit and the client starts the daemon itself."
+doc = "Longest the start command of a client with no daemon may run for a call that waits for the daemon itself (a guard event, the spool writer); the child process is killed at the limit and the client starts the daemon itself. Measured: it returns in 11-18 ms."
 value = 300
 min = 10
 unit = "ms"
 
-[units.kickstart_budget_ms]
-doc = "Longest a client with no daemon spends on the whole ask to the service manager (the start command and the wait for a daemon to answer together). A miss costs the hook this much at most before the client starts the daemon itself; it must fit the hook timeout. Measured cold start of the supervised daemon: see docs/engine/SUPERVISOR.md."
-value = 600
-min = 10
-unit = "ms"
-
 [units.kickstart_unguarded_ms]
-doc = "Longest the ask to the service manager may take for a call that never waits (a prompt, an advisory, an answer-now call): the start command runs within it and the call does not wait for the daemon to answer, which it would otherwise do for up to units.kickstart_budget_ms. Measured on macOS with a release build (scratch label, never the live job): `launchctl kickstart` returns in 11-18 ms, the daemon answers 0.60-0.69 s after it."
+doc = "Longest the ask to the service manager may take for a call that never waits (a prompt, an advisory, an answer-now call): the start command runs within it and the call does not wait for the daemon to answer. Measured on macOS with a release build (scratch label, never the live job): `launchctl kickstart` returns in 11-18 ms, the daemon answers 0.60-0.69 s after it. No client waits for that answer inside the ask: a guard event keeps waiting for the supervised daemon within client.cold_guard_wait_ms (so the engine stays the unit's child and is never replaced by an unsupervised one), the spool writer in its own retry loop."
 value = 100
 min = 10
 unit = "ms"
 
 [units.kickstart_poll_ms]
-doc = "How often a client that asked the service manager for the daemon checks whether it answers (up to units.kickstart_budget_ms)."
+doc = "How often the start command's exit is checked while it runs."
 value = 2
 min = 1
 unit = "ms"
@@ -559,12 +559,16 @@ value = ["AH_ENGINE_ALLOCATOR"]
 doc = "Event-log kind of a client's ask to the service manager; the code says how it went."
 value = "unit_kickstart"
 
+[units.kickstart_asked]
+doc = "Code of a unit_kickstart event: the start command ran and the service manager accepted it. It says the ask was made, not that the daemon answered (see units.kickstart_ok, units.kickstart_miss)."
+value = "asked"
+
 [units.kickstart_ok]
-doc = "Code of a unit_kickstart event: the daemon answered after the service manager started it."
+doc = "Code of a unit_kickstart event: a guard-event client that asked the service manager saw the daemon answer within client.cold_guard_wait_ms."
 value = "ok"
 
 [units.kickstart_miss]
-doc = "Code of a unit_kickstart event: the command ran but no daemon answered in time; the client starts the daemon itself (the singleton lock keeps it single)."
+doc = "Code of a unit_kickstart event: a guard-event client asked the service manager and no daemon answered within client.cold_guard_wait_ms; the call is let through (fail open) and the next call asks again."
 value = "miss"
 
 [units.kickstart_failed]

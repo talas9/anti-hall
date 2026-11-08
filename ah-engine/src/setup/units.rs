@@ -224,6 +224,11 @@ pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)
     engine_files_with(m, home, exe, super::supervise::enabled())
 }
 
+/// Where launchd sends the unit's stdout and stderr: `units.plist_log` in the engine state directory under `home`.
+pub(super) fn unit_log_path(home: &Path) -> PathBuf {
+    home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")).join(defaults::text("units.plist_log"))
+}
+
 /// [`engine_files`] with the supervision decided by the caller (`supervise`: the unit restarts a killed daemon).
 pub fn engine_files_with(m: Manager, home: &Path, exe: &str, supervise: bool) -> Vec<(PathBuf, String)> {
     // What the daemon is started with and a unit would otherwise not give it: the allocator tuning it reads before its first
@@ -268,7 +273,7 @@ pub fn engine_files_with(m: Manager, home: &Path, exe: &str, supervise: bool) ->
                     ("env", &env),
                     ("supervise", &sup),
                     ("interval", &interval),
-                    ("log", &x(defaults::text("units.plist_log"))),
+                    ("log", &x(&unit_log_path(home).to_string_lossy())),
                 ],
             );
             vec![(plist_path(home, label), text)]

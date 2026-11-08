@@ -457,3 +457,12 @@ fn a_transient_unit_with_the_supervised_properties_restarts_after_75_and_stops_a
     assert!(out.status.success(), "systemd-run: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2, "started again once after 75, not after 0");
 }
+
+#[test]
+fn the_launchd_unit_sends_its_output_to_a_file_in_the_state_dir_not_to_dev_null() {
+    let home = Path::new("/h");
+    let text = engine_files_with(Manager::Launchd, home, "/bin/ah", true).remove(0).1;
+    let want = format!("<key>StandardErrorPath</key>\n  <string>{}</string>", unit_log_path(home).display());
+    assert!(text.contains(&want) && !text.contains("/dev/null"), "{text}");
+    assert!(unit_log_path(home).starts_with("/h/.anti-hall"), "{}", unit_log_path(home).display());
+}

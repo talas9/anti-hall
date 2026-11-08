@@ -10,7 +10,6 @@
 use super::units::{self, Manager, Sys};
 use crate::defaults;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 /// Whether the engine unit is the supervised one: `maintenance.unitsSupervise`, on unless it says off.
 pub fn enabled() -> bool {
@@ -49,12 +48,14 @@ fn unit_matches_client(home: &Path, m: Manager) -> bool {
     !files.is_empty() && files.iter().all(|(p, text)| std::fs::read(p).is_ok_and(|b| b == text.as_bytes()))
 }
 
-/// Ask the service manager to start the engine unit and wait for a daemon to answer on `sock`, all within `units.kickstart_budget_ms`
-/// (the command and the wait together, so a miss costs the hook no more than that). With `wait` false the call does not wait for an
-/// answer: the start command only, within `units.kickstart_unguarded_ms`.
-/// True when one answered. False means the caller starts the daemon itself (the singleton lock keeps it single); every false
-/// is also false when nothing was asked (switch off, no unit, a mismatch, a test home).
-pub fn kickstart(sock: &Path, wait: bool) -> bool {
+/// Ask the service manager to start the engine unit. The ask is the start command only: it returns once the manager has accepted
+/// the job, long before the daemon answers (measured 11-18 ms against 0.60-0.69 s), so no caller waits for the answer here. A caller
+/// that needs the daemon (`guarded`: a guard event, the spool writer) keeps waiting for it itself, within its own budget, and never
+/// starts a second, unsupervised daemon while the manager's is coming up. The command is held to `units.kickstart_timeout_ms` for such
+/// a caller and to `units.kickstart_unguarded_ms` for one that never waits (a prompt, an advisory, an answer-now call).
+/// True when the manager accepted the ask (logged as `units.kickstart_asked`). False means the caller starts the daemon itself (the
+/// singleton lock keeps it single); it is also false when nothing was asked (switch off, no unit, a mismatch, a test home).
+pub fn kickstart(guarded: bool) -> bool {
     if defaults::env_var("nospawn").is_some() || !enabled() {
         return false;
     }
@@ -64,42 +65,27 @@ pub fn kickstart(sock: &Path, wait: bool) -> bool {
     if units::RealSys::new(&home, &env).guarded() || !unit_matches_client(&home, m) {
         return false;
     }
-    let began = Instant::now();
-    // a call that never waits (`wait` false) is held to `units.kickstart_unguarded_ms` for the start command alone
-    let budget = if wait { defaults::millis("units.kickstart_budget_ms") } else { defaults::millis("units.kickstart_unguarded_ms") };
+    let limit = defaults::millis(if guarded { "units.kickstart_timeout_ms" } else { "units.kickstart_unguarded_ms" });
     let argv = kickstart_argv(m);
     let Some((prog, rest)) = argv.split_first() else { return false };
     let mut cmd = std::process::Command::new(prog);
     cmd.args(rest);
     let kind = defaults::text("units.kickstart_log_kind");
-    let ran = crate::proc::run(
-        cmd,
-        defaults::text("units.cmd_what"),
-        defaults::millis("units.kickstart_timeout_ms").min(budget),
-        defaults::millis("units.kickstart_poll_ms"),
-    )
-    .ok()
-    .is_some_and(|o| o.status.code() == Some(0));
-    if !ran {
-        crate::health::log_event(kind, defaults::text("units.kickstart_failed"), &argv.join(" "));
-        return false;
-    }
-    if !wait {
-        // the command ran in time, so the service manager is starting the job; this call does not wait for it to answer
-        crate::health::log_event(kind, defaults::text("units.kickstart_ok"), &argv.join(" "));
-        return true;
-    }
-    let poll = defaults::millis("units.kickstart_poll_ms");
-    loop {
-        if crate::client::ping(sock).is_some() {
-            crate::health::log_event(kind, defaults::text("units.kickstart_ok"), &argv.join(" "));
-            return true;
-        }
-        if began.elapsed() >= budget {
-            crate::health::log_event(kind, defaults::text("units.kickstart_miss"), &argv.join(" "));
-            return false;
-        }
-        std::thread::sleep(poll);
+    let ran = crate::proc::run(cmd, defaults::text("units.cmd_what"), limit, defaults::millis("units.kickstart_poll_ms"))
+        .ok()
+        .is_some_and(|o| o.status.code() == Some(0));
+    crate::health::log_event(kind, defaults::text(if ran { "units.kickstart_asked" } else { "units.kickstart_failed" }), &argv.join(" "));
+    ran
+}
+
+/// Empty the unit's stdout/stderr file (`units.plist_log`, in the state directory) when it is over `units.plist_log_max_bytes`, so it
+/// stays bounded. The manager keeps its file open in append mode (checked on macOS), so a truncate leaves no hole. A daemon that was
+/// not started by a unit has nothing to trim, and a missing file is fine.
+pub fn trim_unit_log(state_dir: &Path) {
+    let path = state_dir.join(defaults::text("units.plist_log"));
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > defaults::num("units.plist_log_max_bytes")) {
+        // keep: a failed trim only leaves the file larger; the next start tries again
+        crate::discard::harmless(std::fs::OpenOptions::new().write(true).truncate(true).open(&path));
     }
 }
 
@@ -204,5 +190,30 @@ mod tests {
         assert_eq!(ld[..2], ["launchctl", "kickstart"]);
         assert_eq!(ld[2], format!("gui/{}/com.anti-hall.engine", crate::limits::uid()));
         assert_eq!(kickstart_argv(Manager::Systemd), ["systemctl", "--user", "start", "anti-hall-engine.service"]);
+    }
+
+    #[test]
+    fn the_unit_log_is_emptied_only_when_over_its_limit() {
+        let d = std::env::temp_dir().join(format!("ah-unitlog-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join(defaults::text("units.plist_log"));
+        trim_unit_log(&d); // a missing file is fine
+        assert!(!f.exists());
+        let max = defaults::num("units.plist_log_max_bytes") as usize;
+        std::fs::write(&f, vec![b'x'; max]).unwrap();
+        trim_unit_log(&d);
+        assert_eq!(std::fs::metadata(&f).unwrap().len(), max as u64, "at the limit: kept");
+        std::fs::write(&f, vec![b'x'; max + 1]).unwrap();
+        trim_unit_log(&d);
+        assert_eq!(std::fs::metadata(&f).unwrap().len(), 0, "over the limit: emptied");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn the_ask_and_the_answer_have_distinct_codes() {
+        let codes = ["units.kickstart_asked", "units.kickstart_ok", "units.kickstart_miss", "units.kickstart_failed"].map(defaults::text);
+        for (i, a) in codes.iter().enumerate() {
+            assert!(!a.is_empty() && codes.iter().skip(i + 1).all(|b| a != b), "{codes:?}");
+        }
     }
 }

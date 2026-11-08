@@ -2314,6 +2314,7 @@ pub fn serve(start_reason: &str) -> i32 {
     drain_spool(&sh); // writes spooled while the engine was down, before any new one
     crate::memstat::configure_measure_from_defaults(); // the per-call memory knobs, from the defaults the owner's files overlay
     let sh = Arc::new(sh);
+    crate::setup::supervise::trim_unit_log(&paths::dir());
     count_supervision(&sh, supervised, start_reason);
     {
         let s = sh.clone();
