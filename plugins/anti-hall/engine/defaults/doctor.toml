@@ -970,6 +970,10 @@ doc = "DMN-13. Placeholders: {pid}, {sock}."
 value = "non-live ah-engine serve process pid {pid} is using socket {sock}; it should exit when its parent dies or the socket is removed"
 
 
+[doctor_msg.supervisor_unhealthy]
+doc = "The service manager accepted an ask to start the engine but no daemon answered. Placeholders: {secs}."
+value = "the service manager did not bring the daemon up when asked: clients start it themselves for {secs}s more - Fix: ah-engine doctor --repair, then check the engine unit's log in the state directory"
+
 [doctor_msg.crashloop]
 doc = "DMN-08. Placeholders: {secs}, {reason}."
 value = "daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix: read ah-engine status, fix the cause, then run: ah-engine reset"
