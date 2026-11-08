@@ -4,7 +4,7 @@
 //! guards, the merge gate and speculation guard tail reads, the judge's evidence window, the agent scan).
 use crate::checks::agent_scan::{Opts, scan_transcript_uncached};
 use crate::checks::{compact_decl, guardkit, replykit, taskstate};
-use crate::transcript::scan::while_turn_is_held;
+use crate::transcript::scan::tests::while_turn_is_held;
 
 fn fixture() -> String {
     let mut text = String::new();

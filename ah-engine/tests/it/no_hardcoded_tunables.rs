@@ -53,6 +53,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a test-only thread-local that keeps the concurrency bound off for the lib's unit tests unless one sets it: an initial zero, not a tunable",
     ),
     (
+        "src/transcript/scan.rs",
+        "static TEST_BLOCK",
+        "a test-only thread-local whose initial zero leaves the block size to the TOML value; a test sets its own thread's block to cut lines at small edges: not a tunable",
+    ),
+    (
         "src/budget.rs",
         "static LAST_DROP",
         "an empty thread-local slot that holds the reason of the last dropped answer until its observer takes it: an initial None, not a tunable",
