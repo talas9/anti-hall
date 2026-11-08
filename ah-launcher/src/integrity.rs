@@ -421,8 +421,8 @@ impl Integ {
             && self.sha(&tmp) == cur
             && fs::rename(&tmp, &self.good).is_ok()
         {
-            if self.write_atomic(&self.good_sha_f, &cur) {
-                self.rec("promote", &[("sha256", &cur)]);
+            if self.write_atomic(&self.good_sha_f, cur) {
+                self.rec("promote", &[("sha256", cur)]);
             }
         } else {
             let _ = fs::remove_file(&tmp);

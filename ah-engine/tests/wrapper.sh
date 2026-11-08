@@ -1238,6 +1238,18 @@ ss_run() { # ss_run NAME: run the shipped SessionStart command; sets ss_rc
   ss_rc=$?
   set -e
 }
+ss_one_json() { # ss_one_json FILE: exactly one line holding one balanced JSON object
+  [ "$(wc -l <"$1" | tr -d ' ')" -eq 1 ] && awk '{
+    if (substr($0, 1, 1) != "{" || substr($0, length($0), 1) != "}") bad = 1
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (esc) { esc = 0; continue }
+      if (c == "\\" && q) { esc = 1; continue }
+      if (c == "\"") { q = !q; continue }
+      if (!q) { if (c == "{") d++; if (c == "}") { d--; if (d == 0 && i < length($0)) bad = 1 } }
+    }
+    if (d != 0 || q) bad = 1 } END { exit bad }' "$1"
+}
 ss_ran_binary() { [ "$(cat "$ssd/args" 2>/dev/null)" = SessionStart ] && cmp -s "$ssd/stdin" "$payload"; }
 
 test_sessionstart_stale_marker_prints_one_notice_and_runs_the_client() {
@@ -1246,7 +1258,8 @@ test_sessionstart_stale_marker_prints_one_notice_and_runs_the_client() {
   [ "$ss_rc" -eq 0 ] && ss_ran_binary || return 1
   [ "$(wc -l <"$ssd/err" | tr -d ' ')" -eq 1 ] || return 1
   grep -q '0\.2\.0' "$ssd/err" && grep -q '0\.2\.1' "$ssd/err" && grep -q 'ah-hook install' "$ssd/err" || return 1
-  [ ! -s "$ssd/out" ] || return 1
+  # SessionStart on host claude also carries the notice as exactly one JSON object on stdout
+  ss_one_json "$ssd/out" || return 1
   # a client that also knows the notice is told this one was said
   grep -q 'knob=1' "$ssd/env" || return 1
   # a second session start of the same host process: silent, and the client still runs
@@ -1304,10 +1317,17 @@ check sessionstart_notice_is_off_with_the_setting test_sessionstart_notice_is_of
 test_sessionstart_without_the_client_keeps_the_old_install_behaviour() {
   ss_make nobin 0.2.1 0.2.0 nobin || return 1
   ss_run || return 1
-  [ "$ss_rc" -eq 0 ] && [ ! -s "$ssd/out" ] || return 1
+  [ "$ss_rc" -eq 0 ] && ss_one_json "$ssd/out" || return 1
   [ "$(wc -l <"$ssd/err" | tr -d ' ')" -eq 1 ] || return 1
   # the install notice, not the stale one; nothing downloaded
-  ! grep -q 'ah-hook install' "$ssd/err" && [ ! -e "$ssd/h/.anti-hall/ah-engine/bin/ah-hook" ]
+  ! grep -q 'ah-hook install' "$ssd/err" && [ ! -e "$ssd/h/.anti-hall/ah-engine/bin/ah-hook" ] || return 1
+  # host codex: stdout stays empty (the JSON notice is for the claude host only)
+  rm -f "$ssd/h/.anti-hall/ah-engine/"*notice* 2>/dev/null
+  set +e
+  HOME=$ssd/h CLAUDE_PLUGIN_ROOT=$ssd/plugin sh "$ssd/plugin/hooks/install.sh" SessionStart --host codex <"$payload" >"$ssd/cout" 2>"$ssd/cerr"
+  crc=$?
+  set -e
+  [ "$crc" -eq 0 ] && [ ! -s "$ssd/cout" ]
 }
 check sessionstart_without_the_client_keeps_the_old_install_behaviour test_sessionstart_without_the_client_keeps_the_old_install_behaviour
 

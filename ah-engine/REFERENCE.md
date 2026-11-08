@@ -63,7 +63,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take an older anti-hall status line out of the host's settings: restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
 | `update` | `[--check] [--post-pull-only] \| --from-local <dir> [--engine-bin F] [--hook-bin F] [--tree D] [--source release\|local\|manual] [--check] [--yes] [--force] \| --rollback [--deploy-dir D] [--yes]` | no | implemented | Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions (with --json it adds an `engine` object: the running build version, its sha, where it came from - release, local build or manual - and the latest GitHub release). `--from-local <dir>` and `--rollback` run the ONE install routine (pre-check, rollback copy, install, settle, validate, automatic rollback on failure, cleanup, install record); a downgrade needs --force. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
-| `web` | `[open\|status] [--no-open] [--json]` | no | implemented | The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token, serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled. |
+| `web` | `[open\|status] [--no-open] [--json]` | no | implemented | The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token (web.require_token = false removes the token; the Host and Origin checks stay), serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled. |
 | `afk` | `on\|off\|status` | no | implemented | AFK mode, machine-wide: `on` starts it (agents work silently and log milestone bullets to their progress files), `off` ends it, `status` shows it. Lasts until `back` / `off`. Settings: afk.*. |
 | `back` | `` | no | implemented | End AFK mode and print each session's digest: the checklist bullets after the AFK marker in its progress file, with the percentage of [x] bullets. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
@@ -762,12 +762,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `install.cpu_x86_name` | `x86_64` |  |  | The architecture part of the release triple for x86. |
 | `install.curl_cmd` | `14 items` |  |  | The download command. Placeholders: {connect}, {max_time}, {max_size}, {out}, {url}. |
 | `install.curl_cmd_test` | `9 items` |  |  | Test-only form of the download command (http and file URLs allowed); used only with the test flag. |
+| `install.defaults_probe_grace_ms` | `150` |  |  | Milliseconds the defaults probe gets, after the TERM sent at defaults_probe_ms, before it is killed (KILL). The probe is bounded by defaults_probe_ms plus this (550 ms by default), so an engine that ignores TERM cannot hold SessionStart. |
+| `install.defaults_probe_ms` | `400` |  |  | Milliseconds the defaults probe may run before it is sent TERM. A probe that does not finish in time is not taken as a failure: the notice stays silent. Together with defaults_probe_grace_ms and install.hook_overhead_allowance_ms it must stay under install.hook_budget_ms (every hook fails open in under 1 s). |
+| `install.defaults_probe_verb` | `config` |  |  | The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults and exits non-zero only when they cannot be loaded. It is not read-only: a load that fails rewrites defaults.error (the note it reads). A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing. |
 | `install.dir_lock` | `bootstrap.lock` |  |  | Directory (inside the state directory) that keeps two installers from downloading at once. |
+| `install.explicit_fail_exit` | `1` |  |  | Exit code of an explicit `ah-hook install` (not --auto, with install.explicit_ignores_retry on) that did not install: a failure, or a skip other than 'already current'. |
+| `install.explicit_ignores_retry` | `1` |  |  | 1 (default): an explicit `ah-hook install` (without --auto) ignores the retry window of the last failed automatic attempt, prints why it failed on stderr (msg.install_failed) and exits non-zero on a failure. 0: as before (silent, exit 0, skipped for install.retry_s after an attempt). |
 | `install.file_attempt` | `bootstrap.attempt` |  |  | Marker of the last failed attempt: <epoch> <version> <asset sha256>. Read by the retry limit. |
+| `install.file_defaults_error` | `defaults.error` |  |  | The note the engine writes (in the state directory) when it could not load the plugin's defaults; hooks/install.sh reads it to tell the session that the guards are not running. |
+| `install.file_json_notice` | `install-json.notice` |  |  | Holds the process id of the host process that already got the SessionStart JSON notice of hooks/install.sh (inside the state directory), so the notice shows once per host process. |
 | `install.file_log` | `bootstrap.log` |  |  | Install log, inside the state directory. |
 | `install.file_marker` | `bootstrap.installed` |  |  | Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten. |
 | `install.file_notice` | `install.notice` |  |  | Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory). |
+| `install.file_notice_log` | `install-notices.log` |  |  | Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read. |
 | `install.file_stale_notice` | `stale-engine-hook.notice` |  |  | Holds the process id of the host process that already got the stale-engine notice from hooks/install.sh (inside the state directory), so the notice shows once per host process, not at every session start event. |
+| `install.hook_budget_ms` | `1000` |  |  | Milliseconds the whole SessionStart hook (hooks/install.sh with a TERM-ignoring defaults probe) must stay under: every hook fails open in under 1 s. A test checks defaults_probe_ms + defaults_probe_grace_ms + hook_overhead_allowance_ms against it. |
+| `install.hook_overhead_allowance_ms` | `300` |  |  | Measured allowance, in milliseconds, for the hook's own work around the defaults probe (shell start, config reads, the notice join); about 220 ms on a loaded laptop. |
 | `install.kill_grace_s` | `2` |  | s | How long a timed-out command gets after TERM before it is killed. |
 | `install.libc_default` | `gnu` |  |  | The libc part of the Linux triple when musl is not detected. |
 | `install.libc_musl` | `musl` |  |  | The libc part of the Linux triple on a musl system. |
@@ -791,6 +801,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `install.retry_s` | `21600` |  | s | After a failed attempt for a version, the next automatic attempt waits this long. |
 | `install.rosetta_sysctl` | `hw.optional.arm64` |  |  | macOS sysctl that is 1 on an Apple-silicon machine, even for a process running under Rosetta (which reports x86_64). |
 | `install.run_s` | `20` |  | s | Hard limit for one command the installer runs (download, extract, the version check of the new binary); a child that ignores TERM is killed install.kill_grace_s later. |
+| `install.sessionstart_json_notice` | `1` |  |  | 1 (default): at SessionStart hooks/install.sh shows the 'guards are not running / engine out of date' notice to the user as JSON on stdout (systemMessage plus additionalContext), because Claude Code never shows the stderr of a hook that exits 0. 0: stderr only. The installed client's own SessionStart output is kept (the notice is merged in, never a second JSON object). |
 | `install.setting_key` | `bootstrap` |  |  | Key of the setting that turns the automatic download on (opt-in: absent means off). |
 | `install.setting_off` | `false, off, no, 0` |  |  | Spellings of the setting's value that mean off. |
 | `install.setting_on` | `true, on, yes, 1` |  |  | Spellings of the setting's value that mean on (booleans and numbers are read as such). |
@@ -1577,7 +1588,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `docs.external_flags` | `25 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
+| `docs.external_flags` | `26 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
 
 ### telemetry.toml / telemetry
 
@@ -1710,6 +1721,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `storage.hot_synchronous` | `FULL` |  |  | SQLite synchronous level for hot.db; FULL syncs every commit, so an acknowledged write survives a process crash (D23, D73). |
 | `storage.journal_mode` | `WAL` |  |  | SQLite journal mode for both databases; WAL lets readers run while the writer commits (D73). |
 | `storage.mmap_kb` | `0` |  | KB | SQLite memory-mapped I/O per connection; 0 turns it off so file pages are not counted in the daemon's resident set (D25). |
+| `storage.sqlite_use_global_allocator` | `1` |  |  | Whether SQLite allocates through the engine's own allocator (jemalloc, which gives freed pages back as they are freed) instead of the C library's, whose zones kept about 8 MB of freed pages after a SQLite burst. Read once at daemon start, before the first database opens; 0 leaves SQLite on the C library. |
 | `storage.wal_autocheckpoint` | `1000` |  | pages | WAL pages after which SQLite checkpoints on its own (between explicit checkpoints by `ah-engine maintain`). |
 | `storage.wal_suffix` | `-wal` |  |  | Suffix SQLite gives a database's write-ahead log file; used to report WAL sizes. |
 | `storage.write_queue` | `1024` | `AH_ENGINE_WRITE_QUEUE` |  | Writes that may wait for the writer thread; beyond this a write is refused as busy (the client retries, then spools). |
@@ -3014,7 +3026,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_no_row` | `the dispatch table has no well-formed row for {host} {event}: the Node hooks ...` |  |  | Deferral reason when the dispatch table has no well-formed row for an event the fallback list does not mark as a thin trigger. Placeholders: {host}, {event}. |
 | `dispatch.msg_panic` | `the dispatcher hit an internal error: the Node hooks decide` |  |  | Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block. |
 | `dispatch.msg_skipped_entry` | `entry {id} skipped: no runnable Node command` |  |  | Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}. |
-| `dispatch.msg_skipped_entry_stderr` | `anti-hall: skipped {event} Node hook {id}: no runnable Node command` |  |  | Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}. |
+| `dispatch.msg_skipped_entry_stderr` | `anti-hall: skipped the {event} hook {id}: it has no runnable command on this ...` |  |  | Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}. |
 | `dispatch.msg_spill_failed` | `context spill file not written: {err}` |  |  | Event-log detail when the spill file could not be written (the previous over-cap answer stands). Placeholder: {err}. |
 | `dispatch.msg_spill_pointer` | `[anti-hall: the context of {hooks} more hook(s), {chars} characters, did not ...` |  |  | The last line of a spilled additionalContext: tells the model where the rest of the session context is. Placeholders: {path} (absolute file path), {hooks} (how many hooks' contexts are in the file), {chars} (their size). |
 | `dispatch.msg_spill_sweep` | `removed {n} stale context spill file(s)` |  |  | Event-log detail after stale spill files were removed. Placeholder: {n}. |
@@ -5243,6 +5255,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.js_parse_max_depth` | `2000` |  |  | The deepest bracket nesting of a transcript line the engine reads the way JSON.parse does when serde_json's 128-level limit rejects it (JavaScript's own stack ends far past it). A deeper line cannot be read and leaves the scan unsure. |
 | `taskstate.list_id_env` | `CLAUDE_CODE_TASK_LIST_ID` |  |  | Name of the environment variable Claude Code reads to put a session's tasks in a NAMED list (`<store_base>/<list id>/`) instead of `session-<8>`. The R-pair spawn-by-id check reads that named list as THE list when the variable is set to a valid id and its directory exists (even empty: Claude Code then keeps the session's tasks only there, and the `session-<8>` directory is left empty). Forwarded to the checks by `request_env.allow`. Unset, or a value that is not a valid id, or no such directory: the `store_dir_names` candidates apply. |
 | `taskstate.list_id_re` | `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` |  |  | A valid named-list id (one directory name under the store: starts with a letter, digit or underscore, then letters, digits, `_`, `.` or `-`; never a path). |
+| `taskstate.memo_entries` | `16` |  | count | How many task reconstructions of a transcript file the engine remembers, each for one state of the file (its size, modification time, window sizes and variant). The Stop checks task-guard (twice), task-pair-guard and tasklist-guard each rebuild the same task list from the same tail, and a tail cut in the middle of a task's history makes each of them scan back up to taskstate.backfill_exact_bytes; with this memo the first check computes it and the others take its answer. A changed file is read afresh. The least recently used is dropped first. 0 turns the memo off and every check reconstructs for itself. |
 | `taskstate.open_statuses` | `pending, in_progress, in-progress` |  |  | Statuses (lowercase) that make a task open. |
 | `taskstate.pending_statuses` | `pending` |  |  | Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store. |
 | `taskstate.prompt_key_max_lines` | `64` |  |  | How many of the newest user-entry lines of the transcript tail the task guard reads to find the newest real prompt (its key). Tool results are user entries too, so a long run of them is skipped; when the newest this-many are all unusable the whole tail is read, so the key is the same as a full scan gives. 0 reads every user line. |
@@ -6274,6 +6287,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.codex_coarse_marker` | `/plugins/anti-hall/hooks/` |  |  | The text a Codex hooks.json holds when anti-hall hooks are registered in it (the coarse test, used only when the plugin has no Codex registration to compare). |
 | `doctor.codex_double_backslash` | `\\` |  |  | Two backslashes in a row: the doctor reads them as one slash when it falls back to the coarse Codex registration test. |
 | `doctor.codex_hooks_enabled_re` | `(?m)\[features\][\s\S]*?^\s*hooks\s*=\s*true` |  |  | A Codex config.toml whose [features] table sets hooks = true. |
+| `doctor.codex_node_entries` | `1` |  |  | 1 (default): the engine doctor reports Codex hook commands that still run a Node-era anti-hall script (doctor.codex_node_entry_re) as a failure, with the command that replaces them. 0: only the old 'no anti-hall hooks found' check. |
+| `doctor.codex_node_entry_re` | `\bnode\b[^\|&;]*/anti-hall/[^\|&;]*\.js` |  |  | A Codex hooks.json command (backslashes already turned into slashes) that runs a Node-era anti-hall hook: `node` followed by a path under an anti-hall directory that ends in a .js file. The scripts no longer ship. |
 | `doctor.core_dirs` | `/usr/bin, /bin` |  |  | System directories a usable PATH has at least one of. |
 | `doctor.cpu_other` | `other` |  |  | The name shown for a CPU type that is not in the tables above. |
 | `doctor.cron_assign_re` | `^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'(?:[^'\\]\|\\.)*'\|[^\s']*)\s+)*` |  |  | The `NAME=value` assignments before the command of a managed crontab line. |
@@ -6464,10 +6479,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.start_pid_re` | `\bpid (\d+)` |  |  | Finds the daemon's pid in the detail of a start event (group 1). |
 | `doctor.stat_gnu_args` | `-c, %s, /` |  |  | Arguments that only GNU/busybox stat accepts, to tell the userland flavour. |
 | `doctor.statusline_check` | `statusline` |  |  | The name the statusline render check is reported under when the engine does not decide the render. |
-| `doctor.statusline_dispatcher` | `../anti-hall-node/statusline/statusline.js` |  |  | The statusline dispatcher script, relative to the plugin root; the render check requires it to be installed. |
+| `doctor.statusline_dispatcher` | `../anti-hall-node/statusline/statusline.js` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor.statusline_marker` | `statusline.js` |  |  | A statusLine command that contains this is the anti-hall dispatcher. |
 | `doctor.statusline_min_lines` | `2` |  |  | How many lines the statusline must print for the render check to pass (line 1 plus the context gauge on line 2). |
-| `doctor.statusline_rich` | `../anti-hall-node/statusline/statusline-rich.js` |  |  | The line-1 renderer script, relative to the plugin root. |
+| `doctor.statusline_rich` | `../anti-hall-node/statusline/statusline-rich.js` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor.statusline_sample` | `{"workspace":{"current_dir":{cwd}},"cwd":{cwd},"model":{"display_name":"docto...` |  |  | The session payload the render check pipes to the statusline; {cwd} is the working directory as a JSON string. |
 | `doctor.statusline_scopes` | `3 entries, 3 entries, 3 entries` |  |  | Where a statusLine command may be configured, in order: label and file relative to the project (a leading ~ means the home directory). |
 | `doctor.statusline_shown` | `48` |  |  | How many UTF-16 units of a custom statusLine command the doctor shows. |
@@ -6513,8 +6528,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.backup_infix` | `.bak-antihall-` |  |  | Infix of the backup a repair keeps of a file it changes: <file><infix><UTC time>. |
 | `doctor_l.claude_settings_rel` | `.claude/settings.json` |  |  | Claude Code's settings file, relative to HOME. |
 | `doctor_l.cmd_word` | `doctor` |  |  | The engine verb the thin client hands over to when the engine runs. |
+| `doctor_l.codex_cache_marks` | `/.codex/plugins/cache/` |  |  | The subset of the host cache marks that belong to Codex. Codex records no install path (its config.toml holds only an enabled flag per plugin), so in these caches only the newest version dir (by semver) of a plugin is judged; older version dirs an upgrade left behind are reported as information. Layout under the mark: <marketplace>/<plugin>/<version>/. |
 | `doctor_l.defaults_dir` | `engine/defaults` |  |  | The plugin's defaults directory, relative to the plugin root. |
 | `doctor_l.defaults_index` | `index.toml` |  |  | The file that marks a defaults directory as complete. |
+| `doctor_l.defaults_probe_cmd` | `config` |  |  | The engine arguments ah-hook doctor runs (after the binary) to prove the engine can load this plugin's defaults: the verb must read them and exit 0 when it can, and exit non-zero when it cannot. Not read-only: a failed load rewrites the engine's defaults.error note. |
 | `doctor_l.engine_serve_word` | `serve` |  |  | The word in the command line of a running engine daemon. |
 | `doctor_l.excerpt_chars` | `120` |  |  | How many characters of a hook command or a file's first line a finding quotes. |
 | `doctor_l.gh_name` | `gh` |  |  | The GitHub CLI program. |
@@ -6523,12 +6540,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.hook_files` | `7 items` |  |  | The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. Relative paths cover the current project. |
 | `doctor_l.hooks_claude_rel` | `hooks/hooks.json` |  |  | Claude's hooks file, relative to the plugin root. |
 | `doctor_l.hooks_codex_rel` | `codex/hooks/hooks.json` |  |  | Codex's hooks file, relative to the plugin root. |
+| `doctor_l.host_cache_marks` | `/.claude/plugins/cache/, /.codex/plugins/cache/` |  |  | A hooks file whose path holds one of these is a host cache copy: judged only when it is in a registered installPath or the running plugin root; any other is reported as information (an old version dir an upgrade left behind). |
 | `doctor_l.install_health_fail` | `1` |  |  | 1 = a failed install-health check (old-form hook commands, Node on an entry path, extra shell files, a bad launcher shim, a missing thin client) fails the doctor; 0 = it only warns. |
 | `doctor_l.kill_grace_s` | `1` |  | s | How long a timed-out command the doctor ran gets after TERM before it is killed. |
+| `doctor_l.launcher_health_with_engine` | `1` |  |  | 1 (default): when ah-hook doctor hands over to the engine's doctor it first runs its own install-health checks (Node entries in the hooks files, Node launchers in ~/.anti-hall/bin, the retired statusLine, the client binary) and shows them only when they find something; a failing check keeps the exit code at 1. 0: the engine's doctor alone. |
 | `doctor_l.line_chars` | `160` |  |  | How many characters of a command's output a finding quotes. |
 | `doctor_l.msg_builtin_daemon_note` | `the built-in doctor reads the daemon's files only; it never contacts or signa...` |  |  | Informational line of the built-in doctor. |
 | `doctor_l.msg_builtin_defaults_missing` | `{path} is missing; the engine has no settings and the hooks pass through - Fi...` |  |  | The defaults index is missing. Placeholder: {path}. |
 | `doctor_l.msg_builtin_defaults_ok` | `the plugin's defaults and their pristine copy are present` |  |  | The defaults and their pristine copy are present. |
+| `doctor_l.msg_engine_defaults_unloadable` | `engine {have} is installed but cannot load this plugin's settings ({detail}),...` |  |  | The engine runs and reports a version but cannot load this plugin's defaults (a plugin update it predates): every hook call is handed back unchecked. Placeholders: {have}, {detail} (the engine's first error line), {bootstrap}. |
 | `doctor_l.msg_err_eacces` | `Permission denied (os error 13)` |  |  | The reason text for a lock file that exists but cannot be read. |
 | `doctor_l.msg_err_enoent` | `No such file or directory (os error 2)` |  |  | The reason text for a lock file that does not exist. |
 | `doctor_l.msg_head_health` | `Install health` |  |  | Heading of the install-health checks. |
@@ -6538,8 +6558,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.msg_health_client_ok` | `the thin client {path} is installed and executable` |  |  | Placeholder: {path}. |
 | `doctor_l.msg_health_hooks_ok` | `{file}: every hook command is the direct form` |  |  | Placeholder: {file}. |
 | `doctor_l.msg_health_hooks_old` | `{file} still runs {n} hook command(s) through the retired shell wrapper (firs...` |  |  | Placeholders: {file}, {n}, {first}. |
-| `doctor_l.msg_health_node_entry` | `{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: upd...` |  |  | Placeholders: {file}, {n}, {first}. |
-| `doctor_l.msg_health_shim_bad` | `{path} is not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine d...` |  |  | Placeholders: {path}, {first}. |
+| `doctor_l.msg_health_node_entry` | `{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: in ...` |  |  | Placeholders: {file}, {n}, {first}. |
+| `doctor_l.msg_health_other_cache` | `{n} older anti-hall copy(ies) in the host's plugin cache are not the register...` |  |  | Information line. Placeholders: {n}, {first}. |
+| `doctor_l.msg_health_other_cache_codex` | `{n} older anti-hall version dir(s) in the Codex plugin cache are not judged (...` |  |  | Information line for Codex cache version dirs older than the newest. Placeholders: {n}, {first}. |
+| `doctor_l.msg_health_other_cache_unmatched` | `{n} anti-hall copy(ies) in the host's plugin cache were not judged because no...` |  |  | Information line when the host's registry has no anti-hall entry and the run did not start from a cache copy, so no copy can be told apart as the install. Placeholders: {n}, {first}. |
+| `doctor_l.msg_health_shim_bad` | `{path} is a retired Node launcher, not an sh shim for ah-hook (first line: {f...` |  |  | Placeholders: {path}, {first}. |
 | `doctor_l.msg_health_shims_ok` | `{n} launcher shim(s) in {dir} are sh shims` |  |  | Placeholders: {n}, {dir}. |
 | `doctor_l.msg_health_shipped_sh` | `the plugin ships {n} shell file(s) besides hooks/install.sh (first: {first}) ...` |  |  | Placeholders: {n}, {first}. |
 | `doctor_l.msg_health_shipped_sh_ok` | `the plugin ships no shell file besides hooks/install.sh` |  |  | Said when the plugin ships only hooks/install.sh. |
@@ -6561,8 +6584,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.path_wanted` | `/usr/bin, /bin` |  |  | Directories of which PATH should contain at least one. |
 | `doctor_l.poll_ms` | `50` |  | ms | How often the doctor looks at a command it started. |
 | `doctor_l.pristine_dir` | `engine/defaults.pristine` |  |  | The pristine copy of the defaults, relative to the plugin root. |
+| `doctor_l.probe_defaults_load` | `1` |  |  | 1 (default): before ah-hook doctor hands over to the engine's doctor it also runs a verb that loads this plugin's defaults (doctor_l.defaults_probe_cmd): an engine that answers `version` but cannot load them (a plugin update it predates) is reported as such, and the built-in diagnosis runs instead. 0: only `version` is probed. |
 | `doctor_l.probe_prefix` | `.doctor-probe-` |  |  | Prefix of the scratch file the doctor creates (and removes) to test that a directory is writable. |
 | `doctor_l.ps_cmd` | `ps, -p, {pid}, -o, command=` |  |  | The command that prints the command line of one process. Placeholder: {pid}. |
+| `doctor_l.registry_key_prefix` | `anti-hall@` |  |  | The keys of the host's installed-plugins registry that are anti-hall's; only the installPath of those is judged for Node entry paths among the host's cache copies. |
 | `doctor_l.run_s` | `5` |  |  | Hard limit for one command the doctor runs (the engine's version, git). |
 | `doctor_l.scan_skip_dirs` | `.git, node_modules` |  |  | Directories the scan for shell files does not enter. |
 | `doctor_l.shell_ext` | `sh` |  |  | File extension of a shell file. |
@@ -6579,7 +6604,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `doctor_msg.bin_corrupt` | `{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} --d...` |  |  | BIN-04. Placeholders: {path}, {why}, {bootstrap}. |
 | `doctor_msg.bin_hash_differs` | `{path} differs from the build the bootstrap installed (sha256 {have}... vs {w...` |  |  | BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}. |
-| `doctor_msg.bin_missing` | `engine binary not installed at {path} (hooks use ah-engine on PATH, else the ...` |  |  | BIN-01. Placeholders: {path}, {bootstrap}. |
+| `doctor_msg.bin_missing` | `engine binary not installed at {path}: hook calls pass through unchecked, so ...` |  |  | BIN-01. Placeholders: {path}, {bootstrap}. |
 | `doctor_msg.bin_no_rosetta` | `{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch...` |  |  | BIN-06c. Same placeholders. |
 | `doctor_msg.bin_no_run` | `{path} does not run: {why} - Fix: reinstall: sh {bootstrap} --download -v` |  |  | BIN-12. Placeholders: {path}, {why}, {bootstrap}. |
 | `doctor_msg.bin_not_bootstrapped` | `{path} was not installed by the bootstrap (a local build); the bootstrap leav...` |  |  | BIN-08. Placeholder: {path}. |
@@ -6590,10 +6615,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.bin_quarantined` | `{path} is quarantined by macOS Gatekeeper (com.apple.quarantine); it will not...` |  |  | BIN-11. Placeholder: {path}. |
 | `doctor_msg.bin_rosetta` | `{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (...` |  |  | BIN-06b. Same placeholders. |
 | `doctor_msg.bin_unreadable` | `{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh ...` |  |  | The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}. |
-| `doctor_msg.bin_version_differs` | `engine {have} is installed but the plugin pins {want} - Fix: it updates at th...` |  |  | BIN-09. Placeholders: {have}, {want}, {bootstrap}. |
+| `doctor_msg.bin_version_differs` | `engine {have} is installed but the plugin pins {want}; it updates by itself a...` |  |  | BIN-09. Placeholders: {have}, {want}, {bootstrap}. |
 | `doctor_msg.bin_wrong_arch` | `{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it...` |  |  | BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}. |
 | `doctor_msg.bin_wrong_os` | `{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstal...` |  |  | BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}. |
-| `doctor_msg.breaker` | `client circuit breaker open for {secs}s more ({reason}); hooks use the Node f...` |  |  | DMN-09. Placeholders: {secs}, {reason}. |
+| `doctor_msg.breaker` | `client circuit breaker open for {secs}s more ({reason}); hook calls pass thro...` |  |  | DMN-09. Placeholders: {secs}, {reason}. |
 | `doctor_msg.claude_missing` | `the claude CLI is not on PATH; Claude Code's own `claude doctor` was skipped` |  |  | The claude CLI is not on PATH; the optional sub-check is skipped. |
 | `doctor_msg.claude_ok` | `claude doctor (Claude Code {v}): no installation issues found` |  |  | Placeholder: {v}. |
 | `doctor_msg.claude_problem` | `claude doctor: {line} (see `claude doctor` for details)` |  |  | A problem line from `claude doctor`. Placeholder: {line}. |
@@ -6605,6 +6630,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.codex_label_project` | `project` |  |  | The label of the project's Codex directory. |
 | `doctor_msg.codex_launcher_missing` | `Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine do...` |  |  | A Codex registration still invokes the retired anti-hall shell launcher, and that launcher is missing. Placeholders: label, file. |
 | `doctor_msg.codex_missing` | `Codex hooks.json ({label}) missing — run `ah-engine install-codex`` |  |  | There is no Codex hooks file. Placeholder: {label}. |
+| `doctor_msg.codex_node_entries` | `Codex hooks.json ({label}: {file}) still runs {n} Node-era anti-hall hook(s) ...` |  |  | The Codex hooks file still runs Node-era anti-hall hooks (`node .../hooks/<name>.js`), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command). |
 | `doctor_msg.codex_none` | `Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped` |  |  | No Codex configuration was found. |
 | `doctor_msg.codex_unwired` | `Codex hooks.json ({label}) present but no anti-hall hooks found — run `ah-eng...` |  |  | The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}. |
 | `doctor_msg.codex_wired` | `Codex hooks.json ({label}) has anti-hall hooks registered` |  |  | The Codex hooks file registers anti-hall's hooks. Placeholder: {label}. |
@@ -6727,7 +6753,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.leak_summary` | `(warn) leaked test-fixture stores: {count} (run doctor --repair-test-stores t...` |  |  | The leaked stores. Placeholders: {count}, {shown}, {more}. |
 | `doctor_msg.legacy_journal` | `(warn) {count} DevSwarm store(s) use the legacy journal backend (Node older t...` |  |  | Stores on the journal backend. Placeholders: {count}, {shown}. |
 | `doctor_msg.legacy_split` | `(warn) {count} DevSwarm store(s) are split between the legacy journal and SQL...` |  |  | Stores split between a journal and SQLite. Placeholders: {count}, {shown}. |
-| `doctor_msg.lock_no_asset` | `the plugin's ah-engine.lock has no build for {triple}; the Node hooks stay in...` |  |  | BIN-10. Placeholder: {triple}. |
+| `doctor_msg.lock_no_asset` | `the plugin's ah-engine.lock has no build for {triple}, so no engine can be in...` |  |  | BIN-10. Placeholder: {triple}. |
 | `doctor_msg.lock_no_version` | `the lock has no version` |  |  | The lock has no version. |
 | `doctor_msg.lock_unreadable` | `ah-engine.lock is missing or unreadable at {path} ({err}); the bootstrap cann...` |  |  | BIN-15. Placeholders: {path}, {err}. |
 | `doctor_msg.log_corrupt` | `{n} of the last {m} lines of {file} are not event lines` |  |  | LG-02. Placeholders: {n}, {m}, {file}. |
@@ -6815,14 +6841,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.state_uncreatable` | `state directory {dir} cannot be created ({err}) - Fix: make the parent direct...` |  |  | ST-01b. Placeholders: {dir}, {err}. |
 | `doctor_msg.state_unwritable` | `state directory {dir} is not writable ({err}) - Fix: chmod u+w {dir}, or remo...` |  |  | ST-03. Placeholders: {dir}, {err}. |
 | `doctor_msg.state_windows_mount` | `{dir} is on a Windows drive ({mount}); file locks and sockets are unreliable ...` |  |  | ST-07. Placeholders: {dir}, {mount}. |
-| `doctor_msg.statusline_dispatcher_missing` | `statusline.js dispatcher missing` |  |  | The statusline dispatcher script is not installed. |
-| `doctor_msg.statusline_installed` | `legacy anti-hall statusLine still configured ({label}) -> uninstall-statuslin...` |  |  | A legacy anti-hall statusLine is still configured. Placeholder: {label}. |
+| `doctor_msg.statusline_dispatcher_missing` | `statusline.js dispatcher missing` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
+| `doctor_msg.statusline_installed` | `the anti-hall statusLine in {label} is the retired Node form: the script it r...` |  |  | A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node .../statusline.js` command; that script no longer ships, so the status line is blank until this is removed. |
 | `doctor_msg.statusline_no_output` | `statusline.js produced no output (exit {code})` |  |  | The statusline printed nothing, or failed. Placeholder: {code}. |
-| `doctor_msg.statusline_none` | `no anti-hall statusLine configured (installer retired)` |  |  | No statusLine is configured. |
+| `doctor_msg.statusline_none` | `no anti-hall statusLine is configured (the statusline is optional; nothing to...` |  |  | No statusLine is configured. |
 | `doctor_msg.statusline_one_line` | `statusline rendered only 1 line — line 2 (context gauge) did NOT render despi...` |  |  | The statusline printed only one line although the payload carried a context window. |
 | `doctor_msg.statusline_renders` | `statusline renders {n} lines (line 1 + live context gauge on line 2)` |  |  | The statusline printed both lines. Placeholder: {n}. |
-| `doctor_msg.statusline_rich_bad` | `statusline-rich.js missing — line 1 falls back to the simple renderer` |  |  | The line-1 renderer script is missing. |
-| `doctor_msg.statusline_rich_ok` | `statusline-rich.js (line-1 renderer) present` |  |  | The line-1 renderer script is present. |
+| `doctor_msg.statusline_rich_bad` | `statusline-rich.js missing — line 1 falls back to the simple renderer` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
+| `doctor_msg.statusline_rich_ok` | `statusline-rich.js (line-1 renderer) present` |  |  | Compatibility key: the published engine 0.2.1 refuses a plugin whose defaults lack it (every hook then passes unchecked); engine 0.3.0 does not read it. |
 | `doctor_msg.statusline_set` | `statusline set ({label}) -> {command}…` |  |  | A custom statusline is configured. Placeholders: {label}, {command}. |
 | `doctor_msg.stores_changed` | `no longer eligible at apply time (registry changed or worktree reappeared) — ...` |  |  | A store that no longer matches when the repair runs. |
 | `doctor_msg.stores_failed` | `failed to move {dir} aside — {error}` |  |  | A leaked store that could not be moved. Placeholders: {dir}, {error}. |
@@ -6836,7 +6862,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.thin_ok` | `{file} is the thin form` |  |  | Thin hooks file. Placeholder: {file}. |
 | `doctor_msg.title` | `anti-hall doctor v{version}` |  |  | The first line of the report. Placeholder: {version}. |
 | `doctor_msg.tools_missing` | `required tool(s) missing from PATH: {tools} - Fix: install coreutils/procps, ...` |  |  | EV-10. Placeholder: {tools}. |
-| `doctor_msg.unhandled_flag` | `{flag} is not handled by the engine doctor yet (D81); run the Node doctor for it` |  |  | A flag of the Node doctor that the engine doctor does not handle. Placeholder: {flag}. |
+| `doctor_msg.unhandled_flag` | `{flag} is not handled by the engine doctor; it was skipped` |  |  | A flag of the retired Node doctor that the engine doctor does not handle. Placeholder: {flag}. |
 | `doctor_msg.unknown_pid` | `unknown` |  |  | A pid that is not known. |
 | `doctor_msg.unknown_version` | `(unknown)` |  |  | The version shown when the plugin manifest cannot be read. |
 | `doctor_msg.userland` | `userland: {flavour} stat` |  |  | EV-11. Placeholder: {flavour}. |
@@ -9367,7 +9393,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_install.features_nl_hooks` | `[features]\nhooks = true\n` |  |  | The replacement. |
 | `codex_install.features_with_hooks_re` | `(?m)\[features\][\s\S]*?^\s*hooks\s*=` |  |  | A [features] table that already sets `hooks`. |
 | `codex_install.heading` | `anti-hall Codex install ({scope}): {status}\n` |  |  | First output line. |
-| `codex_install.hook_group_re` | `/plugins/anti-hall/hooks/\|/hooks/ah-hook\.sh["\x27]\|/\.anti-hall/ah-engine/bi...` |  |  | An anti-hall hook command (after backslashes become slashes): its legacy hook directory, retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection. |
+| `codex_install.hook_group_re` | `/plugins/anti-hall/hooks/\|/anti-hall/[0-9][^/]*/hooks/[\w-]+\.js["\x27]\|/hook...` |  |  | An anti-hall hook command (after backslashes become slashes): its legacy hook directory (a repo clone, or a plugin-cache version directory), retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection. |
 | `codex_install.hooks_file` | `hooks.json` |  |  | The Codex hooks file inside it. |
 | `codex_install.line_config` | `- config: {path} {state}\n` |  |  | Output line. |
 | `codex_install.line_hooks` | `- hooks: {path} {state}\n` |  |  | Output line. |
@@ -13633,6 +13659,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.mem_snapshot_probe` | `vmmap, --summary, {pid}` |  |  | Command whose output goes into the snapshot as the platform's memory map of the daemon (macOS: vmmap summary); the program, then its arguments with `{pid}` substituted. Where /proc/<pid>/smaps_rollup exists it is used instead. An empty list or a missing program leaves the field empty. |
 | `diagnostics.mem_snapshot_probe_ms` | `4000` |  | ms | Longest the memory-map command may run. |
 | `diagnostics.mem_snapshot_wait_ms` | `3000` |  | ms | Longest the snapshot waits for every worker to report its interpreter and caches (a busy worker reports after its request); workers that have not reported by then are listed as missing. |
+| `diagnostics.mem_target_mb` | `100` |  | MB | The owner's memory target of the daemon in MB (footprint, the figure daemon.mem_metric selects). It is only REPORTED (status budget: mem_target_mb and over_target); nothing is shrunk or restarted at it, the enforced limits are diagnostics.budget_mem_mb and mem.global_hard_bytes. 0 hides it. |
 | `diagnostics.msg_abandoned` | `abandoned at {site} (x{n}): {why}` |  |  | The event-log line for an abandoned decision. {site} is the counted site, {why} the reason with its key inputs, {n} how many were counted at the site since the last line. |
 | `diagnostics.msg_file_refused` | `refused: {why}` |  |  | Said when `diag file` refuses an id: {why}. |
 | `diagnostics.msg_file_usage` | `usage: ah-engine diag file <state:NAME\|defaults:NAME.toml\|transcript:AGENT>` |  |  | Usage of `diag file`. |
@@ -14117,10 +14144,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.bind_attempts` | `40` |  |  | How many random ports are tried before the server gives up. |
 | `web.bind_host` | `127.0.0.1` |  |  | The address the dashboard server binds to. Keep it a loopback address: the page can send agent messages. |
 | `web.boot_marker` | `__AH_BOOT__` |  |  | The text in the index file that the server replaces with the page's boot data (texts and thresholds as JSON). |
+| `web.check_host` | `true` |  |  | Refuse a request whose Host header is not one of web.loopback_names (or web.bind_host) plus the bound port, with 421. This stops DNS rebinding, and applies whatever web.require_token says. Counted as web_request_rejected{reason=host}. |
+| `web.check_origin` | `true` |  |  | Refuse a state-changing request (any method but GET, HEAD, OPTIONS) that carries an Origin header, or without one a Referer, that is not this dashboard's own origin, with 403. This stops other web pages from posting to the dashboard, and applies whatever web.require_token says. A request with neither header (a command-line client) passes. Counted as web_request_rejected{reason=origin}. |
 | `web.client_label` | `{project} · {name}` |  |  | How a Health client (a hook session) is named once the tracker knows it. Placeholders: {project}, {name} (its session or agent title). |
 | `web.compat_msg` | `web {web_version} needs engine >= {required}, installed {actual} -> update th...` |  |  | The sentence shown when the engine is older than the lowest version this dashboard works with. Placeholders: {web_version}, {required}, {actual}. |
 | `web.config_rel` | `engine/defaults/web.toml` |  |  | This file's path relative to the plugin root; the engine hands it to the server, which reads it itself. |
 | `web.cookie_name` | `ah_web_session` |  |  | Name of the session cookie the browser receives after it presents the token. |
+| `web.counters_file` | `obs-counters.log` |  |  | Name (in the state directory) of the shared counter journal the refusals are appended to. Keep it equal to diagnostics.counters_file. |
+| `web.counters_lock_suffix` | `.lock` |  |  | Suffix of the journal's lock file (the engine's paths.lock_suffix): the server takes the shared lock on it while it appends, as the engine's own writers do. |
 | `web.coverage` | `8 entries` |  |  | Which dashboard screen shows which engine feature, for `ah-engine describe --coverage` (the header badge counts what no screen covers). Screen to selectors; a selector is `kind:name` with `*` as a wildcard. Kinds: verbs, checks, settings, files, jobs, jev, switches, sources. |
 | `web.csp` | `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'u...` |  |  | Content-Security-Policy header sent with every page and file. |
 | `web.ctl_max_bytes` | `16777216` |  |  | Largest engine reply accepted. |
@@ -14181,6 +14212,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
 | `web.log_file` | `ah-web.log` |  |  | File (in the state directory the server was started with) it appends one line to for its start, every signal it receives and its exit with the reason, so a server that disappears says why. Rotated to `<name>.1` at web.log_max_bytes. |
 | `web.log_max_bytes` | `262144` |  |  | Size at which the server's log file is rotated (one old copy is kept). |
+| `web.loopback_names` | `localhost, [::1]` |  |  | Host names the dashboard answers to, besides web.bind_host: the Host header and the Origin must name one of these plus the bound port. |
 | `web.manage_file` | `web_manage.toml` |  |  | The Settings screens' config file, next to this one (texts and limits of the Settings, Config, Checks, Jev and History tabs). |
 | `web.max_streams` | `16` |  |  | Most event streams open at once; more are refused with 503. |
 | `web.mesh_db_rel` | `.anti-hall/devswarm/store/devswarm.db` |  |  | The mesh store, relative to the home directory. |
@@ -14193,6 +14225,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.msg_action_failed` | `The action failed.` |  |  | Said when the verb failed without a message. |
 | `web.msg_action_timeout` | `The engine did not answer in time.` |  |  | Said when the engine did not answer in time. |
 | `web.msg_action_unknown` | `That action is not available.` |  |  | Said for an action the menu does not list. |
+| `web.msg_bad_origin` | `request refused: it did not come from the dashboard page` |  |  | Sent with 403 when the Origin or Referer of a state-changing request is not the dashboard's own origin. |
 | `web.msg_busy` | `Too many open dashboard tabs.` |  |  | Body sent when too many event streams are open. |
 | `web.msg_disabled` | `The Command Center is switched off (web.enabled = false).` |  |  | Printed when web.enabled is false. |
 | `web.msg_no_bin` | `The Command Center server binary was not found: {bin}` |  |  | Printed when the server binary is missing. Placeholder: {bin}. |
@@ -14211,6 +14244,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.open_browser` | `true` |  |  | Open the page in the default browser after `ah-engine web` (the --no-open flag overrides it). |
 | `web.open_cmd` | `open` |  |  | Command that opens a URL; the URL is appended as the last argument. |
 | `web.ops_cfg_rel` | `engine/defaults/web_ops.toml` |  |  | The Accounts, Updates and Logs screens config file, relative to the plugin root; the server reads its [web.ops.*] values and merges its texts into the page labels. |
+| `web.origin_scheme` | `http` |  |  | The scheme of the dashboard's own origin (it is served over plain http on the loopback address). |
 | `web.pkg_dir` | `web/pkg` |  |  | Directory of the compiled page (WASM and its loader), relative to the plugin root. |
 | `web.placeholder_id_chars` | `8` |  |  | How many characters of the missing parent's id its name carries. |
 | `web.placeholder_kind` | `workspace` |  |  | The kind shown for a parent agent that a sub-agent names but the tracker does not list. |
@@ -14242,6 +14276,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.pulse_mem_warn_mb` | `125` |  |  | Engine memory footprint (MB) at which the MEM pill turns amber (the engine's soft memory limit). |
 | `web.pulse_min_interval_ms` | `2000` |  |  | How often the engine's vital signs (CPU, memory, requests, errors) are read and pushed. |
 | `web.push_min_ms` | `500` |  |  | Hard floor of the time between pushes and between asking the engine (500 = at most 2 per second). |
+| `web.reject_reason_host` | `host` |  |  | The reason name counted for a request refused by the Host check. |
+| `web.reject_reason_origin` | `origin` |  |  | The reason name counted for a request refused by the Origin / Referer check. |
+| `web.rejected_counter` | `web_request_rejected` |  |  | Counter kind a refused request (bad Host, bad Origin) is counted under in the shared counter journal; the reason is the name. Shows in `status` accounting. |
+| `web.require_token` | `true` |  |  | Whether the page and its API need the per-session token (the `?t=` address and the session cookie). true = the token is required (shipped default). false = no token is made or asked for, `ah-engine web` prints a plain address, and `/`, `/api/*`, `/static/*` and `/pkg/*` work without a cookie; the Host check (web.check_host) and the Origin check (web.check_origin) still apply. Read once when the server starts: `ah-engine config set web.require_token false` (the owner's override; the engine hands the effective value to the server) and restart it. |
 | `web.sse_keepalive_s` | `15` |  |  | Interval of the keep-alive comment on the event stream. |
 | `web.start_poll_ms` | `50` |  |  | Poll interval of that wait. |
 | `web.start_wait_ms` | `8000` |  |  | How long `ah-engine web` waits for a freshly started server to publish its state file. |
@@ -14483,9 +14521,13 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.hint_socket_path` | Self-fix hint when the socket path is too long. Placeholder: {env_dir}. |
 | `msg.hint_state_dir` | Self-fix hint when the state directory is not writable or not private. Placeholders: {state_dir}, {env_dir}. |
 | `msg.impact_no_routing` | Status shown in place of a model-routing saving figure while no routing events are recorded. |
+| `msg.install_defaults_failed` | Shown by hooks/install.sh at SessionStart (JSON notice, and once per host process on stderr) when the installed engine could not load this plugin's defaults (its defaults.error is newer than the plugin's defaults): every hook call is then handed back and passes UNCHECKED. Placeholders: {have} (installed engine version, or unknown), {want} (version the plugin pins). |
 | `msg.install_done` | Printed by `hooks/install.sh --download` when it installed the binaries. Placeholders: {version}, {triple}, {path}. |
+| `msg.install_engine_missing` | Shown by hooks/install.sh at SessionStart (JSON notice, and once per host process on stderr) when the hook client is installed, the engine binary is missing, and a fresh defaults.error exists: the missing engine, not the defaults, is the problem. Placeholders: {have} (installed engine version, or unknown), {want} (version the plugin pins). |
 | `msg.install_failed` | Printed on stderr by `hooks/install.sh --download` when the install did not complete. Placeholder: {why}. |
 | `msg.install_notice` | The one line per session hooks/install.sh prints on stderr while the thin client is not installed (hook calls pass through unchecked). |
+| `msg.install_notice_json_template` | The JSON object hooks/install.sh prints on stdout for a SessionStart notice (the user sees systemMessage; the model gets additionalContext). {text} is the notice text, JSON-escaped by the script. The backslashes are TOML escapes: the script reads the raw line and removes them. |
+| `msg.install_notice_no_client` | Like msg.install_notice, for an engine that is installed without its hook client (the 0.300 bootstrap installed only the engine): hooks/install.sh could not install the client. Placeholder: {installer} (the path of install.sh). |
 | `msg.install_unsupported` | Printed by `ah-hook install --print-target` on a platform without a release build. |
 | `msg.inv_busy_workers` | Invariant violation: more workers are marked busy than there are workers. Placeholder: {workers}. |
 | `msg.inv_queue_pop` | Invariant violation: after a worker took a connection, the queue-depth counter and the queue length differ. Placeholders: {depth}, {len}. |
@@ -14523,7 +14565,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.launcher_st_ver_empty` | Selftest reason: the engine's version check printed nothing. |
 | `msg.launcher_st_ver_exit` | Selftest reason: the engine's version check failed with exit code {code}. |
 | `msg.launcher_st_ver_timeout` | Selftest reason: the engine's version check did not finish in {ms} ms. |
-| `msg.launcher_stale_engine` | Printed once per session on stderr by the thin client when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned). |
+| `msg.launcher_stale_engine` | Printed once per session on stderr by the thin client (and by hooks/install.sh, whose SessionStart call also shows it as the JSON notice) when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned). |
 | `msg.launcher_unreachable_why_down` | The {why} of the engine-unreachable notice when the daemon-down marker is fresh. |
 | `msg.launcher_unreachable_why_handed_back` | The {why} of the engine-unreachable notice when the engine handed the call back. |
 | `msg.launcher_unreachable_why_missing` | The {why} of the engine-unreachable notice when no engine is installed. |
@@ -14576,6 +14618,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_restored` | Event-log detail of a restore. Placeholders: {from}, {kept}. |
 | `msg.log_rollback_request` | Log detail when the crash-loop rule asks for a roll-back. Placeholder: {sha}. |
 | `msg.log_rss` | Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}. |
+| `msg.log_sqlite_alloc_failed` | Event-log detail when SQLite could not be routed through the engine's allocator (it had already started); it stays on the C library's allocator. |
 | `msg.log_stall` | Log detail when the accept loop stalled. |
 | `msg.log_start` | Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}. |
 | `msg.log_stuck` | Log detail when a worker is stuck. Placeholder: {i}. |
@@ -15013,6 +15056,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `stop_channel` | counter | stops | counter, check, model, project | Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime. |
 | `tasks_cache` | counter | lookups | result | Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh). |
 | `tasks_cache_rebuild` | counter | lookups | reason | Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place). |
+| `taskstate_memo` | counter | lookups | result | Task reconstructions asked for by the Stop and prompt checks (`ah.transcript.tasks`): hit (another check already built this state of the file, or is building it), miss (built now) or off (taskstate.memo_entries is 0). |
 | `tel_child_counts` | counter | series | result | Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read). |
 | `tel_dropped` | counter | samples | reason | Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed). |
 | `tel_events` | counter | invocations | k, h, e, o | Telemetry invocations recorded, by kind (k), hook or check (h), hook event (e) and outcome (o) (D78). |
@@ -15026,6 +15070,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
+| `sqlite_alloc_routing` | counter | starts | result | SQLite allocator routing attempts at daemon start (storage.sqlite_use_global_allocator on), by result: routed (SQLite now allocates through the engine's allocator) or failed (SQLite had already started; it stays on the C library's). |
 | `jev_asked_sync` | counter | calls | id | Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration. |
 | `jev_calls` | counter | calls | backend, mode | Jev decisions asked for, by backend (jev, cache or baseline-only) and mode. |
 | `jev_changed` | counter | decisions |  | Decisions in on mode where Jev changed the outcome (always an added block or advisory). |
@@ -15107,6 +15152,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `burn_breaker_bypass` | counter | calls | kind | Tool calls the burn-breaker check let through while the breaker held, by kind (commit: a commit or push, per call, never a lift (PR #472); restore: the restore class; report: a report write; send: a mesh send; tool: an always-allowed tool; inspect: another allowed command; doubt: an error while judging, allowed) (GH #458). |
 | `burn_breaker_paused` | counter | calls | reason | Tool calls the burn-breaker check paused, by reason (burn: the token line; waste: the waste sensor's hard mark) (GH #458). |
 | `burn_pause_withheld` | counter | ticks | reason | Ticks the agent tracker held the hard burn flag but withheld the pause marker, by reason (building: a build call still in flight; soft: a recent soft outcome within burn.soft_hold). The nudge still goes out (GH #458). |
+| `doctor_codex_node_entries` | counter | count |  | Codex hooks files the engine doctor found still running Node-era anti-hall hook scripts. |
+| `doctor_statusline_skipped` | counter | runs |  | Engine doctor runs that skipped the statusline render check because no statusLine running `ah-hook statusline` is configured. |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |

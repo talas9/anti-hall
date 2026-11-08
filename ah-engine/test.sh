@@ -47,10 +47,17 @@ if cargo nextest --version >/dev/null 2>&1; then
     # shellcheck disable=SC2086 # timed_flag is deliberately split into its two words
     cargo nextest run $timed_flag --profile "$profile" -j 1 --no-tests=pass --lib --test it --test script_latency \
       --test telemetry_overhead --test watch_bench -E "$timed" "$@" || rc=1
+    # the task_stop_cost bench is #[ignore]d (it builds a 200 MB transcript): named here, so only this timed pass runs it, and not
+    # under the `ci` profile (the pull-request gate; the nightly tier sets AH_TEST_PROFILE=nightly)
+    # shellcheck disable=SC2086
+    [ "$profile" = ci ] || cargo nextest run $timed_flag --profile "$profile" -j 1 --no-tests=pass --test task_stop_cost --run-ignored only "$@" || rc=1
   else
     cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
     rc=$?
     cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
+    # the task_stop_cost bench is #[ignore]d (it builds a 200 MB transcript): named here, so only this timed pass runs it, and not
+    # under the `ci` profile (the pull-request gate; the nightly tier sets AH_TEST_PROFILE=nightly)
+    [ "$profile" = ci ] || cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass --test task_stop_cost --run-ignored only "$@" || rc=1
   fi
   if [ "$rc" -eq 0 ]; then
     cargo test --release --doc
