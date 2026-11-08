@@ -129,11 +129,18 @@ pub fn base(apex: &Value, dark: bool, height: u64) -> Value {
         },
         "theme": { "mode": if dark { "dark" } else { "light" } },
         "grid": { "borderColor": theme["grid"] },
-        "colors": apex["palette"],
+        "colors": tone(apex, dark, "palette"),
         "tooltip": { "theme": if dark { "dark" } else { "light" } },
         "dataLabels": { "enabled": false },
         "stroke": { "width": 2, "curve": "smooth" },
     })
+}
+
+/// A colour key (`palette`, `ok`, `warn`, `bad`, `info`, `neutral`) for the page's scheme: the `dark`/`light` set's own value when
+/// it names one, else the shared value.
+pub fn tone(apex: &Value, dark: bool, key: &str) -> Value {
+    let own = &apex[if dark { "dark" } else { "light" }][key];
+    if own.is_null() { apex[key].clone() } else { own.clone() }
 }
 
 /// `b` merged into `a` (objects deeply, everything else replaced).

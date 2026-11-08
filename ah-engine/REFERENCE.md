@@ -3291,7 +3291,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.digest_state_file` | `.anti-hall/logs/rule-digest-sessions.log` |  |  | State file, relative to the home directory and under script.write_root (a script write elsewhere is refused), where each session's digest state is appended as a line, so blocks per 100 matching calls can be compared with the digest on and off. |
 | `guard_rules.enum_digest_tier` | `7 entries` |  |  | Which tier the digest lists (context.ruleDigestTier, default essential): essential = the essentials only; skill = essentials, then the other rules that have a line, up to the byte budget. |
 | `guard_rules.enum_summary` | `7 entries` |  |  | When the session summary is shown to the user (ui.sessionSummary, default end): off, or end = once when the session ends. |
-| `guard_rules.exempt` | `47 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry). |
+| `guard_rules.exempt` | `48 items` |  |  | Defaults keys that look like a block text (a key named what, or an inline what table) but are not rows of their own: setup, error-context and diagnostic wording, and the ranked variants of the advisor plan and retry texts (rows advisor.plan and advisor.retry), and the block-tier variant of the runtime Stop block (row silent_nudge.runtime). |
 | `guard_rules.extra_line` | `- {id}: {what}` |  |  | One extra digest line (tier skill, non-essential rules). Placeholders: {id}, {what}. |
 | `guard_rules.manifest_files` | `.claude-plugin/plugin.json, .codex-plugin/plugin.json` |  |  | The plugin manifests, relative to the plugin root, the banner reads the version from (first one that has it). |
 | `guard_rules.msg_compose` | `3 entries` |  |  | How a rules.json rule composes its message from the defaults text, per rule action (deny, warn, context): a warning must not say BLOCKED. Placeholders: {what}, {why}, {instead}. |
@@ -4369,9 +4369,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
 | `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
 | `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
-| `silent_nudge.msg_rt_instead` | `check its output now, then stop it or re-task it with a tighter scope; this b...` |  |  | What to do about an escalated agent. |
+| `silent_nudge.msg_rt_block_instead` | `stop it, or extend it with a reason: agents nudge <child> other "<reason>".` |  |  | What to do about a block-tier agent (kept within the visible action length). |
+| `silent_nudge.msg_rt_block_what` | `{names}{more} past the runtime block step: Stop stays blocked until you act.` |  |  | What the block-tier runtime Stop block says; {names} the agents with their runtime, {more} the remainder. |
+| `silent_nudge.msg_rt_instead` | `stop it, or extend it with a stated reason (agents nudge <child> other "<reas...` |  |  | What to do about an escalated agent. |
 | `silent_nudge.msg_rt_item` | `'{name}' (running {dur})` |  |  | One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes). |
-| `silent_nudge.msg_rt_what` | `{names}{more} still running after repeated runtime nudges, not finished and n...` |  |  | What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder. |
+| `silent_nudge.msg_rt_what` | `{names}{more} still running past the runtime block step, not finished and not...` |  |  | What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder. |
 | `silent_nudge.msg_what` | `{count} of your own {noun} have gone silent past the {min}m threshold: {shown...` |  |  | Headline of the nudge. |
 | `silent_nudge.msg_why` | `Advisory only; nothing was auto-killed.` |  |  | Why line of the nudge. |
 | `silent_nudge.noun_agent` | `background subagent(s)` |  |  | What the headline calls silent agents. |
@@ -4381,6 +4383,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.pronoun_many` | `them` |  |  | The pronoun for several silent agents. |
 | `silent_nudge.pronoun_one` | `it` |  |  | The pronoun for one silent agent. |
 | `silent_nudge.resume_mark` | `@r` |  |  | Marker between an agent id or snapshot and the resume time. |
+| `silent_nudge.rt_block_cap` | `25` |  |  | How many times per session the block-tier runtime step (agent_nudge.runtime block_tier) may block the coordinator's Stop (0 = never block). Counted apart from rt_stop_cap, so a repeated-reminder escalation cannot use it up. It is a safety valve: the block lifts at once when the agent is stopped or extended, so a Stop is not held for good if neither works. |
+| `silent_nudge.rt_block_state_file` | `runtime-block-stops.json` |  |  | Per-session count of the block-tier runtime Stop blocks given, under the engine state directory. |
 | `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
 | `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
 | `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |
@@ -6308,7 +6312,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `422 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `423 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8756,7 +8760,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `429 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `430 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -10123,7 +10127,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `agent_nudge.answers` | `6 entries` |  |  | The answer words of the nudge verb: stop (the parent stops the child; verified), msg (it redirects or unblocks it; acted when new output follows), snooze (it knows, it is fine, remind later; minutes capped), other (any other reason, required; handled as a snooze with the default time). prose: what a reply in free words is recorded as before the nudgeReply judge classifies it. acted: the parent spawned a replacement for the child (found from its tool calls, counted like a stop). |
+| `agent_nudge.answers` | `7 entries` |  |  | The answer words of the nudge verb: wrong (the runtime step was reported wrong: counted in agent_runtime_step_reported_wrong, no other effect), stop (the parent stops the child; verified), msg (it redirects or unblocks it; acted when new output follows), snooze (it knows, it is fine, remind later; minutes capped), other (any other reason, required; handled as a snooze with the default time). prose: what a reply in free words is recorded as before the nudgeReply judge classifies it. acted: the parent spawned a replacement for the child (found from its tool calls, counted like a stop). |
 | `agent_nudge.cmd` | `"$HOME/.anti-hall/ah-engine/bin/ah-engine" agents nudge` |  |  | The command a nudge tells the parent to answer with (works the same from Claude Code and Codex shells). |
 | `agent_nudge.codex_tools` | `8 entries` |  |  | Codex tool names that count for the turn matching, each mapped to the tool word of agent_nudge.match it behaves as (shell commands are checked for the stop and send verbs; send_message to an agent is a message; close_agent a stop; spawn_agent a spawn). A Codex tool not listed is not kept. |
 | `agent_nudge.codex_turn` | `14 entries` |  |  | Field and value names of the Codex rollout lines read for the turns of a watched Codex parent (the host's own format): a line of type item holds a payload; a payload of type message with the assistant role has content items of type text_item carrying text; a payload of type call has a name and a JSON string args. |
@@ -10149,7 +10153,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_nudge.reason_plausible` | `plausible` |  |  | The nudgeReason label that lets the requested snooze stand. |
 | `agent_nudge.ref_alphabet` | `abcdefghjkmnpqrstuvwxyz23456789` |  |  | The characters a nudge's ref token is made of (lower case and digits, no look-alikes). |
 | `agent_nudge.reply_integration` | `nudgeReply` |  |  | The Jev evidence integration that classifies a prose reply into an answer word. |
+| `agent_nudge.runtime` | `4 entries` |  |  | Escalating runtime steps (GH #687): the longer an agent runs and the more it spends, the more serious the nudge to its parent gets; an agent is never killed by the engine. Fires for agents WITH outcomes too (the unhealthy-signal nudges above keep their own rule). budget_tokens: the per-agent token budget a step's budget_pct is a percentage of. block_tier: the tier word of a step that blocks the coordinator's next Stop (published to agent_nudge.runtime_escalation.file). trigger: the nudge trigger word of these nudges. Each step (in order) fires once either its min (minutes running) or its budget_pct (percent of budget_tokens spent) is reached, whichever comes first: name, min, budget_pct, tier (advise\|order\|block), refire_min (minutes between repeats of the same step while unanswered), text (placeholders {kind}, {name}, {dur}, {tokens}, {outcome_age}, {child}, {cmd}, {answer}). Extending (snooze or other with a reason) or snoozing never resets: it moves the agent on to the next step, which still fires on its own thresholds; at the last step the extension holds only for the snoozed minutes. |
 | `agent_nudge.runtime_escalation` | `2 entries` |  |  | Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory. |
+| `agent_nudge.runtime_setting` | `6 entries` |  |  | Escalating runtime steps switch (GH #687). Where the switch of the escalating runtime steps is read from (agents.nudgeRuntime, default on): on, a running child that reaches a step of agent_nudge.runtime (minutes or percent of the per-agent token budget) is nudged with that step's wording, the last step blocking the coordinator's next Stop until it stops or extends the child; off, only the unhealthy-signal nudges run. |
 | `agent_nudge.scope_setting` | `6 entries` |  |  | Where the switch of the nudge and wake scope rules is read from (agents.nudgeScope, default on): on, an answered nudge is never queued again by the wake fallback, an agentHealth verdict of done holds the nudge, and heartbeat and lock-holder wake rows go only to the session that owns them (agent_tracker.wake_scope); off, the earlier behaviour. |
 | `agent_nudge.setting` | `6 entries` |  |  | Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before. |
 | `agent_nudge.snooze_setting` | `6 entries` |  |  | Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge. |
@@ -14426,6 +14432,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.step_max_chars` | `240` |  |  | Longest 'doing now' text sent per agent, in characters. |
 | `web.strip_pills` | `cpu, mem, err` |  |  | The figures in the top strip, left to right: cpu, mem, req (requests since start), err. req is a lifetime counter without a threshold, so it is off by default. |
 | `web.switches` | `6 entries` |  |  | Optional page parts. graph_tab: the Graph tab of the agents view (an empty canvas for now). search: the header search box (not wired yet). compose: the Send box of the selected-agent panel (not wired yet). swap_account: the Switch account card of Accounts (not wired yet). topology_toggle: Health can switch to the Topology drawing. tier_switch: the Auto/Full/Lite choice in the sidebar foot. |
+| `web.theme` | `dark` |  |  | The colour scheme the page starts in: system (follow the computer's light or dark setting), light or dark. The header switch cycles system, light and dark, and the browser remembers the choice. |
 | `web.token_bytes` | `16` |  |  | Random bytes in the per-session token (shown as twice as many hex digits). |
 | `web.topo_action_max_chars` | `4000` |  |  | Longest output text of a Topology action that is returned. |
 | `web.topo_actions` | `7 items` |  |  | The Topology node menus, in order. kind: client, engine, subsystem or store. local: shows the figures the page already has. needs_viewer: only for stores in web.topo_viewers. args: the engine arguments; {pid} is the engine's pid, {viewer} the store's viewer id, {id} the node's id. |
@@ -14438,7 +14445,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
 | `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
 | `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
-| `web.ui` | `281 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `282 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 
@@ -15364,6 +15371,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `agent_nudge_sent` | counter | nudges | trigger | Nudges opened and delivered (or escalated to the owner when no parent is live), counted only when a delivery succeeded, by trigger (hung, idle, loop, waste). |
 | `agent_nudge_suppressed` | counter | nudges | reason | Nudges held back by the scope rules (agents.nudgeScope), by reason: judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again). |
 | `agent_nudge_to_owner` | counter | notices | where | Notices sent to the owner's channel (escalations, acted-on notices, dead-child notices with no live parent), by where: session (the newest live armed main session of the child's project) or file (the owner notices file, when no such session exists). |
+| `agent_runtime_step_acted` | counter | answers | step, action | Parent answers to a runtime step, by step name and action: stop, extend (snooze or other, the reason recorded) or msg. |
+| `agent_runtime_step_fired` | counter | nudges | step | Runtime escalation steps fired (the first send of a step, by step name). |
+| `agent_runtime_step_reported_wrong` | counter | reports | step | Runtime steps a parent reported as wrong (`agents nudge <child> wrong "<why>"`), by step name. |
 | `agent_wake_dropped` | counter | rows | reason | Wake rows dropped because no followed session owns them (agents.nudgeScope on), by reason: foreign_agent (a heartbeat whose writer is no followed session), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). |
 | `runtime_escalations` | counter | escalations |  | Children whose repeated runtime nudges reached agent_nudge.runtime_escalation.after_reminders without the child finishing or being stopped; counted once per nudge. |
 | `dsx_actions` | counter | actions | feature, outcome | Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed). |
