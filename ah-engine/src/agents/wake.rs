@@ -1,4 +1,11 @@
-//! `ah-engine agents wake-watch [--auto]`: the wake Monitor of a session. The host runs it as a Monitor (armed at SessionStart by the
+//! `ah-engine agents wake-watch [--auto]`: the ONE wake Monitor of a session (the agent wake rows and, in a DevSwarm session, the
+//! mesh wake rows; `devswarm wake-watch` is a deprecated alias of it). Below, the description of the agent half.
+//!
+//! The merged watcher: [`run_merged`] runs the agent half ([`run`]) on a thread while the calling thread runs the DevSwarm half
+//! ([`crate::wakew::run`]). Each half keeps its own switch (`agents.wakeWatch`, `devswarm.wakeWatch`) and its own lock, so a half that
+//! is off or not applicable prints nothing and the other carries on; the process ends when both halves have ended.
+//!
+//! The wake Monitor of a session. The host runs it as a Monitor (armed at SessionStart by the
 //! plugin's monitor entry): every line it prints on stdout is an event delivered to the session, so a session that went idle is woken
 //! when the tracker queues a wake row for it (an agent idle with an open task, a looping or burning agent, a watched process that
 //! ended). It only stats and reads one file of its own session while quiet: no tokens, no commands.
@@ -106,17 +113,44 @@ fn drain(feed: &Path, offset: u64) -> (Vec<(Value, String)>, u64) {
 fn record(env: &Env, sid: &str, v: &Value, now: u64) {
     let row = serde_json::json!({"id": v["id"], "key": super::sinks::key_of(sid), "signal": v["signal"], "agent": v["agent"], "ts": now, "channel": super::chan("wake")});
     crate::discard::harmless(super::sinks::append(&env.dir().join(pth("delivered")), &row)); // keep: a lost row only leaves delivered_at at 0
+    crate::metrics::bump_by_shared("merged_watch_rows", &[("source", "agent")], 1);
 }
 
-/// Run the watcher until the process that started it is gone. Returns the exit code.
-pub(crate) fn run(p: &Parsed) -> i32 {
-    let auto = p.rest.iter().any(|a| a == defaults::text("agent_tracker.wake_flag_auto"));
-    let Some(env) = Env::current() else { return 0 };
+/// The merged watcher (`agents wake-watch`, and `devswarm wake-watch` as a deprecated alias): the agent half on a thread, the DevSwarm
+/// half on this one. `alias`: invoked as `devswarm wake-watch`, which says on stderr that the verb is deprecated and keeps that verb's
+/// own refusal lines for a hand start (no `--auto`). Returns the exit code: the DevSwarm half's when the agent half never armed,
+/// else 0 (a half that is switched off or not applicable is not a failure).
+pub(crate) fn run_merged(p: &Parsed, alias: bool) -> i32 {
+    let flag = defaults::text("agent_tracker.wake_flag_auto");
+    let auto = p.rest.iter().any(|a| a == flag);
+    if alias {
+        diag(defaults::text("msg.wake_alias_deprecated"));
+    }
+    let mut dev_rest: Vec<String> = p.rest.iter().skip(1).cloned().collect();
+    // the DevSwarm half is the normal "not a DevSwarm session" case for a plain session: its refusals stay quiet unless a hand start
+    // through the old verb asked for them
+    if !(alias && !auto) && !dev_rest.iter().any(|a| a == flag) {
+        dev_rest.push(flag.to_string());
+    }
+    let quiet = auto || alias; // the old verb never printed the agent half's refusals
+    let agent = std::thread::spawn(move || run(quiet));
+    let dev_code = crate::wakew::run(&dev_rest);
+    // `None`: the agent half never armed (switched off, no session, held elsewhere), so the exit code follows the DevSwarm half
+    if agent.join().ok().flatten().is_some() { 0 } else { dev_code }
+}
+
+fn diag(line: &str) {
+    crate::discard::harmless(std::io::stderr().lock().write_all(line.as_bytes())); // keep: a closed stderr must not stop the watcher
+}
+
+/// Run the agent half until the process that started it is gone. Returns `Some(0)`, or `None` when it never armed.
+pub(crate) fn run(auto: bool) -> Option<i32> {
+    let env = Env::current()?;
     let refuse = |why: &str| {
         if !auto {
             emit(&defaults::render("msg.agent_wake_refused", &[("reason", &why)]));
         }
-        0
+        None
     };
     if !env.switch("agent_tracker.setting") || !env.switch("agent_tracker.wake_setting") {
         return refuse(defaults::text("msg.agent_wake_reason_off"));
@@ -134,7 +168,7 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     let poll = Duration::from_millis(setting_num("agent_tracker.wake_poll_ms"));
     crate::web::actions::register(&format!("{}-{}", defaults::text("act.watcher_name"), super::sinks::key_of(&sid)), defaults::text("act.watcher_kind"), &[]);
     pump(&env, &sid, poll, &mut |l| emit(l), &|| parent_gone(start_ppid));
-    0
+    Some(0)
 }
 
 /// The loop of the watcher: renew the stamp, print each new row of the session's feed once, stop when `stop` says so. Rows from before

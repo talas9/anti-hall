@@ -96,6 +96,133 @@ fn spawn(s: &Scratch, auto: bool) -> Child {
     c.spawn().unwrap()
 }
 
+/// A watcher started through `args` (the merged verb or the old alias) with extra environment, stderr piped when asked for.
+fn spawn_with(s: &Scratch, args: &[&str], envs: &[(&str, &str)], stderr: bool) -> Child {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(args)
+        .env_clear()
+        .env("PATH", &s.nopath)
+        .env("HOME", &s.home)
+        .env("AH_ENGINE_PLUGIN_ROOT", &s.own_root)
+        .env("ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS", "250")
+        .env("DEVSWARM_SOURCE_BRANCH", "main")
+        .env("DEVSWARM_BUILDER_ID", ID)
+        .env("ANTIHALL_SESSION_ID", "sessM")
+        .env("ANTIHALL_AGENT_WAKE_COALESCE_SECONDS", "0")
+        .current_dir(&s.cwd)
+        .stdout(Stdio::piped())
+        .stderr(if stderr { Stdio::piped() } else { Stdio::null() });
+    for (k, v) in envs {
+        c.env(k, v);
+    }
+    c.spawn().unwrap()
+}
+
+fn feed(s: &Scratch) -> PathBuf {
+    s.home.join(".anti-hall/agent-tracker/wake/sessM.ndjson")
+}
+
+fn armed_stamp(s: &Scratch) -> PathBuf {
+    s.home.join(".anti-hall/agent-tracker/wake/sessM.armed")
+}
+
+fn wait_file(p: &Path, secs: u64) -> bool {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        if p.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn append_row(s: &Scratch) {
+    use std::io::Write;
+    std::fs::create_dir_all(feed(s).parent().unwrap()).unwrap();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(feed(s)).unwrap();
+    writeln!(f, "{{\"id\":\"r1\",\"ts\":1,\"signal\":\"hung\",\"agent\":\"a1\",\"text\":\"agent a1 is stuck\"}}").unwrap();
+}
+
+fn reap(c: &mut Child) {
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+/// One `agents wake-watch --auto` process streams BOTH sources of a DevSwarm session: the agent tracker's wake rows and the mesh mail,
+/// from one process with no child of any kind.
+#[test]
+fn the_merged_watcher_streams_agent_rows_and_mesh_mail_from_one_process() {
+    let s = scratch("merged", &Setup { own: "9.9.9", live_newer: None, other_newer: None, enabled: Some(LIVE_ON) });
+    let mut c = spawn_with(&s, &["agents", "wake-watch", "--auto"], &[], false);
+    let rx = lines(&mut c);
+    let mut seen = Vec::new();
+    assert!(wait_for(&rx, "armed: watching child w1", 20, &mut seen), "{seen:?}");
+    assert!(wait_file(&armed_stamp(&s), 20), "the agent half armed too");
+    append_row(&s);
+    assert!(wait_for(&rx, "agent a1 is stuck", 20, &mut seen), "no agent row: {seen:?}");
+    std::fs::write(s.home.join(format!(".anti-hall/devswarm/inbox/{ID}.ndjson")), "{\"m\":1}\n").unwrap();
+    assert!(wait_for(&rx, "new mesh mail for child w1", 20, &mut seen), "no mesh line: {seen:?}");
+    assert_eq!(children_of(c.id()), "", "one process, no child");
+    reap(&mut c);
+    std::fs::remove_dir_all(&s.root).ok();
+}
+
+/// devswarm.wakeWatch off: the merged watcher prints no mesh line at all, and the agent rows still come.
+#[test]
+fn with_devswarm_wake_watch_off_the_merged_watcher_emits_no_mesh_rows_and_keeps_the_agent_rows() {
+    let s = scratch("merged-dsoff", &Setup { own: "9.9.9", live_newer: None, other_newer: None, enabled: Some(LIVE_ON) });
+    let mut c = spawn_with(&s, &["agents", "wake-watch", "--auto"], &[("CLAUDE_PLUGIN_OPTION_DEVSWARM_WAKE_WATCH", "false")], false);
+    let rx = lines(&mut c);
+    let mut seen = Vec::new();
+    assert!(wait_file(&armed_stamp(&s), 20), "the agent half armed");
+    append_row(&s);
+    assert!(wait_for(&rx, "agent a1 is stuck", 20, &mut seen), "no agent row: {seen:?}");
+    std::fs::write(s.home.join(format!(".anti-hall/devswarm/inbox/{ID}.ndjson")), "{\"m\":1}\n").unwrap();
+    assert!(!wait_for(&rx, "mesh", 2, &mut seen), "devswarm off prints no mesh row: {seen:?}");
+    assert!(!seen.iter().any(|l| l.contains("armed: watching")), "{seen:?}");
+    reap(&mut c);
+    std::fs::remove_dir_all(&s.root).ok();
+}
+
+/// agents.wakeWatch off: no agent half (no stamp, no agent row), the mesh half still wakes.
+#[test]
+fn with_the_agent_switch_off_the_merged_watcher_still_wakes_on_mesh_mail() {
+    let s = scratch("merged-agoff", &Setup { own: "9.9.9", live_newer: None, other_newer: None, enabled: Some(LIVE_ON) });
+    let mut c = spawn_with(&s, &["agents", "wake-watch", "--auto"], &[("ANTIHALL_AGENT_WAKE_WATCH", "false")], false);
+    let rx = lines(&mut c);
+    let mut seen = Vec::new();
+    assert!(wait_for(&rx, "armed: watching child w1", 20, &mut seen), "{seen:?}");
+    append_row(&s);
+    std::fs::write(s.home.join(format!(".anti-hall/devswarm/inbox/{ID}.ndjson")), "{\"m\":1}\n").unwrap();
+    assert!(wait_for(&rx, "new mesh mail for child w1", 20, &mut seen), "{seen:?}");
+    assert!(!seen.iter().any(|l| l.contains("agent a1 is stuck")) && !armed_stamp(&s).exists(), "{seen:?}");
+    reap(&mut c);
+    std::fs::remove_dir_all(&s.root).ok();
+}
+
+/// The old verb is an alias of the merged watcher: it works, says on STDERR that it is deprecated (a stdout line would be delivered to
+/// the session as an event), and also carries the agent rows now.
+#[test]
+fn the_old_devswarm_verb_is_a_deprecated_alias_of_the_merged_watcher() {
+    use std::io::Read;
+    let s = scratch("merged-alias", &Setup { own: "9.9.9", live_newer: None, other_newer: None, enabled: Some(LIVE_ON) });
+    let mut c = spawn_with(&s, &["devswarm", "wake-watch", "--auto"], &[], true);
+    let mut err = c.stderr.take().unwrap();
+    let rx = lines(&mut c);
+    let mut seen = Vec::new();
+    assert!(wait_for(&rx, "armed: watching child w1", 20, &mut seen), "{seen:?}");
+    assert!(wait_file(&armed_stamp(&s), 20), "the alias runs the agent half too");
+    append_row(&s);
+    assert!(wait_for(&rx, "agent a1 is stuck", 20, &mut seen), "{seen:?}");
+    assert!(!seen.iter().any(|l| l.contains("deprecated")), "the note never goes to stdout: {seen:?}");
+    reap(&mut c);
+    let mut text = String::new();
+    err.read_to_string(&mut text).unwrap();
+    assert!(text.contains("`devswarm wake-watch` is deprecated") && text.contains("agents wake-watch"), "{text}");
+    std::fs::remove_dir_all(&s.root).ok();
+}
+
 /// The stdout lines of a child, delivered as they print.
 fn lines(child: &mut Child) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();

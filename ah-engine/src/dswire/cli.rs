@@ -89,7 +89,7 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
         return compat_run(p);
     }
     if verb == defaults::text("wake_watch.verb") {
-        return crate::wakew::run(&p.rest[1..]);
+        return crate::agents::wake::run_merged(p, true);
     }
     if defaults::list("devswarm_wire.not_ported_verbs").contains(&verb.as_str()) {
         return fail(p, defaults::render("devswarm_wire.msg_not_ported", &[("verb", &verb)]), defaults::num("devswarm_wire.not_ported_exit") as i32);

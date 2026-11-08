@@ -223,7 +223,7 @@ Shared libraries (historical, Node era; no Node hook ships and each is now an en
 | ah-engine migrate | Legacy DevSwarm state → store migration. |
 | ah-engine devswarm recover | The only DevSwarm path that kills: on-demand, one named workspace. |
 | ah-engine statusline | The two-line statusline renderer (line 1 rich, line 2 phase bar; also persists the context window for auto-handover); `ah-engine install-statusline` / `ah-engine uninstall-statusline` manage it. |
-| monitors/monitors.json | Registers `ah-engine devswarm wake-watch` (Monitor-based wake; off: `devswarm.wakeWatch`). |
+| monitors/monitors.json | Registers the one merged `ah-engine agents wake-watch` Monitor (agent wake rows and DevSwarm mesh rows; off: `agents.wakeWatch` / `devswarm.wakeWatch`; `devswarm wake-watch` is a deprecated alias). |
 
 ## Settings (user-facing; `/anti-hall:settings`, `ah-engine settings show --all` for advanced)
 

@@ -453,7 +453,15 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
     let subs = st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64;
     let shells = a.bg_bash.iter().filter(|t| now.saturating_sub(**t) <= lim("bg_bash_ms")).count() as u64;
     let bg = subs + shells;
-    (bg >= lim("monitor_min_bg") && now > a.armed_until).then(|| {
+    if bg < lim("monitor_min_bg") && now > a.armed_until {
+        // #614: nothing to watch (no live subagent, no running background shell), so nothing is lost without a watcher and the line
+        // would only ask for an action the session has no use for
+        if env.act {
+            crate::metrics::bump("monitor_nag_suppressed", &[("reason", "no_live_child")]);
+        }
+        return None;
+    }
+    (now > a.armed_until).then(|| {
         let armed = if a.armed_at == 0 {
             defaults::render("msg.agent_armed_never", &[])
         } else {

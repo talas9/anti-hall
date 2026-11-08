@@ -911,10 +911,21 @@ fn an_armed_monitor_keeps_the_reminder_quiet() {
 
 // ---- wake-watch auto re-arm (T-0e) --------------------------------------------------------------------------
 
-fn idle_main(tag: &str, n: u64) -> PathBuf {
+/// A main session with no child and no background task at all.
+fn idle_main_alone(tag: &str, n: u64) -> PathBuf {
     let h = home(tag);
     write(&sess(&h, "s1"), &[prompt(n - 5 * MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "done"}]), Some("end_turn"))]);
     register(&h, std::process::id(), "s1", "busy", n);
+    h
+}
+
+/// A main session with one running subagent: something for a wake-watch to watch.
+fn idle_main(tag: &str, n: u64) -> PathBuf {
+    let h = idle_main_alone(tag, n);
+    write(
+        &h.join(".claude/projects/p/s1/subagents/agent-bg1.jsonl"),
+        &[prompt(n - 5 * MIN, "/w"), asst(n - MIN, "b1", 5, 5, json!([{"type": "text", "text": "running"}]), None)],
+    );
     h
 }
 
@@ -923,7 +934,7 @@ fn arm_reminders(h: &Path) -> Vec<Value> {
 }
 
 #[test]
-fn a_dead_watcher_gets_one_exact_rearm_line_even_with_no_background_work_and_is_then_rate_limited() {
+fn a_dead_watcher_with_a_live_child_gets_one_exact_rearm_line_and_is_then_rate_limited() {
     let n = now0();
     let h = idle_main("rearm-dead", n);
     let mut st = State::default();
@@ -936,6 +947,26 @@ fn a_dead_watcher_gets_one_exact_rearm_line_even_with_no_background_work_and_is_
     take_queue(&h, "s1");
     ticks_unarmed(&h, &mut st, &[n + 30 * MIN]);
     assert_eq!(arm_reminders(&h).len(), 2);
+}
+
+/// #614: the re-arm line asked for an action the session had no use for: with no live child and no background task there is nothing to
+/// wake it for. Fails on the old code (monitor_min_bg = 0 raised the flag for any live main session).
+#[test]
+fn a_dead_watcher_with_no_live_child_is_not_asked_to_rearm_and_the_suppression_is_counted() {
+    let n = now0();
+    let h = idle_main_alone("rearm-nochild", n);
+    let mut st = State::default();
+    crate::metrics::reset_this_thread();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 3 * MIN]);
+    assert!(arm_reminders(&h).is_empty() && !agent(&st, "s1").flags.contains_key("monitor_unarmed"), "{:?}", queue(&h, "s1"));
+    assert!(crate::metrics::bumped_on_this_thread("monitor_nag_suppressed", &[("reason", "no_live_child")]) >= 1);
+    // the moment a child runs, the same dead watcher is asked for
+    write(
+        &h.join(".claude/projects/p/s1/subagents/agent-bg1.jsonl"),
+        &[prompt(n + 4 * MIN, "/w"), asst(n + 5 * MIN - 1000, "b1", 5, 5, json!([{"type": "text", "text": "running"}]), None)],
+    );
+    ticks_unarmed(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN, n + 7 * MIN]);
+    assert_eq!(arm_reminders(&h).len(), 1, "{:?}", queue(&h, "s1"));
 }
 
 #[test]
@@ -1104,12 +1135,12 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
             && !rows[0]["text"].as_str().unwrap().contains("node "),
         "{rows:?}"
     );
-    assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
+    assert!(rows[0]["text"].as_str().unwrap().contains("agents wake-watch --auto"), "{rows:?}");
     // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
     // delivery that reaches it; it is a session, and its hook delivers the queue
     let q = queue(&h, "sessW");
     assert_eq!(q.len(), 1, "{q:?}");
-    assert!(q[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto") && !q[0]["text"].as_str().unwrap().contains("node "), "{q:?}");
+    assert!(q[0]["text"].as_str().unwrap().contains("agents wake-watch --auto") && !q[0]["text"].as_str().unwrap().contains("node "), "{q:?}");
 }
 
 #[test]
