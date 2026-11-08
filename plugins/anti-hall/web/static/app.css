@@ -3,18 +3,18 @@
    (data-theme overrides the system setting). Layout answers its own container's width (container queries). */
 :root {
   color-scheme: dark light;
-  --bg:      light-dark(#fafafa, #141415);
-  --deep:    light-dark(#f4f4f5, #0f0f10);
-  --panel:   light-dark(#ffffff, #19191b);
-  --card:    light-dark(#ffffff, #19191b);
-  --raised:  light-dark(#f4f4f5, #232325);
-  --line:    light-dark(rgb(23 23 23 / 8%), rgb(237 237 237 / 8%));
-  --line-2:  light-dark(rgb(23 23 23 / 14%), rgb(237 237 237 / 14%));
-  --text:    light-dark(#171717, #ededed);
-  --text-2:  light-dark(#525252, #a1a1a6);
-  --text-3:  light-dark(#737373, #85858b);
-  --amber:   light-dark(#9a5b00, #f0b04a);
-  --down:    light-dark(#dc2626, #e5484d);
+  --bg:      light-dark(#f3f4f7, #141415);
+  --deep:    light-dark(#eceef2, #0f0f10);
+  --panel:   light-dark(#fbfbfd, #19191b);
+  --card:    light-dark(#fbfbfd, #19191b);
+  --raised:  light-dark(#e6e8ee, #232325);
+  --line:    light-dark(rgb(25 27 34 / 8%), rgb(237 237 237 / 8%));
+  --line-2:  light-dark(rgb(25 27 34 / 14%), rgb(237 237 237 / 14%));
+  --text:    light-dark(#191b22, #ededed);
+  --text-2:  light-dark(#464b57, #a1a1a6);
+  --text-3:  light-dark(#5f6572, #85858b);
+  --amber:   light-dark(#8a5200, #f0b04a);
+  --down:    light-dark(#c0201f, #e5484d);
   --font-ui:   Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -29,7 +29,11 @@
   --green: var(--text-2);
   --red: var(--amber);
   --idle: var(--text-3);
-  --on-accent: light-dark(#ffffff, #141415);
+  --on-accent: light-dark(#fbfbfd, #141415);
+  --scrim:   light-dark(rgb(25 27 34 / 35%), rgb(0 0 0 / 45%));
+  --shadow-pop: light-dark(0 8px 24px rgb(25 27 34 / 10%), 0 8px 24px rgb(0 0 0 / 40%));
+  --shadow-float: light-dark(0 8px 24px rgb(25 27 34 / 10%), 0 8px 24px rgb(0 0 0 / 20%));
+  --boot-error: light-dark(#c0201f, #ff8888);
   --bg-glow: var(--bg);
 
   /* the graph component's tokens, from the same ramp */
@@ -83,7 +87,7 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 .nav-item .glyph { flex: 0 0 16px; width: 16px; height: 16px; display: block; color: var(--text-3); }
 .nav-item .glyph svg { display: block; }
 .nav-item:hover { color: var(--text); background: color-mix(in oklch, var(--text) 5%, transparent); }
-.nav-item.on { color: var(--text); background: var(--raised); box-shadow: inset 0 1px 0 light-dark(transparent, rgb(255 255 255 / 8%)); }
+.nav-item.on { color: var(--text); background: var(--raised); box-shadow: inset 0 1px 0 light-dark(rgb(255 255 255 / 70%), rgb(255 255 255 / 8%)); }
 .nav-item.on .glyph { color: var(--text); }
 .nav-foot { display: flex; flex-direction: column; gap: 8px; }
 .theme { min-height: 32px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 8px; background: transparent; color: var(--text-2); cursor: pointer; font-size: 13px; text-align: left; transition: color 150ms var(--ease), background-color 150ms var(--ease); }
@@ -117,7 +121,7 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 .tree-cols { padding: 0 0 8px; font: 400 12px/16px var(--font-ui); color: var(--text-3); }
 .row { flex: 1 1 auto; min-width: 0; min-height: 36px; padding: 4px 12px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; text-align: left; transition: background-color 150ms var(--ease); }
 .row:hover { background: color-mix(in oklch, var(--text) 4%, transparent); }
-.row.sel { background: var(--raised); box-shadow: inset 0 1px 0 light-dark(transparent, rgb(255 255 255 / 8%)); }
+.row.sel { background: var(--raised); box-shadow: inset 0 1px 0 light-dark(rgb(255 255 255 / 70%), rgb(255 255 255 / 8%)); }
 .indent { flex: 0 0 auto; }
 .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
 .c-name { flex: 1 1 0; min-width: 0; font-weight: 500; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -176,7 +180,7 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 .row-wrap { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .kebab { flex: 0 0 auto; width: 32px; min-height: 32px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-3); cursor: pointer; font-size: 16px; line-height: 1; transition: color 150ms var(--ease), background-color 150ms var(--ease); }
 .kebab:hover, .kebab:focus-visible { background: var(--raised); color: var(--text); border-color: var(--line-2); }
-.menu { margin: 4px 0 0; padding: 4px; min-width: 192px; inset: auto; border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px light-dark(rgb(0 0 0 / 6%), rgb(0 0 0 / 40%)); position-area: block-end span-inline-start; position-try-fallbacks: flip-block, flip-inline; }
+.menu { margin: 4px 0 0; padding: 4px; min-width: 192px; inset: auto; border: 1px solid var(--line-2); border-radius: 12px; background: var(--panel); color: var(--text); box-shadow: var(--shadow-pop); position-area: block-end span-inline-start; position-try-fallbacks: flip-block, flip-inline; }
 .menu:popover-open { display: flex; flex-direction: column; gap: 2px; }
 @supports not (position-area: block-end) { .menu { inset: 20% auto auto 50%; } }
 .menu-item { min-height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; font-size: 13px; }
@@ -206,7 +210,7 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 .feed-age { flex: 0 0 auto; color: var(--text-3); font: 400 12px/16px var(--font-mono); }
 
 /* confirmation */
-.scrim { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgb(0 0 0 / 45%); z-index: 10; }
+.scrim { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--scrim); z-index: 10; }
 .confirm { width: min(92vw, 380px); padding: 24px; border-radius: 16px; border: 1px solid var(--line-2); background: var(--panel); display: flex; flex-direction: column; gap: 12px; }
 .confirm p { margin: 0; color: var(--text-2); }
 
