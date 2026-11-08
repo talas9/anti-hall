@@ -53,6 +53,10 @@ unit = "bytes"
 doc = "Global object of the shared context that holds each loaded check's entry function, by check name."
 value = "__ahCheckEntries"
 
+[script.msg_no_evaluator]
+doc = "Reason logged when a shared include (script.shared_includes) does not evaluate to its evaluator function. Placeholder: {module}."
+value = "{module}: the shared include defines no evaluator"
+
 [script.msg_no_entry]
 doc = "Reason logged (then the failure policy applies) when a check's script defines no entry function. Placeholders: {check}, {entry}."
 value = "{check}: the script defines no {entry} function"

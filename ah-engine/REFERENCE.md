@@ -8332,6 +8332,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.msg_guard_down` | `anti-hall: the {check} guard could not run ({why}), so this call went through...` |  |  | The notice the user sees, once per session and check, when a check that failed open let a call through unchecked. Placeholders: {check}, {why}. |
 | `script.msg_invalid_pattern` | `invalid pattern {src}` |  |  | Error a script sees when it hands `ah.re.*` a pattern that does not compile. |
 | `script.msg_no_entry` | `{check}: the script defines no {entry} function` |  |  | Reason logged (then the failure policy applies) when a check's script defines no entry function. Placeholders: {check}, {entry}. |
+| `script.msg_no_evaluator` | `{module}: the shared include defines no evaluator` |  |  | Reason logged when a shared include (script.shared_includes) does not evaluate to its evaluator function. Placeholder: {module}. |
 | `script.msg_no_request` | `no request state` |  |  | Error a host function raises when it is called outside a check call (no request state). |
 | `script.msg_no_script` | `no script file` |  |  | Reason logged (then the failure policy applies) when a check whose logic is a script has no script file. |
 | `script.msg_not_number` | `{key} is not a number` |  |  | Error a script sees when it asks `ah.cfgNum` for a key whose value is not a number. |

@@ -558,7 +558,7 @@ fn ensure_module<'js>(
     let text = std::fs::read_to_string(&file.0).map_err(|e| format!("{}: {e}", file.0.display()))?;
     let scope = defaults::render("script.module_scope", &[("source", &text)]);
     let f: JsValue = c.eval(scope).catch(c).map_err(|e| format!("{module}: {e}"))?;
-    let f = f.into_function().ok_or_else(|| format!("{module}: no evaluator"))?;
+    let f = f.into_function().ok_or_else(|| defaults::render("script.msg_no_evaluator", &[("module", &module)]))?;
     reg.set(module, f.clone()).map_err(|e| e.to_string())?;
     modules.insert(module.to_string(), file.clone());
     Ok((f, true))
