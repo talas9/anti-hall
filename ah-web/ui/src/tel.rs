@@ -63,7 +63,7 @@ fn is_dark() -> bool {
 }
 
 /// Read `path` now and then every `refresh` seconds (the server says how often, after the first read) until the screen is gone.
-fn poll<T: serde::de::DeserializeOwned + Send + Sync + 'static>(path: &'static str, doc: RwSignal<Option<T>>, refresh_s: impl Fn(&T) -> u64 + 'static, failed: RwSignal<bool>) {
+fn poll<T: serde::de::DeserializeOwned + Send + Sync + 'static>(path: &'static str, doc: RwSignal<Option<T>>, refresh_s: impl Fn(&T) -> u64 + 'static, failed: RwSignal<bool>, last_ok: RwSignal<u64>) {
     let alive = Arc::new(AtomicBool::new(true));
     let flag = alive.clone();
     on_cleanup(move || flag.store(false, Ordering::Relaxed));
@@ -74,6 +74,7 @@ fn poll<T: serde::de::DeserializeOwned + Send + Sync + 'static>(path: &'static s
                 Ok(d) => {
                     wait = refresh_s(&d).max(1);
                     failed.set(false);
+                    last_ok.set(now_ms());
                     doc.set(Some(d));
                 }
                 Err(_) => failed.set(true),
@@ -118,7 +119,7 @@ fn fmt_cell(ui: &TelUi, texts: &BTreeMap<String, String>, unit: &str, c: &Cell) 
 }
 
 fn delta_text(d: Option<f64>) -> String {
-    d.map_or_else(String::new, |d| format!("{} {:.0}%", if d > 0.5 { "\u{25B2}" } else if d < -0.5 { "\u{25BC}" } else { "\u{25AC}" }, d.abs()))
+    d.map_or_else(String::new, |d| if d.abs() < 0.5 { "0%".to_string() } else { format!("{}{:.0}%", if d > 0.0 { "+" } else { "\u{2212}" }, d.abs()) })
 }
 
 /// Which way a change reads: `ok` when it moved the good way, `bad` the wrong way, `flat` when it did not move.
@@ -474,7 +475,20 @@ fn TelBody() -> impl IntoView {
     ensure_style();
     let doc: RwSignal<Option<TelDoc>> = RwSignal::new(None);
     let failed = RwSignal::new(false);
-    poll(TELEMETRY_PATH, doc, |d: &TelDoc| d.ui.refresh_s, failed);
+    let last_ok = RwSignal::new(0u64);
+    poll(TELEMETRY_PATH, doc, |d: &TelDoc| d.ui.refresh_s, failed, last_ok);
+    let retry = move || {
+        failed.set(false);
+        leptos::task::spawn_local(async move {
+            match get_json::<TelDoc>(TELEMETRY_PATH).await {
+                Ok(d) => {
+                    last_ok.set(now_ms());
+                    doc.set(Some(d));
+                }
+                Err(_) => failed.set(true),
+            }
+        });
+    };
     let sel = RwSignal::new(String::new());
     crate::route::bind_text(sel, "telemetry.kpi");
     view! {
@@ -482,9 +496,8 @@ fn TelBody() -> impl IntoView {
             <h1>{tx("title_telemetry")}</h1>
             <span class="counts">{move || doc.with(|d| d.as_ref().map(|d| format!("{} {}", tt(&d.texts, "updated"), age_text(&d.ui, &d.texts, d.generated_ms as f64))).unwrap_or_default())}</span>
         </div>
-        <Show when=move || doc.with(Option::is_none)>
-            <p class="empty">{move || if failed.get() { "\u{2014}".to_string() } else { "\u{2026}".to_string() }}</p>
-        </Show>
+        <crate::load::StaleNote failed=failed.into() last_ok=last_ok.into() />
+        <crate::load::Pending have=Signal::derive(move || doc.with(Option::is_some)) failed=failed.into() endpoint=TELEMETRY_PATH retry=retry shape="cards" />
         {move || doc.with(Option::is_some).then(|| view! { <TelContent doc=doc sel=sel /> })}
     }
 }
@@ -811,7 +824,20 @@ fn ImpactBody() -> impl IntoView {
     ensure_style();
     let doc: RwSignal<Option<ImpactDoc>> = RwSignal::new(None);
     let failed = RwSignal::new(false);
-    poll(IMPACT_PATH, doc, |d: &ImpactDoc| d.ui.refresh_s, failed);
+    let last_ok = RwSignal::new(0u64);
+    poll(IMPACT_PATH, doc, |d: &ImpactDoc| d.ui.refresh_s, failed, last_ok);
+    let retry = move || {
+        failed.set(false);
+        leptos::task::spawn_local(async move {
+            match get_json::<ImpactDoc>(IMPACT_PATH).await {
+                Ok(d) => {
+                    last_ok.set(now_ms());
+                    doc.set(Some(d));
+                }
+                Err(_) => failed.set(true),
+            }
+        });
+    };
     let period = RwSignal::new(0usize);
     crate::route::bind_num(period, "impact.period");
     view! {
@@ -825,9 +851,8 @@ fn ImpactBody() -> impl IntoView {
                 }).collect_view()))}
             </div>
         </div>
-        <Show when=move || doc.with(Option::is_none)>
-            <p class="empty">{move || if failed.get() { "\u{2014}".to_string() } else { "\u{2026}".to_string() }}</p>
-        </Show>
+        <crate::load::StaleNote failed=failed.into() last_ok=last_ok.into() />
+        <crate::load::Pending have=Signal::derive(move || doc.with(Option::is_some)) failed=failed.into() endpoint=IMPACT_PATH retry=retry shape="cards" />
         {move || doc.with(|d| d.as_ref().map(|d| d.engine_ok)).unwrap_or(false).then(|| view! { <ImpactContent doc=doc period=period /> })}
         <Show when=move || doc.with(|d| d.as_ref().is_some_and(|d| !d.engine_ok))>
             <p class="empty">{move || doc.with(|d| d.as_ref().map(|d| tt(&d.texts, "engine_down")).unwrap_or_default())}</p>
@@ -842,8 +867,7 @@ fn ImpactContent(doc: RwSignal<Option<ImpactDoc>>, period: RwSignal<usize>) -> i
         <div class="tel">
             <section class="tel-card">
                 <h2>{title("impact_prevention")}</h2>
-                <p class="soft-note">{title("gl_i_note")}</p>
-                {move || doc.with(|d| d.as_ref().map(|d| pair_rows(&d.prevention, period.get(), &d.texts, &d.ui)))}
+                {move || doc.with(|d| d.as_ref().map(|d| pair_rows(&d.prevention, period.get(), true, &d.texts, &d.ui)))}
             </section>
             <section class="tel-card">
                 <h2>{title("impact_savings")}</h2>
@@ -853,7 +877,7 @@ fn ImpactContent(doc: RwSignal<Option<ImpactDoc>>, period: RwSignal<usize>) -> i
             </section>
             <section class="tel-card">
                 <h2>{title("impact_failures")}</h2>
-                {move || doc.with(|d| d.as_ref().map(|d| pair_rows(&d.failures, period.get(), &d.texts, &d.ui)))}
+                {move || doc.with(|d| d.as_ref().map(|d| pair_rows(&d.failures, period.get(), false, &d.texts, &d.ui)))}
             </section>
             <section class="tel-card">
                 <h2>{title("impact_gaps")}</h2>
@@ -880,9 +904,14 @@ fn waterfall_view(steps: Vec<Step>, ui: TelUi, texts: BTreeMap<String, String>) 
 }
 
 /// Paired bars: this period and the one before, scaled to the larger of the two, with the change per day.
-fn pair_rows(rows: &[ImpactRow], period: usize, texts: &BTreeMap<String, String>, ui: &TelUi) -> impl IntoView {
+fn pair_rows(rows: &[ImpactRow], period: usize, note: bool, texts: &BTreeMap<String, String>, ui: &TelUi) -> impl IntoView {
     let legend = view! { <div class="pair-legend"><span class="cur">{tt(texts, "legend_cur")}</span><span class="prev">{tt(texts, "legend_prev")}</span></div> };
-    let body = rows
+    // a row that is zero in both periods takes no height of its own: one muted line names them all
+    let (live, quiet): (Vec<&ImpactRow>, Vec<&ImpactRow>) = rows.iter().partition(|r| {
+        let p: Pair = r.pairs.get(period).copied().unwrap_or_default();
+        p.cur_rate > 0.0 || p.prev_rate > 0.0
+    });
+    let body = live
         .iter()
         .map(|r| {
             let p: Pair = r.pairs.get(period).copied().unwrap_or_default();
@@ -893,15 +922,23 @@ fn pair_rows(rows: &[ImpactRow], period: usize, texts: &BTreeMap<String, String>
                 <div class="pair" title=r.hint.clone()>
                     <span class="pair-label">{r.label.clone()}</span>
                     <div class="pair-bars">
-                        <div class="bar cur"><span style=format!("width:{:.1}%", p.cur_rate / max * 100.0)></span><em>{fmt_rate(ui, texts, p.cur_rate)}{tt(texts, "per_day_so_far")}</em></div>
-                        <div class="bar prev"><span style=format!("width:{:.1}%", p.prev_rate / max * 100.0)></span><em>{fmt_rate(ui, texts, p.prev_rate)}{tt(texts, "per_day")}</em></div>
+                        <div class="bar cur"><span style=format!("width:{:.1}%", p.cur_rate / max * 100.0)></span></div>
+                        <div class="bar prev"><span style=format!("width:{:.1}%", p.prev_rate / max * 100.0)></span></div>
+                    </div>
+                    <div class="pair-figs">
+                        <span class="fig-cur">{fmt_rate(ui, texts, p.cur_rate)}</span>
+                        <span class="fig-prev">{fmt_rate(ui, texts, p.prev_rate)}</span>
                     </div>
                     <span class=format!("pair-delta tone-{tone}")>{delta_text(p.delta_pct)}</span>
                 </div>
             }
         })
         .collect_view();
-    view! { {legend} {body} <p class="soft-note">{tt(texts, "impact_rate_note")}</p> }
+    let none = (!quiet.is_empty()).then(|| {
+        let names = quiet.iter().map(|r| r.label.to_lowercase()).collect::<Vec<_>>().join(", ");
+        view! { <p class="soft-note pair-none">{tt(texts, "impact_none_in_either").replace("{names}", &names)}</p> }
+    });
+    view! { {legend} {body} {none} {note.then(|| view! { <p class="soft-note">{tt(texts, "impact_rate_note")}</p> })} }
 }
 
 fn saving_card(s: &Saving, texts: &BTreeMap<String, String>, ui: &TelUi) -> impl IntoView {

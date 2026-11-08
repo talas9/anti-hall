@@ -124,6 +124,20 @@ broad-kill-guard = 4
 merge-side-pick = 4
 git = 14
 command = 6
+[logic_alloc.unquoted_heredoc_mib]
+git = 16
+[logic_alloc.many_heredocs_mib]
+merge-side-pick = 32
+# Wall time as a RATIO of the same unquoted heredoc at big_kb over small_kb (best of `runs` calls each), so it holds on any machine and
+# any build profile (debug, release, ci-test): bytes grow 15x, so a linear scan costs about 15x and a quadratic one about 225x. The
+# bound sits between the two, with headroom for timer noise on the small run.
+[logic_alloc.time_ratio]
+small_kb = 1
+big_kb = 15
+runs = 3
+[logic_alloc.time_ratio.max]
+git = 25
+
 [logic_alloc.braces_mib]
 git = 14
 # measured 2026-11-08 (15 KB `a>|b` command): 108 MiB before the char-builder fix, 33 MiB after #656's first commit, 7.1 MiB on dev; budget ~2x the current figure like braces_mib
