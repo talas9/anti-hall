@@ -28,6 +28,9 @@ thread_local! {
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
     /// The hook event of the call this thread makes next (empty = unknown): its late-reply bound is the event's own.
     static CALL_EVENT: std::cell::RefCell<String> = std::cell::RefCell::default();
+    /// Unit tests only: the progress gate is off (a test's fake daemon writes no heartbeat).
+    #[cfg(test)]
+    static GATE_OFF: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Name the hook event of the calls this thread makes next (empty = none): the late-reply bound `client.slow_fallback_max_ms`
@@ -130,6 +133,10 @@ impl Stall {
 /// daemon ([`Stall::Hung`], so the replacement path sees it as early as the progress gate does); no heartbeat, or none carrying a
 /// figure, is no progress. 0 turns the gate off.
 fn stalled() -> Option<Stall> {
+    #[cfg(test)]
+    if GATE_OFF.get() {
+        return None;
+    }
     let limit = defaults::millis("client.progress_stale_ms");
     if limit.is_zero() {
         return None;
@@ -1335,7 +1342,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(400));
             std::io::Write::write_all(&mut c, &frame::encode(Kind::Ok, "late-ok")).unwrap();
         }); // dropping `c` closes the socket right after the write
+        GATE_OFF.set(true); // this fake daemon writes no heartbeat; the gate has its own tests
         let r = exchange_inner(&sock, b"CTL ping\n", Duration::from_millis(150), Duration::from_secs(5));
+        GATE_OFF.set(false);
         h.join().unwrap();
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
         assert!(matches!(&r, Exch::Reply(Kind::Ok, b) if b == "late-ok"), "{r:?}");

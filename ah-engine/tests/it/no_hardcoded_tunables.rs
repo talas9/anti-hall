@@ -154,6 +154,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a thread-local slot initialised to not armed (None): state, the grace itself comes from diagnostics.deadline_grace_ms",
     ),
     ("src/client.rs", "static GUARD_CALL", "a thread-local boolean marker initialised false: state, not a tunable"),
+    ("src/client.rs", "static GATE_OFF", "a unit-test-only thread-local boolean initialised false: state, not a tunable"),
     ("src/client.rs", "static CALL_EVENT", "a thread-local holding the hook event of the call in flight, initialised empty: state, not a tunable"),
     ("src/crash.rs", "static BREADCRUMB", "a thread-local breadcrumb slot initialised empty: state, not a tunable"),
     (
