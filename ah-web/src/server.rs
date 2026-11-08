@@ -849,7 +849,9 @@ mod tests {
         let ids: Vec<&str> = boot.nav().iter().map(|x| x.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["agents", "health", "logs", "settings", "accounts", "updates"]
+            [
+                "agents", "health", "logs", "settings", "accounts", "updates"
+            ]
         );
         assert!(!boot.screen_on("live") && !boot.screen_on("reports"));
         for off in ["graph_tab", "search", "compose", "swap_account"] {
@@ -859,9 +861,11 @@ mod tests {
         cut.screens.retain(|x| x.id != "logs");
         assert!(!cut.screen_on("logs"));
         assert_eq!(cut.resolve_screen("logs"), "agents");
+        // the page's texts as the page gets them: web.ui plus the Ops and Telemetry tables
+        let ui = crate::ops::merged_ui(&app, &s.ui);
         for def in &boot.screens {
             assert!(
-                s.ui.contains_key(&def.label),
+                ui.contains_key(&def.label),
                 "nav label key {} is in web.ui",
                 def.label
             );

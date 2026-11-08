@@ -98,13 +98,15 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 .seg button { min-height: 32px; padding: 0 12px; border: 0; font-size: 13px; cursor: pointer; background: transparent; color: var(--text-3); transition: color 150ms var(--ease), background-color 150ms var(--ease); }
 .seg button:hover { color: var(--text); }
 .seg button.on { background: var(--raised); color: var(--text); }
+.view-wrap { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.view-wrap > .main { flex: 1 1 auto; }
 .view-tabs { margin: 24px 24px 0; }
 .nav-foot .seg { display: flex; }
 .nav-foot .seg button { flex: 1 1 0; padding: 0 4px; }
 .chip { min-height: 24px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 4px; background: transparent; color: var(--text-3); font: 400 12px/16px var(--font-mono); cursor: pointer; }
 .chip.on { background: var(--raised); color: var(--text); }
 
-.canvas, .tree { position: relative; flex: 1 1 auto; min-height: 320px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.canvas, .tree { position: relative; flex: 0 1 auto; min-height: 160px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--text-3); text-align: center; padding: 24px; }
 .placeholder strong { color: var(--text); font-weight: 500; font-size: 16px; }
 .legend { position: absolute; left: 16px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-3); }
@@ -123,7 +125,7 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 .c-kind, .c-hb { font: 400 12px/16px var(--font-mono); color: var(--text-3); }
 .c-kind { flex: 0 0 96px; }
 .c-hb { flex: 0 0 72px; text-align: right; font-variant-numeric: tabular-nums; }
-.c-brief { flex: 0 1 360px; min-width: 0; font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-brief { flex: 0 1 280px; min-width: 0; font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { margin: 16px; color: var(--text-3); }
 .k-primary { --c: var(--text); } .k-ws { --c: var(--text-2); } .k-sub { --c: var(--text-2); } .k-codex { --c: var(--text-2); }
 .k-idle { --c: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
@@ -135,7 +137,7 @@ a { color: var(--text); text-decoration-color: var(--line-2); text-underline-off
 @container main (max-width: 480px) { .c-kind, .tree-cols .c-kind { display: none; } }
 
 /* the decision ribbon: the last hour as one thin timeline, blocks marked, everything else grey */
-.ribbon { display: flex; align-items: flex-end; gap: 16px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.ribbon { margin-top: auto; display: flex; align-items: flex-end; gap: 16px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .ribbon-k, .ribbon-sum { flex: 0 0 auto; font: 400 12px/16px var(--font-mono); color: var(--text-3); }
 .ribbon-track { flex: 1 1 auto; min-width: 0; height: 20px; display: flex; align-items: flex-end; gap: 1px; }
 .rb { flex: 1 1 0; min-width: 1px; height: 4px; border-radius: 1px; background: var(--line-2); }
@@ -239,6 +241,7 @@ html { scrollbar-gutter: stable; }
   .body { flex-wrap: nowrap; overflow: hidden; }
   .nav { position: static; height: auto; align-self: stretch; }
   .main { overflow-y: auto; min-height: 0; }
+  .view-wrap { overflow: hidden; }
   .detail { overflow-y: auto; min-height: 0; align-self: stretch; }
 }
 @media (max-width: 1099px) { .nav { flex: 0 0 100%; flex-direction: row; align-items: center; position: static; height: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow-x: auto; } .nav-items { flex-direction: row; } .nav-item { flex: 0 0 auto; } .nav-foot { flex-direction: row; } }

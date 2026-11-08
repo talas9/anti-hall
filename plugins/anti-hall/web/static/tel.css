@@ -96,7 +96,7 @@ table.data tbody tr:hover { background: color-mix(in oklch, var(--cyan) 6%, tran
 .bar span { display: block; height: 100%; border-radius: 3px; }
 .bar.cur span { background: var(--cyan); }
 .bar.prev span { background: var(--idle); }
-.bar em { position: absolute; left: 6px; top: -2px; font: normal 11px var(--font-mono); color: var(--text-hi); mix-blend-mode: normal; text-shadow: 0 0 3px var(--bg); }
+.bar em { position: absolute; left: 6px; top: -2px; font: normal 11px var(--font-mono); color: var(--text-hi); mix-blend-mode: normal; }
 .pair-delta { font: 12px var(--font-mono); text-align: right; color: var(--muted); }
 .saving { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); margin-bottom: 8px; }
 .saving-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

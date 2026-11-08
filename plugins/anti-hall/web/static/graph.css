@@ -142,12 +142,6 @@
   .ahg[data-tier="full"] .ahg-node[data-fx$="-b"] { animation: ahgFxB .5s ease-out; }
   .ahg[data-tier="full"] .ahg-node[data-fx^="shake"][data-fx$="-a"] { animation: ahgShakeA .45s ease-in-out; }
   .ahg[data-tier="full"] .ahg-node[data-fx^="shake"][data-fx$="-b"] { animation: ahgShakeB .45s ease-in-out; }
-
-  @keyframes ahgPulse {
-    0% { box-shadow: none; }
-    70% { box-shadow: none; }
-    100% { box-shadow: none; }
-  }
   /* Lite tier: static; and honour reduced motion everywhere */
   .ahg[data-tier="lite"] *, .ahg[data-tier="lite"] { animation: none !important; transition: none !important; }
   @media (prefers-reduced-motion: reduce) { .ahg *, .ahg { animation: none !important; transition: none !important; } }

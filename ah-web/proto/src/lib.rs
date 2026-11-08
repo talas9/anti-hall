@@ -423,7 +423,9 @@ pub struct ScreenDef {
 }
 
 /// The view ids the page can render.
-pub const KNOWN_SCREENS: [&str; 8] = ["agents", "live", "reports", "health", "logs", "settings", "accounts", "updates"];
+pub const KNOWN_SCREENS: [&str; 8] = [
+    "agents", "live", "reports", "health", "logs", "settings", "accounts", "updates",
+];
 
 impl Boot {
     /// The views the nav shows, in order: enabled, known to the page, each id once.
@@ -431,9 +433,14 @@ impl Boot {
         let mut seen = Vec::new();
         self.screens
             .iter()
-            .filter(|s| s.enabled && KNOWN_SCREENS.contains(&s.id.as_str()) && !seen.contains(&s.id.as_str()) && {
-                seen.push(s.id.as_str());
-                true
+            .filter(|s| {
+                s.enabled
+                    && KNOWN_SCREENS.contains(&s.id.as_str())
+                    && !seen.contains(&s.id.as_str())
+                    && {
+                        seen.push(s.id.as_str());
+                        true
+                    }
             })
             .collect()
     }
@@ -446,7 +453,11 @@ impl Boot {
     /// The view an address names: `wanted` when it is shown, else the first shown one (so a link to a switched-off view lands home).
     pub fn resolve_screen(&self, wanted: &str) -> String {
         let nav = self.nav();
-        nav.iter().find(|s| s.id == wanted).or(nav.first()).map(|s| s.id.clone()).unwrap_or_default()
+        nav.iter()
+            .find(|s| s.id == wanted)
+            .or(nav.first())
+            .map(|s| s.id.clone())
+            .unwrap_or_default()
     }
 
     /// Whether the optional part `name` is on.
@@ -460,14 +471,32 @@ mod screens_tests {
     use super::*;
 
     fn def(id: &str, enabled: bool) -> ScreenDef {
-        ScreenDef { id: id.into(), label: format!("nav_{id}"), icon: id.into(), enabled }
+        ScreenDef {
+            id: id.into(),
+            label: format!("nav_{id}"),
+            icon: id.into(),
+            enabled,
+        }
     }
 
     #[test]
     fn a_switched_off_screen_is_not_in_the_nav_and_a_link_to_it_lands_home() {
-        let b = Boot { screens: vec![def("agents", true), def("live", false), def("health", true), def("nowhere", true), def("health", true)], ..Boot::default() };
+        let b = Boot {
+            screens: vec![
+                def("agents", true),
+                def("live", false),
+                def("health", true),
+                def("nowhere", true),
+                def("health", true),
+            ],
+            ..Boot::default()
+        };
         let ids: Vec<&str> = b.nav().iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["agents", "health"], "off, unknown and repeated entries are not shown");
+        assert_eq!(
+            ids,
+            ["agents", "health"],
+            "off, unknown and repeated entries are not shown"
+        );
         assert!(b.screen_on("health") && !b.screen_on("live") && !b.screen_on("nowhere"));
         assert_eq!(b.resolve_screen("live"), "agents");
         assert_eq!(b.resolve_screen("health"), "health");
@@ -475,8 +504,15 @@ mod screens_tests {
 
     #[test]
     fn the_order_is_the_lists_and_a_switch_not_listed_is_off() {
-        let b = Boot { screens: vec![def("logs", true), def("agents", true)], switches: [("search".to_string(), true)].into(), ..Boot::default() };
-        assert_eq!(b.nav().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["logs", "agents"]);
+        let b = Boot {
+            screens: vec![def("logs", true), def("agents", true)],
+            switches: [("search".to_string(), true)].into(),
+            ..Boot::default()
+        };
+        assert_eq!(
+            b.nav().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["logs", "agents"]
+        );
         assert!(b.switch("search") && !b.switch("compose"));
     }
 }

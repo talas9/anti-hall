@@ -660,7 +660,8 @@ fn App(boot: Boot) -> impl IntoView {
                     </main>
                 })}
                 {b3.screen_on("health").then(|| view! {
-                    <ViewTabs on=Signal::derive(move || health_on.get() || topo_on.get()) alt=Signal::derive(move || topo_on.get()) shown=b3.switch("topology_toggle")
+                    <div class="view-wrap" hidden=move || !(health_on.get() || topo_on.get())>
+                    <ViewTabs alt=Signal::derive(move || topo_on.get()) shown=b3.switch("topology_toggle")
                         first="topo_toggle_health" second="topo_toggle_topology"
                         pick=move |second| { health_on.set(!second); topo_on.set(second); } />
                     <main class="main live-main" hidden=move || !health_on.get()>
@@ -671,6 +672,7 @@ fn App(boot: Boot) -> impl IntoView {
                             <health::TopologyScreen mode=mode active=topo_on.into() />
                         </main>
                     })}
+                    </div>
                     <Show when=move || health_on.get() || topo_on.get()><health::Poller mode=mode /></Show>
                 })}
                 {b3.screen_on("settings").then(|| view! {
@@ -679,7 +681,8 @@ fn App(boot: Boot) -> impl IntoView {
                     </main>
                 })}
                 {b3.screen_on("reports").then(|| view! {
-                    <ViewTabs on=Signal::derive(move || matches!(ops_screen.get(), 4 | 5)) alt=Signal::derive(move || ops_screen.get() == 5) shown=true
+                    <div class="view-wrap" hidden=move || !matches!(ops_screen.get(), 4 | 5)>
+                    <ViewTabs alt=Signal::derive(move || ops_screen.get() == 5) shown=true
                         first="rep_tel" second="rep_impact"
                         pick=move |second| ops_screen.set(if second { 5 } else { 4 }) />
                     <main class="main tel-main" hidden=move || ops_screen.get() != 4>
@@ -688,6 +691,7 @@ fn App(boot: Boot) -> impl IntoView {
                     <main class="main tel-main" hidden=move || ops_screen.get() != 5>
                         <tel::ImpactScreen active=Signal::derive(move || ops_screen.get() == 5) />
                     </main>
+                    </div>
                 })}
                 <ops::OpsScreens screen=ops_screen />
                 <aside class="detail" aria-label=tx("selected_label") hidden=move || other_on.get()>
@@ -805,10 +809,10 @@ fn Icon(name: String) -> impl IntoView {
 
 /// A two-way toggle above a view that holds two screens (Health and Topology, Telemetry and Impact). `pick(true)` chose the second one.
 #[component]
-fn ViewTabs(on: Signal<bool>, alt: Signal<bool>, shown: bool, first: &'static str, second: &'static str, pick: impl Fn(bool) + Copy + 'static) -> impl IntoView {
+fn ViewTabs(alt: Signal<bool>, shown: bool, first: &'static str, second: &'static str, pick: impl Fn(bool) + Copy + 'static) -> impl IntoView {
     shown.then(|| {
         view! {
-            <div class="view-tabs seg" role="group" hidden=move || !on.get()>
+            <div class="view-tabs seg" role="group">
                 <button type="button" class=move || if alt.get() { "" } else { "on" } on:click=move |_| pick(false)>{tx(first)}</button>
                 <button type="button" class=move || if alt.get() { "on" } else { "" } on:click=move |_| pick(true)>{tx(second)}</button>
             </div>
@@ -831,7 +835,7 @@ fn Ribbon(snap: RwSignal<Snapshot>) -> impl IntoView {
                     continue;
                 }
                 let i = slots - 1 - (age * slots as u64 / window_ms) as usize;
-                if f.tone == "advisory" { v[i].1 += 1 } else { v[i].0 += 1 }
+                if f.tone == "block" { v[i].0 += 1 } else { v[i].1 += 1 }
             }
             v
         })

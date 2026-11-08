@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+### Changed
+
+- **Command Center redesign.** Ten views become six: Agents (home), Health (with Topology as a toggle), Logs, Settings, Accounts and Updates. Telemetry and Impact are the two tabs of one Reports view, and the Live decision graph has its own view; both ship switched off and stay in the page. The nav is read from `web.screens` (order, label, icon, `enabled`), not compiled in. The Graph tab, the header search, the Send box and the Switch account card are behind `web.switches` (all off); `web.strip_pills` sets the figures of the top strip (the lifetime request count is off); `web.ribbon_window_s` and `web.ribbon_buckets` shape the new decision ribbon on the agents view. The look is a graphite ramp with one amber accent for block, stale and needs-you (red only for an engine that is down), Inter and JetBrains Mono, no gradients, glows or looping motion. Every decision shows as one of the engine's four words (allow, advise, block, defer). Copy fixes: sentence-case labels, no trailing periods on short strings, correct detail-tile labels, no hardcoded "Jev" label.
+
 ## 0.302.0
 
 ### Summary

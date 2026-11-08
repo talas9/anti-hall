@@ -1,9 +1,9 @@
 /* The Health and Topology screens (ah-web/ui health.rs). Tokens come from app.css. */
 .health { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; min-height: 0; overflow: auto; }
-.hl { border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; background: var(--card); font: 500 17px var(--font-ui); }
-.hl-ok   { border-color: color-mix(in oklch, var(--green) 45%, transparent); color: var(--green); background: color-mix(in oklch, var(--green) 8%, var(--card)); }
-.hl-warn { border-color: color-mix(in oklch, var(--amber) 45%, transparent); color: var(--amber); background: color-mix(in oklch, var(--amber) 8%, var(--card)); }
-.hl-bad, .hl-down { border-color: color-mix(in oklch, var(--red) 45%, transparent); color: var(--red); background: color-mix(in oklch, var(--red) 8%, var(--card)); }
+.hl { border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; background: var(--card); font: 500 16px/24px var(--font-ui); }
+.hl-ok { color: var(--text); }
+.hl-warn, .hl-bad { border-color: var(--amber); color: var(--amber); }
+.hl-down { border-color: var(--down); color: var(--down); }
 .h-gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .h-card { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--card); min-width: 0; }
 .h-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
