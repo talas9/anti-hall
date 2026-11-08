@@ -35,6 +35,8 @@ struct Doc<'a> {
     pass: u32,
     fail: u32,
     warn: u32,
+    /// Information rows the install-health block made that are shown even when nothing failed.
+    notes: u32,
     host_os: String,
     host_arch: String,
     os_name: String,
@@ -43,6 +45,8 @@ struct Doc<'a> {
     test: bool,
     limit: Duration,
     engine_usable: bool,
+    /// First line of the error when the engine answers `--version` but cannot load this plugin's defaults (C3).
+    defaults_error: Option<String>,
     bin: PathBuf,
     client: PathBuf,
 }
@@ -615,6 +619,17 @@ impl Doc<'_> {
                 }
             }
             if !reported.is_empty() {
+                // it runs and reports a version, but cannot read this plugin's settings: every hook call is handed back unchecked
+                if let Some(detail) = self.defaults_error.clone() {
+                    self.bad(
+                        "x.engine_defaults_unloadable",
+                        &[
+                            ("have", &reported),
+                            ("detail", &detail),
+                            ("bootstrap", &install),
+                        ],
+                    );
+                }
                 if !pinned.is_empty()
                     && older_than(
                         &self.s.text("launcher.legacy_scheme_floor"),
@@ -630,7 +645,7 @@ impl Doc<'_> {
                             ("bootstrap", &install),
                         ],
                     );
-                } else {
+                } else if self.defaults_error.is_none() {
                     let triple = format!("{}-{}", self.host_arch, self.host_os);
                     self.ok(
                         "bin_ok",
@@ -973,6 +988,111 @@ impl Doc<'_> {
             .any(|t| t == w || t.ends_with(&format!("/{w}")))
     }
 
+    /// The install paths the host's registry holds for anti-hall (`doctor.installed_plugins_rel`, keys starting with
+    /// `doctor_l.registry_key_prefix`). A hooks file under a host cache directory is judged only when it is in one of them (or in the
+    /// plugin root this run was started from); an old cache version dir an upgrade left behind is not what the host loads.
+    fn registered_paths(&self) -> Vec<PathBuf> {
+        let reg = Path::new(&self.home).join(self.s.text("doctor.installed_plugins_rel"));
+        let prefix = self.s.text("doctor_l.registry_key_prefix");
+        let Some(v) = fs::read_to_string(reg)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (k, ents) in v
+            .get("plugins")
+            .and_then(|p| p.as_object())
+            .into_iter()
+            .flatten()
+        {
+            if prefix.is_empty() || !k.starts_with(&prefix) {
+                continue;
+            }
+            for e in ents.as_array().into_iter().flatten() {
+                if let Some(p) = e.get("installPath").and_then(|x| x.as_str()) {
+                    out.push(PathBuf::from(p));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether the hooks file `f` sits in the newest COMPLETE version dir (by semver) of its plugin in a Codex cache
+    /// (`<mark><marketplace>/<plugin>/<version>/...`). A path of any other shape, or a version name that is not semver,
+    /// counts as newest (judged). Rules: only dirs whose name is semver take part (`latest`, a SHA prefix and the like do not);
+    /// a symlink counts as the dir it points to, once; a dir with no hooks.json (partly written) is skipped, so the newest
+    /// complete one is judged (a dir with a non-semver name is judged only when no semver dir exists); equal-version siblings (same precedence, e.g. differing only in build metadata) are ordered by the
+    /// modified time of their hooks.json (newer wins), then by name.
+    fn newest_cache_version(f: &Path, marks: &[String]) -> bool {
+        let full = f.display().to_string();
+        let Some((m, at)) = marks
+            .iter()
+            .filter_map(|m| full.find(m.as_str()).map(|i| (m, i)))
+            .next()
+        else {
+            return true;
+        };
+        let rest = &full[at + m.len()..];
+        let segs: Vec<&str> = rest.split('/').collect();
+        if segs.len() < 4 {
+            return true;
+        }
+        let plugin_dir = PathBuf::from(&full[..at + m.len()])
+            .join(segs[0])
+            .join(segs[1]);
+        let Some(mine) = fs::canonicalize(plugin_dir.join(segs[2])).ok() else {
+            return true;
+        };
+        // no semver sibling at all: nothing to compare against, the file is judged; with one, a dir whose name is not semver
+        // (`latest`, a SHA prefix) cannot be the newest and is not judged
+        let Some(newest) = Self::newest_complete_version_dir(&plugin_dir) else {
+            return true;
+        };
+        newest == mine
+    }
+
+    /// The newest complete version dir under `plugin_dir` (canonical path), by the rules of `newest_cache_version`.
+    fn newest_complete_version_dir(plugin_dir: &Path) -> Option<PathBuf> {
+        let rd = fs::read_dir(plugin_dir).ok()?;
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut cands: Vec<(SemVer, Option<std::time::SystemTime>, PathBuf)> = Vec::new();
+        for e in rd.flatten() {
+            // the version comes from the entry's OWN name (a semver-named symlink to a hash-named dir counts); the canonical
+            // target is only for telling two names for one directory apart
+            let Some(v) = SemVer::parse(&e.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let Ok(real) = fs::canonicalize(e.path()) else {
+                continue;
+            };
+            if !real.is_dir() || seen.contains(&real) {
+                continue;
+            }
+            seen.push(real.clone());
+            // complete = a hooks.json exists in one of the two places the doctor reads (the newest of them stamps the dir)
+            let stamp = ["hooks/hooks.json", "codex/hooks/hooks.json"]
+                .iter()
+                .filter_map(|r| fs::metadata(real.join(r)).ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.modified().ok())
+                .max();
+            let Some(stamp) = stamp else {
+                continue;
+            };
+            cands.push((v, stamp, real));
+        }
+        cands
+            .into_iter()
+            .max_by(|a, b| {
+                a.0.cmp_precedence(&b.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| a.2.file_name().cmp(&b.2.file_name()))
+            })
+            .map(|c| c.2)
+    }
+
     fn install_health(&mut self) {
         self.head("x.head_health");
         let install = self.install_cmd();
@@ -1013,7 +1133,42 @@ impl Doc<'_> {
         }
         // the hooks files
         let files = self.hook_files();
+        let cache_marks = self.s.list("doctor_l.host_cache_marks");
+        let codex_marks = self.s.list("doctor_l.codex_cache_marks");
+        let registered = self.registered_paths();
+        let (mut other_n, mut other_first) = (0usize, String::new());
+        let (mut codex_n, mut codex_first) = (0usize, String::new());
+        let root_in_cache = self.root.as_ref().is_some_and(|r| {
+            let rs = r.display().to_string();
+            cache_marks.iter().any(|m| rs.contains(m.as_str()))
+        });
         for f in &files {
+            let shown_path = f.display().to_string();
+            let in_cache = cache_marks.iter().any(|m| shown_path.contains(m.as_str()));
+            let from_root = self.root.as_ref().is_some_and(|r| f.starts_with(r));
+            let codex_cache = codex_marks.iter().any(|m| shown_path.contains(m.as_str()));
+            let judged = if !in_cache || from_root {
+                true
+            } else if codex_cache {
+                // Codex keeps no install path: only the newest version dir of a plugin is the one it loads
+                Self::newest_cache_version(f, &codex_marks)
+            } else {
+                registered.iter().any(|p| f.starts_with(p))
+            };
+            if !judged {
+                if codex_cache {
+                    if codex_n == 0 {
+                        codex_first = shown_path;
+                    }
+                    codex_n += 1;
+                } else {
+                    if other_n == 0 {
+                        other_first = shown_path;
+                    }
+                    other_n += 1;
+                }
+                continue;
+            }
             let Some(v) = fs::read_to_string(f)
                 .ok()
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -1054,6 +1209,23 @@ impl Doc<'_> {
             if old.is_empty() && node.is_empty() {
                 self.ok("x.health_hooks_ok", &[("file", &shown)]);
             }
+        }
+        if other_n > 0 {
+            self.notes += 1;
+            // with no registry entry and a run that did not start from a cache root, nothing says which copy is the install
+            let key = if registered.is_empty() && !root_in_cache {
+                "x.health_other_cache_unmatched"
+            } else {
+                "x.health_other_cache"
+            };
+            self.infol(key, &[("n", &other_n.to_string()), ("first", &other_first)]);
+        }
+        if codex_n > 0 {
+            self.notes += 1;
+            self.infol(
+                "x.health_other_cache_codex",
+                &[("n", &codex_n.to_string()), ("first", &codex_first)],
+            );
         }
         // the shell files the plugin ships
         if let Some(root) = self.root.clone() {
@@ -1442,7 +1614,8 @@ impl Doc<'_> {
         true
     }
 
-    fn repair(&mut self, dry: bool) {
+    /// Returns whether anything was (or, with `dry`, would be) repaired.
+    fn repair(&mut self, dry: bool) -> bool {
         let heading = self.m(
             if dry {
                 "repair_heading_dry"
@@ -1544,6 +1717,7 @@ impl Doc<'_> {
             let none = self.m("repair_none", &[]);
             self.out.push_str(&format!("  {none}\n"));
         }
+        did
     }
 }
 
@@ -1627,6 +1801,7 @@ pub fn run(
         pass: 0,
         fail: 0,
         warn: 0,
+        notes: 0,
         host_os,
         host_arch,
         os_name,
@@ -1635,10 +1810,12 @@ pub fn run(
         test,
         limit,
         engine_usable: false,
+        defaults_error: None,
         bin: bin.clone(),
         client,
     };
-    // the engine runs: its doctor has every check this one makes and more
+    // the engine runs: its doctor makes most of the checks this one does. A `--version` that answers does not prove it can load this
+    // plugin's defaults (it cannot after a plugin update it predates), so a defaults-loading verb is probed too.
     if !builtin {
         let ok = fs::metadata(&bin)
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -1656,11 +1833,43 @@ pub fn run(
                     Ran::Done(0)
                 )
             };
-        if ok {
+        let mut loads = true;
+        if ok && s.num("doctor_l.probe_defaults_load") == 1 {
+            let probe = s.list("doctor_l.defaults_probe_cmd");
+            if !probe.is_empty() {
+                let root_env = s.text("env.plugin_root");
+                let root = d.root.clone().unwrap_or_default();
+                let envs = [(root_env.as_str(), root.as_path())];
+                let mut argv = vec![bin.display().to_string()];
+                argv.extend(probe);
+                let (r, out) = d.run(&argv, &envs, limit);
+                if !matches!(r, Ran::Done(0)) {
+                    loads = false;
+                    d.defaults_error = Some(first_line(&out, d.line_chars()));
+                }
+            }
+        }
+        if ok && loads {
+            let mut code_floor = 0;
             if repair {
-                // the repairs only the thin client can make (its own files), then the engine's
-                d.repair(dry);
-                print_out(&d.out);
+                // the repairs only the thin client can make (its own files), then the engine's; the block is shown only when it did something
+                if d.repair(dry) {
+                    print_out(&d.out);
+                }
+                d.out.clear();
+            }
+            // the engine's doctor does not make the install-health checks (Node entries in the hooks files, Node launchers, the retired
+            // statusLine, the client itself): they run here, and are shown only when they find something
+            if s.num("doctor_l.launcher_health_with_engine") == 1 {
+                let before = d.fail + d.warn;
+                let notes = d.notes;
+                d.install_health();
+                if d.fail + d.warn > before || d.notes > notes {
+                    print_out(&d.out);
+                    if d.fail > 0 {
+                        code_floor = 1;
+                    }
+                }
                 d.out.clear();
             }
             let mut cmd = Command::new(&bin);
@@ -1668,11 +1877,21 @@ pub fn run(
                 cmd.env(s.text("env.plugin_root"), r);
             }
             crate::launcher::unblock_signals();
-            let err = std::os::unix::process::CommandExt::exec(
-                cmd.arg(s.text("doctor_l.cmd_word")).args(args),
-            );
-            crate::util::say(&err.to_string());
-            return 1;
+            if code_floor == 0 {
+                let err = std::os::unix::process::CommandExt::exec(
+                    cmd.arg(s.text("doctor_l.cmd_word")).args(args),
+                );
+                crate::util::say(&err.to_string());
+                return 1;
+            }
+            // a failing install-health check: the engine's doctor still runs, the exit code keeps the failure
+            return match cmd.arg(s.text("doctor_l.cmd_word")).args(args).status() {
+                Ok(st) => st.code().unwrap_or(1).max(code_floor),
+                Err(e) => {
+                    crate::util::say(&e.to_string());
+                    1
+                }
+            };
         }
     }
     let title = d.m("title", &[("version", &d.version())]);
@@ -1705,4 +1924,146 @@ fn print_out(t: &str) {
 /// not older.
 fn older_than(floor: &str, have: &str, want: &str) -> bool {
     crate::compat::component_cmp(floor, have, want) == Some(std::cmp::Ordering::Less)
+}
+
+/// A semantic version (semver.org 2.0.0): `MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`, with an optional leading `v`. Only what the
+/// doctor needs: parse and precedence. Build metadata is kept out of the precedence, as the spec says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SemVer {
+    core: [u64; 3],
+    pre: Vec<String>,
+}
+
+impl SemVer {
+    fn parse(name: &str) -> Option<SemVer> {
+        let v = name.strip_prefix('v').unwrap_or(name);
+        let (v, build) = match v.split_once('+') {
+            Some((a, b)) => (a, Some(b)),
+            None => (v, None),
+        };
+        let ident =
+            |i: &str| !i.is_empty() && i.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if build.is_some_and(|b| !b.split('.').all(ident)) {
+            return None;
+        }
+        let (core, pre) = match v.split_once('-') {
+            Some((a, b)) => (a, Some(b)),
+            None => (v, None),
+        };
+        let nums: Vec<&str> = core.split('.').collect();
+        if nums.len() != 3 {
+            return None;
+        }
+        let mut c = [0u64; 3];
+        for (i, n) in nums.iter().enumerate() {
+            // numeric, no leading zero (except "0" itself)
+            if n.is_empty()
+                || !n.bytes().all(|b| b.is_ascii_digit())
+                || (n.len() > 1 && n.starts_with('0'))
+            {
+                return None;
+            }
+            c[i] = n.parse().ok()?;
+        }
+        let pre = match pre {
+            None => Vec::new(),
+            Some(p) => {
+                let ids: Vec<&str> = p.split('.').collect();
+                if !ids.iter().all(|i| ident(i)) {
+                    return None;
+                }
+                // a numeric identifier has no leading zero
+                if ids.iter().any(|i| {
+                    i.len() > 1 && i.starts_with('0') && i.bytes().all(|b| b.is_ascii_digit())
+                }) {
+                    return None;
+                }
+                ids.iter().map(|i| i.to_string()).collect()
+            }
+        };
+        Some(SemVer { core: c, pre })
+    }
+
+    /// semver.org precedence: the core numbers, then a version with a pre-release is lower than the same without; pre-release
+    /// identifiers compare left to right (numeric by value, below alphanumeric; alphanumeric in ASCII order); the longer set wins
+    /// when all earlier ones are equal.
+    fn cmp_precedence(&self, o: &SemVer) -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        match self.core.cmp(&o.core) {
+            Equal => {}
+            x => return x,
+        }
+        match (self.pre.is_empty(), o.pre.is_empty()) {
+            (true, true) => return Equal,
+            (true, false) => return Greater,
+            (false, true) => return Less,
+            _ => {}
+        }
+        for (a, b) in self.pre.iter().zip(&o.pre) {
+            let (na, nb) = (
+                a.bytes().all(|c| c.is_ascii_digit()),
+                b.bytes().all(|c| c.is_ascii_digit()),
+            );
+            let r = match (na, nb) {
+                (true, true) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+                (true, false) => Less,
+                (false, true) => Greater,
+                (false, false) => a.cmp(b),
+            };
+            if r != Equal {
+                return r;
+            }
+        }
+        self.pre.len().cmp(&o.pre.len())
+    }
+}
+
+#[cfg(test)]
+mod semver_tests {
+    use super::*;
+    use std::cmp::Ordering::*;
+
+    fn v(s: &str) -> SemVer {
+        SemVer::parse(s).unwrap_or_else(|| panic!("{s} must parse"))
+    }
+
+    #[test]
+    fn real_codex_dir_names_parse_and_order_by_semver() {
+        assert!(
+            v("0.1.13-77c10e110b37").cmp_precedence(&v("0.1.13")) == Less,
+            "a pre-release is below its release"
+        );
+        assert!(v("0.1.14-aaaa").cmp_precedence(&v("0.1.13-zzzz")) == Greater);
+        assert!(
+            v("0.10.0").cmp_precedence(&v("0.9.0")) == Greater,
+            "by number, not text"
+        );
+        assert!(v("1.0.0-alpha.1").cmp_precedence(&v("1.0.0-alpha.beta")) == Less);
+        assert!(v("1.0.0-alpha.2").cmp_precedence(&v("1.0.0-alpha.10")) == Less);
+        assert!(v("1.0.0-alpha").cmp_precedence(&v("1.0.0-alpha.1")) == Less);
+        assert!(v("v1.2.3").cmp_precedence(&v("1.2.3")) == Equal);
+        assert!(
+            v("1.2.3+b1").cmp_precedence(&v("1.2.3+b2")) == Equal,
+            "build metadata is not part of precedence"
+        );
+    }
+
+    #[test]
+    fn names_that_are_not_semver_do_not_parse() {
+        for n in [
+            "latest",
+            "77c10e110b37",
+            "1234567",
+            "1.2",
+            "1.2.3.4",
+            "01.2.3",
+            "1.2.x",
+            "",
+            "1.2.3-",
+            "1.2.3-a..b",
+            "1.2.3-01",
+        ] {
+            assert!(SemVer::parse(n).is_none(), "{n} must not parse");
+        }
+    }
 }

@@ -284,7 +284,7 @@ pub const STRS: &[(&str, &str)] = &[
     ("files.launcher_stale_notice", "stale-engine.notice"),
     (
         "msg.launcher_stale_engine",
-        "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install` (or the anti-hall setup skill) to update it.",
+        "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install -v` (or the anti-hall setup skill) to update it; if the update fails, the reason is in ~/.anti-hall/ah-engine/bootstrap.log.",
     ),
     ("install.file_marker", "bootstrap.installed"),
     ("client.cold_guard_kick_event", "ColdStartKick"),
