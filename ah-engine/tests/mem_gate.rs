@@ -483,7 +483,8 @@ fn draw_size(mix: &[(u64, u64, u64)], rng: &mut u64) -> u64 {
 
 /// A transcript of about `mb` MB, built from nothing: prompts, replies, tool calls and results, task events and agent
 /// notifications, so every kind of fact and every reader path is exercised. The size of the free-text lines follows the measured
-/// mix of real transcripts (`tests/mem_gate_sizes.toml`), including the rare line over the line cap.
+/// mix of real transcripts (`tests/mem_gate_sizes.toml`), scaled to the transcript sizes of real sessions. A line over the line cap is practically never drawn (the
+/// largest is just under it), so oversize handling is covered by tests/it/transcript_store.rs, not by this gate.
 fn synth_transcript(path: &Path, mb: u64) {
     use std::io::BufWriter;
     let ts = "2026-10-04T10:00:00.000Z";
