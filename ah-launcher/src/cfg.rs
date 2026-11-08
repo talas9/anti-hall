@@ -17,9 +17,9 @@ impl Cfg {
     pub fn load_why(path: &Path) -> Result<Cfg, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Cfg {
-            doc: text.parse::<toml::Table>().map_err(|e| {
-                format!("{}: {}", path.display(), e.to_string().replace('\n', " "))
-            })?,
+            doc: text
+                .parse::<toml::Table>()
+                .map_err(|e| format!("{}: {}", path.display(), e.to_string().replace('\n', " ")))?,
         })
     }
 
