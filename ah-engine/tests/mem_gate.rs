@@ -305,11 +305,12 @@ fn run_phase(name: &'static str, root: &Path, src: &Path, sessions_n: usize, sec
             .filter_map(|k| m[*k].as_array())
             .flatten()
             .filter(|r| matches!(r.get("name").and_then(Value::as_str), Some("check_mem_peak_bytes")))
-            .map(|r| (r.get("value").or_else(|| r.get("max")).and_then(Value::as_f64).unwrap_or(0.0), r.to_string()))
+            .map(|r| (r.get("max_bytes").or_else(|| r.get("value")).and_then(Value::as_f64).unwrap_or(0.0), r.to_string()))
             .collect();
         rows.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, row) in rows.iter().take(8) {
-            eprintln!("GATE {name} check_mem_peak_bytes {row}");
+        for (peak, row) in rows.iter().filter(|(p, _)| *p >= MB).take(12) {
+            let v: Value = serde_json::from_str(row).unwrap_or_default();
+            eprintln!("GATE {name} check_peak {:>6.1} MB  {} (calls {})", peak / MB, v["labels"]["check"].as_str().unwrap_or("?"), v["count"]);
         }
     }
     let mut r = std::mem::take(&mut *res.lock().unwrap());

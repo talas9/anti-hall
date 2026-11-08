@@ -6008,3 +6008,68 @@ fn range_sha1_hex_equals_sha1_of_range_hex() {
     assert_eq!(host::range_sha1_hex(&format!("{h}/absent"), 0.0, 1.0), None);
     assert_eq!(host::range_sha1_hex(&h, 0.0, 1.0), None, "a directory is not a file");
 }
+
+/// The streaming projection (`IgnoredAny` for what `keep` does not name) answers every line exactly as the full parse and the
+/// tree projection did, on lines of every shape.
+#[test]
+fn the_streaming_keep_projection_matches_the_tree_projection_on_every_shape() {
+    use super::host::KeepNode;
+    let keeps = [
+        r#"[["type"],["message","content","*","type"],["message","content","*","text"],["message","role"]]"#,
+        r#"[["message","content","*","input","command"],["message","content","*","tool_use_id"],["timestamp"]]"#,
+        r#"[["a"],["b","*"],["c","d","e"]]"#,
+        r#"[]"#,
+        r#"[["message"]]"#,
+    ];
+    let big = "y".repeat(5000);
+    let lines = vec![
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"BIG\nline"}]},"timestamp":"2026-01-01T00:00:00Z"}"#.to_string(),
+        format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"hi"}},{{"type":"tool_use","input":{{"command":"ls","big":"{big}"}}}}]}}}}"#),
+        r#"{"a":1,"a":{"x":2},"b":[1,[2,3],{"q":4}],"c":{"d":{"e":[1,2,{"f":3}]}}}"#.to_string(),
+        r#"{"a":[1.5,-2,1e3,18446744073709551615,-9223372036854775808,null,true,"sé\n"],"b":null}"#.to_string(),
+        r#"{"a":{"deep":[[[[[[{"z":1}]]]]]]},"b":"not an array"}"#.to_string(),
+        r#"  {"message":{"content":"plain string"}}  "#.to_string(),
+        r#"{"message":[1,2,3]}"#.to_string(),
+        r#"{"message":{"content":"\ud800"}}"#.to_string(),
+        r#"{"a":"\ud800"}"#.to_string(),
+        r#"{"toolUseResult":{"stdout":"\ud800 ignored"},"a":1}"#.to_string(),
+        r#"{"a":1e999}"#.to_string(),
+        r#"{"x":1e999,"a":1}"#.to_string(),
+        r#"{"a":1} trailing"#.to_string(),
+        r#"{"a":1"#.to_string(),
+        "[1,2]".to_string(),
+        "42".to_string(),
+        "\"text\"".to_string(),
+        "null".to_string(),
+        "not json".to_string(),
+        "{}".to_string(),
+        r#"{"":1,"a":{"":2}}"#.to_string(),
+    ];
+    for keep in keeps {
+        let trie = KeepNode::parse(keep).unwrap();
+        for l in &lines {
+            let tree = match serde_json::from_str::<Value>(l) {
+                Ok(Value::Object(m)) => Ok(Some(trie.project_object(&m))),
+                Ok(_) => Ok(None),
+                Err(_) => Err(()),
+            };
+            let stream = trie.project_str(l).map_err(|_| ());
+            // The one allowed difference: the streaming read skips what `keep` does not name, so a line the full parse refuses ONLY inside
+            // an unnamed part (a lone surrogate escape, a number out of range) is read; the script that gets the text instead would
+            // read the same projection. A refusal in a named part, or anywhere else, is the same refusal.
+            if tree.is_err() && stream.is_ok() {
+                // the refusing token sat in a part nothing names: with it replaced the tree projection gives the very answer the stream gave
+                let fixed = l.replace("\\ud800", "X").replace("1e999", "1");
+                assert_ne!(&fixed, l, "keep {keep} line {l}: refused for another reason, yet the stream read it");
+                let again = match serde_json::from_str::<Value>(&fixed) {
+                    Ok(Value::Object(m)) => Ok(Some(trie.project_object(&m))),
+                    _ => Err(()),
+                };
+                assert_eq!(again, stream, "keep {keep} line {l}");
+                assert!(!format!("{stream:?}").contains('X'), "keep {keep} line {l}: a refused token reached a kept leaf");
+                continue;
+            }
+            assert_eq!(tree, stream, "keep {keep} line {l}");
+        }
+    }
+}

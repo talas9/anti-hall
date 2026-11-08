@@ -913,41 +913,32 @@ pub fn tail_entries(path: &str, window: f64, line_max: f64, keep: &str, max_line
     let max_lines = if max_lines.is_finite() && max_lines >= 1.0 { max_lines as usize } else { usize::MAX };
     // only the newest `max_lines` lines are parsed and returned; the older ones are counted (`dropped`, and `droppedUnread`
     // for those that were over `lineMax` or not UTF-8)
-    let mut ring: std::collections::VecDeque<(u64, Option<String>)> = std::collections::VecDeque::new();
+    let mut ring: std::collections::VecDeque<(u64, serde_json::Value, bool)> = std::collections::VecDeque::new();
     let (mut dropped, mut dropped_unread) = (0u64, 0u64);
+    // each line is cut down to `keep` as it is read (never parsed into a tree, never kept as text), so the window is not held
     tail_scan(path, window, line_max, |at, text| {
+        let unread = text.is_none();
+        let v = project_line(&trie, text);
         if ring.len() == max_lines
-            && let Some((_, old)) = ring.pop_front()
+            && let Some((_, _, old_unread)) = ring.pop_front()
         {
             dropped += 1;
-            dropped_unread += u64::from(old.is_none());
+            dropped_unread += u64::from(old_unread);
         }
-        ring.push_back((at, text));
+        ring.push_back((at, v, unread));
     })?;
-    let mut lines: Vec<serde_json::Value> = Vec::with_capacity(ring.len());
-    for (at, text) in ring {
-        let v = match text {
-            None => serde_json::Value::Null,
-            Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
-            Some(t) => match serde_json::from_str::<serde_json::Value>(&t) {
-                Ok(serde_json::Value::Object(m)) => trie.project_object(&m),
-                Ok(_) => serde_json::json!(0),
-                Err(_) => serde_json::Value::String(t),
-            },
-        };
-        lines.push(serde_json::json!([at, v]));
-    }
+    let lines: Vec<serde_json::Value> = ring.into_iter().map(|(at, v, _)| serde_json::json!([at, v])).collect();
     Some(serde_json::json!({ "lines": lines, "dropped": dropped, "droppedUnread": dropped_unread }).to_string())
 }
 
 /// The paths of a `tailEntries` projection, as a tree.
 #[derive(Default)]
-struct KeepNode {
+pub(super) struct KeepNode {
     kids: std::collections::BTreeMap<String, KeepNode>,
 }
 
 impl KeepNode {
-    fn parse(keep: &str) -> Option<KeepNode> {
+    pub(super) fn parse(keep: &str) -> Option<KeepNode> {
         let paths: Vec<Vec<String>> = serde_json::from_str(keep).ok()?;
         let mut root = KeepNode::default();
         for p in paths {
@@ -959,7 +950,8 @@ impl KeepNode {
         Some(root)
     }
 
-    fn project_object(&self, m: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    #[cfg(test)]
+    pub(super) fn project_object(&self, m: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         for (k, kid) in &self.kids {
             if let Some(v) = m.get(k) {
@@ -969,6 +961,7 @@ impl KeepNode {
         serde_json::Value::Object(out)
     }
 
+    #[cfg(test)]
     fn project(&self, v: &serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::Object(m) => self.project_object(m),
@@ -978,6 +971,112 @@ impl KeepNode {
             },
             other => other.clone(),
         }
+    }
+}
+
+/// One line of a `tailEntries` / `rangeEntries` answer: `null` for a line the reader skipped, `0` for a blank line or JSON that is not
+/// an object, the cut-down object, or the line's own text when the parser refused it.
+fn project_line(trie: &KeepNode, text: Option<String>) -> serde_json::Value {
+    match text {
+        None => serde_json::Value::Null,
+        Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
+        Some(t) => match trie.project_str(&t) {
+            Ok(Some(v)) => v,
+            Ok(None) => serde_json::json!(0),
+            Err(_) => serde_json::Value::String(t),
+        },
+    }
+}
+
+impl KeepNode {
+    /// The line's object cut down to this tree, read straight from the text: the parts the tree does not name are skipped with
+    /// `IgnoredAny` (never built, never copied), so a multi-megabyte tool result costs the line text and nothing beside it.
+    /// `Ok(None)` when the JSON is not an object; `Err` when the parser refuses the text (as a full parse would).
+    pub(super) fn project_str(&self, text: &str) -> Result<Option<serde_json::Value>, serde_json::Error> {
+        use serde::de::DeserializeSeed;
+        // only an object is cut down; any other JSON reads as nothing, and is rare enough to take the plain parse
+        if !text.trim_start_matches([' ', '\t', '\n', '\r']).starts_with('{') {
+            return serde_json::from_str::<serde_json::Value>(text).map(|_| None);
+        }
+        let mut de = serde_json::Deserializer::from_str(text);
+        let v = Cut { node: self }.deserialize(&mut de)?;
+        de.end()?;
+        Ok(Some(v))
+    }
+}
+
+/// A value read through a `keep` tree: [`KeepNode::project`] without the tree of values.
+struct Cut<'a> {
+    node: &'a KeepNode,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for Cut<'_> {
+    type Value = serde_json::Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Cut<'_> {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any JSON value")
+    }
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(serde_json::Number::from_f64(v).map_or(serde_json::Value::Null, serde_json::Value::Number))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v.to_owned()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v))
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        match self.node.kids.get("*") {
+            Some(kid) => {
+                let mut out = Vec::new();
+                while let Some(v) = seq.next_element_seed(Cut { node: kid })? {
+                    out.push(v);
+                }
+                Ok(serde_json::Value::Array(out))
+            }
+            None => {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(serde_json::Value::Array(Vec::new()))
+            }
+        }
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut out = serde_json::Map::new();
+        while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+            match self.node.kids.get(key.as_ref()) {
+                // a repeated key keeps its last value, as the full parse does
+                Some(kid) => {
+                    let v = map.next_value_seed(Cut { node: kid })?;
+                    out.insert(key.into_owned(), v);
+                }
+                None => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(serde_json::Value::Object(out))
     }
 }
 
@@ -996,15 +1095,7 @@ pub fn range_entries(path: &str, from: f64, window: f64, line_max: f64, keep: &s
     let from = if from.is_finite() && from >= 0.0 { Some(from as u64) } else { None };
     let mut lines: Vec<serde_json::Value> = Vec::new();
     let info = range_scan(path, from, window, line_max, false, max_lines, |at, text| {
-        let v = match text {
-            None => serde_json::Value::Null,
-            Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
-            Some(t) => match serde_json::from_str::<serde_json::Value>(&t) {
-                Ok(serde_json::Value::Object(m)) => trie.project_object(&m),
-                Ok(_) => serde_json::json!(0),
-                Err(_) => serde_json::Value::String(t),
-            },
-        };
+        let v = project_line(&trie, text);
         lines.push(serde_json::json!([at, v]));
     })?;
     Some(
