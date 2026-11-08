@@ -9,6 +9,7 @@
 //! The format is JSON (`serde_json` is already a dependency; a binary format would be a new one).
 use super::facts::{AgentRow, Fact, FifoMap, TaskRow};
 use super::store::Session;
+use crate::checks::agent_scan::lines::AgentState;
 use crate::defaults;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -36,6 +37,9 @@ pub(super) struct Snap {
     pub tasks: FifoMap<TaskRow>,
     pub agents: FifoMap<AgentRow>,
     pub task_ids: FifoMap<String>,
+    /// The agent-scan digests (absent in an older snapshot: no window before its offset is answered from digests then).
+    #[serde(default)]
+    pub agent: AgentState,
 }
 
 /// What [`write`] did.
@@ -75,6 +79,8 @@ impl Snap {
             tasks: self.tasks,
             agents: self.agents,
             task_ids: self.task_ids,
+            // digests made under other agent-scan settings answer nothing: they start again at the snapshot's offset
+            agent: if self.agent.stamp == crate::checks::agent_scan::lines::config_stamp() { self.agent } else { AgentState::starting_at(self.offset) },
             ..Session::default()
         }
     }
@@ -99,6 +105,7 @@ pub(super) fn write(dir: &Path, path: &Path, s: &Session, max: usize) -> Wrote {
         tasks: s.tasks.clone(),
         agents: s.agents.clone(),
         task_ids: s.task_ids.clone(),
+        agent: s.agent.clone(),
     };
     let Ok(bytes) = serde_json::to_vec(&snap) else { return Wrote::Failed };
     if bytes.len() > max {

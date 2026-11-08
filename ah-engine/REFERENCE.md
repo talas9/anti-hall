@@ -1789,7 +1789,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `transcript.agent_answered_calls_max` | `4096` |  | count | Most answered tool calls a session remembers, for a further result of the same call (the oldest is forgotten first). |
+| `transcript.agent_budget_bytes` | `3145728` |  | bytes | Bytes of agent-scan digests one session may hold. Over it the oldest digests are dropped and the agent coverage mark rises (a window starting before it is read afresh). Counted in the session's bytes and in transcript.global_budget_bytes. |
+| `transcript.agent_call_bytes` | `160` |  | bytes | Bytes charged for one remembered call besides its id, name and kept input (the record and its slot in the order queue). |
+| `transcript.agent_horizon_bytes` | `16777216` |  | bytes | How far behind the end of a transcript the store keeps the agent-scan digests (what each line contributes to the agent walk). It covers the widest agent-scan window (agent_scan.wide_tail_bytes plus its agent_scan.window_quantum_pct rounding); a scan of a window that starts earlier is read afresh. |
 | `transcript.agent_map_max` | `256` |  | count | Most agents the keyed agent map holds (launch offset, terminal or not). It outlives the horizon; the oldest-inserted agent goes first. |
+| `transcript.agent_open_calls_max` | `4096` |  | count | Most unanswered tool calls a session remembers for matching their results. Over it the oldest is forgotten and the agent coverage mark rises past it, so no window is answered as if that call were unseen. |
+| `transcript.agent_stamp_prefix` | `agent_scan.` |  |  | Settings prefix whose values the agent-scan digests depend on: a change of any of them rebuilds the digests (and a snapshot made under other values starts them again at its offset). |
 | `transcript.agent_tools` | `Agent, Task` |  |  | Names of the tools that launch an agent; a use of one is recorded in the keyed agent map under its tool-use id. |
 | `transcript.assistant_text_max_bytes` | `1048576` |  | bytes | Longest last-assistant text kept; the rest is cut at a character boundary and flagged. |
 | `transcript.cold_build_permits` | `1` |  | count | Cold builds (a first touch with no usable snapshot, or a rebuild after a rewrite) that may run at once in the whole process, so sessions that start together share one read buffer and never hold N windows. |
@@ -4264,6 +4270,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_scan.teammate_report_prefix` | `Another Claude session sent a message:` |  |  | Text a teammate report entry begins with. |
 | `agent_scan.transcript_ext` | `.jsonl` |  |  | Extension of a transcript file. |
 | `agent_scan.undefined_string` | `undefined` |  |  | What String() gives for a missing value. |
+| `agent_scan.use_store` | `1` |  | flag | 1 = the agent scan answers from the transcript store's agent digests (transcript.agent_* keys): each line is digested once when the store reads it, no walk is kept per scan, and a window the store cannot answer (not yet covered, busy, another file, settings changed) is read afresh without keeping a walk; counted in agent_scan_store{result}. 0 = the scan walks its window itself and keeps the walk between calls (agent_scan.cache_*), as before (kill switch). |
 | `agent_scan.utc_suffix` | ` UTC` |  |  | Suffix of a clock time in a note. |
 | `agent_scan.wide_tail_bytes` | `12582912` |  | bytes | Bytes read by the one widened scan that proves a zero running-agent count on a transcript longer than the default window. |
 | `agent_scan.window_quantum_pct` | `10` |  | percent | The scan window of a transcript longer than it starts at a multiple of this percent of the window, so it is the window up to this much longer. An exact window starts one byte later with every appended byte and the kept walk is rebuilt (the whole window read and filtered) whenever the start passes a line a launch, a notice or a stop came from, which in a busy session is nearly every Stop; a start that moves once per quantum rebuilds once per quantum. A longer window only ever sees more, never less. 0 is the exact window. |

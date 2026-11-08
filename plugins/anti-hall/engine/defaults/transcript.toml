@@ -416,3 +416,38 @@ doc = "Longest tool-result text a parsed transcript line keeps for the fact read
 value = 65536
 min = 1024
 unit = "bytes"
+
+# ---- the agent scan on the store (checks/agent_scan/lines.rs) -----------------------------------------------------------
+[transcript.agent_horizon_bytes]
+doc = "How far behind the end of a transcript the store keeps the agent-scan digests (what each line contributes to the agent walk). It covers the widest agent-scan window (agent_scan.wide_tail_bytes plus its agent_scan.window_quantum_pct rounding); a scan of a window that starts earlier is read afresh."
+value = 16777216
+min = 0
+unit = "bytes"
+
+[transcript.agent_budget_bytes]
+doc = "Bytes of agent-scan digests one session may hold. Over it the oldest digests are dropped and the agent coverage mark rises (a window starting before it is read afresh). Counted in the session's bytes and in transcript.global_budget_bytes."
+value = 3145728
+min = 0
+unit = "bytes"
+
+[transcript.agent_open_calls_max]
+doc = "Most unanswered tool calls a session remembers for matching their results. Over it the oldest is forgotten and the agent coverage mark rises past it, so no window is answered as if that call were unseen."
+value = 4096
+min = 1
+unit = "count"
+
+[transcript.agent_answered_calls_max]
+doc = "Most answered tool calls a session remembers, for a further result of the same call (the oldest is forgotten first)."
+value = 4096
+min = 1
+unit = "count"
+
+[transcript.agent_call_bytes]
+doc = "Bytes charged for one remembered call besides its id, name and kept input (the record and its slot in the order queue)."
+value = 160
+min = 0
+unit = "bytes"
+
+[transcript.agent_stamp_prefix]
+doc = "Settings prefix whose values the agent-scan digests depend on: a change of any of them rebuilds the digests (and a snapshot made under other values starts them again at its offset)."
+value = "agent_scan."

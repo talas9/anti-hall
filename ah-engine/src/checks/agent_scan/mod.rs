@@ -20,6 +20,7 @@ use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::OnceLock;
 
+pub mod lines;
 #[cfg(test)]
 mod tests;
 
@@ -771,6 +772,8 @@ struct Other {
     ts: f64,
     /// Offset of the line the text came from (kept walks only).
     off: u64,
+    /// Where the text sits in its line when it is not held (`text` is then empty): block, text, byte length (store replays only).
+    at: Option<(u32, u32, u64)>,
 }
 
 #[derive(Clone)]
@@ -1165,7 +1168,7 @@ impl Walk {
                     if self.other_bytes > defaults::num("agent_scan.retain_bytes") {
                         return Err(Unsupported);
                     }
-                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text: text.to_string(), seq, ts: entry_ts, off: self.cur_off });
+                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text: text.to_string(), seq, ts: entry_ts, off: self.cur_off, at: None });
                     if let Some(t) = tuid {
                         self.pinned.insert(t);
                     }
@@ -1429,6 +1432,14 @@ fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) 
     if !path.starts_with('/') {
         return Err(Unsupported);
     }
+    if defaults::num("agent_scan.use_store") == 1 {
+        if let Some(r) = scan_store(path, file, tail, opts) {
+            return r;
+        }
+        // the store could not answer this window: it is read afresh, and no walk is kept (the store is the cache)
+        let _turn = crate::transcript::scan::permit();
+        return scan_window(path, file, tail, opts);
+    }
     // one transcript window is walked at a time in the daemon; a request that gets no turn before its deadline walks anyway
     let _turn = crate::transcript::scan::permit();
     if defaults::num("agent_scan.cache_max_paths") > 0
@@ -1439,6 +1450,63 @@ fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) 
         return scan_kept(path, tail, file, &m, opts);
     }
     scan_window(path, file, tail, opts)
+}
+
+/// The line of `file` at `off` (no newline), read with the store's reader; `None` when it cannot be read or is over the line cap.
+fn line_at(file: &std::fs::File, off: u64, size: u64) -> Option<Vec<u8>> {
+    let mut r = crate::transcript::reader::LineReader::new(file, crate::transcript::reader::ReadCfg::from_defaults(), off, size);
+    let l = r.next_line().ok()??;
+    (!l.oversize && l.off == off).then(|| r.bytes().to_vec())
+}
+
+/// The scan of the window answered from the transcript store's agent digests (`agent_scan.use_store`). `None` when the store
+/// cannot answer it (not covered, busy, another file, settings changed): the caller then reads the window afresh. Counted in
+/// `agent_scan_store{result}`.
+fn scan_store(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Option<Res<Option<Scan>>> {
+    let m = file.metadata().ok()?;
+    let size = m.len();
+    if size == 0 {
+        return None;
+    }
+    let s = size - window_len(size, tail);
+    let id = (m.dev(), m.ino());
+    let replayed = crate::transcript::store::global().with(std::path::Path::new(path), now_ms() as u64, |v| {
+        if v.size() != size || v.file_id() != Some(id) {
+            return Err(lines::Miss::Reread);
+        }
+        let oversize = v.oversize();
+        v.agent_digests().replay(s, &oversize, &mut |off| line_at(file, off, size))
+    });
+    let walk = match replayed {
+        Err(u) => {
+            crate::load::note_count("agent_scan_store", "result", u.code());
+            return None;
+        }
+        Ok(Err(miss)) => {
+            crate::load::note_count("agent_scan_store", "result", miss.label());
+            return None;
+        }
+        Ok(Ok(Err(e))) => {
+            crate::load::note_count("agent_scan_store", "result", "unsupported");
+            return Some(Err(e));
+        }
+        Ok(Ok(Ok(w))) => w,
+    };
+    let mut load = |o: &Other| o.at.and_then(|at| line_at(file, o.off, size).and_then(|raw| lines::text_at(&raw, at)));
+    match finish_with(&walk, 0, path, opts, &mut load) {
+        Ok(Some(scan)) => {
+            crate::load::note_count("agent_scan_store", "result", "hit");
+            Some(Ok(Some(scan)))
+        }
+        Ok(None) => {
+            crate::load::note_count("agent_scan_store", "result", "reread");
+            None
+        }
+        Err(e) => {
+            crate::load::note_count("agent_scan_store", "result", "unsupported");
+            Some(Err(e))
+        }
+    }
 }
 
 /// How far before the window start a kept walk may begin before it is rebuilt: `agent_scan.window_slack_pct` percent of the window.
@@ -1677,6 +1745,12 @@ fn kept_miss_reason(k: &Kept, gen_: u64, m: &std::fs::Metadata, size: u64, s: u6
 }
 
 fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
+    finish_with(w, others_from, path, opts, &mut |_| None).map(|s| s.unwrap_or_default())
+}
+
+/// [`finish`], with `load` giving the text of a retained result the walk does not hold (`Other::at`). `Ok(None)` when a text
+/// cannot be read again (the caller then scans afresh).
+fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut dyn FnMut(&Other) -> Option<String>) -> Res<Option<Scan>> {
     // finish only borrows the walk (a kept walk is cached for the next call and must not be cloned whole): the few fields it
     // changes are copied here, the big read-only ones (calls, answers, the text of other lines) are read in place
     let mut launched = w.launched.clone();
@@ -1735,15 +1809,22 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
         }
     }
 
-    // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id.
+    // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id. Each agent takes the first
+    // retained answer that quotes it; the answers are visited once each (in order) and asked about every agent not yet found, which
+    // looks at the same (agent, answer) pairs as one pass per agent, so a text that is not held is read at most once.
     let launched_ids: Vec<String> = launched.keys().cloned().collect();
-    for id in &launched_ids {
-        if terminal.contains(id) {
-            continue;
+    let live_ids: Vec<&String> = launched_ids.iter().filter(|id| !terminal.contains(*id)).collect();
+    let mut hits: Vec<Option<(u64, f64)>> = vec![None; live_ids.len()];
+    for o in w.others.iter().filter(|o| o.off >= others_from) {
+        if hits.iter().all(Option::is_some) {
+            break;
         }
-        let own = launched.get(id).and_then(|r| r.tool_use_id.clone());
-        let mut hit: Option<(u64, f64)> = None;
-        for o in w.others.iter().filter(|o| o.off >= others_from) {
+        let mut loaded: Option<String> = None;
+        for (i, id) in live_ids.iter().enumerate() {
+            if hits[i].is_some() {
+                continue;
+            }
+            let own = launched.get(id.as_str()).and_then(|r| r.tool_use_id.clone());
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
@@ -1754,12 +1835,25 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
                     continue;
                 }
             }
-            if o.text.split('\n').any(|ln| ln.contains(id.as_str()) && !pats().running_row.is_match(ln)) {
-                hit = Some((o.seq, o.ts));
-                break;
+            let text: &str = match o.at {
+                None => &o.text,
+                Some(_) => {
+                    if loaded.is_none() {
+                        match load(o) {
+                            Some(t) => loaded = Some(t),
+                            None => return Ok(None),
+                        }
+                    }
+                    loaded.as_deref().unwrap_or("")
+                }
+            };
+            if text.split('\n').any(|ln| ln.contains(id.as_str()) && !pats().running_row.is_match(ln)) {
+                hits[i] = Some((o.seq, o.ts));
             }
         }
-        if let Some((seq, ts)) = hit {
+    }
+    for (i, id) in live_ids.iter().enumerate() {
+        if let Some((seq, ts)) = hits[i] {
             mark_terminal_in(&mut terminal, &mut terminal_ev, id, seq, ts);
         }
     }
@@ -1907,7 +2001,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
         );
         terminal.remove(&name);
     }
-    Ok(Scan { launched, terminal, stopped_agents, pending })
+    Ok(Some(Scan { launched, terminal, stopped_agents, pending }))
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows
