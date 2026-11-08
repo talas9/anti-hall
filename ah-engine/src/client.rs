@@ -568,9 +568,11 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
 
 /// Start the daemon for a client that found none: through the service manager when the supervised unit is installed and matches
 /// this client (the daemon is then the unit's child and its supervisor starts it again after a kill), else detached by the client.
-/// `None` = it could not be started; `Some(None)` = the service manager started it and it answers; `Some(Some(child))` = started here.
-pub(crate) fn start_daemon() -> Option<Option<std::process::Child>> {
-    if crate::setup::supervise::kickstart(&paths::socket()) {
+/// `None` = it could not be started; `Some(None)` = the service manager started it (and, with `wait`, it answers); `Some(Some(child))` =
+/// started here. `wait` is for the callers that need the daemon now (a guard event, the spool writer); a call that never waits (a
+/// prompt, an advisory, `answer_now`) passes false, and the ask to the service manager then costs the start command only.
+pub(crate) fn start_daemon(wait: bool) -> Option<Option<std::process::Child>> {
+    if crate::setup::supervise::kickstart(&paths::socket(), wait) {
         return Some(None);
     }
     spawn_daemon().map(Some)
@@ -724,7 +726,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
                 && let Some(_spawn_lock) = spawn_lock_if_absent(&sock)
             {
                 health::log_event("client_spawn_attempt", "singleflight", &why);
-                let _ = start_daemon();
+                let _ = start_daemon(false);
             }
             health::breaker_failure(cfg, &why);
             None
@@ -788,7 +790,7 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
     let (spawn_guard, mut child) = match spawn_lock_if_absent(sock) {
         Some(lock) => {
             health::log_event("client_spawn_attempt", "singleflight", "absent");
-            let Some(child) = start_daemon() else {
+            let Some(child) = start_daemon(true) else {
                 wait_marker(false);
                 note_unavailable();
                 mark_daemon_down("spawn");
@@ -852,7 +854,7 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     note_unavailable();
     let _spawn_lock = spawn_lock_if_absent(sock)?;
     health::log_event("client_spawn_attempt", "singleflight", "absent");
-    let Some(mut child) = start_daemon() else {
+    let Some(mut child) = start_daemon(false) else {
         mark_daemon_down("spawn");
         return None;
     };
@@ -911,7 +913,7 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
     health::clear_hang_suspicion();
     health::log_event("client_hung_kill", "daemon", &defaults::render("msg.log_hung_kill", &[("pid", &pid), ("why", &why)]));
     health::log_event("client_spawn_attempt", "singleflight", why);
-    start_daemon().is_some()
+    start_daemon(false).is_some()
 }
 
 /// Log a client-side failure; the state dir may not exist yet (no daemon ever ran here), and the event must still be on record.

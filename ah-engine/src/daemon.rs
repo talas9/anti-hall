@@ -2173,11 +2173,13 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
 
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
-    health::record_failure("start_fail", code, detail);
+    let recorded = health::record_failure("start_fail", code, detail);
     // A start by the service manager that keeps failing obeys the same crash-loop rule: the failure above counts (start_fail is a
     // crashy kind), and once the rule trips this exits 0, which launchd (KeepAlive SuccessfulExit=false, no start limit) leaves alone
     // until the interval tick asks again after the cooldown. Below the threshold it exits 78 and the manager starts it again.
-    if SUPERVISED.load(SeqCst) && health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
+    // When the state directory cannot be written the failure cannot be counted and the rule would never trip, so a supervised start
+    // exits 0 at once: the interval tick retries, instead of the manager re-running it every throttle interval for ever.
+    if SUPERVISED.load(SeqCst) && (!recorded || health::crashloop_tripped(&crate::config::ClientConfig::from_env())) {
         std::process::exit(defaults::num("daemon.drain_timeout_exit_code") as i32);
     }
     std::process::exit(defaults::num("daemon.start_fail_exit_code") as i32);

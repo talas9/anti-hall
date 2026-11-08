@@ -317,14 +317,17 @@ pub fn hint_text(key: &str) -> String {
     defaults::render(key, &[("state_dir", &state_dir), ("env_dir", &defaults::env_name("dir")), ("env_mem", &defaults::env_of("daemon.mem_mb").unwrap_or(""))])
 }
 
-/// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}.
-pub fn record_failure(kind: &str, code: &str, reason: &str) {
+/// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}. True when the record was written; false
+/// when the state directory cannot be written (then no crash-loop rule can count this failure either).
+pub fn record_failure(kind: &str, code: &str, reason: &str) -> bool {
     let (class, hint) = classify(code);
     let v = json!({"ts": now_ms(), "class": if class == Class::Env {"env"} else {"permanent"}, "kind": kind, "code": code, "hint": hint, "reason": reason});
     if let Err(e) = crate::atomic::write(state_file("failure"), v.to_string()) {
         // without the record no advisory is ever shown; the log still has the failure itself
         log_event_or_stderr("health", "failure_record_write_failed", &format!("{kind}/{code}: {e}"));
+        return false;
     }
+    true
 }
 
 pub(crate) fn read_json(key: &str) -> Option<Value> {

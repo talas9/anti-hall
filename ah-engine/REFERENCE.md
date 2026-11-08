@@ -13393,6 +13393,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `units.kickstart_poll_ms` | `2` |  | ms | How often a client that asked the service manager for the daemon checks whether it answers (up to units.kickstart_budget_ms). |
 | `units.kickstart_systemd` | `systemctl, --user, start, {unit}` |  |  | The command that starts the engine service now (systemd user manager). {unit} is the service name with its suffix. |
 | `units.kickstart_timeout_ms` | `300` |  | ms | Longest the start command of a client with no daemon may run (within units.kickstart_budget_ms); the child process is killed at the limit and the client starts the daemon itself. |
+| `units.kickstart_unguarded_ms` | `100` |  | ms | Longest the ask to the service manager may take for a call that never waits (a prompt, an advisory, an answer-now call): the start command runs within it and the call does not wait for the daemon to answer, which it would otherwise do for up to units.kickstart_budget_ms. Measured on macOS with a release build (scratch label, never the live job): `launchctl kickstart` returns in 11-18 ms, the daemon answers 0.60-0.69 s after it. |
 | `units.label` | `com.anti-hall.engine` |  |  | The launchd label of the engine unit. |
 | `units.label_sep` | `.` |  |  | Between a family label and its per-project suffix. |
 | `units.launchd_dir` | `Library/LaunchAgents` |  |  | The LaunchAgents directory, relative to the home directory. |

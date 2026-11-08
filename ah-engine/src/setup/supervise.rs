@@ -50,10 +50,11 @@ fn unit_matches_client(home: &Path, m: Manager) -> bool {
 }
 
 /// Ask the service manager to start the engine unit and wait for a daemon to answer on `sock`, all within `units.kickstart_budget_ms`
-/// (the command and the wait together, so a miss costs the hook no more than that).
+/// (the command and the wait together, so a miss costs the hook no more than that). With `wait` false the call does not wait for an
+/// answer: the start command only, within `units.kickstart_unguarded_ms`.
 /// True when one answered. False means the caller starts the daemon itself (the singleton lock keeps it single); every false
 /// is also false when nothing was asked (switch off, no unit, a mismatch, a test home).
-pub fn kickstart(sock: &Path) -> bool {
+pub fn kickstart(sock: &Path, wait: bool) -> bool {
     if defaults::env_var("nospawn").is_some() || !enabled() {
         return false;
     }
@@ -64,7 +65,8 @@ pub fn kickstart(sock: &Path) -> bool {
         return false;
     }
     let began = Instant::now();
-    let budget = defaults::millis("units.kickstart_budget_ms");
+    // a call that never waits (`wait` false) is held to `units.kickstart_unguarded_ms` for the start command alone
+    let budget = if wait { defaults::millis("units.kickstart_budget_ms") } else { defaults::millis("units.kickstart_unguarded_ms") };
     let argv = kickstart_argv(m);
     let Some((prog, rest)) = argv.split_first() else { return false };
     let mut cmd = std::process::Command::new(prog);
@@ -81,6 +83,11 @@ pub fn kickstart(sock: &Path) -> bool {
     if !ran {
         crate::health::log_event(kind, defaults::text("units.kickstart_failed"), &argv.join(" "));
         return false;
+    }
+    if !wait {
+        // the command ran in time, so the service manager is starting the job; this call does not wait for it to answer
+        crate::health::log_event(kind, defaults::text("units.kickstart_ok"), &argv.join(" "));
+        return true;
     }
     let poll = defaults::millis("units.kickstart_poll_ms");
     loop {

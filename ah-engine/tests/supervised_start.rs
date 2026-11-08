@@ -132,3 +132,43 @@ fn an_unsupervised_start_that_fails_is_still_exit_78() {
     }
     ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
 }
+
+/// Make a start fail BEFORE the lock is won, with the state directory still writable: a directory where the lock file belongs.
+fn poison_lock(r: &Path) {
+    let lock = ah_engine::paths::lock_for(&ah_engine::paths::socket_in(&r.join("eng")));
+    std::fs::create_dir_all(lock).unwrap();
+}
+
+#[test]
+fn a_supervised_start_that_fails_before_the_lock_is_stopped_by_the_crash_loop_rule_too() {
+    let r = root("prelock");
+    poison_lock(&r);
+    let mut codes = Vec::new();
+    for _ in 0..8 {
+        let mut c = cmd(&r);
+        c.env("AH_ENGINE_CRASH_N", "3").args(["serve", "--start-reason", "launchd"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        codes.push(wait_exit(&mut c.spawn().unwrap()));
+        if codes.last() == Some(&0) {
+            break;
+        }
+    }
+    assert_eq!(codes.first(), Some(&78), "below the threshold a failed start is exit 78: {codes:?}");
+    assert_eq!(codes.last(), Some(&0), "a failure before the lock is won trips the rule as well: {codes:?}");
+    assert!(logged(&r, "crashloop"), "the trip is logged");
+    assert!(!logged(&r, "supervised_start"), "no start is logged: the lock was never won");
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
+}
+
+#[test]
+fn a_supervised_start_that_cannot_record_its_failure_exits_0_at_once_and_an_unsupervised_one_stays_78() {
+    let r = root("unwritable");
+    // the state directory is a regular file: nothing can be written there, so no failure is ever counted
+    std::fs::remove_dir_all(r.join("eng")).unwrap();
+    std::fs::write(r.join("eng"), b"not a directory").unwrap();
+    for (reason, want) in [("launchd", 0), ("manual", 78)] {
+        let mut c = cmd(&r);
+        c.env("AH_ENGINE_CRASH_N", "3").args(["serve", "--start-reason", reason]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        assert_eq!(wait_exit(&mut c.spawn().unwrap()), want, "{reason}");
+    }
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
+}

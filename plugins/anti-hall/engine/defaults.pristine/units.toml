@@ -535,6 +535,12 @@ value = 600
 min = 10
 unit = "ms"
 
+[units.kickstart_unguarded_ms]
+doc = "Longest the ask to the service manager may take for a call that never waits (a prompt, an advisory, an answer-now call): the start command runs within it and the call does not wait for the daemon to answer, which it would otherwise do for up to units.kickstart_budget_ms. Measured on macOS with a release build (scratch label, never the live job): `launchctl kickstart` returns in 11-18 ms, the daemon answers 0.60-0.69 s after it."
+value = 100
+min = 10
+unit = "ms"
+
 [units.kickstart_poll_ms]
 doc = "How often a client that asked the service manager for the daemon checks whether it answers (up to units.kickstart_budget_ms)."
 value = 2
