@@ -6,6 +6,8 @@ const boot = JSON.parse(document.getElementById("boot")?.textContent || "{}");
 let theme = null;
 try { theme = localStorage.getItem("ah-theme"); } catch (_) { /* storage blocked: use the server's start */ }
 if (!["system", "light", "dark"].includes(theme)) theme = boot.theme || "system";
+// the scheme to use on `system` when the computer reports no preference (read by the page's one dark/light check)
+document.documentElement.setAttribute("data-theme-default", boot.theme === "light" ? "light" : "dark");
 if (theme === "system") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", theme);
 let saved = null;
 try { saved = localStorage.getItem("ah-mode"); } catch (_) { /* storage blocked: use the server's start tier */ }

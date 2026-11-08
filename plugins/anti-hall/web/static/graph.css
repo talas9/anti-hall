@@ -31,7 +31,7 @@
 
   .ahg-lbl {
     position: absolute; transform: translate(-50%, -50%); padding: 1px 7px; border-radius: 4px; pointer-events: none;
-    font: Ipx var(--ahg-mono); color: var(--ahg-muted); background: color-mix(in oklch, var(--ahg-bg) 85%, transparent);
+    font: 400 11px/14px var(--ahg-mono); color: var(--ahg-muted); background: color-mix(in oklch, var(--ahg-bg) 85%, transparent);
     border: 1px solid var(--ahg-line); white-space: nowrap;
   }
   .ahg-lbl[data-hot="true"] { color: var(--ahg-text); border-color: var(--ahg-wire-hot); }
@@ -74,11 +74,11 @@
   .ahg-port { position: absolute; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%, -50%); background: var(--k); border: 2px solid var(--ahg-bg); box-sizing: content-box; }
   .ahg-port.in { left: 0; }
   .ahg-port.out { left: 100%; }
-  .ahg-port em { position: absolute; top: 50%; transform: translateY(-50%); font: Ipx var(--ahg-mono); color: var(--ahg-muted); white-space: nowrap; pointer-events: none; }
+  .ahg-port em { position: absolute; top: 50%; transform: translateY(-50%); font: 400 11px/14px var(--ahg-mono); color: var(--ahg-muted); white-space: nowrap; pointer-events: none; }
   .ahg-port.in em { right: 12px; }
   .ahg-port.out em { left: 12px; }
 
-  .ahg-chip { position: absolute; top: -11px; right: 10px; padding: 1px 8px; border-radius: 4px; font: Ipx var(--ahg-mono); white-space: nowrap; border: 1px solid var(--ahg-line); background: var(--ahg-panel); }
+  .ahg-chip { position: absolute; top: -11px; right: 10px; padding: 1px 8px; border-radius: 4px; font: 400 11px/14px var(--ahg-mono); white-space: nowrap; border: 1px solid var(--ahg-line); background: var(--ahg-panel); }
   .ahg-chip.run { color: var(--ahg-warn); border-color: color-mix(in oklch, var(--ahg-warn) 55%, transparent); }
   .ahg-chip.ok { color: var(--ahg-ok); border-color: color-mix(in oklch, var(--ahg-ok) 55%, transparent); }
   .ahg-chip.bad { color: var(--ahg-bad); border-color: color-mix(in oklch, var(--ahg-bad) 55%, transparent); }
@@ -118,7 +118,7 @@
   .ahg-pop li button:hover:not(:disabled), .ahg-pop li button:focus-visible { background: color-mix(in oklch, var(--ahg-panel) 75%, var(--ahg-wire-hot)); outline: none; }
   .ahg-pop li button:disabled { opacity: .45; cursor: not-allowed; }
   .ahg-pop li button.destructive { color: var(--ahg-bad); }
-  .ahg-fb { font: Ipx var(--ahg-mono); }
+  .ahg-fb { font: 400 11px/14px var(--ahg-mono); }
   .ahg-fb.run { color: var(--ahg-warn); } .ahg-fb.ok { color: var(--ahg-ok); } .ahg-fb.bad { color: var(--ahg-bad); }
   .ahg-empty { margin: 6px 10px; color: var(--ahg-muted); }
   .ahg-confirm { max-width: 300px; padding: 14px; }

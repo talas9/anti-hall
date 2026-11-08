@@ -4,7 +4,7 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 12px; }
 .live { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
 .live-stats { display: grid; grid-template-columns: repeat(5, minmax(90px, 130px)) minmax(0, 1fr); gap: 8px; }
 .live-block { color: var(--red); }
-.live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--font-mono); }
+.live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font: 400 12px/16px var(--font-ui); }
 .live-top li { display: flex; gap: 6px; }
 .live-top li b { color: var(--cyan); font-weight: 500; }
 .live-cols { display: grid; grid-template-columns: repeat(5, 1fr); font-size: 12px; color: var(--muted); padding: 0 6px; }
@@ -16,7 +16,7 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 12px; }
 }
 .live-timeline { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 8px 12px; }
 .live-timeline ol, .live-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 148px; overflow: auto; }
-.tl { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); min-width: 0; }
+.tl { display: flex; align-items: center; gap: 12px; font: 400 12px/16px var(--font-ui); min-width: 0; }
 .tl i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--tl, var(--idle)); box-shadow: none; }
 .tl-check { color: var(--text-hi); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-ev, .tl-rule { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -26,13 +26,13 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 12px; }
 .live-panel { display: flex; flex-direction: column; gap: 6px; }
 .live-panel .live-rows { max-height: none; }
 @media (max-width: 720px) { .live-stats { grid-template-columns: 1fr 1fr; } .live-top { grid-column: 1 / -1; } .live-cols { display: none; } }
-.task { display: flex; align-items: center; gap: 8px; font: 12px var(--font-mono); min-width: 0; }
+.task { display: flex; align-items: center; gap: 8px; font: 400 12px/16px var(--font-ui); min-width: 0; }
 .chip { flex: 0 0 auto; padding: 1px 8px; border-radius: 4px; border: 1px solid var(--line-2); font-size: 12px; color: var(--muted); }
 .chip-in_progress { color: var(--cyan); border-color: color-mix(in oklch, var(--cyan) 50%, transparent); }
 .chip-completed { color: var(--green); border-color: color-mix(in oklch, var(--green) 50%, transparent); }
 .chip-blocked { color: var(--red); border-color: color-mix(in oklch, var(--red) 50%, transparent); }
 .chip-pending { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 50%, transparent); }
-.jev-row { display: flex; flex-direction: column; gap: 2px; font: 12px var(--font-mono); padding: 4px 0; border-bottom: 1px solid var(--line); }
+.jev-row { display: flex; flex-direction: column; gap: 2px; font: 400 12px/16px var(--font-ui); padding: 4px 0; border-bottom: 1px solid var(--line); }
 
 /* sci-fi deck (Full): deep field, luminous core. Every motion below is triggered by data (a judgement, a fired effect); at rest the scene is still. */
 .live .ahg-view { background-color: var(--deep);  }
@@ -46,8 +46,8 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 12px; }
 
 
 /* legend: the packet colour is the hook type; each chip carries its live rate */
-.live-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 6px; font: 11px var(--font-mono); color: var(--muted); }
-.live-legend-t { font: Ipx var(--font-ui); }
+.live-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 8px; font: 400 12px/16px var(--font-ui); color: var(--muted); }
+.live-legend-t { font: 400 11px/14px var(--font-ui); }
 .live-legend-i { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .live-legend-i i { width: 9px; height: 9px; border-radius: 50%; background: var(--hk); box-shadow: none; }
 .live-legend-i b { color: var(--text-hi); font-weight: 500; font-variant-numeric: tabular-nums; }

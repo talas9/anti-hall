@@ -54,12 +54,7 @@ fn ensure_style() {
 
 #[cfg(feature = "full")]
 fn is_dark() -> bool {
-    let attr = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()).and_then(|e| e.get_attribute("data-theme"));
-    match attr.as_deref() {
-        Some("light") => false,
-        Some("dark") => true,
-        _ => web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten()).is_some_and(|m| m.matches()),
-    }
+    ah_web_graph::color::page_dark()
 }
 
 /// Read `path` now and then every `refresh` seconds (the server says how often, after the first read) until the screen is gone.
@@ -469,7 +464,9 @@ fn WaterfallChart(steps: Vec<Step>, ui: TelUi, texts: BTreeMap<String, String>) 
 /// The screen. Nothing exists, and nothing is read, while it is not shown.
 #[component]
 pub fn TelScreen(active: Signal<bool>) -> impl IntoView {
-    view! { <Show when=move || active.get()><TelBody /></Show> }
+    // rebuilt when the colour scheme changes, so the charts take the new scheme's colours
+    let tick = crate::theme_tick();
+    view! { <Show when=move || active.get()>{move || { tick.track(); view! { <TelBody /> } }}</Show> }
 }
 
 #[component]
@@ -818,7 +815,8 @@ fn filtered(t: &Table, q: &str, sort: (usize, bool)) -> Vec<Vec<Cell>> {
 
 #[component]
 pub fn ImpactScreen(active: Signal<bool>) -> impl IntoView {
-    view! { <Show when=move || active.get()><ImpactBody /></Show> }
+    let tick = crate::theme_tick();
+    view! { <Show when=move || active.get()>{move || { tick.track(); view! { <ImpactBody /> } }}</Show> }
 }
 
 #[component]
