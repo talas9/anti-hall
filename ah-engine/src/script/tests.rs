@@ -2306,19 +2306,20 @@ fn the_prompt_checks_answer_a_raw_slash_command_prompt_like_a_plain_one() {
     }
 }
 
-/// The cache reports a pattern's program plus the scratch its searches were MEASURED to keep, not an assumed per-thread figure.
+/// A pattern nobody searched yet, and one searched where nothing is measured (lib tests install no counting allocator, so
+/// `measure` returns None), weigh at least program + the scratch estimate: the regex limits keep bounding what cannot be measured.
 #[test]
-fn a_cached_pattern_reports_measured_search_scratch_not_an_estimate() {
+fn an_unmeasured_pattern_weighs_at_least_program_plus_the_scratch_estimate() {
     let (_, before) = super::recache::usage();
-    let r = super::recache::get("zzmeasuredscratch[a-z]{3}\\d+", "").expect("valid pattern");
-    let (_, weighed) = super::recache::usage();
-    assert!(weighed - before < super::recache::scratch_estimate(), "no assumed scratch is added at insert");
-    let (n0, _, s0) = super::recache::search_totals();
-    r.searched(|re| re.is_match(&"abc123 zzmeasuredscratchabc12345 ".repeat(200)));
-    let (n1, _, s1) = super::recache::search_totals();
-    assert_eq!(n1, n0 + 1);
-    assert!(s1 >= s0, "the measured scratch never goes down");
-    assert_eq!(super::recache::usage().1 - weighed, (s1 - s0) as usize, "the report grows by exactly what the search kept");
+    let r = super::recache::get("zzunmeasuredscratch[a-z]{3}\\d+", "").expect("valid pattern");
+    let (_, fresh) = super::recache::usage();
+    assert!(fresh - before >= super::recache::scratch_estimate(), "an unsearched entry reports the estimate: {}", fresh - before);
+    for _ in 0..3 {
+        r.searched(|re| re.is_match(&"abc123 zzunmeasuredscratchabc12345 ".repeat(200)));
+    }
+    assert!(r.reported_bytes() >= super::recache::scratch_estimate(), "this entry alone reports the estimate: {}", r.reported_bytes());
+    let (_, after) = super::recache::usage();
+    assert!(after - before >= super::recache::scratch_estimate(), "still at least the estimate after unmeasured searches: {}", after - before);
 }
 
 #[test]

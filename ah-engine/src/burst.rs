@@ -391,7 +391,7 @@ fn dump(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u6
         // a ring of `keep` files: the first free name, else the oldest is overwritten (nothing is deleted)
         let mut pick = (0usize, std::time::SystemTime::now());
         for i in 0..keep {
-            let p = dir.join(format!("burst-{i}.json"));
+            let p = dir.join(dump_name(i));
             match std::fs::metadata(&p).and_then(|m| m.modified()) {
                 Err(_) => {
                     pick = (i, std::time::UNIX_EPOCH);
@@ -401,7 +401,7 @@ fn dump(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u6
                 Ok(_) => {}
             }
         }
-        let path = dir.join(format!("burst-{}.json", pick.0));
+        let path = dir.join(dump_name(pick.0));
         crate::atomic::write(&path, doc.to_string())?;
         Ok(path)
     };
@@ -415,6 +415,11 @@ fn dump(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u6
             Outcome::Suppressed
         }
     }
+}
+
+/// File name of ring slot `i`: `diagnostics.burst_dump_prefix`, the slot, `.` and `diagnostics.burst_dump_ext` (the extension `diag burst-dump` lists by).
+pub(crate) fn dump_name(i: usize) -> String {
+    format!("{}{i}.{}", crate::defaults::text("diagnostics.burst_dump_prefix"), crate::defaults::text("diagnostics.burst_dump_ext"))
 }
 
 fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u64) -> serde_json::Value {
@@ -444,12 +449,10 @@ fn build(ctx: &Ctx<'_>, checks: &[(String, u64)], growth: u64, live: u64, now: u
         .into_iter()
         .map(|(bytes, samples, ips)| {
             let mut frames: Vec<_> = ips.iter().map(|ip| symbolize(*ip)).collect();
+            let internal_frames = crate::defaults::list("diagnostics.burst_internal_frames");
             // drop the allocator's own leading frames when the binary has symbols
-            let internal = |f: &serde_json::Value| {
-                f.get("function").and_then(serde_json::Value::as_str).is_some_and(|n| {
-                    n.contains("burst::") || n.contains("memstat::") || n.contains("__rust_alloc") || n.contains("alloc::alloc::") || n.contains("GlobalAlloc")
-                })
-            };
+            let internal =
+                |f: &serde_json::Value| f.get("function").and_then(serde_json::Value::as_str).is_some_and(|n| internal_frames.iter().any(|p| n.contains(p)));
             while frames.len() > 1 && frames.first().is_some_and(internal) {
                 frames.remove(0);
             }

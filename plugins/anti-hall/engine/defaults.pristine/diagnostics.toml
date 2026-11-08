@@ -741,8 +741,16 @@ doc = "The flag of `diag burst-dump` that names the frames of a dump (`--symboli
 value = "--symbolize"
 
 [diagnostics.burst_dump_ext]
-doc = "File extension of a burst dump."
+doc = "File extension of a burst dump. The dump writer and `diag burst-dump` both read this key, so changing it renames new dumps and the listing follows."
 value = "json"
+
+[diagnostics.burst_dump_prefix]
+doc = "Start of a burst dump's file name; the ring slot number and diagnostics.burst_dump_ext follow it (burst-0.json, burst-1.json, ...)."
+value = "burst-"
+
+[diagnostics.burst_internal_frames]
+doc = "Fragments of function names that belong to the allocation profiler itself (the allocator hook and the sampler). A dump drops leading frames whose symbol contains one of them, so the first frame shown is the code that allocated."
+value = ["burst::", "memstat::", "__rust_alloc", "alloc::alloc::", "GlobalAlloc"]
 
 [diagnostics.symbols_suffixes]
 doc = "Name endings of a separate symbol file: beside the binary a dump names (<binary>.dSYM, <binary>.debug) and in the symbols directory. Every candidate is verified by the build id inside it, never by its name."
@@ -770,7 +778,7 @@ min = 4096
 unit = "bytes"
 
 [diagnostics.symbolize_cmd_macos]
-doc = "Resolver run over the unresolved frames of a dump on macOS: the program, then its arguments. {file} = the DWARF file of the matching dSYM, {arch} = the architecture name (diagnostics.symbolize_arch), {base} = the dump's build.image_base, {ips} = every call-site address, one argument each. It prints one entry per address: with -a a header line, with -i the inlined callers after it (the engine joins them, innermost first)."
+doc = "Resolver run over the unresolved frames of a dump on macOS: the program, then its arguments. {file} = the DWARF file of the matching dSYM, {arch} = the architecture name (diagnostics.symbolize_arch), {base} = the dump's build.image_base, {ips} = every call-site address, one argument each. It prints one entry per address (atos is given neither -a nor -i: no header line, one frame per address)."
 value = ["atos", "-o", "{file}", "-arch", "{arch}", "-l", "{base}", "{ips}"]
 
 [diagnostics.symbolize_cmd_linux]

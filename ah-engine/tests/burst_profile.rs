@@ -384,3 +384,28 @@ fn a_stripped_linux_binary_is_named_from_its_kept_debug_file() {
     ah_engine::burstsym::set_symbols_dir(None);
     std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
 }
+
+/// The dump writer and the listing read the same `diagnostics.burst_dump_ext`: editing it renames new dumps and `diag burst-dump` still finds them.
+#[test]
+fn a_dump_is_named_from_the_configured_extension_and_listed_by_it() {
+    let _one = serial();
+    let dir = std::env::temp_dir().join(format!("ah-burst-ext-{}", std::process::id()));
+    burst::set_dump_dir(Some(dir.clone()));
+    burst::forget_dumps();
+    ah_engine::defaults::set_overlay(&[("diagnostics.burst_dump_ext", serde_json::json!("dmp"))]);
+    burst::configure(&Config { on: false, ..cfg() });
+    burst::configure(&cfg());
+    burst::begin();
+    let held = synthetic_burst_allocator();
+    let out = burst::request_end(&Ctx { event: "PreToolUse", busy: 1 });
+    ah_engine::defaults::set_overlay(&[("diagnostics.burst_dump_ext", serde_json::json!("dmp"))]); // still set while listing
+    let listed = ah_engine::burstsym::run(&[]);
+    ah_engine::defaults::set_overlay(&[]);
+    drop(black_box(held));
+    let Some(Outcome::Written(path)) = out else { panic!("expected a dump, got {out:?}") };
+    assert_eq!(path.extension().and_then(|e| e.to_str()), Some("dmp"), "{path:?}");
+    assert!(path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("burst-")), "{path:?}");
+    let files = listed["dumps"].as_array().expect("dumps");
+    assert_eq!(files.len(), 1, "the listing finds the dump written under the edited extension: {listed}");
+    std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory
+}
