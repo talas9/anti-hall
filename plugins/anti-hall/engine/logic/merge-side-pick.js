@@ -17,7 +17,7 @@ function maskHeredocs(cmd) {
   // works on the original text with a cursor: rewriting the whole string for every heredoc (and slicing the rest of it to find the
   // terminator) made a command with many heredocs cost length x heredocs. A body is blanked in place, so every later position holds
   // what it held before.
-  var parts = [], at = 0, from = 0, terms = {}, open = new RegExp(ah.cfg('merge_side_pick.heredoc_open'), 'g');
+  var parts = [], at = 0, from = 0, terms = Object.create(null), open = new RegExp(ah.cfg('merge_side_pick.heredoc_open'), 'g');
   for (;;) {
     open.lastIndex = from;
     var m = open.exec(cmd);

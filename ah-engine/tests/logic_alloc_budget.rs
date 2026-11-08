@@ -2,16 +2,63 @@
 //! (length x characters). A 15 KB command used to make `git`, `command` and `coordinator-work-guard` allocate 38-42 MB each (and
 //! `merge-side-pick` 79 MB on a heredoc commit) because the logic built strings one character at a time (see
 //! `tests/logic_charwise_concat.rs`). Budgets are in `tests/logic_lint.toml` `[logic_alloc]`. Own test binary: the counting
-//! allocator and the measure knob are process-wide.
+//! allocator is process-wide.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
 use ah_engine::memstat;
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
+use std::alloc::{GlobalAlloc, Layout};
+use std::cell::Cell;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Why not `memstat`'s `alloc` total: QuickJS-ng serves blocks of up to 512 bytes from arenas of at most 4 KiB and frees an arena the
+// moment its last block goes. A scanner that makes and drops a one-character string per step then pays one arena malloc/free per
+// step whenever no other live block pins that arena, and whether one does depends on the heap layout, i.e. on the size and order of
+// the lib files loaded into the shared context (measured: one unused `var` in a lib file moved git on 15 KB of `a>|b ` from 7.1 to 8.8
+// MiB; another lib file moved it to 94 MiB = 22722 arena refills of 4080 bytes). That churn is neither a regression of the check nor
+// bounded by its logic, so it is not counted: only requests above the arena size (`arena_max_bytes` in logic_lint.toml), where a
+// string built character by character shows its copying, are.
+struct BigOnly;
+
+static MIN_BIG: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+thread_local! {
+    static BIG: Cell<u64> = const { Cell::new(0) };
+}
+
+fn note(size: usize) {
+    if size > MIN_BIG.load(Ordering::Relaxed) {
+        BIG.with(|b| b.set(b.get().wrapping_add(size as u64)));
+    }
+}
+
+// SAFETY: every method forwards to `memstat::Counting` unchanged and only adds to a per-thread counter that never allocates.
+unsafe impl GlobalAlloc for BigOnly {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        note(l.size());
+        // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::alloc` call.
+        unsafe { memstat::Counting.alloc(l) }
+    }
+    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        note(l.size());
+        // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::alloc_zeroed` call.
+        unsafe { memstat::Counting.alloc_zeroed(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::dealloc` call.
+        unsafe { memstat::Counting.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
+        note(new);
+        // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::realloc` call.
+        unsafe { memstat::Counting.realloc(p, l, new) }
+    }
+}
 
 #[global_allocator]
-static ALLOC: memstat::Counting = memstat::Counting;
+static ALLOC: BigOnly = BigOnly;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -22,7 +69,7 @@ fn budgets() -> toml::Table {
         .clone()
 }
 
-/// (allocated bytes, wall microseconds) of one call of `check` for `command` (after one unmeasured call that loads the check).
+/// (bytes of the requests above the arena size, wall microseconds) of one call of `check` for `command` (after one unmeasured call that loads the check).
 fn alloc_of(check: &str, command: &str, home: &Path) -> (u64, u128) {
     let env = RequestEnv::from_pairs(vec![("HOME".to_string(), home.to_string_lossy().into_owned())]);
     let payload = json!({
@@ -30,13 +77,15 @@ fn alloc_of(check: &str, command: &str, home: &Path) -> (u64, u128) {
         "tool_input": { "command": command }
     });
     let run = || ah_engine::script::run_forced(check, &payload, &json!({}), "PreToolUse", &env);
-    memstat::configure_measure(false, 1);
     run();
-    memstat::configure_measure(true, 1);
+    let before = BIG.with(Cell::get);
     let t = std::time::Instant::now();
-    let (_, delta) = ah_engine::mem::measure(run);
+    run();
     let us = t.elapsed().as_micros();
-    (delta.unwrap_or_else(|| panic!("{check}: the call was not measured (counting allocator not installed?)")).alloc, us)
+    let n = BIG.with(Cell::get).wrapping_sub(before);
+    // a script call that moved off the calling thread would count 0 here and pass every budget silently
+    assert!(n > 0, "no large allocation counted for `{check}`: the call no longer runs on the measuring thread");
+    (n, us)
 }
 
 #[test]
@@ -47,6 +96,7 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
         ah_engine::bootstrap::set_root_flag(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins/anti-hall"));
     }
     let b = budgets();
+    MIN_BIG.store(b["arena_max_bytes"].as_integer().unwrap() as usize, Ordering::Relaxed);
     let words = b["command_len_words"].as_integer().unwrap() as usize;
     let lines = b["heredoc_lines"].as_integer().unwrap() as usize;
     let echo = format!("echo {}", "word ".repeat(words));
