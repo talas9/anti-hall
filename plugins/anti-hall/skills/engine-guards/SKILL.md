@@ -47,6 +47,7 @@ What the automatic guards check and how to read a block.
 - `guards.projectCommandAllow` = true: the per-project command allowlist (default on)
 - `guards.projectEditAllow` = true: the per-project edit allowlist (default on)
 - `guards.stashGuard` = false: arms the git stash guard for every repository (default off)
+- `guards.commandResolveWrapperScripts` = true: Default on: a `sh|bash <script>` run in the main thread is judged by the script's body (read up...
 - `guards.apiGuard` = true: Switch for the fabricated-API guard
 - `guards.shellWriteChecks` = true: Switch for checking code a shell write adds
 - `guards.apiGuardThirdparty` = false: Switch for verifying third-party packages
@@ -54,6 +55,7 @@ What the automatic guards check and how to read a block.
 - `safety.editGuard` = true: Where the guard's on/off switch is read from (safety.editGuard, default on)
 - `guards.modelRoutingDeployFloor` = "sonnet": Model floor for deploys and secrets
 - `guards.exploreHintExec` = true: Withholds the Explore hint for file-writing briefs
+- `guards.exploreHintSkip` = true: Withholds the Explore hint for a review seat or a brief that runs tests (guards.exploreHintSkip,...
 - `guards.modelRouting` = "strict": Model-routing mode
 - `guards.allowAnthropicEnvKey` = false: Home-only switch that lets ANTHROPIC_API_KEY count as a key
 - `guards.failOpenNonSafety` = true: Non-safety guards pass when unanswered
@@ -77,12 +79,6 @@ What the automatic guards check and how to read a block.
 - `guards.pruneStopBlock` = true: Capped Stop block after an ignored prune advisory
 - `guards.pruneCompletedTasksAfter` = 3: Completed or cancelled tasks kept before the task tracker suggests pruning
 - `guards.inlineRule` = false: R-inline
-- `guards.laneTestGuard` = true: Default on; off lets a subagent run suite-scale test commands
-- `guards.allowTestSuites` = false: Lets a subagent run test suites
-- `guards.testPolicy` = "targeted": Test policy for subagents
-- `guards.testPolicyMainThread` = false: On makes testPolicy none apply to the main session too (default off)
-- `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
-- `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
 - `guards.advisorRank` = false: Skips plan/retry blocks for an equal/higher main
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once

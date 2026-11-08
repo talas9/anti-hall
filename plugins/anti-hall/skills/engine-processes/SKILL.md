@@ -19,6 +19,14 @@ Leftover processes, runaway CPU or memory and low disk space.
 
 ## Switches
 
+- `guards.laneTestGuard` = true: Default on; off lets a subagent run suite-scale test commands
+- `guards.allowTestSuites` = false: Lets a subagent run test suites
+- `guards.laneTestLockBoundOnly` = true: Default on: only a suite runner that queues behind a shared build lock (cargo test or nextest,...
+- `guards.testPolicy` = "targeted": Test policy for subagents
+- `guards.testPolicyMainThread` = false: On makes testPolicy none apply to the main session too (default off)
+- `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
+- `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
+- `guards.wideSearchDepthBound` = true: Default on: a search with a depth limit within wide_search.depth_allow_max is allowed under a...
 - `procwatch.buildDaemonMode` = "report": Mode of the build_daemon class (build tool daemons): off | report | kill
 - `procwatch.devServerMode` = "report": Mode of the dev_server class (dev servers and watchers an agent started): off | report | kill
 - `procwatch.mcpServerMode` = "report": Mode of the mcp_server class (MCP servers of ended sessions): off | report | kill
