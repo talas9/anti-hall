@@ -39,6 +39,10 @@ value = { section = "agents", key = "ownerNotify", env = "ANTIHALL_AGENT_OWNER_N
 doc = "Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off, `agents wake-watch` arms nothing (the cron and ScheduleWakeup fallbacks are unaffected), a main session is no longer reported as unarmed, and it is told once that the watcher is switched off (signal monitor_off)."
 value = { section = "agents", key = "wakeWatch", env = "ANTIHALL_AGENT_WAKE_WATCH", aliases = [], option = "", default = true }
 
+[agent_tracker.wake_setting_devswarm]
+doc = "Where the off switch of a DevSwarm workspace's wake-watch is read from (devswarm.wakeWatch, default on): off, a workspace is no longer reported as unarmed and is told once that the watcher is switched off (signal monitor_off). A main session follows agent_tracker.wake_setting instead."
+value = { section = "devswarm", key = "wakeWatch", env = "", aliases = [], option = "devswarm_wake_watch", default = true }
+
 [agent_tracker.wake_verb]
 doc = "The `ah-engine agents` subcommand that runs the session wake Monitor."
 value = "wake-watch"
@@ -253,8 +257,8 @@ doc = "Reminder to re-arm the session wake-watch (generic sessions), one short l
 value = "agent tracker: no live wake-watch covers this session, so you are not woken when background work ends. Re-arm it now: call `Monitor` with command `{command}` and timeout_ms {timeout}; re-arm it each time it expires. `CronCreate` stays the fallback."
 
 [msg.agent_monitor_off]
-doc = "One-time notice that the wake watcher is switched off (agents.wakeWatch=false), so the session is never told to re-arm it. Placeholders: none."
-value = "agent tracker: wake watcher switched off: agents.wakeWatch=false. No wake-watch Monitor is armed or re-armed for this session; set it true to turn it back on."
+doc = "One-time notice that the wake watcher is switched off (agents.wakeWatch=false for a main session, devswarm.wakeWatch=false for a DevSwarm workspace), so the session is never told to re-arm it. Placeholders: setting."
+value = "agent tracker: wake watcher switched off: {setting}=false. No wake-watch Monitor is armed or re-armed for this session; set it true to turn it back on."
 
 [msg.agent_monitor_unarmed_devswarm]
 doc = "Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}."

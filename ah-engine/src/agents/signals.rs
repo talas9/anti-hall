@@ -421,14 +421,24 @@ fn watcher_session(a: &Agent) -> bool {
 
 /// The wake watcher is switched off (agents.wakeWatch=false): said once per session, never silently (signal `monitor_off`).
 fn monitor_off(env: &Env, a: &Agent) -> Option<Raised> {
-    (watcher_session(a) && !env.switch("agent_tracker.wake_setting")).then(|| (0, String::new()))
+    (watcher_session(a) && !wake_switch(env, a)).then(|| (0, String::new()))
+}
+
+/// The wake-watch switch that governs this session: a DevSwarm workspace follows devswarm.wakeWatch, a main session agents.wakeWatch.
+fn wake_switch(env: &Env, a: &Agent) -> bool {
+    env.switch(wake_switch_key(a))
+}
+
+/// The defaults key of the switch entry that governs this session's wake-watch.
+fn wake_switch_key(a: &Agent) -> &'static str {
+    if a.kind == kind_name("workspace") { "agent_tracker.wake_setting_devswarm" } else { "agent_tracker.wake_setting" }
 }
 
 /// A live session whose wake watcher is down. The harness starts the watcher once and a Monitor lives at most 30 minutes, so a dead one
 /// stays dead; this is what tells the session to re-arm it. Silent while the watcher's stamp is fresh (or a Monitor the session armed
 /// itself is still within its timeout), while the switch is off (`monitor_off` speaks then), and during the start-up grace.
 fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
-    if !watcher_session(a) || !env.switch("agent_tracker.wake_setting") {
+    if !watcher_session(a) || !wake_switch(env, a) {
         return None;
     }
     if a.first_seen > 0 && now.saturating_sub(a.first_seen) < lim("monitor_grace_ms") {
@@ -920,10 +930,13 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             let (run, cap, items) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
             defaults::render("msg.agent_underparallel", &[("n", &f.evidence), ("items", &items), ("running", &run), ("cap", &cap)])
         }
+        "monitor_off" => {
+            let e = defaults::raw(wake_switch_key(a));
+            defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])
+        }
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
             defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
-        "monitor_off" => defaults::render("msg.agent_monitor_off", &[]),
         _ => defaults::render(
             "msg.agent_monitor_unarmed",
             &[("command", &defaults::text("agent_tracker.wake_command_agents")), ("timeout", &defaults::num("agent_tracker.wake_timeout_ms"))],

@@ -984,6 +984,50 @@ fn a_switched_off_watcher_is_said_once_and_never_asked_for() {
     assert!(off[0]["text"].as_str().unwrap().contains("agents.wakeWatch=false"));
 }
 
+/// Switch the watcher off through the plugin option the DevSwarm setting reads (`devswarm.wakeWatch`).
+fn devswarm_watch_off(e: &mut Env) {
+    let key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), "devswarm_wake_watch".to_ascii_uppercase());
+    e.settings.env.insert(key, "false".into());
+}
+
+#[test]
+fn a_workspace_with_an_unarmed_lock_and_the_switch_off_gets_the_off_notice_not_the_arm_command() {
+    let h = home("ws-off");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN));
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        devswarm_watch_off(&mut e);
+        tick(&e, &mut st);
+    }
+    assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(false));
+    assert!(!agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
+    let q = queue(&h, "sessW");
+    assert!(q.iter().all(|r| r["signal"] != "monitor_unarmed"), "{q:?}");
+    let off: Vec<&Value> = q.iter().filter(|r| r["signal"] == "monitor_off").collect();
+    assert_eq!(off.len(), 1, "{q:?}");
+    let t = off[0]["text"].as_str().unwrap();
+    assert!(t.contains("devswarm.wakeWatch=false") && !t.contains("--auto"), "{t}");
+}
+
+#[test]
+fn a_workspace_follows_devswarm_wake_watch_not_agents_wake_watch() {
+    let h = home("ws-own-switch");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN));
+    let mut st = State::default();
+    // agents.wakeWatch off must not silence a workspace whose own switch is on
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        tick(&e, &mut st);
+    }
+    assert!(agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
+    assert!(queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_off"));
+}
+
 #[test]
 fn codex_is_never_asked_to_arm_a_monitor() {
     let h = home("rearm-codex");

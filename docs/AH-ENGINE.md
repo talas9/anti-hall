@@ -1188,8 +1188,8 @@ the reminder to the session's wake feed, and the Monitor `agents wake-watch --au
 with `agents.wakeWatch`) prints it as one `[agent-wake]` line, which wakes the session. It reads one small file and costs no tokens
 while quiet; its stamp is what `monitor_unarmed` reads, so a live main or workspace session whose watcher is down (the harness starts it once and a
 Monitor lives at most 30 minutes) is told in one line, with the exact Monitor command and `timeout_ms`, to re-arm it (rate-limited by
-`cooldowns.monitor_unarmed`, silent for `limits.monitor_grace_ms` after a session is first seen). With `agents.wakeWatch` off it is told
-once instead (`monitor_off`). Codex has no Monitor tool and is never asked; it keeps its cron and hooks. Two signals exist for it: `idle_open_task` (a subagent or workspace finished its turn with a task open and was silent
+`cooldowns.monitor_unarmed`, silent for `limits.monitor_grace_ms` after a session is first seen). With the switch off (`agents.wakeWatch` for a main session, `devswarm.wakeWatch` for a DevSwarm workspace) it is told
+once instead (`monitor_off`). Counters: `monitor_rearm_prompted` (re-arm lines queued) and `monitor_rearmed` (sessions whose watcher came back after one). Codex has no Monitor tool and is never asked; it keeps its cron and hooks. Two signals exist for it: `idle_open_task` (a subagent or workspace finished its turn with a task open and was silent
 `limits.idle_open_ms`) and `watched_exit` (a background shell command an agent started has ended). Both fire once per state change
 (`once` in `agent_tracker.cooldowns`); hung, looping, token waste and a stale heartbeat go to the same channel. A new target or
 route is config; only a new kind of delivery needs code. The Codex port has no Monitor tool, so it keeps the queue delivery.
