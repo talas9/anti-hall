@@ -46,6 +46,23 @@ function thCompose(b) {
   return parts.join(ah.cfg('tasklist_hygiene.join'));
 }
 
+// Write task `id`'s Cause/Fix/Verified entry in the session ledger (inc/task-ledger.js), from the task's subject and description (the
+// session's list) and its metadata (the call's own over the store's). True when the ledger holds it afterwards; a failure is counted
+// and leaves the old note (the entry is then the agent's to write, and the Stop `ledger` rule lists it).
+function thAutoLedger(p, inp, id, sid) {
+  if (!ah.settings.bool('pair_rule.strict_auto_ledger')) return false;
+  try {
+    var home = ah.home(), t = { id: id, content: '', description: '' };
+    var r = typeof p.transcript_path === 'string' && p.transcript_path !== '' ? tk.tasksOf(home, sid, p.transcript_path, 'state') : null;
+    var hit = r && Array.isArray(r.tasks) ? r.tasks.filter(function (x) { return String(x.id) === id; })[0] : undefined;
+    if (hit) t = { id: id, content: hit.content || '', description: hit.description || '' };
+    var res = tlgEnsure(p, home, t, jx.isObj(inp.metadata) ? inp.metadata : null, ah.clock.now());
+    if (res.result === 'written') ah.metric('task_strict_auto_ledgered', ['event', ah.cfg('pair_rule.event_post')]);
+    if (res.result === 'failed') ah.unable('tasklist-hygiene:ledger_failed');
+    return res.result !== 'failed';
+  } catch (e) { ah.unable('tasklist-hygiene:ledger_threw'); return false; }
+}
+
 function decide(p, opts, event) {
   if (!jx.isObj(p) || (event !== 'PostToolUse' && event !== 'PreToolUse')) return 'allow';
   var tool = p.tool_name;
@@ -64,10 +81,13 @@ function decide(p, opts, event) {
   }
   var whats = [], instead = '', doneNote = false, mk = ah.cfg('metric.tasklist_hygiene').advisory_kind;
   if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.cfg('tasklist_hygiene.delete_trigger').indexOf(String(inp.status)) >= 0) ah.advisory(mk, ah.cfg('tasklist_hygiene.event_deleted'));
-  if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.settings.bool('ctxbudget.set_h_task_done_note') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0) {
-    var id = inp.taskId === undefined || inp.taskId === null ? '' : String(inp.taskId);
-    whats.push(text.render(ah.cfg('tasklist_hygiene.msg_done'), { id: id }));
-    instead = ah.cfg('tasklist_hygiene.instead_done');
+  var finished = tool === ah.cfg('tasklist_hygiene.update_tool') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0;
+  var id = inp.taskId === undefined || inp.taskId === null ? '' : String(inp.taskId);
+  // GH #682: the engine writes the finished task's ledger entry itself (guards.taskAutoLedger), so the agent only deletes the task
+  var ledgered = finished && id !== '' && thAutoLedger(p, inp, id, sid);
+  if (finished && ah.settings.bool('ctxbudget.set_h_task_done_note')) {
+    whats.push(text.render(ah.cfg(ledgered ? 'tasklist_hygiene.msg_done_auto' : 'tasklist_hygiene.msg_done'), { id: id }));
+    instead = ledgered ? text.render(ah.cfg('tasklist_hygiene.instead_done_auto'), { id: id }) : ah.cfg('tasklist_hygiene.instead_done');
     doneNote = true;
     ah.advisory(mk, ah.cfg('tasklist_hygiene.event_nudge'));
   }

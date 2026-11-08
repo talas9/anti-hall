@@ -171,7 +171,8 @@ fn completed_tasks_counts_the_real_task_done_line_and_escalates() {
     let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "tool_input": {"taskId": "3", "status": "completed"}, "session_id": "th-s", "cwd": "{HOME}", "transcript_path": "{HOME}/t.jsonl"});
     let l = golden::lay(&inline("PostToolUse", p, json!({"t.jsonl": ""})));
     let (b, fires) = drive("completed_tasks", "tasklist-hygiene", "tasklist-hygiene:post", &l, 6, &|_| {});
-    assert!(b.is_some_and(|(_, r)| r.contains("done: delegate")), "escalated after its fires ({fires})");
+    // GH #682: the engine wrote the ledger entry, so the done line says so (the ladder matches both forms, nudges.toml completed_tasks)
+    assert!(b.is_some_and(|(_, r)| r.contains("done, ledger entry written")), "escalated after its fires ({fires})");
 }
 
 /// Queue one tracker reminder row (the text the tracker renders) for the session the hook delivers to.

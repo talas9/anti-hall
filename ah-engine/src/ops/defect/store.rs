@@ -542,6 +542,7 @@ pub fn report(input: &ReportInput, home: &str) -> Result<J, Defer> {
         ("claimed".to_string(), J::Str(tr.take("claimed", &input.claimed, field_cap("claimed"), true)?)),
         ("observed".to_string(), J::Str(tr.take("observed", &input.observed, field_cap("observed"), true)?)),
     ];
+    let component = opt.component.clone();
     for (k, v) in [("component", opt.component), ("cause", opt.cause), ("regressionOf", opt.regression_of)] {
         if let Some(v) = v {
             line.push((k.to_string(), J::Str(v)));
@@ -571,6 +572,7 @@ pub fn report(input: &ReportInput, home: &str) -> Result<J, Defer> {
             return Ok(with_trunc(vec![outcome_member(defaults::text("defect.out_registry_full")), fp_member()], &tr));
         }
         let res = append_line(&file, &line_str, true, false);
+        count_strict_report(component.as_deref(), res);
         return Ok(with_trunc(spill_if_written(res, 0, &tr), &tr));
     }
     let parsed = parse_lines(&read_raw_lines(&file));
@@ -586,7 +588,20 @@ pub fn report(input: &ReportInput, home: &str) -> Result<J, Defer> {
         return Ok(with_trunc(vec![outcome_member(defaults::text("defect.out_defect_full")), fp_member()], &tr));
     }
     let res = append_line(&file, &line_str, false, false);
+    count_strict_report(component.as_deref(), res);
     Ok(with_trunc(spill_if_written(res, report_count, &tr), &tr))
+}
+
+/// GH #682: a report written against a strict task-list rule (its component is a key of `pair_rule.strict_report_components`) counts
+/// as that rule reported wrong (`task_strict_reported_wrong`, by rule).
+fn count_strict_report(component: Option<&str>, res: &str) {
+    if res != defaults::text("defect.out_recorded") && res != defaults::text("defect.out_occurrence_appended") {
+        return;
+    }
+    let Some(c) = component.map(str::trim) else { return };
+    if let Some(rule) = defaults::raw("pair_rule.strict_report_components").get(c).and_then(defaults::V::as_str) {
+        crate::metrics::bump_shared("task_strict_reported_wrong", &[("rule", rule)]);
+    }
 }
 
 /// What a ruling asks the store to write.
@@ -779,4 +794,22 @@ pub fn show_defect(fp: &str, home: &str) -> Option<J> {
         }
     }
     Some(J::Obj(o))
+}
+
+#[cfg(test)]
+mod strict_report_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn a_written_report_on_a_strict_rule_counts_as_reported_wrong() {
+        crate::metrics::reset_this_thread();
+        let series = [("rule", "owner")];
+        count_strict_report(Some("task-strict.owner"), defaults::text("defect.out_recorded"));
+        assert_eq!(crate::metrics::bumped_on_this_thread("task_strict_reported_wrong", &series), 1);
+        count_strict_report(Some("task-strict.owner"), defaults::text("defect.out_registry_full"));
+        count_strict_report(Some("other-check"), defaults::text("defect.out_recorded"));
+        count_strict_report(None, defaults::text("defect.out_recorded"));
+        assert_eq!(crate::metrics::bumped_on_this_thread("task_strict_reported_wrong", &series), 1); // only a written report on a listed component counts
+    }
 }

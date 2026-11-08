@@ -378,10 +378,107 @@ function prgPair(tasks, agents, rules) {
   return { f2: f2, f3: f3 };
 }
 
+// ---- the strict task-list rules (GH #682): ledger, owner, blocked_on; agent_task is the pairing above ----
+function prsTier(rule) { return ah.settings.enum(ah.cfg('pair_rule.strict_tiers')[rule]); }
+function prsBlocks(rule) { return prsTier(rule) === ah.cfg('pair_rule.strict_tier_block'); }
+function prsCut(s) { return tk.oneLine(String(s), ah.cfgNum('pair_rule.strict_name_max')); }
+
+// An in-progress task's owner stands as: 'live' (a live agent, the session itself, a live DevSwarm workspace), 'unknown' (it names agent
+// work whose liveness no source tells: not judged) or 'dead' (it names nothing live the session can see).
+function prsOwnerState(owner, rows) {
+  if (ah.cfg('pair_rule.strict_coordinator_live') === true && prgCoordinator(owner)) return 'live';
+  if (tk.childAttended(owner)) return 'live';
+  var lc = prgLc(owner), hits = rows.filter(function (r) { return (r.name !== '' && prgLc(r.name) === lc) || prgLooseOwner(owner, r); });
+  if (hits.some(function (r) { return r.live === true; })) return 'live';
+  if (hits.some(function (r) { return r.live === null; })) return 'unknown';
+  return 'dead';
+}
+
+// The strict items of the session's list: [{rule, item, call}] (each item's visible text and the exact call that clears it). `all` every
+// task of the list, `rows` the launched agents, `free` the name of a live agent that owns no task ('' when none). The ledger rule writes
+// a missing entry first (guards.taskAutoLedger) and lists only an entry it could not write.
+function prsItems(p, home, all, rows, free) {
+  var out = [], open = {}, done = ah.cfg('tasklist_hygiene.done_trigger');
+  var inProgress = ah.cfg('taskstate.in_progress_statuses'), pending = ah.cfg('taskstate.pending_statuses');
+  all.forEach(function (t) { if (tk.isOpen(t)) open[t.id] = true; });
+  var auto = ah.settings.bool('pair_rule.strict_auto_ledger'), ledgerText = null, root = tlgRoot(p, home), sid = tlgSid(p), now = ah.clock.now();
+  var path = root === null ? ah.cfg('task_lifecycle_log.history_dir').join('/') : tlgDir() + '/' + new Date(now).toISOString().slice(0, 10) + '/' + tlgName(sid);
+  all.forEach(function (t) {
+    var s = tk.statusLc(t), id = String(t.id);
+    if (done.indexOf(s) >= 0) {
+      if (auto) {
+        var r = tlgEnsure(p, home, t, null, now);
+        if (r.result === 'written') ah.metric('task_strict_auto_ledgered', ['event', ah.cfg('pair_rule.event_stop')]);
+        if (r.result !== 'failed') return;
+      } else if (root !== null && sid !== '') {
+        if (ledgerText === null) ledgerText = tlgText(root, sid);
+        if (tlgHas(ledgerText, id)) return;
+      }
+      out.push({ rule: 'ledger', item: text.render(ah.cfg('pair_rule.strict_item_ledger'), { id: id }),
+        call: text.render(ah.cfg('pair_rule.strict_call_ledger'), { id: id, marker: tlgMarker(id), path: path }) });
+    } else if (inProgress.indexOf(s) >= 0) {
+      var owner = typeof t.owner === 'string' ? t.owner.trim() : '', st = owner === '' ? 'none' : prsOwnerState(owner, rows);
+      if (st === 'live') return;
+      if (st === 'unknown') { prgSuppressed('owner_unknown'); return; }
+      out.push({ rule: 'owner', item: text.render(ah.cfg(st === 'none' ? 'pair_rule.strict_item_no_owner' : 'pair_rule.strict_item_dead_owner'), { id: id, owner: prsCut(owner) }),
+        call: text.render(ah.cfg('pair_rule.strict_call_owner'), { id: id, agent: free !== '' ? free : ah.cfg('pair_rule.strict_agent_placeholder') }) });
+    } else if (pending.indexOf(s) >= 0) {
+      if (tk.blockedOnText(t) !== '') return;
+      var deps = Array.isArray(t.blockedBy) ? t.blockedBy : [];
+      if (ah.cfg('pair_rule.strict_pending_blocked_by_ok') === true && deps.some(function (d) { return String(d) !== id && open[String(d)] === true; })) return;
+      out.push({ rule: 'blocked_on', item: text.render(ah.cfg('pair_rule.strict_item_no_blocked_on'), { id: id }),
+        call: text.render(ah.cfg('pair_rule.strict_call_blocked_on'), { id: id }) });
+    }
+  });
+  return out;
+}
+
+// One strict message over `items` of one tier (house format, pair_rule.strict_msg): the first strict_items_max items and their calls on
+// the two visible lines; every item and call saved in the details file, linked when some were left off.
+function prsMessage(items, tier, session) {
+  var max = ah.cfgNum('pair_rule.strict_items_max'), shown = items.slice(0, max), left = items.length - shown.length, details = '';
+  if (left > 0) {
+    var path = text.saveDetails(ah.cfg('pair_rule.strict_details_id'), { what: items.map(function (x) { return x.item + ': ' + x.call; }).join('\n') }, session);
+    if (path) details = text.render(ah.cfg('pair_rule.strict_details'), { path: path });
+  }
+  return text.render(ah.cfg('pair_rule.strict_msg'), {
+    icon: ah.cfg('pair_rule.strict_icons')[tier] || '', name: ah.cfg('pair_rule.strict_guard_name'),
+    facts: shown.map(function (x) { return x.item; }).join(ah.cfg('pair_rule.strict_item_sep')),
+    more: left > 0 ? text.render(ah.cfg('pair_rule.strict_more'), { n: left }) : '',
+    calls: shown.map(function (x) { return x.call; }).join(ah.cfg('pair_rule.strict_call_sep')), details: details,
+  });
+}
+
 function prgStop(p, on, home) {
-  var event = ah.cfg('pair_rule.event_stop');
-  var open = prgOpenTasks(p, home), rows = open === null ? null : prgAgents(p);
+  var all = prgAllTasks(p, home), open = all === null ? null : all.filter(tk.isOpen), rows = open === null ? null : prgAgents(p);
   if (open === null || rows === null) { prgSuppressed('no_rows'); return 'allow'; }
+  var pairReason = prgPairReason(p, on, open, rows);
+  // the strict rules; a script failure here is counted and lets the Stop go on (fail open), never a block on a broken reading
+  var strict = [];
+  try {
+    var free = pairReason.f2.length > 0 ? pairReason.f2[0].name : '';
+    strict = prsItems(p, home, all, rows, free);
+  } catch (e) { ah.unable('task-pair-guard:strict_failed'); strict = []; }
+  strict.forEach(function (x) { ah.metric('task_strict_fired', ['rule', x.rule]); });
+  if (pairReason.result !== 'clean') ah.metric('task_strict_fired', ['rule', 'agent_task']);
+  if (!on) return 'allow';
+  var sid = p.session_id ? String(p.session_id) : '', block = [], advise = [], rulesBlocked = {};
+  var hard = strict.filter(function (x) { return prsBlocks(x.rule); }), soft = strict.filter(function (x) { return !prsBlocks(x.rule); });
+  if (pairReason.reason !== '') (prsBlocks('agent_task') ? block : advise).push(pairReason.reason);
+  if (pairReason.reason !== '' && prsBlocks('agent_task')) rulesBlocked.agent_task = true;
+  if (hard.length > 0) { block.push(prsMessage(hard, 'block', sid)); hard.forEach(function (x) { rulesBlocked[x.rule] = true; }); }
+  if (soft.length > 0) advise.push(prsMessage(soft, 'advise', sid));
+  Object.keys(rulesBlocked).forEach(function (r) { ah.metric('task_strict_blocked', ['rule', r]); });
+  if (block.length === 0 && advise.length === 0) return 'allow';
+  // one answer per Stop: a block carries the advise-tier text too; with no block-tier item the text reaches the model as Stop context
+  var sep = ah.cfg('pair_rule.strict_join');
+  if (block.length > 0) return { exact: { code: 0, out: text.blockJson(block.concat(advise).join(sep)), err: '' } };
+  return { advisory: text.advisoryJson(ah.cfg('pair_rule.event_stop'), advise.join(sep)) };
+}
+
+// The R-pair Stop facts (rule agent_task): {result, f2, reason} where reason is the R-pair block text ('' when clean or the switch is off).
+function prgPairReason(p, on, open, rows) {
+  var event = ah.cfg('pair_rule.event_stop');
   // a launch name below pair_rule.name_min_chars is no name (the spawn check lets such an agent through when its description names a task id)
   if (ah.settings.bool('pair_rule.sw_by_id')) rows.forEach(function (r) { if (r.name.length < ah.cfgNum('pair_rule.name_min_chars')) r.name = ''; });
   var unknown = rows.filter(function (r) { return r.name !== '' && r.live === null; });
@@ -395,7 +492,7 @@ function prgStop(p, on, home) {
   var f2 = res.f2, f3 = res.f3;
   var result = f2.length > 0 ? 'agent_without_task' : f3.length > 0 ? 'inexact_owner' : 'clean';
   prgObserved(event, result);
-  if (result === 'clean' || !on) return 'allow';
+  if (result === 'clean' || !on) return { result: result, f2: f2, reason: '' };
   if (f2.length > 0) prgFired(event, 'agent_without_task');
   if (f3.length > 0) prgFired(event, 'inexact_owner');
   var max = ah.cfgNum('pair_rule.ids_max'), nameMax = ah.cfgNum('pair_rule.name_max'), items = [], full = [], inexact = [];
@@ -434,7 +531,7 @@ function prgStop(p, on, home) {
     what: whatOf(k), why: ah.cfg('pair_rule.msg_stop_why'), instead: ah.cfg(insteadKey),
     extra: full, details: linked(k),
   });
-  return { exact: { code: 0, out: text.blockJson(reason), err: '' } };
+  return { result: result, f2: f2, reason: reason };
 }
 
 function decide(p) {

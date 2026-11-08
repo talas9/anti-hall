@@ -148,7 +148,13 @@ fn the_task_done_note_leads_with_the_action_and_fits_before_the_cut() {
     s.store(&["completed", "pending"]);
     let tr = s.transcript("completed");
     let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
-    let out = s.check("tasklist-hygiene", &payload, &[]);
+    // GH #682: the engine writes the ledger entry itself, so the first line says so and the second is the exact delete call
+    let auto = s.check("tasklist-hygiene", &payload, &[]);
+    let first = auto.split("\\n").next().unwrap_or("");
+    assert!(first.contains("task 1 done, ledger entry written by the engine"), "the action leads the first line: {auto}");
+    assert!(auto.contains("TaskUpdate({taskId: \\\"1\\\", status: \\\"deleted\\\"})"), "the exact delete call: {auto}");
+    // with the auto-ledger off the entry is the agent's to write, as before
+    let out = s.check("tasklist-hygiene", &payload, &[("ANTIHALL_TASK_AUTO_LEDGER", "0")]);
     let first = out.split("\\n").next().unwrap_or("");
     assert!(first.contains("task 1 done: delegate its Cause/Fix/Verified ledger entry"), "the action leads the first line: {out}");
     assert!(first.chars().count() < 115 + 40, "the first line stays short enough to survive the digest cut: {first}");

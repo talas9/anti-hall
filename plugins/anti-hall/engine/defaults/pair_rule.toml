@@ -208,3 +208,176 @@ value = { kind = "counter", unit = "calls", labels = ["event", "kind"] }
 [metric.pair_rule_suppressed]
 doc = "Calls R-pair stepped aside on, by reason (subagent, codex, plan_mode, stop_hook_active, omc, no_rows = tasks or agents unreadable, liveness_unknown = an agent whose liveness no source tells; counted per agent)."
 value = { kind = "counter", unit = "calls", labels = ["reason"] }
+
+# ---- strict task-list rules (GH #682): the session that owns the task list is held to it on every Stop, in ONE block ----------------
+# Rules: `ledger` (a completed task with no Cause/Fix/Verified entry in the session history file; the engine writes the entry itself
+# first, so only an entry it could not write is listed), `owner` (an in-progress task with no owner, or whose owner is not a live agent),
+# `blocked_on` (a pending task with no metadata.blockedOn), `agent_task` (a live named agent that owns no open task: the R-pair F2/F3
+# facts above). Each rule has its own tier setting: block = the Stop is blocked, advise = a note, the Stop goes on. Only the main session
+# of a Claude host is held (subagents, teammates with agent markers, Codex, plan mode, an OMC loop and a re-fired Stop step aside, as
+# R-pair does); guards.pairRule off counts the facts and prints nothing. A rule PR-head check (a task text naming a stale PR head) is not
+# here: the engine's GitHub poller keeps one PR per followed checkout's current branch, not the head of any PR a task names.
+
+[pair_rule.strict_ledger_tier]
+doc = "Tier of the strict rule `ledger` (guards.taskStrictLedger): a completed task of the session's list whose Cause/Fix/Verified entry is not in the session history file and could not be written by the engine. block = the Stop is blocked; advise = a note only."
+value = { type = "enum", section = "guards", key = "taskStrictLedger", env = "ANTIHALL_TASK_STRICT_LEDGER", option = "", values = ["block", "advise"], default = "block" }
+
+[pair_rule.strict_owner_tier]
+doc = "Tier of the strict rule `owner` (guards.taskStrictOwner): an in-progress task with no owner, or whose owner is not a live agent (the agent tracker says it ended, or the owner names no agent of the session). A coordinator-like owner (task_guard.coordinator_owner_re) is the session itself and counts as live; an owner whose liveness no source can tell is not judged (counted as owner_unknown). block = the Stop is blocked; advise = a note only."
+value = { type = "enum", section = "guards", key = "taskStrictOwner", env = "ANTIHALL_TASK_STRICT_OWNER", option = "", values = ["block", "advise"], default = "block" }
+
+[pair_rule.strict_blocked_on_tier]
+doc = "Tier of the strict rule `blocked_on` (guards.taskStrictBlockedOn): a pending task with no metadata.blockedOn (a task waiting on open tasks through blockedBy also passes when pair_rule.strict_pending_blocked_by_ok is true). block = the Stop is blocked; advise = a note only."
+value = { type = "enum", section = "guards", key = "taskStrictBlockedOn", env = "ANTIHALL_TASK_STRICT_BLOCKED_ON", option = "", values = ["block", "advise"], default = "block" }
+
+[pair_rule.strict_agent_task_tier]
+doc = "Tier of the strict rule `agent_task` (guards.taskStrictAgentTask): a live named agent that owns no open task, or an in-progress task owned by an agent's id or description instead of its launch name (the R-pair Stop facts). block = the Stop is blocked; advise = a note only."
+value = { type = "enum", section = "guards", key = "taskStrictAgentTask", env = "ANTIHALL_TASK_STRICT_AGENT_TASK", option = "", values = ["block", "advise"], default = "block" }
+
+[pair_rule.strict_auto_ledger]
+doc = "Switch guards.taskAutoLedger (default on): the engine writes the Cause/Fix/Verified entry of a task itself, from its subject, description and metadata (metadata.cause, metadata.fix, metadata.verified), when a TaskUpdate marks it completed and again at each Stop for a completed task that has none, so the agent spends no tokens on it. Off: the entry is the agent's to write and the `ledger` rule lists every completed task without one."
+value = { section = "guards", key = "taskAutoLedger", type = "boolean", env = "ANTIHALL_TASK_AUTO_LEDGER", option = "", default = true }
+
+[pair_rule.strict_tiers]
+doc = "Each strict rule and the setting key (in this file) that holds its tier."
+value = { ledger = "pair_rule.strict_ledger_tier", owner = "pair_rule.strict_owner_tier", blocked_on = "pair_rule.strict_blocked_on_tier", agent_task = "pair_rule.strict_agent_task_tier" }
+
+[pair_rule.strict_tier_block]
+doc = "The tier value that blocks the Stop."
+value = "block"
+
+[pair_rule.strict_guard_name]
+doc = "The check name the strict block shows (`<icon> <name>: <facts>`)."
+value = "task list"
+
+[pair_rule.strict_icons]
+doc = "The leading icon of the strict message, by tier."
+value = { block = "⛔", advise = "⚠️" }
+
+[pair_rule.strict_msg]
+doc = "The strict message, house format: `{icon} {name}: {facts}` then `Do now: {calls}`. {facts} the visible items joined by strict_item_sep plus the {more} tail, {calls} the exact calls of the visible items joined by strict_call_sep, {details} the saved-details pointer when items were left off the visible list."
+value = "{icon} {name}: {facts}{more}\nDo now: {calls}{details}"
+
+[pair_rule.strict_items_max]
+doc = "Most items the strict message lists with their calls; the rest are counted ({more}) and every item with its call is in the saved details."
+value = 4
+min = 1
+
+[pair_rule.strict_more]
+doc = "Tail of the visible facts when items were left off; {n} how many."
+value = " (+{n} more)"
+
+[pair_rule.strict_details]
+doc = "Pointer to the saved details holding every item and call, when items were left off; {path} the file."
+value = " (all calls: {path})"
+
+[pair_rule.strict_item_sep]
+doc = "Separator between visible items."
+value = "; "
+
+[pair_rule.strict_call_sep]
+doc = "Separator between visible calls."
+value = " · "
+
+[pair_rule.strict_item_ledger]
+doc = "Item: a completed task with no ledger entry the engine could write. {id} the task id."
+value = "#{id} completed, no ledger entry"
+
+[pair_rule.strict_call_ledger]
+doc = "Call that clears strict_item_ledger: write the entry (marker pair_rule.strict_ledger_marker), then delete the task. {id} the task id, {marker} the entry heading, {path} the ledger path."
+value = "append \"{marker} ...\" with Cause/Fix/Verified to {path}, then TaskUpdate({taskId: \"{id}\", status: \"deleted\"})"
+
+[pair_rule.strict_item_no_owner]
+doc = "Item: an in-progress task with no owner. {id} the task id."
+value = "#{id} in_progress, no owner"
+
+[pair_rule.strict_item_dead_owner]
+doc = "Item: an in-progress task whose owner is not a live agent. {id} the task id, {owner} the owner."
+value = "#{id} in_progress, owner \"{owner}\" not a live agent"
+
+[pair_rule.strict_call_owner]
+doc = "Call that clears an owner item: give it the live agent working on it, or put it back to pending with what it waits on. {id} the task id, {agent} a live agent that owns no task (strict_agent_placeholder when none)."
+value = "TaskUpdate({taskId: \"{id}\", owner: \"{agent}\"}) or TaskUpdate({taskId: \"{id}\", status: \"pending\", metadata: {blockedOn: \"<what it waits on>\"}})"
+
+[pair_rule.strict_agent_placeholder]
+doc = "The {agent} of strict_call_owner when no live agent is free to name."
+value = "<live agent name>"
+
+[pair_rule.strict_item_no_blocked_on]
+doc = "Item: a pending task with no metadata.blockedOn. {id} the task id."
+value = "#{id} pending, no blockedOn"
+
+[pair_rule.strict_call_blocked_on]
+doc = "Call that clears strict_item_no_blocked_on. {id} the task id."
+value = "TaskUpdate({taskId: \"{id}\", metadata: {blockedOn: \"<what it waits on>\"}})"
+
+[pair_rule.strict_details_id]
+doc = "The id the strict message's saved details file is named after (block-details/<id>-<session>)."
+value = "task-list"
+
+[pair_rule.strict_join]
+doc = "Between the R-pair text and the strict message when both are in one answer (one block per Stop)."
+value = "\n\n"
+
+[pair_rule.strict_name_max]
+doc = "Most characters of an owner or agent name inside a visible item or call (a longer one is cut; the saved details hold it whole)."
+value = 40
+min = 8
+
+[pair_rule.strict_pending_blocked_by_ok]
+doc = "A pending task whose blockedBy names an open task of the list passes the `blocked_on` rule (the dependency is its reason)."
+value = true
+
+[pair_rule.strict_coordinator_live]
+doc = "An in-progress task owned by a coordinator-like owner (task_guard.coordinator_owner_re: the session itself) passes the `owner` rule."
+value = true
+
+[pair_rule.strict_ledger_marker]
+doc = "The heading of a ledger entry; the `ledger` rule finds an entry by it. {id} the task id."
+value = "### Task #{id}:"
+
+[pair_rule.strict_ledger_entry]
+doc = "The ledger entry the engine appends. {id}, {subject}, and the three facts: {cause} (metadata.cause, else the subject), {fix} (metadata.fix, else the description, else the subject), {verified} (metadata.verified, else strict_ledger_unverified). Starts with the marker (strict_ledger_marker)."
+value = "\n### Task #{id}: {subject}\n- Cause: {cause}\n- Fix: {fix}\n- Verified: {verified}\n"
+
+[pair_rule.strict_ledger_meta_keys]
+doc = "The task metadata keys the ledger entry reads its Cause, Fix and Verified from."
+value = { cause = "cause", fix = "fix", verified = "verified" }
+
+[pair_rule.strict_ledger_unverified]
+doc = "The Verified text of an entry whose task carried no metadata.verified."
+value = "not stated (the task carried no metadata.verified)"
+
+[pair_rule.strict_ledger_field_max]
+doc = "Most characters of one ledger field (one line each)."
+value = 400
+min = 40
+
+[pair_rule.strict_ledger_scan_days]
+doc = "How many of the newest history date directories are searched for a task's entry (a session's ledger is spread over the UTC dates it ran on)."
+value = 14
+min = 1
+
+[pair_rule.strict_ledger_date_re]
+doc = "Rust/JavaScript regex of a history date directory name."
+value = '^\d{4}-\d{2}-\d{2}$'
+
+[pair_rule.strict_report_components]
+doc = "`defect report --component <c>` values that count as a strict rule reported wrong (metric task_strict_reported_wrong), each to its rule label."
+value = { "task-strict.ledger" = "ledger", "task-strict.owner" = "owner", "task-strict.blocked_on" = "blocked_on", "task-strict.agent_task" = "agent_task", "task-pair-guard" = "agent_task", "tasklist-hygiene" = "ledger" }
+
+[metric.task_strict_fired]
+doc = "Strict task-list facts found at a Stop of the main session (counted with guards.pairRule off too), by rule (ledger, owner, blocked_on, agent_task); one per item."
+value = { kind = "counter", unit = "items", labels = ["rule"] }
+
+[metric.task_strict_blocked]
+doc = "Stops the strict task-list block stopped, by rule whose block-tier items it carried (one per rule per Stop)."
+value = { kind = "counter", unit = "calls", labels = ["rule"] }
+
+[metric.task_strict_auto_ledgered]
+doc = "Ledger entries the engine wrote itself, by event (PostToolUse = on TaskUpdate status=completed, Stop = a completed task found without one)."
+value = { kind = "counter", unit = "entries", labels = ["event"] }
+
+[metric.task_strict_reported_wrong]
+doc = "Defect reports filed against a strict rule (`defect report --component`, see pair_rule.strict_report_components), by rule."
+value = { kind = "counter", unit = "reports", labels = ["rule"] }
