@@ -1441,10 +1441,6 @@ value = 150
 min = 0
 max = 5000
 
-[install.file_probe_watchdog]
-doc = "Scratch file name prefix (in the state directory); hooks/install.sh appends the running script's pid (so parallel sessions never share a file) and the defaults-probe watchdog records the pid of its current sleep helper there, so the helper can be stopped by pid. Removed when the probe ends, on every exit path."
-value = "defaults-probe.watchdog"
-
 [install.hook_budget_ms]
 doc = "Milliseconds the whole SessionStart hook (hooks/install.sh with a TERM-ignoring defaults probe) must stay under: every hook fails open in under 1 s. A test checks defaults_probe_ms + defaults_probe_grace_ms + hook_overhead_allowance_ms against it."
 value = 1000

@@ -171,7 +171,6 @@ t_a_probe_that_ignores_term_is_killed_after_the_grace() {
     i=$((i + 1))
   done
   [ "$best" -lt "$budget" ] || { echo "best of 3: $best ms (budget $budget)" >&2; return 1; }
-  [ -z "$(ls "$st" | grep 'defaults-probe.watchdog')" ]
 }
 t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget() {
   [ $(( $(tv defaults_probe_ms) + $(tv defaults_probe_grace_ms) + $(tv hook_overhead_allowance_ms) )) -lt "$(tv hook_budget_ms)" ]
@@ -183,13 +182,21 @@ t_a_failing_probe_leaves_no_orphan_sleep_helper() {
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
   mkdir -p "$st/bin"; printf '#!/bin/sh\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
   sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
-  # the probe exits at once; the TERM-stage helper (`sleep 0.<defaults_probe_ms>`) must not outlive the hook call
-  pat="[s]leep 0.$(tv defaults_probe_ms)"
-  before=$(ps -axo command | grep -c "$pat")
-  hook s1 SessionStart >/dev/null
+  # sleep shim: every `sleep` this hook run starts records its own pid, so the check is on the helpers THIS run created (no system-wide count)
+  mkdir -p "$tmp/shim"; : >"$tmp/sleeppids"
+  printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
+  # the probe exits at once; none of the watchdog's sleep helpers may outlive the hook call (bounded poll: the overhead allowance setting)
+  PATH="$tmp/shim:$PATH" hook s1 SessionStart >/dev/null
   grep -q 'cannot load' "$tmp/out" || return 1
-  after=$(ps -axo command | grep -c "$pat")
-  [ "$after" -le "$before" ] && [ -z "$(ls "$st" | grep 'defaults-probe.watchdog')" ]
+  [ -s "$tmp/sleeppids" ] || { echo "shim recorded no sleep: the test would prove nothing" >&2; return 1; }
+  n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+  while :; do
+    alive=
+    for p in $(cat "$tmp/sleeppids"); do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    [ -z "$alive" ] && break
+    [ "$n" -ge "$max" ] && { echo "orphan sleep helper(s) still alive:$alive" >&2; kill $alive 2>/dev/null; return 1; }
+    sleep 0.02; n=$((n + 1))
+  done
 }
 t_parallel_sessions_in_one_home_each_get_their_notice() {
   newhome conc; write_lock "$good"; fake_client ''
