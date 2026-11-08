@@ -452,7 +452,7 @@ pub fn heartbeat_init() {
     let exe = crate::procid::exe(pid).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let ident = format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy());
     IDENT_LEN.store(ident.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), format!("{ident}{}", progress_line(0))));
+    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), format!("{ident}{}", progress_line(Some(0)))));
 }
 
 /// Length of the identity part of the heartbeat file this process wrote (the progress line follows it).
@@ -460,16 +460,18 @@ static IDENT_LEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 
 /// The heartbeat's progress line: the age in ms, zero-padded to a fixed width, so a rewrite never changes the file's length and a
 /// reader never sees a shorter number's leftover digits.
-fn progress_line(age_ms: u64) -> String {
+fn progress_line(age_ms: Option<u64>) -> String {
     let width = defaults::num("health.progress_digits") as usize;
+    // no worker busy: the idle marker (all `i`), which a reader never mistakes for a figure
+    let Some(age_ms) = age_ms else { return format!("{}\n", "i".repeat(width)) };
     let digits = age_ms.to_string();
     // an age too wide for the line is recorded as the widest number that fits
     if digits.len() > width { format!("{}\n", "9".repeat(width)) } else { format!("{digits:0>width$}\n") }
 }
 
-/// One heartbeat: record the progress age in ms of the daemon's longest-silent busy worker (0 = none busy) in the progress line,
+/// One heartbeat: record the progress age in ms of the daemon's longest-silent busy worker (`None` = none busy: the idle marker) in the progress line,
 /// and touch the file's modification time. Rewritten in place with one write at a fixed offset and width.
-pub fn heartbeat(progress_ms: u64) {
+pub fn heartbeat(progress_ms: Option<u64>) {
     use std::os::unix::fs::FileExt;
     if let Ok(f) = std::fs::File::options().write(true).open(state_file("heartbeat")) {
         let at = IDENT_LEN.load(std::sync::atomic::Ordering::Relaxed);
@@ -488,8 +490,10 @@ pub(crate) struct Heartbeat {
     /// The identity part of the file: the generation identity (pid, start time, executable, state dir).
     pub ident: String,
     /// The progress age in ms the daemon recorded at its last beat: how long its longest-silent busy worker has made no
-    /// progress (0 = no worker busy). `None` = the file carries none (a build from before it, an unreadable figure).
+    /// progress. `None` = the file carries none (a build from before it, an unreadable figure) or the idle marker (see `idle`).
     pub progress_ms: Option<u64>,
+    /// The progress line is the idle marker: no worker was busy at the last beat, so nothing is working on a waiting request.
+    pub idle: bool,
     /// Its modification time, nanoseconds since the epoch: changes on every beat.
     pub mtime_ns: u128,
     /// How old that modification time is by the wall clock (0 when it is in the future).
@@ -516,9 +520,10 @@ impl Heartbeat {
 
 /// A heartbeat file's two parts: the identity (its first four lines) and the progress age of its fifth line, when it has one that reads
 /// as a number.
-fn split_heartbeat(raw: &str) -> (String, Option<u64>) {
+fn split_heartbeat(raw: &str) -> (String, Option<u64>, bool) {
     let split = raw.match_indices('\n').nth(3).map_or(raw.len(), |(i, _)| i + 1);
-    (raw[..split].to_string(), raw[split..].trim().parse::<u64>().ok())
+    let tail = raw[split..].trim();
+    (raw[..split].to_string(), tail.parse::<u64>().ok(), !tail.is_empty() && tail.bytes().all(|b| b == b'i'))
 }
 
 /// The daemon's heartbeat, counted only when it names the pid that holds the singleton lock (the daemon now serving the socket).
@@ -527,12 +532,12 @@ fn split_heartbeat(raw: &str) -> (String, Option<u64>) {
 pub(crate) fn heartbeat_of_lock_holder() -> Option<Heartbeat> {
     let p = state_file("heartbeat");
     let raw = std::fs::read_to_string(&p).ok()?;
-    let (ident, progress_ms) = split_heartbeat(&raw);
+    let (ident, progress_ms, idle) = split_heartbeat(&raw);
     let pid: u32 = ident.lines().next()?.trim().parse().ok()?;
     let holder: u32 = std::fs::read_to_string(paths::lock_for(&paths::socket())).ok()?.trim().parse().ok()?;
     let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
     let mtime_ns = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, progress_ms, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
+    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, progress_ms, idle, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
 }
 
 /// The system-wide monotonic clock in milliseconds: comparable across the short-lived client processes (std's `Instant` is not
@@ -1165,15 +1170,19 @@ mod tests {
         let ident = "42\n1000\n/bin/ah-engine\n/state\n";
         let width = defaults::num("health.progress_digits") as usize;
         for age in [0u64, 7, 1234, u64::MAX] {
-            let line = progress_line(age);
+            let line = progress_line(Some(age));
             assert_eq!(line.len(), width + 1, "the line never changes length: {line:?}");
-            let (id, p) = split_heartbeat(&format!("{ident}{line}"));
+            let (id, p, idle) = split_heartbeat(&format!("{ident}{line}"));
+            assert!(!idle);
             assert_eq!(id, ident, "the progress never leaks into the identity");
             assert_eq!(p, Some(age.min("9".repeat(width).parse::<u64>().unwrap())));
         }
+        let line = progress_line(None);
+        assert_eq!(line.len(), width + 1);
+        assert_eq!(split_heartbeat(&format!("{ident}{line}")), (ident.to_string(), None, true));
         // a file from before the progress line, or with an unreadable one, has no figure (the client reads that as no progress)
-        assert_eq!(split_heartbeat(ident), (ident.to_string(), None));
-        assert_eq!(split_heartbeat(&format!("{ident}junk\n")), (ident.to_string(), None));
+        assert_eq!(split_heartbeat(ident), (ident.to_string(), None, false));
+        assert_eq!(split_heartbeat(&format!("{ident}junk\n")), (ident.to_string(), None, false));
     }
 
     #[test]
@@ -1185,6 +1194,7 @@ mod tests {
             pid,
             ident: format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy()),
             progress_ms: None,
+            idle: false,
             mtime_ns: 0,
             age: Duration::ZERO,
         };

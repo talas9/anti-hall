@@ -1885,11 +1885,11 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
     now.saturating_sub(beat) > stall_ms
 }
 
-/// How many ms the longest-silent busy worker has gone without progress (0 = no worker is busy): what the heartbeat file carries,
+/// How many ms the longest-silent busy worker has gone without progress (`None` = no worker is busy): what the heartbeat file carries,
 /// so a client waiting past its fail-fast deadline can tell a daemon that is working on its request from one that is not.
-fn oldest_busy_silence(sh: &Shared) -> u64 {
+fn oldest_busy_silence(sh: &Shared) -> Option<u64> {
     let now = sh.ms();
-    sh.busy_since.iter().map(|b| b.load(SeqCst)).filter(|since| *since != 0).map(|since| now.saturating_sub(since - 1)).max().unwrap_or(0)
+    sh.busy_since.iter().map(|b| b.load(SeqCst)).filter(|since| *since != 0).map(|since| now.saturating_sub(since - 1)).max()
 }
 
 fn watchdog(sh: Arc<Shared>) {

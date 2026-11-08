@@ -132,7 +132,7 @@ impl Stall {
 /// heartbeat's own age; it must stay under `client.progress_stale_ms`. A heartbeat that is itself older than that is a stopped
 /// daemon ([`Stall::Hung`], so the replacement path sees it as early as the progress gate does); no heartbeat, or none carrying a
 /// figure, is no progress. 0 turns the gate off.
-fn stalled() -> Option<Stall> {
+fn stalled(idle_seen: &mut bool) -> Option<Stall> {
     #[cfg(test)]
     if GATE_OFF.get() {
         return None;
@@ -144,7 +144,17 @@ fn stalled() -> Option<Stall> {
     if let Some((why, confirmed)) = hung_if_older_than(limit) {
         return Some(Stall::Hung(why, confirmed));
     }
-    let age = health::heartbeat_of_lock_holder().and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age));
+    let hb = health::heartbeat_of_lock_holder();
+    // the daemon says no worker is busy: it has not picked this request up (a wedged accept loop, a request nobody took). One poll
+    // of grace for a reply already in flight (a worker that just finished), then the call fails open.
+    if hb.as_ref().is_some_and(|h| h.idle) {
+        if !std::mem::replace(idle_seen, true) {
+            return None;
+        }
+        return Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &"idle"), ("limit", &limit.as_millis())])));
+    }
+    *idle_seen = false;
+    let age = hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age));
     if age.is_some_and(|a| a < limit) {
         return None;
     }
@@ -196,6 +206,7 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
     let mut buf = Vec::new();
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply"));
     let mut late = false;
+    let mut idle_seen = false;
     // read_to_end keeps the bytes read before an error, so a timeout resumes the same reply instead of restarting it
     while let Err(e) = (&mut s).take(max_reply.saturating_sub(buf.len() as u64)).read_to_end(&mut buf) {
         let why = defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]);
@@ -213,7 +224,7 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
         if let Some((hung, confirmed)) = stale_heartbeat() {
             return Exch::Hung(hung, confirmed);
         }
-        if let Some(stall) = stalled() {
+        if let Some(stall) = stalled(&mut idle_seen) {
             return stall.into_exch();
         }
         rearm_read_timeout(&s, left.min(defaults::millis("client.heartbeat_poll_ms")));
@@ -308,6 +319,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     // acked: never resend from here; wait for the reply up to the hard window (the original read loop's rules)
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply") as usize);
     let mut late = false;
+    let mut idle_seen = false;
     if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
@@ -355,7 +367,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
                 if let Some((hung, confirmed)) = stale_heartbeat() {
                     return Once::Done(Exch::Hung(hung, confirmed));
                 }
-                if let Some(stall) = stalled() {
+                if let Some(stall) = stalled(&mut idle_seen) {
                     return Once::Done(stall.into_exch());
                 }
                 rearm_read_timeout(&s, left.min(defaults::millis("client.heartbeat_poll_ms")));
@@ -397,11 +409,12 @@ fn exchange_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
                 if retries >= defaults::num("wire.max_retries") || window.saturating_sub(began.elapsed()) < defaults::millis("wire.retry_min_ms") {
                     // no more resends: like the original exchange, keep watching the daemon's heartbeat for the rest of the window, so a
                     // daemon that went silent and stopped beating is reported hung (and replaced) instead of merely slow
+                    let mut idle_seen = false;
                     while window.saturating_sub(began.elapsed()) > Duration::ZERO {
                         if let Some((hung, confirmed)) = stale_heartbeat() {
                             return Exch::Hung(hung, confirmed);
                         }
-                        if let Some(stall) = stalled() {
+                        if let Some(stall) = stalled(&mut idle_seen) {
                             return stall.into_exch();
                         }
                         std::thread::sleep(defaults::millis("client.heartbeat_poll_ms").min(window.saturating_sub(began.elapsed())));

@@ -2061,11 +2061,15 @@ fn fake_heartbeat(e: &Env, pid: u32, fresh: bool) {
 /// [`fake_heartbeat`] with the progress age (ms, the fifth line the real daemon writes) it records: `Some(0)` = a worker making
 /// progress right now, a large figure = a worker silent for that long, `None` = no progress line (a build from before it).
 fn fake_heartbeat_with(e: &Env, pid: u32, fresh: bool, progress_ms: Option<u64>) {
+    fake_heartbeat_line(e, pid, fresh, &progress_ms.map_or(String::new(), |ms| format!("{ms:010}\n")));
+}
+
+/// [`fake_heartbeat_with`] with the raw progress line: the idle marker (`iiiiiiiiii\n`) is what the real daemon writes with no worker busy.
+fn fake_heartbeat_line(e: &Env, pid: u32, fresh: bool, progress: &str) {
     let p = e.eng().join("daemon.heartbeat");
     std::fs::create_dir_all(e.eng()).unwrap();
     let (start, exe) = (ah_engine::procid::start(pid).unwrap(), ah_engine::procid::exe(pid).unwrap());
     let dir = std::fs::canonicalize(e.eng()).unwrap();
-    let progress = progress_ms.map_or(String::new(), |ms| format!("{ms:010}\n"));
     std::fs::write(&p, format!("{pid}\n{start}\n{}\n{}\n{progress}", exe.display(), dir.display())).unwrap();
     std::fs::write(e.eng().join("e.sock.lock"), pid.to_string()).unwrap(); // the singleton lock holder the heartbeat must name
     let old = std::time::SystemTime::now() - Duration::from_secs(60);
@@ -2530,4 +2534,34 @@ fn sigint_drains_and_exits_like_sigterm() {
     }
     assert!(gone, "SIGINT must end the daemon{}", e.diag());
     assert!(e.health_log().contains("\texit\tclean\t"), "the drain ends in a clean exit: {}", e.health_log());
+}
+
+const STOP_IN: &str = r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"Stop","stop_hook_active":false}"#;
+
+/// #684 (review of #690, P1-1): a daemon whose heartbeat is fresh but reports NO busy worker (idle marker) is not working on a waiting
+/// Stop call. Two triggers: the accept loop is wedged (the connection sits in the backlog, never accepted), and the request is accepted
+/// but never picked up (no reply, no worker busy). Both fail the call open within `client.progress_stale_ms` + one poll, not at the
+/// 8.6 s Stop window.
+#[test]
+fn a_stop_call_to_a_daemon_with_no_busy_worker_fails_open_within_the_progress_bound() {
+    let _timing = wrapper_timing_lock();
+    for name in ["idleaccept", "idlewedged"] {
+        let e = Env::new(name, &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+        let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+        fake_heartbeat_line(&e, stand_in.id(), true, "iiiiiiiiii\n");
+        if name == "idleaccept" {
+            fake_server(&e, || None); // accepts, never picked up
+        } else {
+            std::fs::create_dir_all(e.eng()).unwrap();
+            let l = UnixListener::bind(e.eng().join("e.sock")).unwrap();
+            std::mem::forget(l); // bound and listening, never accepts: a wedged accept loop
+        }
+        let (out, code, dt) = e.wrapper_hook_for("Stop", STOP_IN);
+        println!("TIMING idle-heartbeat Stop ({name}) wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
+        ah_engine::discard::harmless(stand_in.kill());
+        ah_engine::discard::harmless(stand_in.wait());
+        assert_eq!((code, out.as_str()), (0, ""), "{name}: fail open: {}", e.health_log());
+        let bound = ah_engine::defaults::num("client.progress_stale_ms") + ah_engine::defaults::num("client.heartbeat_poll_ms") + 300;
+        assert!(dt < common::scaled(Duration::from_millis(bound)), "{name}: Stop waited {dt:?}, the bound is {bound} ms");
+    }
 }
