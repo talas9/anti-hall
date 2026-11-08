@@ -256,7 +256,7 @@ doc = "A live self-test the engine does not decide: the check defers this payloa
 value = "{check}: the engine does not decide this self-test, so it was not exercised here"
 
 [doctor_msg.statusline_installed]
-doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node .../statusline.js` command; that script no longer ships, so the status line is blank until this is removed."
+doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}. The Node-era installer wrote a `node` command for its statusline script; that script no longer ships, so the status line is blank until this is removed."
 value = "the anti-hall statusLine in {label} is the retired Node form: the script it runs no longer ships, so the status line is blank - Fix (main session): ~/.anti-hall/ah-engine/bin/ah-engine uninstall-statusline (it restores the settings backup the old installer kept)"
 
 [doctor_msg.statusline_set]
@@ -970,6 +970,10 @@ doc = "DMN-13. Placeholders: {pid}, {sock}."
 value = "non-live ah-engine serve process pid {pid} is using socket {sock}; it should exit when its parent dies or the socket is removed"
 
 
+[doctor_msg.supervisor_unhealthy]
+doc = "The service manager accepted an ask to start the engine but no daemon answered. Placeholders: {secs}."
+value = "the service manager did not bring the daemon up when asked: clients start it themselves for {secs}s more - Fix: ah-engine doctor --repair, then check the engine unit's log in the state directory"
+
 [doctor_msg.crashloop]
 doc = "DMN-08. Placeholders: {secs}, {reason}."
 value = "daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix: read ah-engine status, fix the cause, then run: ah-engine reset"
@@ -1486,7 +1490,7 @@ doc = "A Codex registration still invokes the retired anti-hall shell launcher, 
 value = "Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine doctor --repair`"
 
 [doctor_msg.codex_node_entries]
-doc = "The Codex hooks file still runs Node-era anti-hall hooks (`node .../hooks/<name>.js`), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command)."
+doc = "The Codex hooks file still runs Node-era anti-hall hooks (a `node` command per hook script), whose scripts no longer ship. Placeholders: {label}, {file}, {n} (how many), {first} (the first command)."
 value = "Codex hooks.json ({label}: {file}) still runs {n} Node-era anti-hall hook(s) (first: {first}); they fail on every call because the scripts no longer ship, so no Codex guard runs - Fix: ah-engine install-codex --global (it replaces them and keeps a backup)"
 
 [doctor_msg.codex_unwired]

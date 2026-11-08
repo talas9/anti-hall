@@ -609,3 +609,21 @@ value = "footprint"
 [mem.leak_basis_heap]
 doc = "Word for the counted heap in the leak notice's `basis` placeholder."
 value = "heap"
+
+[mem.transcript_store_soft_bytes]
+doc = "Bytes of the per-session transcript fact stores (the `transcript_store` holder) logged as a soft excursion; the least recently used sessions are evicted down to the low-water mark."
+value = 25165824
+min = 65536
+unit = "bytes"
+
+[mem.transcript_store_hard_bytes]
+doc = "Bytes of the per-session transcript fact stores past which every session is dropped (each is rebuilt from its transcript on the next request)."
+value = 33554432
+min = 65536
+unit = "bytes"
+
+[mem.transcript_store_low_water_pct]
+doc = "Percent of mem.transcript_store_soft_bytes the stores are evicted down to when the soft limit is reached."
+value = 75
+min = 1
+max = 100

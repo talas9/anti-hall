@@ -276,6 +276,12 @@ pub fn non_live_serve_processes(host: &mut dyn Host) -> Vec<(u32, PathBuf)> {
 pub fn daemon_section(doc: &mut Doc) {
     doc.head(defaults::text("doctor_msg.head_engine"));
     doc.ok(defaults::render("doctor_msg.engine_version", &[("version", &crate::version())]));
+    // the engine unit: interval-only (written before the unit supervised the daemon), differing from what this engine writes, or not loaded
+    if let Some(home) = defaults::env_var("home").filter(|h| !h.is_empty()) {
+        for finding in crate::setup::supervise::doctor_findings(std::path::Path::new(&home)) {
+            doc.warnl(finding);
+        }
+    }
     let sock = paths::socket();
     let lock = paths::lock_for(&sock);
     let sock_kind = std::fs::symlink_metadata(&sock).ok();
@@ -343,6 +349,9 @@ pub fn daemon_section(doc: &mut Doc) {
     if let Some(left) = health::crashloop_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();
         doc.bad(defaults::render("doctor_msg.crashloop", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));
+    }
+    if let Some(left) = crate::client::supervisor_unhealthy_remaining() {
+        doc.warnl(defaults::render("doctor_msg.supervisor_unhealthy", &[("secs", &(left.as_secs() + 1))]));
     }
     if let Some(left) = health::breaker_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();

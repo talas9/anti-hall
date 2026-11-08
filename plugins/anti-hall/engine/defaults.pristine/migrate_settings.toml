@@ -236,6 +236,8 @@ value = [
   "{\"section\":\"jev\",\"key\":\"weeklyNotice\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"jev_weekly_notice\",\"legacyFile\":\"jev.json\",\"legacyKey\":\"weeklyNotice\"}",
   "{\"section\":\"jev\",\"key\":\"audit.snippets\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_JEV_AUDIT_SNIPPETS\",\"legacyFile\":\"jev.json\",\"legacyKey\":\"audit.snippets\"}",
   "{\"section\":\"jev\",\"key\":\"logRotatedFiles\",\"type\":\"number\",\"default\":10,\"min\":1,\"max\":100}",
+  "{\"section\":\"jev\",\"key\":\"modelPin\",\"type\":\"string\",\"default\":\"\"}",
+  "{\"section\":\"jev\",\"key\":\"stateMaxTokens\",\"type\":\"number\",\"default\":30000,\"min\":1}",
   "{\"section\":\"jev\",\"key\":\"rollupRetentionDays\",\"type\":\"number\",\"default\":0,\"min\":0,\"max\":3650}",
   "{\"section\":\"jev\",\"key\":\"budget.minCreditUsd\",\"type\":\"number\",\"exclusiveMin\":0,\"pluginOption\":\"jev_budget_min_credit_usd\",\"legacyFile\":\"jev.json\",\"legacyKey\":\"budget.minCreditUsd\"}",
   "{\"section\":\"jev\",\"key\":\"prices\",\"type\":\"object\",\"legacyFile\":\"jev.json\",\"legacyKey\":\"prices\"}",

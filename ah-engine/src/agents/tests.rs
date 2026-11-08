@@ -96,7 +96,31 @@ fn take_queue(h: &Path, key: &str) {
     std::fs::write(cur, queue(h, key).len().to_string()).unwrap();
 }
 
+/// Every session on disk has a live wake-watch (its stamp renewed as of the clock), so the re-arm line stays out of tests about other
+/// signals; `ticks_unarmed` leaves the stamps dead for the tests about that line.
+fn arm_all(e: &Env) {
+    if let Ok(dir) = std::fs::read_dir(e.home.join(".claude/projects/p")) {
+        for f in dir.flatten() {
+            let p = f.path();
+            if p.extension().is_some_and(|x| x == "jsonl")
+                && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+            {
+                arm_wake(e, stem);
+            }
+        }
+    }
+}
+
 fn ticks(h: &Path, st: &mut State, at: &[u64]) {
+    for n in at {
+        let e = env(h, *n);
+        arm_all(&e);
+        tick(&e, st);
+    }
+}
+
+/// Like `ticks`, with the wake stamps left dead.
+fn ticks_unarmed(h: &Path, st: &mut State, at: &[u64]) {
     for n in at {
         tick(&env(h, *n), st);
     }
@@ -868,7 +892,7 @@ fn background_work_with_no_wake_path_gets_an_arm_reminder() {
     // A child doing work has a live launching session.
     register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
-    ticks(&h, &mut st, &[n, n + MIN]);
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     let f = agent(&st, "parent").flags.get("monitor_unarmed").expect("monitor_unarmed");
     assert_eq!(f.evidence, 1);
     let q = queue(&h, "parent");
@@ -883,6 +907,140 @@ fn an_armed_monitor_keeps_the_reminder_quiet() {
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(!agent(&st, "parent").flags.contains_key("monitor_unarmed"));
+}
+
+// ---- wake-watch auto re-arm (T-0e) --------------------------------------------------------------------------
+
+fn idle_main(tag: &str, n: u64) -> PathBuf {
+    let h = home(tag);
+    write(&sess(&h, "s1"), &[prompt(n - 5 * MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "done"}]), Some("end_turn"))]);
+    register(&h, std::process::id(), "s1", "busy", n);
+    h
+}
+
+fn arm_reminders(h: &Path) -> Vec<Value> {
+    queue(h, "s1").into_iter().filter(|r| r["signal"] == "monitor_unarmed").collect()
+}
+
+#[test]
+fn a_dead_watcher_gets_one_exact_rearm_line_even_with_no_background_work_and_is_then_rate_limited() {
+    let n = now0();
+    let h = idle_main("rearm-dead", n);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 3 * MIN, n + 4 * MIN]);
+    let rows = arm_reminders(&h);
+    assert_eq!(rows.len(), 1, "one prompt, then the cooldown holds: {rows:?}");
+    let t = rows[0]["text"].as_str().unwrap();
+    assert!(t.contains("~/.anti-hall/ah-engine/bin/ah-hook agents wake-watch --auto 2>&1") && t.contains("1800000") && t.contains("re-arm"), "{t}");
+    // once the cooldown has passed (and the first line was taken) it is asked again
+    take_queue(&h, "s1");
+    ticks_unarmed(&h, &mut st, &[n + 30 * MIN]);
+    assert_eq!(arm_reminders(&h).len(), 2);
+}
+
+#[test]
+fn a_session_inside_the_start_up_grace_is_not_asked_to_rearm() {
+    let n = now0();
+    let h = idle_main("rearm-grace", n);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN / 4]);
+    assert!(!agent(&st, "s1").flags.contains_key("monitor_unarmed"));
+}
+
+#[test]
+fn a_live_watcher_keeps_the_rearm_line_silent_and_a_recovery_is_counted() {
+    let n = now0();
+    let h = idle_main("rearm-live", n);
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let e = env(&h, t);
+        arm_wake(&e, "s1");
+        tick(&e, &mut st);
+    }
+    assert!(arm_reminders(&h).is_empty() && !agent(&st, "s1").flags.contains_key("monitor_unarmed"));
+    // the watcher dies: asked once; it comes back: the flag clears as recovered
+    ticks_unarmed(&h, &mut st, &[n + 10 * MIN, n + 11 * MIN, n + 12 * MIN]);
+    assert_eq!(arm_reminders(&h).len(), 1);
+    let e = env(&h, n + 13 * MIN);
+    arm_wake(&e, "s1");
+    tick(&e, &mut st);
+    assert!(!agent(&st, "s1").flags.contains_key("monitor_unarmed"));
+    assert_eq!(st.day(&e).recovered, 1);
+}
+
+#[test]
+fn a_switched_off_watcher_is_said_once_and_never_asked_for() {
+    let n = now0();
+    let h = idle_main("rearm-off", n);
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN, n + 40 * MIN, n + 90 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        tick(&e, &mut st);
+    }
+    assert!(arm_reminders(&h).is_empty());
+    let off: Vec<Value> = queue(&h, "s1").into_iter().filter(|r| r["signal"] == "monitor_off").collect();
+    assert_eq!(off.len(), 1, "{off:?}");
+    assert!(off[0]["text"].as_str().unwrap().contains("agents.wakeWatch=false"));
+}
+
+/// Switch the watcher off through the plugin option the DevSwarm setting reads (`devswarm.wakeWatch`).
+fn devswarm_watch_off(e: &mut Env) {
+    let key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), "devswarm_wake_watch".to_ascii_uppercase());
+    e.settings.env.insert(key, "false".into());
+}
+
+#[test]
+fn a_workspace_with_an_unarmed_lock_and_the_switch_off_gets_the_off_notice_not_the_arm_command() {
+    let h = home("ws-off");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN));
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        devswarm_watch_off(&mut e);
+        tick(&e, &mut st);
+    }
+    assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(false));
+    assert!(!agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
+    let q = queue(&h, "sessW");
+    assert!(q.iter().all(|r| r["signal"] != "monitor_unarmed"), "{q:?}");
+    let off: Vec<&Value> = q.iter().filter(|r| r["signal"] == "monitor_off").collect();
+    assert_eq!(off.len(), 1, "{q:?}");
+    let t = off[0]["text"].as_str().unwrap();
+    assert!(t.contains("devswarm.wakeWatch=false") && !t.contains("--auto"), "{t}");
+}
+
+#[test]
+fn a_workspace_follows_devswarm_wake_watch_not_agents_wake_watch() {
+    let h = home("ws-own-switch");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN));
+    let mut st = State::default();
+    // agents.wakeWatch off must not silence a workspace whose own switch is on
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        tick(&e, &mut st);
+    }
+    assert!(agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
+    assert!(queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_off"));
+}
+
+#[test]
+fn codex_is_never_asked_to_arm_a_monitor() {
+    let h = home("rearm-codex");
+    let n = now0();
+    let day = h.join(".codex/sessions/2026/10/22");
+    std::fs::create_dir_all(&day).unwrap();
+    let meta = json!({"type": "session_meta", "payload": {"id": "01a16132-cccc", "cwd": "/cx"}}).to_string();
+    write(&day.join("rollout-2026-10-22T05-21-20-01a16132-cccc.jsonl"), &[meta, json!({"type": "response_item", "payload": {}}).to_string()]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "01a16132-cccc");
+    assert_eq!(a.kind, "codex");
+    assert!(a.flags.is_empty(), "{:?}", a.flags.keys().collect::<Vec<_>>());
 }
 
 // ---- DevSwarm -----------------------------------------------------------------------------------------------
@@ -929,6 +1087,8 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
     )
     .unwrap();
     e.now_ms = n + MIN;
+    tick(&e, &mut st);
+    e.now_ms = n + 2 * MIN;
     tick(&e, &mut st);
     let a = agent(&st, "sessW");
     assert_eq!(a.kind, kind_name("workspace"));
@@ -1411,7 +1571,7 @@ fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watche
             std::fs::File::options().write(true).open(&stamp).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(n)).unwrap();
         }
         let mut st = State::default();
-        ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+        ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
         (agent(&st, "m1").flags.contains_key("monitor_unarmed"), queue(&h, "m1"))
     };
     let (flagged, q) = run("unarmed-main", false);
