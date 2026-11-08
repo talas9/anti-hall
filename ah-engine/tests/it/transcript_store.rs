@@ -278,6 +278,43 @@ fn eviction_during_a_waiting_or_refreshing_request_neither_leaks_bytes_nor_split
 }
 
 #[test]
+fn every_waiter_on_a_retired_flight_moves_on_at_once() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..30).map(|j| prompt_line(j, 400)).collect::<String>());
+    let mut c = cfg();
+    c.wait = Duration::from_millis(1500);
+    let st = Arc::new(store(c));
+    let (s2, f2) = (st.clone(), f.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        s2.with(&f2, 0, |_| {
+            tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        })
+        .unwrap();
+    });
+    rx.recv().unwrap();
+    let waiters: Vec<_> = (0..2)
+        .map(|_| {
+            let (s, f) = (st.clone(), f.clone());
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                s.with(&f, 1, |_| ()).unwrap();
+                t0.elapsed()
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(100));
+    st.drop_session(&f); // the holder's slot leaves the map with both waiters asleep on it
+    holder.join().unwrap();
+    for w in waiters {
+        let took = w.join().unwrap();
+        assert!(took < Duration::from_millis(1000), "a waiter slept {took:?} on a retired slot (wait is 1500 ms)");
+    }
+}
+
+#[test]
 fn ending_a_session_during_its_refresh_releases_its_bytes() {
     let t = Tmp::new("ts");
     let f = t.path("s.jsonl");
@@ -562,12 +599,20 @@ fn a_corrupt_snapshot_is_counted_as_a_miss_and_the_sweep_caps_the_snapshot_direc
         second.with(f, 0, |_| ()).unwrap();
     }
     assert_eq!(second.stats().snapshot_misses, 2, "the two corrupt snapshots are counted");
-    // a zero ttl removes every snapshot older than it at the next sweep
-    c.snapshot_ttl_ms = 0;
+    // The ttl removes a snapshot strictly OLDER than it (the config doc: "age after which"), so the snapshot the sweep's own
+    // persist_all has just written (age ~0, possibly under 1 ms) is kept at any ttl. Backdate the two stale files by an hour so
+    // the outcome does not depend on clock granularity: the stale one goes, the fresh one stays.
+    c.snapshot_ttl_ms = 600_000;
     c.snapshot_max_files = 100;
-    std::thread::sleep(Duration::from_millis(5));
-    let third = Store::with_cfg(c, Some(snap.clone()));
+    let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for e in std::fs::read_dir(&snap).unwrap().flatten() {
+        std::fs::File::options().write(true).open(e.path()).unwrap().set_modified(hour_ago).unwrap();
+    }
+    let third = Store::with_cfg(c.clone(), Some(snap.clone()));
     third.with(&files[0], 0, |_| ()).unwrap();
     third.persist_all();
-    assert_eq!(names(&snap), 0, "every snapshot is older than a zero ttl");
+    assert_eq!(names(&snap), 1, "the stale snapshots are swept; only the one just written is left");
+    let fourth = Store::with_cfg(c, Some(snap.clone()));
+    fourth.with(&files[0], 0, |_| ()).unwrap();
+    assert_eq!(fourth.stats().snapshot_misses, 0, "the survivor is the fresh, readable snapshot of the transcript");
 }

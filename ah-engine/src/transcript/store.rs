@@ -818,7 +818,9 @@ impl Store {
                 busy = slot.cv.wait_timeout(busy, left).unwrap_or_else(|e| e.into_inner()).0;
             }
             if slot.retired.load(SeqCst) {
-                // left the map while this request waited: the map's slot (or a new one) is the one to use
+                // left the map while this request waited: the map's slot (or a new one) is the one to use. BusyGuard wakes one
+                // waiter; pass the wakeup on so every other waiter on this dead slot moves to the map's slot too.
+                slot.cv.notify_all();
                 continue;
             }
             *busy = true;
@@ -829,11 +831,11 @@ impl Store {
         let mut sess = lock(&slot.data);
         let refreshed = self.refresh(&mut sess, path, &cfg, deadline);
         let now_bytes = sess.bytes() as u64;
-        let before = slot.bytes.swap(now_bytes, Relaxed);
+        let before = slot.bytes.swap(now_bytes, SeqCst);
         self.adjust_total(before, now_bytes);
         if slot.retired.load(SeqCst) {
             // the session ended during this refresh: its bytes are no longer anyone's
-            self.adjust_total(slot.bytes.swap(0, Relaxed), 0);
+            self.adjust_total(slot.bytes.swap(0, SeqCst), 0);
         }
         refreshed?;
         let out = f(&View { s: &sess, stats: &self.stats });
@@ -918,7 +920,7 @@ impl Store {
         let gone = lock(&self.slots).remove(path);
         if let Some(s) = gone {
             s.force_retire();
-            self.adjust_total(s.bytes.swap(0, Relaxed), 0);
+            self.adjust_total(s.bytes.swap(0, SeqCst), 0);
             let _ = cfg;
         }
     }
@@ -1116,6 +1118,8 @@ impl Store {
             if s.bytes() > cfg.session_budget {
                 s.trim(cfg, size);
             }
+            #[cfg(test)]
+            tests::probe(self, s);
         }
         self.stats.read_buf_max.fetch_max(r.peak_bytes() as u64, Relaxed);
         Ok(consumed)
@@ -1198,4 +1202,94 @@ pub fn register_mem() -> crate::mem::Budget {
 /// The global store when something has asked it a question already (the daemon publishes its counters only then).
 pub fn global_if_started() -> Option<&'static Store> {
     GLOBAL.get()
+}
+
+#[cfg(test)]
+mod tests {
+    //! Hooks into the middle of a refresh: the probe runs on the refreshing thread after each folded line, so a test can
+    //! observe the session while it is being built and end the session while its refresh is running.
+    use super::*;
+    use std::cell::RefCell;
+
+    type Probe = Box<dyn FnMut(&Store, &Session)>;
+    thread_local! { static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) }; }
+
+    pub(super) fn probe(st: &Store, s: &Session) {
+        PROBE.with(|p| {
+            if let Some(f) = p.borrow_mut().as_mut() {
+                f(st, s);
+            }
+        });
+    }
+
+    fn line(i: usize, pad: usize) -> String {
+        format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"prompt-{i:05} {}\"}}}}\n", "x".repeat(pad))
+    }
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new(tag: &str) -> Dir {
+            let d = std::env::temp_dir().join(format!("ah-store-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            Dir(d)
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    fn cfg_with_budget(budget: usize) -> Cfg {
+        let mut c = Cfg::from_defaults();
+        c.wait = Duration::from_millis(500);
+        c.session_budget = budget;
+        c
+    }
+
+    /// The peak the session reaches while one big append is folded must stay within the budget: the per-line trim, not
+    /// only the final trim, keeps it there.
+    #[test]
+    fn a_big_append_never_exceeds_the_session_budget_at_any_point() {
+        let d = Dir::new("peak");
+        let f = d.0.join("s.jsonl");
+        std::fs::write(&f, line(0, 100)).unwrap();
+        let st = Store::with_cfg(cfg_with_budget(16 * 1024), None);
+        st.with(&f, 0, |_| ()).unwrap();
+        let more: String = (1..=200).map(|i| line(i, 500)).collect();
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&f).unwrap(), more.as_bytes()).unwrap();
+        let peak = Arc::new(AtomicU64::new(0));
+        let p2 = peak.clone();
+        PROBE.with(|p| {
+            *p.borrow_mut() = Some(Box::new(move |_, s| {
+                p2.fetch_max(s.bytes() as u64, Relaxed);
+            }))
+        });
+        st.with(&f, 1, |_| ()).unwrap();
+        PROBE.with(|p| *p.borrow_mut() = None);
+        let peak = peak.load(Relaxed);
+        assert!(peak > 0, "the probe never ran");
+        assert!(peak <= 16 * 1024, "the session reached {peak} bytes during the append, over its 16384 budget");
+    }
+
+    /// The session ends while its refresh is running (not while `f` runs): the refresh's bytes must not be counted.
+    #[test]
+    fn ending_a_session_in_the_middle_of_its_refresh_leaves_no_bytes() {
+        let d = Dir::new("drop");
+        let f = d.0.join("s.jsonl");
+        std::fs::write(&f, (0..30).map(|i| line(i, 400)).collect::<String>()).unwrap();
+        let st = Store::with_cfg(cfg_with_budget(1 << 20), None);
+        let (f2, once) = (f.clone(), std::cell::Cell::new(false));
+        PROBE.with(|p| {
+            *p.borrow_mut() = Some(Box::new(move |st, _| {
+                if !once.replace(true) {
+                    st.drop_session(&f2);
+                }
+            }))
+        });
+        st.with(&f, 0, |_| ()).unwrap();
+        PROBE.with(|p| *p.borrow_mut() = None);
+        let s = st.stats();
+        assert_eq!((s.sessions, s.bytes), (0, 0), "{s:?}");
+    }
 }

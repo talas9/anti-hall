@@ -413,6 +413,28 @@ pub(crate) fn fail_open_unavailable() -> bool {
     daemon_down_marked() || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some()
 }
 
+/// Time left on the "service manager unhealthy" marker (`files.supervisor_unhealthy_marker`): an ask to the service manager was
+/// accepted but no daemon answered, or the command failed. While it holds, clients skip the ask and start the daemon themselves.
+pub(crate) fn supervisor_unhealthy_remaining() -> Option<Duration> {
+    let until: u64 = std::fs::read_to_string(state_file("supervisor_unhealthy_marker")).ok()?.trim().parse().ok()?;
+    let now = health::now_ms();
+    (until > now).then(|| Duration::from_millis(until - now))
+}
+
+pub(crate) fn supervisor_unhealthy_marked() -> bool {
+    fresh_until(&state_file("supervisor_unhealthy_marker"))
+}
+
+pub(crate) fn mark_supervisor_unhealthy() {
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    let until = health::now_ms().saturating_add(defaults::num("units.unhealthy_ttl_ms"));
+    crate::discard::logged("supervisor_unhealthy_marker_write", crate::atomic::write(state_file("supervisor_unhealthy_marker"), until.to_string()));
+}
+
+fn clear_supervisor_unhealthy() {
+    crate::discard::harmless(std::fs::remove_file(state_file("supervisor_unhealthy_marker"))); // keep: absent marker is the desired state
+}
+
 fn mark_daemon_down(reason: &str) {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
@@ -566,6 +588,39 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
     ctl(verb).and_then(|s| serde_json::from_str(&s).ok())
 }
 
+/// Start the daemon for a client that found none: through the service manager when the supervised unit is installed and matches
+/// this client (the daemon is then the unit's child and its supervisor starts it again after a kill), else detached by the client.
+/// `None` = it could not be started; `Some(None)` = the service manager was asked and accepted (the daemon is on its way, not yet
+/// known to answer: the caller waits for it itself); `Some(Some(child))` = started here. `wait` is for the callers that need the
+/// daemon now (a guard event, the spool writer) and wait for it themselves; a call that never waits (a prompt, an advisory,
+/// `answer_now`) passes false, and the ask to the service manager is then held to the shorter `units.kickstart_unguarded_ms`.
+///
+/// Only a start the client makes itself is a `client_spawn_attempt` (what the crash-loop rule's spawn-rate half counts): an ask to the
+/// service manager says nothing about the binary and is logged on its own (`unit_kickstart`). `why` is the spawn attempt's detail.
+pub(crate) fn start_daemon(wait: bool, why: &str) -> Option<Option<std::process::Child>> {
+    start_daemon_with(wait, why, &Starter::real())
+}
+
+/// The two ways a client starts a daemon, replaceable in tests (the real ones ask launchd/systemd and fork the engine).
+pub(crate) struct Starter<'a> {
+    ask: &'a dyn Fn(bool) -> bool,
+    spawn: &'a dyn Fn() -> Option<std::process::Child>,
+}
+
+impl Starter<'static> {
+    fn real() -> Starter<'static> {
+        Starter { ask: &crate::setup::supervise::kickstart, spawn: &spawn_daemon }
+    }
+}
+
+fn start_daemon_with(wait: bool, why: &str, s: &Starter) -> Option<Option<std::process::Child>> {
+    if (s.ask)(wait) {
+        return Some(None);
+    }
+    health::log_event("client_spawn_attempt", "singleflight", why);
+    (s.spawn)().map(Some)
+}
+
 /// Start a detached daemon (unless the `nospawn` env var is set); `None` when it could not be started, logged with the OS
 /// error (review finding 18: a fork that failed with EAGAIN or ENOMEM was not on record).
 pub fn spawn_daemon() -> Option<std::process::Child> {
@@ -713,8 +768,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             if !health::crashloop_tripped(cfg)
                 && let Some(_spawn_lock) = spawn_lock_if_absent(&sock)
             {
-                health::log_event("client_spawn_attempt", "singleflight", &why);
-                let _ = spawn_daemon();
+                let _ = start_daemon(false, &why);
             }
             health::breaker_failure(cfg, &why);
             None
@@ -757,7 +811,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             if !GUARD_CALL.get() || defaults::env_var("nospawn").is_some() {
                 return absent_unguarded(&sock, payload, cfg, answer_now);
             }
-            absent_guarded(&sock, payload, cfg, hold_wait_on_ok)
+            absent_guarded(&sock, payload, cfg, hold_wait_on_ok, &Starter::real())
         }
     }
 }
@@ -772,25 +826,29 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
 /// sent under the ack protocol: the new daemon queues the whole burst of calls that waited with it, so a request can sit
 /// unacknowledged past `wire.ack_timeout_ms`, and the ack protocol would resend it and then give up; one connection is never resent,
 /// so never judged twice.
-fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_ok: bool) -> Option<String> {
+fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_ok: bool, starter: &Starter) -> Option<String> {
     let start = Instant::now();
     // the spawn lock is held until this call's wait ends, so the calls arriving meanwhile wait instead of spawning again
+    let mut asked = false;
     let (spawn_guard, mut child) = match spawn_lock_if_absent(sock) {
         Some(lock) => {
-            health::log_event("client_spawn_attempt", "singleflight", "absent");
-            let Some(child) = spawn_daemon() else {
+            let Some(child) = start_daemon_with(true, "absent", starter) else {
                 wait_marker(false);
                 note_unavailable();
                 mark_daemon_down("spawn");
                 return None;
             };
-            (Some(lock), Some(child))
+            // `Some(None)`: the service manager accepted the ask, so the supervised daemon is on its way; this call waits for it
+            // below instead of starting a second, unsupervised one
+            asked = child.is_none();
+            (Some(lock), child)
         }
         None => (None, None),
     };
     let window = wait_window(cfg.deadline);
     let cold_wait = defaults::millis("client.cold_guard_wait_ms").min(window);
     let ctl = defaults::millis("client.ctl_timeout_ms");
+    let grace = defaults::millis("units.kickstart_grace_ms").min(cold_wait);
     while start.elapsed() < cold_wait {
         if let Some(Ok(Some(st))) = child.as_mut().map(|c| c.try_wait()) {
             use std::os::unix::process::ExitStatusExt;
@@ -805,6 +863,10 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
         let up = !probe.is_zero() && matches!(exchange(sock, b"CTL ping\n", probe), Exch::Reply(Kind::Ok, ref b) if b.starts_with("pong "));
         if up {
             drop(spawn_guard);
+            if asked {
+                health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_ok"), "");
+                clear_supervisor_unhealthy();
+            }
             let left = window.saturating_sub(start.elapsed());
             return match exchange_for(sock, payload, cfg.deadline.min(left), left, false) {
                 Exch::Reply(Kind::Ok, body) => {
@@ -827,7 +889,26 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                 }
             };
         }
+        if asked && start.elapsed() >= grace {
+            // the service manager accepted the ask and nothing answered within the grace: it is not bringing the daemon up. This
+            // call starts one itself within what is left of the window, and later calls do the same until the marker expires. The
+            // singleton lock keeps it to one daemon: whichever starts second finds the lock held, says so and exits 0 (the unit's
+            // KeepAlive leaves a clean exit alone). The miss is its own count; it is never a daemon start or a crash.
+            asked = false;
+            health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_miss"), "");
+            mark_supervisor_unhealthy();
+            if child.is_none() {
+                health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_fallback"), "");
+                health::log_event("client_spawn_attempt", "singleflight", "kickstart_miss");
+                child = (starter.spawn)();
+            }
+        }
         std::thread::sleep(defaults::millis("client.cold_guard_poll_ms").min(cold_wait.saturating_sub(start.elapsed())));
+    }
+    if asked {
+        // grace as long as the whole wait: no time was left to start one; same miss
+        health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_miss"), "");
+        mark_supervisor_unhealthy();
     }
     wait_marker(false);
     note_unavailable();
@@ -841,8 +922,7 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     wait_marker(false);
     note_unavailable();
     let _spawn_lock = spawn_lock_if_absent(sock)?;
-    health::log_event("client_spawn_attempt", "singleflight", "absent");
-    let Some(mut child) = spawn_daemon() else {
+    let Some(mut child) = start_daemon(false, "absent") else {
         mark_daemon_down("spawn");
         return None;
     };
@@ -852,7 +932,7 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     let start = Instant::now();
     let cold_wait = defaults::millis("client.cold_start_wait_ms");
     while start.elapsed() < cold_wait {
-        if let Ok(Some(st)) = child.try_wait() {
+        if let Some(Ok(Some(st))) = child.as_mut().map(|c| c.try_wait()) {
             use std::os::unix::process::ExitStatusExt;
             if let Some(sig) = st.signal() {
                 health::log_event("start_fail", &format!("sig{sig}"), defaults::text("msg.log_daemon_killed"));
@@ -900,8 +980,7 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
     }
     health::clear_hang_suspicion();
     health::log_event("client_hung_kill", "daemon", &defaults::render("msg.log_hung_kill", &[("pid", &pid), ("why", &why)]));
-    health::log_event("client_spawn_attempt", "singleflight", why);
-    spawn_daemon().is_some()
+    start_daemon(false, why).is_some()
 }
 
 /// Log a client-side failure; the state dir may not exist yet (no daemon ever ran here), and the event must still be on record.
@@ -1404,5 +1483,129 @@ mod tests {
         ] {
             assert_eq!(reply_outcome(body.clone()), None, "{body}");
         }
+    }
+
+    // ---- a kickstart that is accepted but never answered (SE-A3 miss fallback) ----
+
+    /// The tests use the crate's scratch state directory (never the real home); they count the events they add, and take turns.
+    struct KickState {
+        dir: PathBuf,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl KickState {
+        fn new(tag: &str) -> KickState {
+            let turn = health::STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::temp_dir().join(format!("ah-kick-{tag}-{}", std::process::id()));
+            crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run of this test
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `STATE_TURN` first. A state directory of its
+            // own, because a test per process (nextest) is not serialised by the turn: they would otherwise count each other's events in the shared one.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            crate::limits::ensure_private_dir(&paths::dir()).unwrap();
+            clear_supervisor_unhealthy();
+            release_spawn_lock();
+            KickState { dir, _turn: turn }
+        }
+
+        fn count(&self, kind: &str, code: Option<&str>) -> usize {
+            health::flush_log();
+            health::events().iter().filter(|e| e.kind == kind && code.is_none_or(|c| e.code == c) && e.ts >= self.since()).count()
+        }
+
+        fn since(&self) -> u64 {
+            std::fs::metadata(&self.dir)
+                .and_then(|m| m.created())
+                .ok()
+                .and_then(|c| c.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64)
+        }
+    }
+
+    impl Drop for KickState {
+        fn drop(&mut self) {
+            clear_supervisor_unhealthy();
+            // SAFETY: as in `new`.
+            unsafe { std::env::remove_var("AH_ENGINE_DIR") };
+            crate::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: cleanup that raced; an absent dir is the goal state
+        }
+    }
+
+    /// A daemon stand-in: answers `CTL ping` with a pong and anything else with `verdict`.
+    fn serve_stub(sock: &Path) {
+        let l = std::os::unix::net::UnixListener::bind(sock).unwrap();
+        std::thread::spawn(move || {
+            while let Ok((mut c, _)) = l.accept() {
+                let mut line = Vec::new();
+                let mut one = [0u8; 1];
+                while !line.ends_with(b"\n") && c.read_exact(&mut one).is_ok() {
+                    line.push(one[0]);
+                }
+                let reply = if line.starts_with(b"CTL ping") { "pong 1 1" } else { "verdict" };
+                crate::discard::harmless(std::io::Write::write_all(&mut c, &frame::encode(Kind::Ok, reply))); // keep: the client may have gone
+            }
+        });
+    }
+
+    #[test]
+    fn an_accepted_ask_with_no_answer_falls_back_to_a_spawn_that_gives_an_engine_within_the_window() {
+        let st = KickState::new("fallback");
+        let sock = st.dir.join("d.sock");
+        let sock2 = sock.clone();
+        let spawned = std::cell::Cell::new(0);
+        let ask = |_wait: bool| true; // the service manager accepts and never starts anything
+        let spawn = || {
+            spawned.set(spawned.get() + 1);
+            serve_stub(&sock2);
+            std::process::Command::new("sleep").arg("30").stdin(Stdio::null()).stdout(Stdio::null()).spawn().ok()
+        };
+        let t = Instant::now();
+        let r = absent_guarded(&sock, b"E {}\n", &ClientConfig::from_env(), false, &Starter { ask: &ask, spawn: &spawn });
+        let took = t.elapsed();
+        assert_eq!(r.as_deref(), Some("verdict"), "the fallback daemon answered the guard call");
+        assert!(took < defaults::millis("client.cold_guard_wait_ms") + defaults::millis("client.ctl_timeout_ms"), "inside the guard window: {took:?}");
+        assert_eq!(spawned.get(), 1, "one fallback spawn");
+        let kind = defaults::text("units.kickstart_log_kind");
+        assert_eq!(st.count(kind, Some(defaults::text("units.kickstart_miss"))), 1);
+        assert_eq!(st.count(kind, Some(defaults::text("units.kickstart_fallback"))), 1);
+        assert!(supervisor_unhealthy_marked(), "later calls skip the ask");
+    }
+
+    #[test]
+    fn repeated_accepted_asks_are_never_spawn_attempts_so_they_never_trip_the_crash_loop_or_a_rollback() {
+        let st = KickState::new("rate");
+        let ask = |_wait: bool| true;
+        let spawn = || -> Option<std::process::Child> { panic!("an accepted ask never spawns") };
+        let s = Starter { ask: &ask, spawn: &spawn };
+        let n = defaults::num("client.spawn_n") as usize * 3;
+        for _ in 0..n {
+            health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_miss"), "");
+            assert!(matches!(start_daemon_with(true, "absent", &s), Some(None)));
+        }
+        assert_eq!(st.count("client_spawn_attempt", None), 0, "an ask is not a daemon start");
+        let cfg = ClientConfig::from_env();
+        assert!(!health::crashloop_tripped(&cfg), "misses and asks are not the binary failing");
+        assert!(health::crashloop_remaining().is_none());
+        assert_eq!(st.count("rollback_request", None), 0);
+    }
+
+    #[test]
+    fn the_unhealthy_marker_holds_for_its_ttl_and_is_then_gone() {
+        let st = KickState::new("marker");
+        assert!(!supervisor_unhealthy_marked());
+        mark_supervisor_unhealthy();
+        let left = supervisor_unhealthy_remaining().expect("marked");
+        assert!(left <= defaults::millis("units.unhealthy_ttl_ms") && left > Duration::ZERO, "{left:?}");
+        assert!(supervisor_unhealthy_marked());
+        // an expired stamp reads as no marker and is removed
+        std::fs::write(state_file("supervisor_unhealthy_marker"), (health::now_ms() - 1).to_string()).unwrap();
+        assert!(supervisor_unhealthy_remaining().is_none());
+        assert!(!supervisor_unhealthy_marked());
+        assert!(!state_file("supervisor_unhealthy_marker").exists());
+        // a daemon answering after an ask clears it at once
+        mark_supervisor_unhealthy();
+        clear_supervisor_unhealthy();
+        assert!(!supervisor_unhealthy_marked());
+        drop(st);
     }
 }
