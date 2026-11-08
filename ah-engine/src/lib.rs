@@ -88,6 +88,7 @@ pub mod setup;
 pub mod skillgen;
 pub mod spool;
 pub mod sql;
+pub mod sqlalloc;
 pub mod storage;
 pub mod store;
 pub mod telemetry;

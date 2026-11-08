@@ -1706,6 +1706,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `storage.hot_synchronous` | `FULL` |  |  | SQLite synchronous level for hot.db; FULL syncs every commit, so an acknowledged write survives a process crash (D23, D73). |
 | `storage.journal_mode` | `WAL` |  |  | SQLite journal mode for both databases; WAL lets readers run while the writer commits (D73). |
 | `storage.mmap_kb` | `0` |  | KB | SQLite memory-mapped I/O per connection; 0 turns it off so file pages are not counted in the daemon's resident set (D25). |
+| `storage.sqlite_use_global_allocator` | `1` |  |  | Whether SQLite allocates through the engine's own allocator (jemalloc, which gives freed pages back as they are freed) instead of the C library's, whose zones kept about 8 MB of freed pages after a SQLite burst. Read once at daemon start, before the first database opens; 0 leaves SQLite on the C library. |
 | `storage.wal_autocheckpoint` | `1000` |  | pages | WAL pages after which SQLite checkpoints on its own (between explicit checkpoints by `ah-engine maintain`). |
 | `storage.wal_suffix` | `-wal` |  |  | Suffix SQLite gives a database's write-ahead log file; used to report WAL sizes. |
 | `storage.write_queue` | `1024` | `AH_ENGINE_WRITE_QUEUE` |  | Writes that may wait for the writer thread; beyond this a write is refused as busy (the client retries, then spools). |
@@ -13621,6 +13622,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.mem_snapshot_probe` | `vmmap, --summary, {pid}` |  |  | Command whose output goes into the snapshot as the platform's memory map of the daemon (macOS: vmmap summary); the program, then its arguments with `{pid}` substituted. Where /proc/<pid>/smaps_rollup exists it is used instead. An empty list or a missing program leaves the field empty. |
 | `diagnostics.mem_snapshot_probe_ms` | `4000` |  | ms | Longest the memory-map command may run. |
 | `diagnostics.mem_snapshot_wait_ms` | `3000` |  | ms | Longest the snapshot waits for every worker to report its interpreter and caches (a busy worker reports after its request); workers that have not reported by then are listed as missing. |
+| `diagnostics.mem_target_mb` | `100` |  | MB | The owner's memory target of the daemon in MB (footprint, the figure daemon.mem_metric selects). It is only REPORTED (status budget: mem_target_mb and over_target); nothing is shrunk or restarted at it, the enforced limits are diagnostics.budget_mem_mb and mem.global_hard_bytes. 0 hides it. |
 | `diagnostics.msg_abandoned` | `abandoned at {site} (x{n}): {why}` |  |  | The event-log line for an abandoned decision. {site} is the counted site, {why} the reason with its key inputs, {n} how many were counted at the site since the last line. |
 | `diagnostics.msg_file_refused` | `refused: {why}` |  |  | Said when `diag file` refuses an id: {why}. |
 | `diagnostics.msg_file_usage` | `usage: ah-engine diag file <state:NAME\|defaults:NAME.toml\|transcript:AGENT>` |  |  | Usage of `diag file`. |
@@ -14564,6 +14566,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_restored` | Event-log detail of a restore. Placeholders: {from}, {kept}. |
 | `msg.log_rollback_request` | Log detail when the crash-loop rule asks for a roll-back. Placeholder: {sha}. |
 | `msg.log_rss` | Log detail when the daemon is over its memory cap. Placeholders: {rss}, {cap}. |
+| `msg.log_sqlite_alloc_failed` | Event-log detail when SQLite could not be routed through the engine's allocator (it had already started); it stays on the C library's allocator. |
 | `msg.log_stall` | Log detail when the accept loop stalled. |
 | `msg.log_start` | Log detail for a daemon start. Placeholders: {version}, {pid}, {rlimit}. |
 | `msg.log_stuck` | Log detail when a worker is stuck. Placeholder: {i}. |
@@ -15013,6 +15016,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
+| `sqlite_alloc_routing` | counter | starts | result | SQLite allocator routing attempts at daemon start (storage.sqlite_use_global_allocator on), by result: routed (SQLite now allocates through the engine's allocator) or failed (SQLite had already started; it stays on the C library's). |
 | `jev_asked_sync` | counter | calls | id | Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration. |
 | `jev_calls` | counter | calls | backend, mode | Jev decisions asked for, by backend (jev, cache or baseline-only) and mode. |
 | `jev_changed` | counter | decisions |  | Decisions in on mode where Jev changed the outcome (always an added block or advisory). |
