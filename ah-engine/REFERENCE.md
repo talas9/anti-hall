@@ -1139,6 +1139,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.credit_label_gh_words` | `2` |  |  | How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`). |
 | `git.credit_session_keys` | `claude-session` |  |  | Trailer keys (lowercase) whose line credits an AI tool whatever its value is, e.g. a session trailer a coding assistant appends (GH #457). Checked in commit messages, reused messages, gh bodies and the audit. |
 | `git.credit_url_markers` | `claude.ai/code/session` |  |  | URL fragments of an AI tool's session link (GH #457). In a commit message a line that is only the link, or a trailer key and the link, counts as a credit; in a gh body the link anywhere does (see gh_body_markers). |
+| `git.expansion_advisory_state_prefix` | `git-expansion-advisory-` |  |  | File name prefix of the per-session stamp that records the dropped-expansion-pattern advisory was shown (git.expansion_pattern_advisory), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it. |
+| `git.expansion_pattern_advisory` | `anti-hall git guard config: ignored git.commit_expansion_patterns entries tha...` |  |  | Advisory (shown once per session) naming the git.commit_expansion_patterns entries the guard dropped because they are not valid or look before the match start (lookbehind, \b, \B, `^`); the other patterns and every other git check keep working. Placeholder: {shown} (the dropped patterns, quoted). |
 | `git.expansion_shown_chars` | `12` |  | chars | How many characters of the expansion the refusal shows. |
 | `git.file_write_tip` | `\nTip: this file's content was scanned as shell. Write the file with the Writ...` |  |  | Added to a block when the command writes a file with shell text: the file was scanned as shell. |
 | `git.find_exec_flags` | `-exec, -execdir, -ok, -okdir` |  |  | find actions that run a command. |
@@ -5349,10 +5351,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `pair_rule.msg_stop_why` | `Each task should be owned by the name of the agent working on it, so the task...` |  |  | The Stop block: why (saved details). |
 | `pair_rule.name_max` | `24` |  |  | Most characters of an agent name or task owner shown on the visible line of a message (the saved details carry it whole). |
 | `pair_rule.name_min_chars` | `2` |  |  | Fewest characters an Agent or Task call's `name` needs to count as a name; a shorter or missing one is an unnamed spawn. |
-| `pair_rule.ref_end_chars` | ` 	\n
-:` |  |  | Characters that may follow the digits of the task reference (ASCII white space and `:`), besides the end of the whole description. Anything else (`#400a`, `#400,#401`, `#400#401`) is unclear and denied. |
-| `pair_rule.ref_lead_chars` | ` 	\n
-` |  |  | Characters the reference scan skips before the reference (ASCII white space). A no-break space, byte order mark or zero-width character is not one: a description that starts with it has no reference and is denied. |
+| `pair_rule.ref_end_chars` | ` 	\n:` |  |  | Characters that may follow the digits of the task reference (ASCII white space and `:`), besides the end of the whole description. Anything else (`#400a`, `#400,#401`, `#400#401`) is unclear and denied. |
+| `pair_rule.ref_lead_chars` | ` 	\n` |  |  | Characters the reference scan skips before the reference (ASCII white space). A no-break space, byte order mark or zero-width character is not one: a description that starts with it has no reference and is denied. |
 | `pair_rule.ref_sigil` | `#` |  |  | The character that starts a task reference in an unnamed spawn's description (`#` + digits). |
 | `pair_rule.summary` | `Pairs every task with the agent working on it: an unnamed spawn is denied unl...` |  |  | One-line summary of the task-pair-guard check. |
 | `pair_rule.sw` | `6 entries` |  |  | Switch guards.pairRule (default on). On: an Agent or Task spawn without a name is denied, a named agent no open task names as owner gets an advisory, and a Stop with a live named agent that owns no open task (or an in-progress task owned by the agent's id or description instead of its launch name) is blocked. Off: the facts are only counted. |
@@ -8989,8 +8989,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
-| `ops.trust_exotic_breaks` | `
-,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
+| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
@@ -11363,8 +11362,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ready_git_timeout_ms` | `4000` |  |  | How long one git call of ready-check may run; a call that overruns is unknown, never a fact. |
 | `devswarm_cli.ready_gitlink_mode` | `160000` |  |  | The git file mode of a submodule pointer (a gitlink). |
 | `devswarm_cli.ready_is_ancestor` | `--is-ancestor` |  |  | The merge-base option that asks whether the first commit is an ancestor of the second. |
-| `devswarm_cli.ready_line_terminators` | `\n
-  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
+| `devswarm_cli.ready_line_terminators` | `\n  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
 | `devswarm_cli.ready_merge_base` | `merge-base` |  |  | The git subcommand that answers ancestry questions. |
 | `devswarm_cli.ready_no_renames` | `--no-renames` |  |  | The git diff option that reports a rename as a delete and an add. |
 | `devswarm_cli.ready_quiet` | `--quiet` |  |  | The git flag that keeps the fetch of `ready-check --fetch` quiet. |
@@ -11495,8 +11493,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_long` | `--file` |  |  | The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`). |
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
-| `devswarm_cli.rr_mb_line_terms` | `\n
-  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
+| `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
 | `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
@@ -14924,6 +14921,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |
 | `git_audit_blocked` | counter | blocks |  | Bash calls the post-call commit check blocked because a commit git just wrote carries an AI credit (PR #469). |
 | `git_blocked` | counter | commands | reason | Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push). |
+| `git_expansion_pattern_dropped` | counter | patterns |  | git.commit_expansion_patterns entries the guard dropped (invalid regex, or one that looks before the match start), counted each time the git tables are built; the user is told once per session. |
 | `git_push_ack_downgraded` | counter | pushes |  | Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default). |
 | `git_push_blocked` | counter | pushes |  | Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457). |
 | `git_push_narrow_unproven` | counter | pushes |  | Pushes read in full because the same Bash call could not be proven to leave what the push publishes unchanged before it runs (a chain, a substitution, another command, an option or an environment prefix before the push; GH #506, PR #524 review). |

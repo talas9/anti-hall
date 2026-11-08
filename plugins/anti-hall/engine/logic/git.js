@@ -66,15 +66,22 @@ function gitBuildTables() {
   // GH #457: a session trailer key (any value) and a session link on a line of its own or behind a trailer key
   t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
   t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
-  // the patterns are matched sticky at index k of the whole text, so one that looks BEFORE k (lookbehind, a word boundary, a `^`
-  // alternative) would see text it must not: refuse it at load
+  // the patterns are matched sticky at index k of the whole text, so one that looks BEFORE k (a lookbehind, \b / \B, a `^` anywhere)
+  // would see text it must not. A bad pattern never throws (the git guard is fail-closed, so a throw would block every Bash call):
+  // it is dropped and named once per session in an advisory (S.badExpansion), and the rest keep working. The look-back tokens are
+  // found left to right with escapes (a literal `\\b` is a backslash and a `b`) and character classes (`[^a]`, `[\b]`) skipped over.
+  t.badExpansion = [];
+  t.expansionSticky = [];
+  const lookBack = /(\\[bB]|\(\?<[=!]|\^)|\\[\s\S]|\[(?:\\[\s\S]|[^\]\\])*\]/g;
   for (const p of c('commit_expansion_patterns')) {
-    if (/\(\?<[=!]|\\[bB]|(?:^|[|(])\^/.test(p)) {
-      throw new Error('git.commit_expansion_patterns: pattern ' + JSON.stringify(p) + ' uses lookbehind, \\b, \\B or ^, which look before the match start; use a pattern that starts at the expansion');
-    }
+    let re = null;
+    lookBack.lastIndex = 0;
+    let m = lookBack.exec(p);
+    while (m !== null && m[1] === undefined) m = lookBack.exec(p);
+    if (m === null) { try { re = new RegExp('(?:' + p + ')', 'y'); } catch (e) { re = null; } }
+    if (re === null) t.badExpansion.push(p); else t.expansionSticky.push(re);
   }
-  // sticky: "does one match AT index k of the whole text", without copying the rest of the text for every k
-  t.expansionSticky = c('commit_expansion_patterns').map((p) => new RegExp('(?:' + p + ')', 'y'));
+  if (t.badExpansion.length) { try { ah.metric('git_expansion_pattern_dropped', []); } catch (e) { /* counting never fails a hook */ } }
   t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
   t.pushSkipOpts = set(c('push_skip_opts'));
   t.sameCallSubs = set(c('push_same_call_subs'));
@@ -3464,6 +3471,20 @@ function countBlock(hit) {
   } catch (e) { /* counting never fails a hook */ }
 }
 
+// The config advisory for a dropped commit_expansion_patterns entry: shown once per session (a stamp in the state directory; without a
+// session id, or when the stamp cannot be written, on each call, which is loud rather than silent).
+function badExpansionAdvisory(session, bad) {
+  const msg = text.render(ah.cfg('git.expansion_pattern_advisory'), { shown: bad.map((p) => JSON.stringify(p)).join(', ') });
+  if (!session) return msg;
+  const name = ah.cfg('git.expansion_advisory_state_prefix') + session.replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('replykit.json_ext');
+  const rel = ah.cfg('replykit.state_dir') + '/' + name;
+  let told = false;
+  try { const prev = ah.state.readText(rel); told = prev !== null && prev !== ''; } catch (e) { told = false; }
+  if (told) return '';
+  try { ah.state.writeAtomic(rel, JSON.stringify({ told: bad })); } catch (e) { /* the advisory is shown regardless */ }
+  return msg;
+}
+
 function decide(p, opts, event) {
   try { return decideScan(p, opts, event); } finally { TOK_MEMO.clear(); SEG_MEMO.clear(); }
 }
@@ -3495,6 +3516,10 @@ function decideScan(p, opts, event) {
   if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
   if (S.scriptUnchecked !== null) notes.push(text.render(ah.cfg('git.script_unchecked_advisory'), { file: S.scriptUnchecked }));
   if (S.pushAckNote) notes.push(S.pushAckNote);
+  if (TB.badExpansion.length) {
+    const bad = badExpansionAdvisory(session, TB.badExpansion);
+    if (bad) notes.push(bad);
+  }
   if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
   if (notes.length) {
     return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };

@@ -22,7 +22,7 @@ fn budgets() -> toml::Table {
         .clone()
 }
 
-/// (allocated bytes, wall ms) of one call of `check` for `command` (after one unmeasured call that loads the check).
+/// (allocated bytes, wall microseconds) of one call of `check` for `command` (after one unmeasured call that loads the check).
 fn alloc_of(check: &str, command: &str, home: &Path) -> (u64, u128) {
     let env = RequestEnv::from_pairs(vec![("HOME".to_string(), home.to_string_lossy().into_owned())]);
     let payload = json!({
@@ -35,8 +35,8 @@ fn alloc_of(check: &str, command: &str, home: &Path) -> (u64, u128) {
     memstat::configure_measure(true, 1);
     let t = std::time::Instant::now();
     let (_, delta) = ah_engine::mem::measure(run);
-    let ms = t.elapsed().as_millis();
-    (delta.unwrap_or_else(|| panic!("{check}: the call was not measured (counting allocator not installed?)")).alloc, ms)
+    let us = t.elapsed().as_micros();
+    (delta.unwrap_or_else(|| panic!("{check}: the call was not measured (counting allocator not installed?)")).alloc, us)
 }
 
 #[test]
@@ -77,18 +77,32 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
     ] {
         for (check, limit) in b[table].as_table().unwrap() {
             let limit = limit.as_integer().unwrap() as u64 * MIB;
-            let (got, ms) = alloc_of(check, command, &home);
-            println!("ALLOC {table} {check}: {} KiB (budget {} KiB), {ms} ms", got / 1024, limit / 1024);
+            let (got, us) = alloc_of(check, command, &home);
+            println!("ALLOC {table} {check}: {} KiB (budget {} KiB), {us} us", got / 1024, limit / 1024);
             if got > limit {
                 over.push(format!("{check} on {table}: {} KiB > {} KiB", got / 1024, limit / 1024));
             }
-            // wall time too, where the cost of a bad scan is time, not bytes (the table name without `_mib`, then the check)
-            let key = table.trim_end_matches("_mib");
-            if let Some(max_ms) = b.get("max_ms").and_then(|t| t.get(key)).and_then(|t| t.get(check)).and_then(toml::Value::as_integer)
-                && ms > max_ms as u128
-            {
-                over.push(format!("{check} on {key}: {ms} ms > {max_ms} ms"));
-            }
+        }
+    }
+    // wall time as a RATIO, which does not depend on the machine or the build profile: the same unquoted heredoc at 1 KB and at 15 KB
+    // (15x the bytes). A linear scan costs about 15x; a quadratic one about 225x. Best of N runs each, so a loaded runner's noise
+    // does not decide it.
+    let ratio = b["time_ratio"].as_table().unwrap();
+    let (small_kb, big_kb, runs) =
+        (ratio["small_kb"].as_integer().unwrap() as usize, ratio["big_kb"].as_integer().unwrap() as usize, ratio["runs"].as_integer().unwrap());
+    let heredoc_of = |kb: usize| format!("git commit -m \"$(cat <<EOF\n{}\nEOF\n)\"", vec![plain; kb * 1024 / (plain.len() + 1)].join("\n"));
+    let (small, big) = (heredoc_of(small_kb), heredoc_of(big_kb));
+    for (check, max) in ratio["max"].as_table().unwrap() {
+        let best = |cmd: &String| (0..runs).map(|_| alloc_of(check, cmd, &home).1.max(1)).min().unwrap();
+        let (t_small, t_big) = (best(&small), best(&big));
+        let r = t_big as f64 / t_small as f64;
+        println!("RATIO {check}: {big_kb} KB {t_big} us / {small_kb} KB {t_small} us = {r:.1}x (bound {}x)", max.as_integer().unwrap());
+        if r > max.as_integer().unwrap() as f64 {
+            over.push(format!(
+                "{check}: time at {big_kb} KB / {small_kb} KB = {r:.1}x > {}x (a linear scan is about {}x)",
+                max.as_integer().unwrap(),
+                big_kb / small_kb
+            ));
         }
     }
     std::fs::remove_dir_all(&home).ok();
