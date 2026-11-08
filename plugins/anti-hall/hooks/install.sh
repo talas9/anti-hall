@@ -145,13 +145,15 @@ stale_notice() {
     pp=$!
     # watchdog: TERM after defaults_probe_ms, KILL after a further defaults_probe_grace_ms (an engine that ignores TERM must not hold
     # SessionStart); the whole probe is bounded by the two settings (under 1 s together by default: every hook fails open in under 1 s).
-    # The watchdog subshell owns its sleep helpers and traps TERM to kill the current one by `$!`. A trap only runs between commands, so
-    # `$!` already names a helper that was forked: no interleaving of the parent's kill with the helper's fork can leave a helper behind
-    # (a TERM before the trap is installed arrives before any helper exists). `$!` still holding the probe's pid or the finished first
-    # helper's pid (reaped by the `wait`) means no live helper: skipped.
-    s1=; s2=
-    ( trap 'h=$!; [ "$h" = "$pp" ] || [ "$h" = "$s1" ] || [ "$h" = "$s2" ] || kill "$h"; exit 0' TERM
-      sleep "$t1" & s1=$!; wait "$s1"; kill "$pp"; sleep "$t2" & s2=$!; wait "$s2"; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
+    # The watchdog subshell owns its sleep helpers and traps TERM to kill the live one. A trap only runs between commands, so `$!`
+    # already names a helper that was forked (a TERM before the trap is installed arrives before any helper exists). `$!` keeps naming
+    # a helper after it is reaped, so `d` records the pid of the last REAPED helper, set right after its `wait` returns (never at
+    # the fork): the trap kills `$!` unless it is the probe's pid (the subshell starts with it in `$!`) or `d`. A live helper is
+    # therefore always killed and a reaped pid never is (the one exception: a TERM between a `wait` returning and `d=$!` signals a
+    # just-reaped pid, a no-op unless that pid was already reused).
+    d=
+    ( trap '[ "$!" = "$pp" ] || [ "$!" = "$d" ] || kill "$!" 2>/dev/null; exit 0' TERM
+      sleep "$t1" & wait "$!"; d=$!; kill "$pp"; sleep "$t2" & wait "$!"; d=$!; kill -KILL "$pp" ) >/dev/null 2>&1 </dev/null &
     wd=$!
     wait "$pp" 2>/dev/null; prc=$?
     kill "$wd" 2>/dev/null

@@ -177,8 +177,9 @@ t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget() {
 }
 t_a_failing_probe_leaves_no_orphan_sleep_helper() {
   newhome kill2; write_lock "$good"; fake_client ''
-  # a probe value no other process uses, so only this run's own helper can match (parallel jobs run `sleep 0.500` etc.)
-  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 437"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e437.toml" && mv "$tmp/e437.toml" "$plug/engine/defaults/engine.toml"
+  # a probe value no other process uses and far above the poll bound below: an orphan helper outlives the poll (it would otherwise
+  # expire inside the allowance and hide the leak)
+  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 6437"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e6437.toml" && mv "$tmp/e6437.toml" "$plug/engine/defaults/engine.toml"
   printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
   # the probe runs 0.2 s then fails, so the watchdog has certainly forked its TERM-stage helper before the parent stops it
   mkdir -p "$st/bin"; printf '#!/bin/sh\nsleep 0.2\nexit 1\n' >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
@@ -200,6 +201,34 @@ t_a_failing_probe_leaves_no_orphan_sleep_helper() {
     [ "$n" -ge "$max" ] && { echo "orphan sleep helper(s) still alive:$alive" >&2; kill $alive 2>/dev/null; return 1; }
     sleep 0.02; n=$((n + 1))
   done
+}
+t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper() {
+  newhome kill3; write_lock "$good"; fake_client ''
+  awk '$0 == "[install.defaults_probe_ms]" { f = 1 } f && $1 == "value" { print "value = 6437"; f = 0; next } { print }' "$plug/engine/defaults/engine.toml" >"$tmp/e6437.toml" && mv "$tmp/e6437.toml" "$plug/engine/defaults/engine.toml"
+  printf '%s aaaa\n' "$ver" >"$st/bootstrap.installed"
+  # the probe hangs without forking any sleep of its own (a busy loop), so every recorded sleep is the watchdog's
+  mkdir -p "$st/bin"; printf '#!/bin/sh\necho $$ >"%s/probepid2"\ntrap "" TERM\nwhile :; do :; done\n' "$tmp" >"$st/bin/ah-engine"; chmod 755 "$st/bin/ah-engine"
+  sleep 1; printf '1 ah-engine: defaults unavailable\n' >"$st/defaults.error"
+  rm -f "$tmp/probepid2"; mkdir -p "$tmp/shim"; : >"$tmp/sleeppids"
+  printf '#!/bin/sh\necho $$ >>"%s/sleeppids"\nexec %s "$@"\n' "$tmp" "$(command -v sleep)" >"$tmp/shim/sleep"; chmod 755 "$tmp/shim/sleep"
+  oldpath=$PATH; PATH="$tmp/shim:$PATH"; export PATH
+  printf '{"session_id":"s1","hook_event_name":"SessionStart"}' | sh "$plug/hooks/install.sh" SessionStart >"$tmp/out" 2>"$tmp/err" &
+  hp=$!
+  PATH=$oldpath; export PATH
+  # wait for the probe AND the watchdog's first helper (the shim has recorded it), then TERM the hook mid-run
+  n=0; while { [ ! -s "$tmp/probepid2" ] || [ ! -s "$tmp/sleeppids" ]; } && [ $n -lt 150 ]; do sleep 0.02; n=$((n + 1)); done
+  pr=$(cat "$tmp/probepid2" 2>/dev/null)
+  [ -s "$tmp/sleeppids" ] || { echo "no watchdog helper started: the test would prove nothing" >&2; for c in $(pgrep -P "$hp" 2>/dev/null) "$hp"; do kill -TERM "$c" 2>/dev/null; done; [ -n "$pr" ] && kill -KILL "$pr" 2>/dev/null; return 1; }
+  for c in $(pgrep -P "$hp" 2>/dev/null) "$hp"; do kill -TERM "$c" 2>/dev/null; done
+  n=0; max=$(( $(tv hook_overhead_allowance_ms) / 20 ))
+  while :; do
+    alive=
+    for p in $(cat "$tmp/sleeppids") $pr; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    [ -z "$alive" ] && break
+    [ "$n" -ge "$max" ] && { echo "process(es) still alive after the hook was signalled:$alive" >&2; kill -KILL $alive 2>/dev/null; return 1; }
+    sleep 0.02; n=$((n + 1))
+  done
+  wait "$hp" 2>/dev/null; return 0
 }
 t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe() {
   newhome sig1; write_lock "$good"; fake_client ''
@@ -335,6 +364,7 @@ check t_a_client_object_without_additional_context_gets_it_added t_a_client_obje
 check t_a_probe_that_ignores_term_is_killed_after_the_grace t_a_probe_that_ignores_term_is_killed_after_the_grace
 check t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget t_the_probe_settings_plus_the_overhead_allowance_fit_the_hook_budget
 check t_a_failing_probe_leaves_no_orphan_sleep_helper t_a_failing_probe_leaves_no_orphan_sleep_helper
+check t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper t_a_signal_to_the_hook_leaves_no_orphan_sleep_helper
 check t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe t_a_signal_to_the_hook_kills_a_hung_term_ignoring_probe
 check t_parallel_sessions_in_one_home_each_get_their_notice t_parallel_sessions_in_one_home_each_get_their_notice
 check t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing t_a_missing_engine_with_a_fresh_defaults_error_says_engine_missing
