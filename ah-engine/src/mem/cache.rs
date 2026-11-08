@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex};
 struct Core<K: Hash + Eq + Clone, V: Clone> {
     tier: Mutex<Tiered<K, V>>,
     bytes: AtomicUsize,
+    /// Bytes a value holds beyond its weight, measured as it is used (the regex search scratch); summed over the held values.
+    extra: Option<fn(&V) -> usize>,
+    extra_seen: AtomicUsize,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> Core<K, V> {
@@ -24,7 +27,13 @@ impl<K: Hash + Eq + Clone, V: Clone> Core<K, V> {
 
 impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> Owner for Core<K, V> {
     fn bytes(&self) -> usize {
-        self.bytes.load(SeqCst)
+        let base = self.bytes.load(SeqCst);
+        let Some(f) = self.extra else { return base };
+        // a busy lock keeps the last sum: reporting never waits on a lookup
+        if let Ok(t) = self.tier.try_lock() {
+            self.extra_seen.store(t.values().iter().map(f).sum(), SeqCst);
+        }
+        base + self.extra_seen.load(SeqCst)
     }
     fn shrink(&self, target: usize) {
         let mut t = self.lock();
@@ -47,7 +56,13 @@ pub struct BoundedCache<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send +
 impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCache<K, V> {
     /// An empty cache registered as `spec` (its limits are read from the spec's config keys).
     pub fn new(reg: &Registry, spec: Spec) -> Self {
-        let core = Arc::new(Core { tier: Mutex::new(Tiered::new(usize::MAX)), bytes: AtomicUsize::new(0) });
+        Self::with_extra(reg, spec, None)
+    }
+
+    /// [`BoundedCache::new`] whose reported bytes also include `extra(value)` of every held value: memory a value grows after it
+    /// was weighed, measured by its user (the weight stays the admission estimate; the report is the measurement).
+    pub fn with_extra(reg: &Registry, spec: Spec, extra: Option<fn(&V) -> usize>) -> Self {
+        let core = Arc::new(Core { tier: Mutex::new(Tiered::new(usize::MAX)), bytes: AtomicUsize::new(0), extra, extra_seen: AtomicUsize::new(0) });
         let owner: Arc<dyn Owner> = core.clone();
         let budget = reg.register(spec, Arc::downgrade(&owner));
         BoundedCache { core, budget }

@@ -144,7 +144,7 @@ min = 32768
 unit = "bytes"
 
 [script.regex_scratch_bytes]
-doc = "Estimated search scratch (lazy-DFA transition tables and caches) ONE worker thread holds per cached `ah.re.*` pattern. The regex crate keeps it per thread inside the compiled pattern and cannot report its size, so a cache entry weighs its compiled program plus daemon.workers times this. Measured 2026-10-23 on the real-payload replay (system allocator, stack-logged live heap): about 21 MB of search scratch across 130 patterns and 4 workers, about 40 KiB per pattern and thread; lowering script.regex_dfa_size_limit from 512 KiB to 64 KiB changed the plateau by under 1 MB, so most caches stay far under the cap."
+doc = "Estimated search scratch (lazy-DFA transition tables and caches) ONE worker thread holds per cached `ah.re.*` pattern. The regex crate keeps it per thread inside the compiled pattern and cannot report its size. Since the profiler work this figure is NO LONGER a weight: the cache reports the scratch each search was measured to keep, and `status --memory` shows this assumption beside the measurement (regex.measured_search_scratch_bytes). Measured 2026-10-23 on the real-payload replay (system allocator, stack-logged live heap): about 21 MB of search scratch across 130 patterns and 4 workers, about 40 KiB per pattern and thread; lowering script.regex_dfa_size_limit from 512 KiB to 64 KiB changed the plateau by under 1 MB, so most caches stay far under the cap."
 value = 40960
 min = 0
 unit = "bytes"

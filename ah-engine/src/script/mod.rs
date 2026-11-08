@@ -333,7 +333,8 @@ pub fn regex_diag() -> serde_json::Value {
     let (patterns, held) = recache::usage();
     let (compiled, est, measured, n) = recache::compiled_totals();
     serde_json::json!({
-        "patterns_held": patterns, "bytes_held_by_cache_weights": held, "scratch_estimate_per_pattern_bytes": recache::scratch_estimate(),
+        "patterns_held": patterns, "bytes_held_program_plus_measured_scratch": held, "scratch_estimate_per_pattern_bytes": recache::scratch_estimate(),
+        "measured_search_scratch_bytes": recache::search_totals().2, "searches": recache::search_totals().0, "searches_measured": recache::search_totals().1,
         "compiled": {"programs": compiled, "estimated_bytes": est, "measured_programs": n, "measured_bytes": measured},
     })
 }

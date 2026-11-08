@@ -61,6 +61,7 @@ pub mod learn;
 pub mod limits;
 pub mod load;
 pub mod maintain;
+pub mod burst;
 pub mod mem;
 pub mod memdiag;
 pub mod memstat;

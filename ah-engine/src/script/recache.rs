@@ -30,19 +30,66 @@ use crate::mem::{BoundedCache, Spec};
 use regex::{Regex, RegexBuilder};
 use std::sync::{Arc, OnceLock};
 
-type Cache = BoundedCache<(String, String), Arc<Regex>>;
+/// A cached pattern and the search scratch it has been MEASURED to hold: the regex crate keeps lazy-DFA caches per thread inside the
+/// compiled pattern and cannot report them, so each search is wrapped in the allocator's per-thread counters and the positive
+/// net growth is added here (a search returns a bool or a few offsets, so the growth is the scratch). The cache reports program +
+/// this, never an estimate.
+pub(super) struct Entry {
+    re: Regex,
+    scratch: std::sync::atomic::AtomicU64,
+}
+
+impl std::ops::Deref for Entry {
+    type Target = Regex;
+    fn deref(&self) -> &Regex {
+        &self.re
+    }
+}
+
+impl Entry {
+    /// Run `f` (one search) and add the heap it kept to this pattern's scratch.
+    pub(super) fn searched<R>(&self, f: impl FnOnce(&Regex) -> R) -> R {
+        let (r, d) = crate::mem::measure(|| f(&self.re));
+        SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(d) = d {
+            MEASURED_SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if d.retained > 0 {
+                self.scratch.fetch_add(d.retained as u64, std::sync::atomic::Ordering::Relaxed);
+                SCRATCH_BYTES.fetch_add(d.retained as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        r
+    }
+}
+
+fn scratch_of(e: &Arc<Entry>) -> usize {
+    e.scratch.load(std::sync::atomic::Ordering::Relaxed) as usize
+}
+
+static SEARCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MEASURED_SEARCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCRATCH_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (searches, searches measured, scratch bytes measured over all patterns ever cached).
+pub fn search_totals() -> (u64, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (SEARCHES.load(Relaxed), MEASURED_SEARCHES.load(Relaxed), SCRATCH_BYTES.load(Relaxed))
+}
+
+type Cache = BoundedCache<(String, String), Arc<Entry>>;
 
 fn cache() -> &'static Cache {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     CACHE.get_or_init(|| {
-        BoundedCache::new(
+        BoundedCache::with_extra(
             crate::mem::global(),
             Spec::new("regex", "mem.regex_soft_bytes", "mem.regex_hard_bytes", "mem.regex_low_water_pct").with_entries("mem.regex_max_entries"),
+            Some(scratch_of),
         )
     })
 }
 
-/// (patterns held, bytes held by the cache's own weights) for the memory snapshot.
+/// (patterns held, bytes the cache reports: program weights plus the measured search scratch) for the memory snapshot.
 pub fn usage() -> (usize, usize) {
     let c = cache();
     (c.len(), c.bytes())
@@ -93,19 +140,19 @@ fn compile(src: &str, flags: &str) -> Option<(Regex, usize)> {
             MEASURED_BYTES.fetch_add(m as u64, Relaxed);
         }
     }
-    Some((re, measured.unwrap_or(estimate).saturating_add(scratch_estimate())))
+    Some((re, measured.unwrap_or(estimate)))
 }
 
-/// What the per-thread search scratch of one cached pattern is assumed to hold: every worker may grow its own.
+/// What the per-thread search scratch of one cached pattern was once ASSUMED to hold (`status --memory` shows it next to the measurement; it no longer enters any weight).
 pub(super) fn scratch_estimate() -> usize {
     (defaults::num("daemon.workers") as usize).saturating_mul(defaults::num("script.regex_scratch_bytes") as usize)
 }
 
 /// The compiled pattern for `(src, flags)`, from the shared cache or compiled now.
-pub(super) fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Regex>> {
+pub(super) fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Entry>> {
     let key = (src.to_string(), flags.to_string());
     cache().get_or_compute(&key, || {
         let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
-        Ok((Arc::new(re), weight))
+        Ok((Arc::new(Entry { re, scratch: std::sync::atomic::AtomicU64::new(0) }), weight))
     })
 }

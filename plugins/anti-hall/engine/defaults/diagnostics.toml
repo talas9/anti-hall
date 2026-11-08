@@ -650,3 +650,62 @@ value = "telemetry funnel needs the running engine (start it with `ah-engine sta
 [delivery.model_transcript_keep]
 doc = "The projection the funnel asks `tailEntries` for when it looks up a session's model in the transcript tail (JSON text: a list of key paths): each line's `type` and `message.model`."
 value = '[["type"], ["message", "model"]]'
+
+# ---- burst allocation-site profile ---------------------------------------------------------------------------------------------------
+
+[diagnostics.burst_profile]
+doc = "Sampled allocation-site profile: every diagnostics.burst_sample_kb of allocation volume on a thread the allocating stack is captured, and when the counted heap grows by more than diagnostics.burst_dump_mb inside diagnostics.burst_window_ms one dump naming the allocating functions, the event and the checks is written to files.burst_dumps_dir. Cost while on: one thread-local add per allocation and one stack capture per sample interval."
+value = true
+
+[diagnostics.burst_sample_kb]
+doc = "Allocation volume (KiB) between two captured stacks on one thread; smaller finds smaller sites and costs more CPU."
+value = 4096
+min = 1
+unit = "KiB"
+
+[diagnostics.burst_dump_mb]
+doc = "Heap growth (MB), measured on the counted heap's high-water mark since the window began and read when each request ends, that triggers one dump."
+value = 24
+min = 1
+unit = "MB"
+
+[diagnostics.burst_window_ms]
+doc = "Length of the window the growth is measured over; the sampled-site table is cleared with every new window, so a dump holds the sites of the burst only."
+value = 500
+min = 10
+unit = "ms"
+
+[diagnostics.burst_dump_max_per_hour]
+doc = "Most burst dumps written per hour; a burst past the limit is counted as burst_dumps_suppressed. 0 writes none."
+value = 4
+min = 0
+
+[diagnostics.burst_dump_keep]
+doc = "Dump files kept: a ring of this many names, the oldest overwritten."
+value = 8
+min = 1
+
+[diagnostics.burst_sites_max]
+doc = "Distinct allocation stacks the sample table holds (fixed when the profile is first enabled; a restart applies a change). Sampled bytes of further stacks are added to unrecorded_sampled_bytes."
+value = 512
+min = 8
+
+[diagnostics.burst_frames_max]
+doc = "Stack frames kept per sampled site (at most 64)."
+value = 24
+min = 4
+max = 64
+
+[diagnostics.burst_dump_sites]
+doc = "Sites (largest sampled bytes first) listed in one dump."
+value = 24
+min = 1
+
+[diagnostics.burst_recent_max]
+doc = "Recent requests (event, checks and their peaks) remembered for a dump, so a burst caused by an overlapping request still names its checks."
+value = 16
+min = 1
+
+[files.burst_dumps_dir]
+doc = "Directory (in the state directory) holding the burst dumps, burst-<n>.json."
+value = "burst-dumps"
