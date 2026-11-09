@@ -781,7 +781,7 @@ value = "the Primary never blocks on a question."
 
 [ask_guard.primary_deny_instead]
 doc = "What a denied Primary does instead."
-value = "take the safe reversible default, note `NEEDS OWNER: <question>` in the progress file, continue."
+value = "ask the owner in plain text in your reply, note NEEDS OWNER: <question> in the progress file, keep working."
 
 [ask_guard.deny_kind_child]
 doc = "Label of the ask_guard_denied counter for a denied child workspace."
