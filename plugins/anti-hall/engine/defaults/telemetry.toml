@@ -444,6 +444,18 @@ value = { kind = "histogram", unit = "bytes", labels = ["check"] }
 doc = "The bytes a check's calls kept allocated when they returned (allocated minus freed, positive only), by check: the sum over its calls. A check that keeps growing here holds on to memory. Calls that freed more than they allocated add nothing."
 value = { kind = "counter", unit = "bytes", labels = ["check"] }
 
+[metric.regex_scratch_trims]
+doc = "Cached `ah.re.*` patterns whose lazy-DFA scratch was dropped on a memory shrink or recycle (mem.regex_trim_scratch) instead of evicting the pattern."
+value = { kind = "counter", unit = "patterns", labels = [] }
+
+[metric.regex_scratch_trim_freed_bytes]
+doc = "Accounting bytes the regex cache stopped reporting because of trims: the reported weight of the trimmed patterns before minus after (a trimmed pattern reports the estimate until its searches are measured)."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.regex_compiles_latched]
+doc = "`ah.re.*` patterns compiled while the process was over its global hard memory limit. With mem.regex_latched_bytes each pattern should compile at most once per excursion; a rate here means the latch cap is too small."
+value = { kind = "counter", unit = "patterns", labels = [] }
+
 [metric.burst_dumps_written]
 doc = "Burst allocation-site dumps written (diagnostics.burst_profile): the counted heap grew past diagnostics.burst_dump_mb inside diagnostics.burst_window_ms."
 value = { kind = "counter", unit = "dumps", labels = [] }

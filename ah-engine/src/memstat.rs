@@ -152,6 +152,7 @@ pub fn configure_measure_from_defaults() {
     let on = crate::defaults::raw("diagnostics.check_mem").as_bool().unwrap_or_default();
     configure_measure(on, crate::defaults::num("diagnostics.check_mem_sample_every"));
     crate::burst::configure_from_defaults();
+    crate::script::recache::refresh_estimate(); // the regex cache's scratch estimate follows the reloaded defaults
 }
 
 /// Whether this `measure` call should measure: the knob is on, the counting allocator is installed (it has counted at least
