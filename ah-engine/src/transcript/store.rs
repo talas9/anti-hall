@@ -1048,8 +1048,7 @@ impl Core {
     /// Refresh the session of `path` (creating it on first use), then run `f` on its facts.
     pub fn with<R>(&self, path: &Path, now_ms: u64, f: impl FnOnce(&View) -> R) -> Result<R, Unsure> {
         let cfg = self.cfg();
-        // a request never waits past the time its client still gives it (outside a request: the whole wait)
-        let deadline = Instant::now() + crate::deadline::clamp(cfg.wait);
+        let deadline = Instant::now() + cfg.wait;
         // set once this request has waited for the background build of its session (it waits for one build only)
         let mut waited = false;
         'again: loop {
@@ -1677,29 +1676,5 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert_eq!(st.stats().build_panics, 1);
-    }
-    /// The wait for a background build is cut to the request's remaining budget; outside a request the whole wait applies.
-    #[test]
-    fn the_wait_for_a_build_never_outlasts_the_requests_remaining_budget() {
-        let d = Dir::new("bgclamp");
-        let f = file_of(&d);
-        lock(&HOOKS).push((f.clone(), Hook::Delay(Duration::from_millis(1500))));
-        let mut cfg = bg_cfg();
-        cfg.wait_for_build = true;
-        let st = Store::with_cfg(cfg, None);
-        crate::deadline::begin(Instant::now());
-        crate::deadline::client_deadline(300);
-        let t = Instant::now();
-        let r = st.with(&f, 0, |_| ());
-        crate::deadline::end();
-        assert_eq!(r, Err(Unsure::Busy));
-        assert!(t.elapsed() < Duration::from_millis(1000), "waited {:?} for a build with 300 ms of budget left", t.elapsed());
-        // outside a request the same build is waited for
-        let t = Instant::now();
-        let mut ok = false;
-        while t.elapsed() < Duration::from_secs(10) && !ok {
-            ok = st.with(&f, 1, |_| ()).is_ok();
-        }
-        assert!(ok);
     }
 }
