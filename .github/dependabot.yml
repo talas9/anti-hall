@@ -13,6 +13,12 @@ updates:
     target-branch: "dev"
     schedule:
       interval: "weekly"
+  # The fuzz crate is a separate Cargo project with its own lockfile; without this entry its bumps target main.
+  - package-ecosystem: "cargo"
+    directory: "/ah-engine/fuzz"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
   - package-ecosystem: "npm"
     directory: "/.github/copilot-cli"
     target-branch: "dev"

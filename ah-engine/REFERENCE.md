@@ -5521,7 +5521,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.claude_agent` | `claude` |  |  | The agent name that has the idle-wake cron and monitor tools. |
 | `devswarm_role.cron_charset` | `0123456789*/,-` |  |  | The only characters a cron field may contain (anything else would let the setting inject text into the directive). |
 | `devswarm_role.cron_fields` | `5` |  |  | How many whitespace-separated fields a valid cron schedule has. |
+| `devswarm_role.engine_bin` | `{home}/.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). engine_cli = engine_bin + " " + engine_verb (a test asserts it). Placeholder: {home}. |
 | `devswarm_role.engine_cli` | `{home}/.anti-hall/ah-engine/bin/ah-engine mesh` |  |  | The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory. |
+| `devswarm_role.engine_verb` | `mesh` |  |  | The verb after the engine binary for every DevSwarm CLI command (the {verb} part, kept OUTSIDE the quotes around the binary path). |
 | `devswarm_role.engine_watcher` | `{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto` |  |  | The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}. |
 | `devswarm_role.gate_guard` | `devswarm-parent-gate` |  |  | The skip-file name of the parent gate. |
 | `devswarm_role.gate_summary` | `Stop: the DevSwarm Primary gate (decided in the plugin's engine/logic/devswar...` |  |  | One-line description of the devswarm-parent-gate check in the generated reference. |
@@ -5654,7 +5656,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_short_id_len` | `8` |  |  | Characters of an id in its display name. |
 | `devswarm_role.pg_short_instead` | `resolve the pending workspace duties.` |  |  | Compact guard message text. |
 | `devswarm_role.pg_sig_prefix` | `devswarm-parent:` |  |  | Prefix of the hashed block-kind signature. |
-| `devswarm_role.pg_skip_cmd` | `{cli} skip {guard}` |  |  | The override command: {cli} (shell-quoted plugin CLI path) and {guard}. |
+| `devswarm_role.pg_skip_cmd` | `{cli} {verb} skip {guard}` |  |  | The override command: {cli} (the shell-quoted engine binary path only), {verb}, {guard}. |
 | `devswarm_role.pg_skip_ttl` | ` (15-min TTL)` |  |  | Appended to the override command. |
 | `devswarm_role.pg_stale_note` | `A stale child is wedged (claude-code#39755); an escalated one already exhaust...` |  |  | The reason paragraph when a blocking workspace carries a stale or escalated verdict. |
 | `devswarm_role.pg_status_escalated` | `escalated` |  |  | The escalated verdict status. |
@@ -5689,8 +5691,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_waiting_line` | `{title}: waiting on a human answer in its own session{q}\n` |  |  | The line for a child waiting on a human: {title}, {q} (the question phrase, or empty). |
 | `devswarm_role.pg_waiting_q` | ` — "{q}"` |  |  | The question phrase of that line: {q}. |
 | `devswarm_role.pg_wake_line` | ` MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{w...` |  |  | The mailbox-wake re-verify line: {cli}, {cron}, {tick}, {watch}, {id}. |
-| `devswarm_role.pg_wake_tick` | ``"$CLI" inbox tick {id} --quiet`` |  |  | The tick command of the wake re-verify line: {id}. |
-| `devswarm_role.pg_wake_watch` | `; WATCH={watcher}, `Monitor` on `"$WATCH"` armed with timeout_ms 1800000 (nev...` |  |  | The watcher part of the wake re-verify line: {watcher} (double-quoted). |
+| `devswarm_role.pg_wake_tick` | ``"$CLI" {verb} inbox tick {id} --quiet`` |  |  | The tick command of the wake re-verify line: {id}, {verb}. $CLI holds the quoted binary path only; the verb follows it. |
+| `devswarm_role.pg_wake_watch` | `; WATCH={watcher}, `Monitor` on `"$WATCH" {wverb}` armed with timeout_ms 1800...` |  |  | The watcher part of the wake re-verify line: {watcher} (the double-quoted binary path only), {wverb}. |
 | `devswarm_role.pg_warning_instead` | `review the workspace status instructions.` |  |  | One action for the parent gate's detailed status advisories. |
 | `devswarm_role.pg_warning_what` | `workspace status needs attention.` |  |  | Headline for the parent gate's detailed status advisories. |
 | `devswarm_role.pg_why` | `Unanswered questions or unread mail would be dropped if this turn ended now.` |  |  | Why line of the block. |
@@ -5719,6 +5721,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.sw_supervisor_mode` | `6 entries` |  |  | Setting devswarm.supervisorMode (auto, on or off): force the supervisor context on or off, or detect it from the environment. default is also the manifest default the plugin option is compared with. |
 | `devswarm_role.sw_wake_cron` | `4 entries` |  |  | Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected. |
 | `devswarm_role.test_markers` | `ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the script counts the case as abandoned and allows rather than guess what Node does. |
+| `devswarm_role.watcher_verb` | `devswarm wake-watch --auto` |  |  | The verbs after the engine binary for the mailbox watcher (the {wverb} part; engine_watcher = engine_bin + " " + watcher_verb, a test asserts it). |
 
 ### roles.toml / roles
 
@@ -6153,7 +6156,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_tick_fresh_ms` | `120000` |  |  | How recent a zero-unread `inbox tick` marker must be to count as liveness proof for this Stop (TICK_MARKER_FRESH_MS). |
 | `devswarm_gates.cg_unknown_reason_default` | `store-read-error` |  |  | The reason named in that line when the host cannot say why the store could not be read. |
 | `devswarm_gates.cg_unknown_session` | `unknown` |  |  | The session key of a Stop payload with neither a session id nor a transcript path. |
-| `devswarm_gates.cg_wake_tick` | ``"$CLI" inbox tick {id} --child --quiet`` |  |  | The tick command of the child's mailbox-wake re-verify line: {id}. |
+| `devswarm_gates.cg_wake_tick` | ``"$CLI" {verb} inbox tick {id} --child --quiet`` |  |  | The tick command of the child's mailbox-wake re-verify line: {id}, {verb} (after the quoted $CLI binary path). |
 | `devswarm_gates.cg_why` | `Your parent orchestrator relies on your heartbeat and a drained inbox.` |  |  | Why line of the child gate block. |
 | `devswarm_gates.child_drain_setting` | `6 entries` |  |  | Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable). |
 | `devswarm_gates.child_drain_summary` | `DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's ...` |  |  | One-line description of the devswarm-child-drain check in the generated reference. |
@@ -7341,7 +7344,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `mesh_write.ack_command` | `{cli} inbox ack-primary {id} --receipt {rid}` |  |  | The `ackCommand` of a read-primary result: `{cli}` is the JSON-quoted stable launcher path, `{id}` the workspace id, `{rid}` the receipt id. |
+| `mesh_write.ack_command` | `{bin} {verb} inbox ack-primary {id} --receipt {rid}` |  |  | The `ackCommand` of a read-primary result: `{bin}` is the JSON-quoted engine binary path (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id. |
 | `mesh_write.ack_hint` | `read-only: nothing was acked. After you have consumed these messages run ackC...` |  |  | The `ackHint` of a read-primary result. |
 | `mesh_write.act_inbox_prefix` | `inbox-` |  |  | What the `action` of an id-resolution refusal of an inbox verb starts with (the action is `inbox-<sub>`). |
 | `mesh_write.action_ack_primary` | `ack-primary` |  |  | The `action` of an ack-primary result. |
@@ -7707,6 +7710,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.mesh_never_read_read_sep` | ` ; ` |  |  | The separator of the direct-read commands in the never-read hint. |
 | `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
 | `mesh_write.min_plausible_start_ms` | `1000000000000` |  |  | A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it. |
+| `mesh_write.mm_log_interval_ms` | `60000` |  | ms | The least time between two log lines of the read/peek mismatch (#615), per reason: a loop that keeps reading an empty mailbox that reports unread mail logs one line per interval; the counter mesh_read_peek_mismatch still counts every one. 0 logs every one. |
+| `mesh_write.mm_msg` | `read printed no message but the unread count is not zero` |  |  | The message of that log entry; the entry's context carries the id, the reason, the unread count, the printed count (0) and the time. |
+| `mesh_write.mm_op` | `read-peek-mismatch` |  |  | The op of the log entry written when a read or peek prints nothing but reports unread mail (#615). |
+| `mesh_write.mm_reason_peek` | `peek_empty_unread` |  |  | The `reason` label of mesh_read_peek_mismatch for a peek-primary that listed no message while reporting a non-zero unread count. |
+| `mesh_write.mm_reason_read` | `read_empty_unread` |  |  | The `reason` label of mesh_read_peek_mismatch for a read-primary that printed no message while reporting a non-zero unread count. |
+| `mesh_write.mm_stamp_prefix` | `mm-warn-` |  |  | The prefix of the stamp file (in the log directory, the reason after it) that holds the time of the last mismatch log line, so the interval holds across mesh processes. |
 | `mesh_write.mode_on` | `on` |  |  | The `mode` of an on-mode record in the shadow log. |
 | `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING. |
 | `mesh_write.month_names` | `12 items` |  |  | Month abbreviations of that start time, January first (what Date.parse reads). |
@@ -8551,6 +8560,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `devswarm_rt.activity_min_dwell_s` | `300` |  |  | Hysteresis of the workspace-activity line in the advisory: a workspace's activity change (working, stuck) is told to a session once; a change within this many seconds of the one the session was last told is held and told on the first prompt after the dwell, and a flip that flips back inside one batch is silent (counted as devswarm_rt_activity_line result=suppressed_flip). 0 turns the hysteresis off. |
+| `devswarm_rt.activity_result_emitted` | `emitted` |  |  | The `result` label of devswarm_rt_activity_line for an activity change that was put in the advisory. |
+| `devswarm_rt.activity_result_suppressed` | `suppressed_flip` |  |  | The `result` label of devswarm_rt_activity_line for an activity change held back by the hysteresis. |
 | `devswarm_rt.ci_failing` | `Failed, Failure, Error` |  |  | `pull_requests.checkStatus` values meaning CI failed (compared case-insensitively). Only `Failed` and `None` were seen in the live app database; the rest are candidates. |
 | `devswarm_rt.ci_passing` | `Passed, Success, Succeeded` |  |  | `pull_requests.checkStatus` values meaning CI passed (compared case-insensitively). |
 | `devswarm_rt.ci_running` | `Pending, Running, InProgress, Queued` |  |  | `pull_requests.checkStatus` values meaning CI is still running (compared case-insensitively). |
@@ -10325,11 +10337,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_wire.act_edge_kinds` | `lifecycle, activity, pr, unread` |  |  | The kinds of state change that trigger an action sweep right away (the others wait for the periodic reconcile). |
 | `devswarm_wire.act_kinds` | `auto_archive, poke, escalate` |  |  | The automatic action kinds that have an executor switch, in the order auto_archive, poke, escalate (the key segment under devswarm_rt.act). |
 | `devswarm_wire.act_min_gap_ms` | `5000` |  | ms | The least time between two action sweeps (auto-archive, poke/escalate). An event burst triggers at most one sweep per gap; the periodic reconcile always triggers one. |
+| `devswarm_wire.advisory_act_key` | `act` |  |  | The key of the per-session advisory marker that holds, per workspace, when its activity change was last told (the activity hysteresis). |
 | `devswarm_wire.advisory_dir` | `rt-advisory` |  |  | The directory (under the engine state directory) holding, per session, the newest change generation that session was told about. |
 | `devswarm_wire.advisory_enabled` | `true` |  |  | Inject a one-paragraph note of the DevSwarm workspace changes a session has not seen yet (the `devswarm-rt-advisory` hook check). Off turns the injection off; the state is still kept. |
 | `devswarm_wire.advisory_kinds` | `lifecycle, paused, activity, pr, checks` |  |  | The kinds of change an advisory mentions (lifecycle, paused, activity, unread, plan_step, pr, checks). |
 | `devswarm_wire.advisory_max_chars` | `600` |  |  | Most characters of one advisory; older changes are summarised as a count when it would be longer. |
 | `devswarm_wire.advisory_max_edges` | `8` |  |  | Most changes listed by name in one advisory. |
+| `devswarm_wire.advisory_pending_key` | `pend` |  |  | The key of the per-session advisory marker that holds, per workspace, the net activity change (from, to, at_ms, count) the hysteresis held back: it is told once the dwell since the last telling has passed, even if no later change arrives. |
 | `devswarm_wire.advisory_prune_ms` | `604800000` |  | ms | A session's seen-generation file untouched for this long is removed when the next advisory is written. |
 | `devswarm_wire.advisory_session_max` | `128` |  |  | Longest session id (characters) used as a file name; a longer or unsafe id gets no advisory. |
 | `devswarm_wire.archive_log_name` | `.anti-hall/logs/devswarm-auto-archive.ndjson` |  |  | Node's auto-archive log under the home directory's logs directory; the newest ok line for a workspace dates its archive. |
@@ -15386,9 +15400,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `burn_pause_withheld` | counter | ticks | reason | Ticks the agent tracker held the hard burn flag but withheld the pause marker, by reason (building: a build call still in flight; soft: a recent soft outcome within burn.soft_hold). The nudge still goes out (GH #458). |
 | `doctor_codex_node_entries` | counter | count |  | Codex hooks files the engine doctor found still running Node-era anti-hall hook scripts. |
 | `doctor_statusline_skipped` | counter | runs |  | Engine doctor runs that skipped the statusline render check because no statusLine running `ah-hook statusline` is configured. |
+| `mesh_ack_command_rendered` | counter | commands |  | ackCommand strings rendered by a read-primary (the quote wraps the engine binary path only; the verb follows it). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |
+| `mesh_read_peek_mismatch` | counter | reads | reason | Reads or peeks that returned no message while reporting a non-zero unread count (the #615 disagreement), by reason. |
 | `mesh_ref_resolved` | counter | references | outcome | How a workspace reference given to a verb (send --to, archive, nudge, gate, ...) resolved, by outcome: exact, mesh, prefix, ambiguous, none. |
 | `mesh_sender_fallback` | counter | messages | where | Messages whose sender came from a fallback instead of the message's own branch, by where: ingest (a child's queue: the Primary), read (the NDJSON line's own sender, or the Primary for a NULL store row). |
 | `mesh_summary_owner_fallback` | counter | rows |  | Roster/summary rows counted from the shared floor because the workspace's partition has no live reader row (the base is the least-advanced live reader otherwise). |
@@ -15402,6 +15418,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `script_module_loads` | counter | modules |  | Shared includes (script.shared_includes) compiled into a worker interpreter: once per interpreter and file version, not once per check that builds on them. |
 | `script_reloads` | counter | checks |  | Checks rebuilt from their source on the next call after the memory limit unloaded them: the cost of a limit set under the working set (each is a read, parse and compile). Flat at zero under steady load when the limit fits. |
 | `script_unloads` | counter | checks |  | Checks unloaded from a worker interpreter because its memory limit was reached. |
+| `devswarm_rt_activity_line` | counter | changes | result | Workspace-activity changes seen by the DevSwarm advisory, by result (emitted: told to the session; suppressed_flip: a flip back within the dwell, or a change inside the dwell of the last one told). |
 | `rt_edges` | counter | edges |  | Workspace state changes emitted. |
 | `rt_reconcile_repairs` | counter | edges |  | Changes a full reconcile found that the event path had not already applied: the health measure of the realtime event layer (close to 0 is healthy). |
 | `rt_shadow_mismatches` | counter | mismatches |  | Differences between the engine's workspace state and the Node witness's. |
