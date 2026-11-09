@@ -623,7 +623,6 @@ fn a_corrupt_snapshot_is_counted_as_a_miss_and_the_sweep_caps_the_snapshot_direc
 fn bg_cfg() -> Cfg {
     let mut c = cfg();
     c.background = true;
-    c.wait_for_build = false; // these tests are about the unsure-at-once answer; the waiting one has its own test
     c
 }
 

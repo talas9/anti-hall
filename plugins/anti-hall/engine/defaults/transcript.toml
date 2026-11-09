@@ -284,13 +284,6 @@ value = 24
 min = 1
 unit = "count"
 
-[transcript.wait_for_build]
-doc = "1 makes a request that finds the session's background build queued or running wait for it, at most transcript.wait_ms, and answer from the built session (past the wait it answers unsure and falls back to a fresh read as before), so the requests of a burst share one build and do not each read the window; 0 answers unsure at once. Only with transcript.cold_build_background = 1."
-value = 1
-min = 0
-max = 1
-unit = "flag"
-
 [transcript.build_thread]
 doc = "Name of the background build worker thread."
 value = "ah-transcript-build"
