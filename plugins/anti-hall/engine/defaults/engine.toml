@@ -219,7 +219,7 @@ doc = "Client marker holding the count of consecutive slow (late) daemon replies
 value = "daemon.slow.streak"
 
 [files.heartbeat]
-doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, 0 when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not."
+doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, or the idle marker (ten `i` characters, not a number) when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not. A call fails open on an idle marker only when a beat NEWER than the first idle one it saw is still idle (an idle beat can predate the worker picking the request up); with no newer beat the stale-heartbeat bound applies."
 value = "daemon.heartbeat"
 
 [files.heartbeat_suspect]
@@ -664,7 +664,7 @@ value = { Stop = 9000, SubagentStop = 9000 }
 unit = "ms"
 
 [client.progress_stale_ms]
-doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress: the age of its longest-silent busy worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress: the age of its longest-silent busy worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
 value = 1000
 min = 0
 unit = "ms"

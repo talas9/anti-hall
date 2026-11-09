@@ -2565,3 +2565,43 @@ fn a_stop_call_to_a_daemon_with_no_busy_worker_fails_open_within_the_progress_bo
         assert!(dt < common::scaled(Duration::from_millis(bound)), "{name}: Stop waited {dt:?}, the bound is {bound} ms");
     }
 }
+
+/// #684 (review of #690, P1-1): an idle beat written BEFORE a worker picked the request up must not fail the call open. The beat is
+/// fresh and idle when the call is sent, a worker takes the request at once and serves it for 600 ms, and the watchdog's next beat
+/// (now busy) comes 700 ms after the idle one, late as under load. The call waits for the real reply: one idle beat is not progress
+/// evidence against a request picked up after it.
+#[test]
+fn an_idle_beat_written_before_the_request_was_picked_up_does_not_fail_a_served_stop_open() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("idlestale", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+    let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+    let pid = stand_in.id();
+    let p = e.eng().join("daemon.heartbeat");
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let (start, exe) = (ah_engine::procid::start(pid).unwrap(), ah_engine::procid::exe(pid).unwrap());
+    let dir = std::fs::canonicalize(e.eng()).unwrap();
+    let head = format!("{pid}\n{start}\n{}\n{}\n", exe.display(), dir.display());
+    std::fs::write(&p, format!("{head}iiiiiiiiii\n")).unwrap(); // the idle beat, written now (before the send)
+    std::fs::write(e.eng().join("e.sock.lock"), pid.to_string()).unwrap();
+    let beats = p.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700)); // the starved watchdog's next beat
+        while std::fs::write(&beats, format!("{head}{:010}\n", 0)).is_ok() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    fake_server(&e, || {
+        std::thread::sleep(Duration::from_millis(600)); // a worker actively serving it
+        Some(ah_engine::frame::encode(ah_engine::frame::Kind::Ok, &format!("{}served deny", ah_engine::hookio::EXIT2)))
+    });
+    let (out, code, dt) = e.wrapper_hook_for("Stop", STOP_IN);
+    println!("TIMING idle-beat-then-served Stop wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
+    ah_engine::discard::harmless(stand_in.kill());
+    ah_engine::discard::harmless(stand_in.wait());
+    // the fake's reply is not a dispatch verdict, so the call ends open either way; what matters is WHEN and WHY: it waited for the
+    // worker's reply (600 ms), and never gave up on "no worker busy"
+    let log = e.health_log();
+    assert!(!log.contains("not working on the request"), "failed open on a stale idle beat: {out:?} {log}");
+    assert!(dt >= Duration::from_millis(600), "the call returned before the served reply ({dt:?}): {log}");
+    assert_eq!(code, 0, "{out}");
+}

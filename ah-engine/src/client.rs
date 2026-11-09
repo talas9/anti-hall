@@ -132,7 +132,7 @@ impl Stall {
 /// heartbeat's own age; it must stay under `client.progress_stale_ms`. A heartbeat that is itself older than that is a stopped
 /// daemon ([`Stall::Hung`], so the replacement path sees it as early as the progress gate does); no heartbeat, or none carrying a
 /// figure, is no progress. 0 turns the gate off.
-fn stalled(idle_seen: &mut bool) -> Option<Stall> {
+fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
     #[cfg(test)]
     if GATE_OFF.get() {
         return None;
@@ -145,15 +145,22 @@ fn stalled(idle_seen: &mut bool) -> Option<Stall> {
         return Some(Stall::Hung(why, confirmed));
     }
     let hb = health::heartbeat_of_lock_holder();
-    // the daemon says no worker is busy: it has not picked this request up (a wedged accept loop, a request nobody took). One poll
-    // of grace for a reply already in flight (a worker that just finished), then the call fails open.
-    if hb.as_ref().is_some_and(|h| h.idle) {
-        if !std::mem::replace(idle_seen, true) {
-            return None;
+    // the daemon says no worker is busy. That beat may predate the worker picking this request up, so the first idle beat seen is
+    // only remembered (by its modification time); the call fails open when a NEWER beat is still idle (the daemon looked again
+    // after the request arrived and still has no worker on it). No newer beat (a starved watchdog) falls to the stale-heartbeat
+    // bound above, never longer.
+    if let Some(h) = hb.as_ref().filter(|h| h.idle) {
+        match *idle_seen {
+            None => {
+                *idle_seen = Some(h.mtime_ns);
+                return None;
+            }
+            Some(first) if first == h.mtime_ns => return None,
+            Some(_) => {}
         }
         return Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &"idle"), ("limit", &limit.as_millis())])));
     }
-    *idle_seen = false;
+    *idle_seen = None;
     let age = hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age));
     if age.is_some_and(|a| a < limit) {
         return None;
@@ -206,7 +213,7 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
     let mut buf = Vec::new();
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply"));
     let mut late = false;
-    let mut idle_seen = false;
+    let mut idle_seen = None;
     // read_to_end keeps the bytes read before an error, so a timeout resumes the same reply instead of restarting it
     while let Err(e) = (&mut s).take(max_reply.saturating_sub(buf.len() as u64)).read_to_end(&mut buf) {
         let why = defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]);
@@ -319,7 +326,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     // acked: never resend from here; wait for the reply up to the hard window (the original read loop's rules)
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply") as usize);
     let mut late = false;
-    let mut idle_seen = false;
+    let mut idle_seen = None;
     if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
@@ -409,7 +416,7 @@ fn exchange_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
                 if retries >= defaults::num("wire.max_retries") || window.saturating_sub(began.elapsed()) < defaults::millis("wire.retry_min_ms") {
                     // no more resends: like the original exchange, keep watching the daemon's heartbeat for the rest of the window, so a
                     // daemon that went silent and stopped beating is reported hung (and replaced) instead of merely slow
-                    let mut idle_seen = false;
+                    let mut idle_seen = None;
                     while window.saturating_sub(began.elapsed()) > Duration::ZERO {
                         if let Some((hung, confirmed)) = stale_heartbeat() {
                             return Exch::Hung(hung, confirmed);
