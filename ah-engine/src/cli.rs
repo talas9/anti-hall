@@ -527,6 +527,12 @@ fn cmd_diag(p: &Parsed) -> i32 {
         emit(p, msg.clone(), json!({"error": msg}));
         return 64;
     }
+    if topic == defaults::text("diagnostics.burst_dump_topic") {
+        let v = crate::burstsym::run(&p.rest[1..]);
+        let failed = v.get("error").is_some();
+        emit(p, human(&v), v);
+        return i32::from(failed);
+    }
     let report = crate::obs::diagverbs::local(topic, p.rest.get(1).map_or("", String::as_str)).or_else(|| client::ctl_json(&format!("diag {topic}")));
     match report {
         Some(v) => emit(p, human(&v), v),

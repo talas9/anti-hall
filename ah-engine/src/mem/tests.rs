@@ -286,3 +286,28 @@ fn an_instance_holder_under_its_per_instance_soft_limit_is_not_flagged_by_the_le
     let v = leak::evaluate(&ring, samples.len() as u64 * 60, &params).to_json();
     assert!(v["holders"].as_array().is_none_or(Vec::is_empty), "summed bytes 360 vs per-instance soft 100 is not an excursion: {v}");
 }
+
+fn held_extra(v: &Arc<AtomicUsize>) -> usize {
+    v.load(SeqCst)
+}
+
+/// The registry's soft target is on the figure the holder REPORTS, weights plus the measured extra: a shrink that evicted by weight alone
+/// stopped at once (600 KB of weights is under the 800 KB target) and left the holder over soft at 1.35 MB.
+#[test]
+fn a_shrink_counts_the_measured_extra_a_value_holds_not_only_its_weight() {
+    let (reg, _events) = registry(&CACHE_BASE);
+    let c: BoundedCache<u32, Arc<AtomicUsize>> = BoundedCache::with_extra(&reg, SPEC, Some(held_extra));
+    let vals: Vec<Arc<AtomicUsize>> = (0..5).map(|_| Arc::new(AtomicUsize::new(0))).collect();
+    for (i, v) in vals.iter().enumerate() {
+        assert!(c.insert(i as u32, v.clone(), 100_000));
+    }
+    assert_eq!(c.len(), 5, "500 KB of weight is under the 1 MB soft limit");
+    for v in &vals {
+        v.store(150_000, SeqCst); // the extra grows after the weigh-in, as regex search scratch does
+    }
+    assert!(c.insert(5, Arc::new(AtomicUsize::new(0)), 100_000));
+    assert!(c.len() < 6, "the extra put the holder over soft, so the shrink evicted");
+    assert!(c.get(&5).is_some() && c.get(&0).is_none(), "oldest first, newest kept");
+    let kept: usize = c.values().iter().map(|v| v.load(SeqCst)).sum();
+    assert!(c.bytes() + kept <= 800_000, "weights {} plus extra {kept} are at the low-water target", c.bytes());
+}
