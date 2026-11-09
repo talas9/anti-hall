@@ -1638,6 +1638,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
     telemetry::stage_begin();
     crate::failopen::begin_request();
+    crate::burst::begin();
     let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
@@ -1653,6 +1654,16 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     let soft_scripts = crate::script::take_soft_overruns();
     if soft_scripts > 0 {
         sh.telemetry.with_metrics(|m| m.add("script_soft", &[], soft_scripts));
+    }
+    let lim = crate::script::take_limit_counts();
+    if lim != crate::script::LimitCounts::default() {
+        sh.telemetry.with_metrics(|m| {
+            m.add("script_limit_trips", &[("kind", "soft")], lim.soft_trips);
+            m.add("script_limit_trips", &[("kind", "hard")], lim.hard_trips);
+            m.add("script_unloads", &[], lim.unloads);
+            m.add("script_reloads", &[], lim.reloads);
+            m.add("script_module_loads", &[], lim.module_loads);
+        });
     }
     let gone_skips = crate::deadline::take_client_gone_skips();
     if gone_skips > 0 {
@@ -1702,9 +1713,18 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         SLOW_REPLIES.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("slow_replies", &[]));
         sh.telemetry.with_metrics(|m| m.inc("deadline_soft", &[]));
+        // #684: the client's read timed out at its fail-fast wait (EAGAIN) and it kept waiting; did the late verdict reach it?
+        let taken = match &res {
+            Some(ResWait::Got(..)) => true,
+            Some(ResWait::Missing(_)) => false,
+            None => delivered,
+        };
+        let outcome = defaults::text(if taken { "daemon.wouldblock_outcome_delivered" } else { "daemon.wouldblock_outcome_lost" });
+        sh.telemetry.with_metrics(|m| m.inc("wouldblock_retries", &[("outcome", outcome)]));
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
+    crate::burst::request_end(&crate::burst::Ctx { event: &event, busy: sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64 });
     crate::failopen::drain_into(&sh.telemetry);
     crate::checks::guardkit::settings::drain_invalid_into(&sh.telemetry);
     crate::failopen::sync_notice(false);
@@ -1867,6 +1887,13 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
     now.saturating_sub(beat) > stall_ms
 }
 
+/// How many ms the longest-silent busy worker has gone without progress (`None` = no worker is busy): what the heartbeat file carries,
+/// so a client waiting past its fail-fast deadline can tell a daemon that is working on its request from one that is not.
+fn oldest_busy_silence(sh: &Shared) -> Option<u64> {
+    let now = sh.ms();
+    sh.busy_since.iter().map(|b| b.load(SeqCst)).filter(|since| *since != 0).map(|since| now.saturating_sub(since - 1)).max()
+}
+
 fn watchdog(sh: Arc<Shared>) {
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
@@ -1876,7 +1903,7 @@ fn watchdog(sh: Arc<Shared>) {
     health::heartbeat_init();
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
-        health::heartbeat();
+        health::heartbeat(oldest_busy_silence(&sh));
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
         // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
         // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts

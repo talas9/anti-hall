@@ -166,6 +166,7 @@ async fn index(
         heartbeat_stale_s: s.heartbeat_stale_s,
         kind_order: s.kind_order.clone(),
         mode: s.mode.clone(),
+        theme: s.theme.clone(),
         limits: s.limits(),
         actions: s.menu(),
         feed_max: s.feed_max,

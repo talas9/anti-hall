@@ -44,3 +44,19 @@ pub fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
 pub fn rgba_css(c: [f32; 4]) -> String {
     format!("rgba({},{},{},{})", (c[0] * 255.0).round(), (c[1] * 255.0).round(), (c[2] * 255.0).round(), c[3])
 }
+
+/// Whether the page shows its dark scheme now; the one check the charts, the canvas and the effects share. `data-theme` on the root
+/// element when set (the person's choice), else the computer's setting, else (no preference reported) the configured start scheme
+/// the page wrote as `data-theme-default` (web.theme).
+pub fn page_dark() -> bool {
+    let root = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element());
+    let attr = |name: &str| root.as_ref().and_then(|e| e.get_attribute(name));
+    let query = |q: &str| web_sys::window().and_then(|w| w.match_media(q).ok().flatten()).is_some_and(|m| m.matches());
+    match attr("data-theme").as_deref() {
+        Some("light") => false,
+        Some("dark") => true,
+        _ if query("(prefers-color-scheme: dark)") => true,
+        _ if query("(prefers-color-scheme: light)") => false,
+        _ => attr("data-theme-default").as_deref() != Some("light"),
+    }
+}

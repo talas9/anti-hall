@@ -24,7 +24,7 @@ function agStr(o, k) { return jx.isObj(o) && typeof o[k] === 'string' ? o[k] : '
 // The thinking type of a dispatch: {type, key} or null for routine work. The description first, else the head of the prompt.
 function agClassify(input) {
   var desc = agStr(input, 'description'), prompt = agStr(input, 'prompt').slice(0, ah.cfgNum('advisor.brief_head_bytes'));
-  if (desc !== '' && ah.re.test(ah.cfg('advisor.thinking_exempt_re'), 'r', desc)) return null;
+  if (desc !== '' && ah.re.test(ah.cfg('advisor.thinking_exempt_re'), 'r', desc)) { ah.metric('advisor_exempt', ['reason', 'routine_description']); return null; } // GH #668: a routine description is not a thinking dispatch
   var types = ah.cfg('advisor.thinking_types'), type = null, srcs = [desc, prompt];
   for (var s = 0; s < srcs.length && type === null; s++) {
     if (srcs[s] === '') continue;

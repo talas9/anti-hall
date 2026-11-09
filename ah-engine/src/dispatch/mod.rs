@@ -91,6 +91,7 @@ fn ask_daemon(meta: &Meta, raw: &str, hold_wait: bool) -> Option<Vec<(String, An
     if request_too_big(&req) {
         return None; // the daemon would refuse it
     }
+    crate::client::set_call_event(&meta.event);
     let reply = if hold_wait { crate::client::attempt_holding_wait(req.as_bytes(), &cfg, true) } else { crate::client::attempt(req.as_bytes(), &cfg, true) };
     // ACK(res) now: the daemon's answers are in this process, and what follows (a model call the daemon deferred, Node hooks,
     // combining) is this process's own work, which can outlast `wire.res_wait_ms` by seconds and must not count as an

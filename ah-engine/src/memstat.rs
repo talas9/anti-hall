@@ -109,6 +109,9 @@ fn grow(by: usize) {
     let live = LIVE.fetch_add(by as u64, Relaxed) + by as u64;
     PEAK.fetch_max(live, Relaxed);
     ALLOCS.fetch_add(1, Relaxed);
+    if crate::burst::ON.load(Relaxed) {
+        crate::burst::on_alloc(by, live);
+    }
     if MEASURE_ON.load(Relaxed) {
         let alloc = TL_ALLOC.with(|c| {
             let a = c.get().wrapping_add(by as u64);
@@ -148,6 +151,7 @@ pub fn measure_enabled() -> bool {
 pub fn configure_measure_from_defaults() {
     let on = crate::defaults::raw("diagnostics.check_mem").as_bool().unwrap_or_default();
     configure_measure(on, crate::defaults::num("diagnostics.check_mem_sample_every"));
+    crate::burst::configure_from_defaults();
 }
 
 /// Whether this `measure` call should measure: the knob is on, the counting allocator is installed (it has counted at least

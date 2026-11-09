@@ -29,7 +29,7 @@ mod signals;
 mod sinks;
 mod sources;
 mod status;
-mod wake;
+pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
 mod tests;

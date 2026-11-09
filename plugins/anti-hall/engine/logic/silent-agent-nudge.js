@@ -188,17 +188,28 @@ function snStuckAdvisory(p) {
 }
 
 // ---- Stop: a child whose runtime nudges keep repeating (agent_nudge.runtime_escalation, published by the nudge loop) blocks the
-// coordinator's Stop, at most rt_stop_cap times per session (GH #484). The rows leave the file when the child finishes or is stopped.
+// coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
 function snRuntimeEscalation(p, home, session) {
-  var cap = ah.cfgNum('silent_nudge.rt_stop_cap');
-  if (cap < 1 || !session) return null;
+  if (!session) return null;
   var file = ah.cfg('agent_nudge.runtime_escalation').file;
   var raw = ah.fs.readText(home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('agent_tracker.paths').dir + '/' + file);
   if (raw === null) return null;
   var doc; try { doc = JSON.parse(raw); } catch (e) { return null; }
   var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
-  if (rows.length === 0) return null;
-  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + ah.cfg('silent_nudge.rt_state_file');
+  // The block-tier rows (the engine marks them) and the repeated-reminder rows (GH #484) count against their own caps, so one cannot use up the other.
+  var blockRows = rows.filter(function (r) { return r.block === true; });
+  var otherRows = rows.filter(function (r) { return r.block !== true; });
+  if (blockRows.length > 0) {
+    var b = snRtStop(home, session, blockRows, ah.cfgNum('silent_nudge.rt_block_cap'), ah.cfg('silent_nudge.rt_block_state_file'), ah.cfg('silent_nudge.msg_rt_block_what'), ah.cfg('silent_nudge.msg_rt_block_instead'));
+    if (b !== null) return b;
+  }
+  if (otherRows.length > 0) return snRtStop(home, session, otherRows, ah.cfgNum('silent_nudge.rt_stop_cap'), ah.cfg('silent_nudge.rt_state_file'), ah.cfg('silent_nudge.msg_rt_what'), ah.cfg('silent_nudge.msg_rt_instead'));
+  return null;
+}
+
+function snRtStop(home, session, rows, cap, stateFile, whatTpl, insteadTpl) {
+  if (cap < 1) return null;
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + stateFile;
   var given = {}, sraw = ah.fs.readText(home + '/' + rel);
   if (sraw !== null) { try { var o = JSON.parse(sraw); if (o !== null && typeof o === 'object' && !Array.isArray(o)) given = o; } catch (e) { given = {}; } }
   if (typeof given[session] === 'number' && given[session] >= cap) return null;
@@ -218,9 +229,9 @@ function snRuntimeEscalation(p, home, session) {
   });
   var more = rows.length > max ? text.render(ah.cfg('silent_nudge.msg_more'), { n: rows.length - max }) : '';
   ah.advisory('flagged', 'runtime_escalation_stop');
+  // house format: fact, then "Do now:"; no why line (an order is not "advisory")
   var reason = text.message('block', ah.cfg('silent_nudge.guard_name'), {
-    what: text.render(ah.cfg('silent_nudge.msg_rt_what'), { names: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more }),
-    why: ah.cfg('silent_nudge.msg_why'), instead: ah.cfg('silent_nudge.msg_rt_instead') });
+    what: text.render(whatTpl, { names: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more }), instead: insteadTpl });
   return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } };
 }
 

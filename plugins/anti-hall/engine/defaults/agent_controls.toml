@@ -410,6 +410,24 @@ value = 1
 min = 0
 max = 20
 
+[silent_nudge.rt_block_cap]
+doc = "How many times per session the block-tier runtime step (agent_nudge.runtime block_tier) may block the coordinator's Stop (0 = never block). Counted apart from rt_stop_cap, so a repeated-reminder escalation cannot use it up. It is a safety valve: the block lifts at once when the agent is stopped or extended, so a Stop is not held for good if neither works."
+value = 25
+min = 0
+max = 1000
+
+[silent_nudge.rt_block_state_file]
+doc = "Per-session count of the block-tier runtime Stop blocks given, under the engine state directory."
+value = "runtime-block-stops.json"
+
+[silent_nudge.msg_rt_block_what]
+doc = "What the block-tier runtime Stop block says; {names} the agents with their runtime, {more} the remainder."
+value = "{names}{more} past the runtime block step: Stop stays blocked until you act."
+
+[silent_nudge.msg_rt_block_instead]
+doc = "What to do about a block-tier agent (kept within the visible action length)."
+value = "stop it, or extend it with a reason: agents nudge <child> other \"<reason>\"."
+
 [silent_nudge.rt_unrecorded_log]
 doc = "The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494)."
 value = { kind = "silent_nudge", text = "runtime escalation Stop not blocked: the block count could not be saved" }
@@ -432,7 +450,7 @@ value = "runtime-escalation-stops.json"
 
 [silent_nudge.msg_rt_what]
 doc = "What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder."
-value = "{names}{more} still running after repeated runtime nudges, not finished and not stopped."
+value = "{names}{more} still running past the runtime block step, not finished and not stopped."
 
 [silent_nudge.msg_rt_item]
 doc = "One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes)."
@@ -440,7 +458,7 @@ value = "'{name}' (running {dur})"
 
 [silent_nudge.msg_rt_instead]
 doc = "What to do about an escalated agent."
-value = "check its output now, then stop it or re-task it with a tighter scope; this block is shown once per session."
+value = "stop it, or extend it with a stated reason (agents nudge <child> other \"<reason>\"); this block is shown once per session."
 
 [silent_nudge.rt_dur_hours]
 doc = "The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes."

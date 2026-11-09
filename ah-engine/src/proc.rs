@@ -223,6 +223,7 @@ fn wait_out(
     poll: Duration,
 ) -> Result<Output, Error> {
     let start = Instant::now();
+    crate::deadline::beat_for(timeout); // a bounded run: the daemon is working on its request until it ends or is killed
     // The exit is observed WITHOUT reaping (waitid + WNOWAIT): until the child is reaped its pid, and so its group id, stays
     // reserved, so every killpg below hits our group or nothing, never an unrelated group that reused the number (P2-5).
     loop {
