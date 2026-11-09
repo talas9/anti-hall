@@ -68,6 +68,10 @@ const ALLOW: &[(&str, &str)] = &[
         "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
     ),
     (
+        "src/checks/agent_scan/tests.rs",
+        "test builds only (`#[cfg(test)]`, `#[ignore]`d diagnostics): `AH_WALK_SRC` (real transcripts to compare or measure) and `AH_HORIZON`; no request is ever answered from them",
+    ),
+    (
         "src/script/golden_d6/tests.rs",
         "test builds only (`#[cfg(test)]`): `AH_GOLDEN_ALL`, the developer switch that prints every golden mismatch instead of the first few; no request is ever answered from it",
     ),

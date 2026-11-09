@@ -92,6 +92,9 @@ fn med(v: &mut [(u128, u128)]) -> (u128, u128) {
 
 #[test]
 fn silent_nudge_stop_is_measured() {
+    // this measures the kept walk (`agent_scan.use_store = 0`); with the store, the default, no walk is kept per scan window
+    ah_engine::defaults::init().unwrap();
+    ah_engine::defaults::set_overlay(&[("agent_scan.use_store", json!(0))]);
     let home = std::env::temp_dir().join(format!("ah-sncost-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();

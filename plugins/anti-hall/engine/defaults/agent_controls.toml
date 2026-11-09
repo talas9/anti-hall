@@ -710,6 +710,13 @@ value = "Override (only if the user explicitly confirmed this exact condition is
 
 # ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------
 
+[agent_scan.use_store]
+doc = "1 = the agent scan answers from the transcript store's agent digests (transcript.agent_* keys): each line is digested once when the store reads it, no walk is kept per scan, and a window the store cannot answer (not yet covered, busy, another file, settings changed) is read afresh without keeping a walk; counted in agent_scan_store{result}. 0 = the scan walks its window itself and keeps the walk between calls (agent_scan.cache_*), as before (kill switch)."
+value = 1
+min = 0
+max = 1
+unit = "flag"
+
 [agent_scan.cache_max_paths]
 doc = "How many walks the scan keeps between calls (one per transcript and window size), so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first, so more transcripts in use at once than this are each walked afresh (the walk of a long session is its cold cost: 64 MiB read and filtered)."
 value = 24

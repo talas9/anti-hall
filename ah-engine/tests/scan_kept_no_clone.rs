@@ -84,6 +84,9 @@ fn allocated_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
 
 #[test]
 fn an_answer_from_the_kept_walk_does_not_copy_the_walk() {
+    // this measures the kept walk, which `agent_scan.use_store = 0` selects (with the store on, the default, no walk is kept)
+    ah_engine::defaults::init().unwrap();
+    ah_engine::defaults::set_overlay(&[("agent_scan.use_store", serde_json::json!(0))]);
     let dir = std::env::temp_dir().join(format!("ah-scan-no-clone-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let tp = dir.join("t.jsonl");

@@ -297,6 +297,47 @@ fn run_phase(name: &'static str, root: &Path, src: &Path, sessions_n: usize, sec
         ah_engine::discard::harmless(t.join());
     }
     let counters = phase.json(&["query", "counters", "--limit", "5000"]);
+    // what the engine holds when the load stops: the registered holders (caches and stores), so a size-dependent resident part is seen
+    {
+        let m = phase.json(&["status", "--memory"]);
+        let mut rows: Vec<(f64, String)> = m["memory"]["budgets"]["holders"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|h| (h["bytes"].as_f64().unwrap_or(0.0), h["name"].as_str().unwrap_or("?").to_string()))
+            .collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let line: Vec<String> = rows.iter().filter(|(b, _)| *b >= 100_000.0).map(|(b, n)| format!("{n} {:.1}", b / MB)).collect();
+        eprintln!("GATE {name} holders (MB) {}", line.join(", "));
+    }
+    // which check held the most (the gate's own diagnosis: the bars above are about the engine, this names the reader)
+    {
+        let m = &counters["meta"]["metrics"];
+        let mut rows: Vec<(f64, String)> = ["counters", "gauges", "histograms"]
+            .iter()
+            .filter_map(|k| m[*k].as_array())
+            .flatten()
+            .filter(|r| matches!(r.get("name").and_then(Value::as_str), Some("check_mem_peak_bytes")))
+            .map(|r| (r.get("max_bytes").or_else(|| r.get("value")).and_then(Value::as_f64).unwrap_or(0.0), r.to_string()))
+            .collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (peak, row) in rows.iter().filter(|(p, _)| *p >= MB).take(12) {
+            let v: Value = serde_json::from_str(row).unwrap_or_default();
+            eprintln!("GATE {name} check_peak {:>6.1} MB  {} (calls {})", peak / MB, v["labels"]["check"].as_str().unwrap_or("?"), v["count"]);
+        }
+    }
+    // how the agent scans were answered: from the store's digests (hit) or read afresh, by reason
+    {
+        let m = &counters["meta"]["metrics"];
+        let line: Vec<String> = ["counters"]
+            .iter()
+            .filter_map(|k| m[*k].as_array())
+            .flatten()
+            .filter(|r| matches!(r.get("name").and_then(Value::as_str), Some("agent_scan_store" | "agent_scan_degraded")))
+            .map(|r| format!("{}{} {}", r["name"].as_str().unwrap_or("?"), r["labels"], r["value"]))
+            .collect();
+        eprintln!("GATE {name} agent scans {}", line.join(", "));
+    }
     let mut r = std::mem::take(&mut *res.lock().unwrap());
     r.appended_bytes = appended.load(Ordering::Relaxed);
     r.hooks = hooks.load(Ordering::Relaxed);
