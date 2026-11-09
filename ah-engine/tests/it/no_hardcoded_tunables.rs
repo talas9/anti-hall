@@ -119,6 +119,88 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "const HEADER",
         "bytes in front of every SQLite block that hold its size: 16 keeps the block 16-byte aligned like the system allocator's, an alignment constant, not a tunable",
     ),
+    (
+        "src/burst.rs",
+        "const FRAME_CAP",
+        "size of the on-stack frame buffer the allocator hook captures into (it cannot allocate); diagnostics.burst_frames_max is the tunable, clamped to it",
+    ),
+    (
+        "src/burst.rs",
+        "static SINCE",
+        "per-thread byte counter initialised to zero (the allocator hook cannot allocate or read the config): state, not a tunable",
+    ),
+    (
+        "src/burst.rs",
+        "const CLAIMING",
+        "the sentinel epoch of a table slot that one thread is filling in (u64::MAX can never equal a window epoch): a protocol marker of the lock-free table, not a tunable",
+    ),
+    (
+        "src/buildid.rs",
+        "const MACHO_MAGIC_64",
+        "the Mach-O 64-bit little-endian file magic, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "const LC_UUID",
+        "the Mach-O load-command type of the UUID, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "const ELF_MAGIC",
+        "the four-byte ELF file magic, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "const PT_NOTE",
+        "the ELF program-header type of a note segment, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    (
+        "src/buildid.rs",
+        "if n >= 32 && u32::from_le_bytes(head[0..4]",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "if n >= 64 && head[0..4] == ELF_MAGIC",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "if phentsize < 56",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "u64_at(&ph, 8)?, u64_at(&ph, 32)?",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "u64::from(u32_at(head, 20)?)",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "while at + 12 <= notes.len()",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "let mut head = [0u8; 64]",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "let mut ph = [0u8; 56]",
+        "a field offset or header size of the Mach-O / ELF file format (Mach-O header 32 bytes, ELF header 64, program header 56, note header 12): defined by the format, not a setting",
+    ),
+    (
+        "src/buildid.rs",
+        "const NT_GNU_BUILD_ID",
+        "the ELF note type of the GNU build id, defined by the file format: read to take a binary's build id, not a setting (how much of a file is read is `diagnostics.symbols_read_cap_bytes`)",
+    ),
+    ("src/burst.rs", "static BUSY", "per-thread re-entrancy flag initialised to false: state, not a tunable"),
+    ("src/burst.rs", "static NOTE", "per-thread list of the checks of the request in progress, empty at start: state, not a tunable"),
     ("src/memstat.rs", "static JEMALLOC", "the allocator the counters may wrap: a target-gated allocator value, not configuration"),
     ("src/memstat.rs", "static SYSTEM", "the allocator the counters may wrap: the platform allocator value, not configuration"),
     (

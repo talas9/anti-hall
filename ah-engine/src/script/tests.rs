@@ -2306,17 +2306,20 @@ fn the_prompt_checks_answer_a_raw_slash_command_prompt_like_a_plain_one() {
     }
 }
 
-/// A cached pattern weighs its program plus the per-thread search scratch the regex crate keeps inside it (and cannot report):
-/// `daemon.workers` times `script.regex_scratch_bytes`, so the registry sees the memory the lazy DFAs really hold.
+/// A pattern nobody searched yet, and one searched where nothing is measured (lib tests install no counting allocator, so
+/// `measure` returns None), weigh at least program + the scratch estimate: the regex limits keep bounding what cannot be measured.
 #[test]
-fn a_cached_pattern_weighs_its_per_thread_search_scratch_too() {
-    let scratch = super::recache::scratch_estimate();
-    assert_eq!(scratch, (defaults::num("daemon.workers") * defaults::num("script.regex_scratch_bytes")) as usize);
-    assert!(scratch > 0, "the shipped defaults estimate a scratch per pattern");
+fn an_unmeasured_pattern_weighs_at_least_program_plus_the_scratch_estimate() {
     let (_, before) = super::recache::usage();
-    super::recache::get("zzscratchweight\\d{3}", "").expect("valid pattern");
+    let r = super::recache::get("zzunmeasuredscratch[a-z]{3}\\d+", "").expect("valid pattern");
+    let (_, fresh) = super::recache::usage();
+    assert!(fresh - before >= super::recache::scratch_estimate(), "an unsearched entry reports the estimate: {}", fresh - before);
+    for _ in 0..3 {
+        r.searched(|re| re.is_match(&"abc123 zzunmeasuredscratchabc12345 ".repeat(200)));
+    }
+    assert!(r.reported_bytes() >= super::recache::scratch_estimate(), "this entry alone reports the estimate: {}", r.reported_bytes());
     let (_, after) = super::recache::usage();
-    assert!(after - before >= scratch, "the entry weighs at least its scratch estimate: {} < {scratch}", after - before);
+    assert!(after - before >= super::recache::scratch_estimate(), "still at least the estimate after unmeasured searches: {}", after - before);
 }
 
 #[test]

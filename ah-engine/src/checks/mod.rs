@@ -143,6 +143,7 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
     crate::load::note_check_mem(mem);
     if let Some(d) = mem {
         crate::memdiag::note_check_mem(check.name(), d.peak, d.alloc);
+        crate::burst::note_check(check.name(), d.peak);
     }
     verdict
 }
