@@ -220,8 +220,8 @@ doc = "Why line of the child gate block."
 value = "Your parent orchestrator relies on your heartbeat and a drained inbox."
 
 [devswarm_gates.cg_wake_tick]
-doc = "The tick command of the child's mailbox-wake re-verify line: {id}."
-value = "`\"$CLI\" inbox tick {id} --child --quiet`"
+doc = "The tick command of the child's mailbox-wake re-verify line: {id}, {verb} (after the quoted $CLI binary path)."
+value = "`\"$CLI\" {verb} inbox tick {id} --child --quiet`"
 
 [devswarm_gates.cg_cron_missing_tick]
 doc = "The mailbox-cron-missing text when the last tick marker is too old: {m} (its age in whole minutes); the wake re-verify line follows."

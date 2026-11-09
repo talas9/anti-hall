@@ -18,9 +18,9 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 use crate::checks::guardkit::text::js_trim;
-use crate::checks::replykit::io::{read_window, truthy};
+use crate::checks::replykit::io::truthy;
 use crate::checks::replykit::json::stringify_value;
-use crate::checks::replykit::transcript::{parse_line, prop, tail_lines};
+use crate::checks::replykit::transcript::{parse_line, prop};
 use crate::defaults;
 use rquickjs::{Ctx, Function, Object};
 use serde_json::{Value, json};
@@ -168,13 +168,14 @@ pub(super) fn line_items(line: &str) -> Result<Option<LineEv>, ()> {
 
 /// `evidence` read straight from the file: the last `w` bytes, every line, no memory of earlier calls.
 pub(super) fn evidence_uncached(path: &str, w: u64) -> String {
-    let Some(tail) = read_window(path, w) else { return "null".into() };
+    use crate::transcript::scan::Flow;
     let mut items: Vec<String> = Vec::new();
     let mut chars = 0usize;
-    for line in tail_lines(&tail) {
+    let mut bad = false;
+    let Some(truncated) = crate::checks::replykit::io::for_each_line(path, w, |line| {
         match line_items(line) {
-            Err(()) => return unsure(),
-            Ok(None) => continue,
+            Err(()) => bad = true,
+            Ok(None) => return Flow::Next,
             Ok(Some(l)) => {
                 chars += l.chars;
                 if !l.items.is_empty() {
@@ -182,11 +183,18 @@ pub(super) fn evidence_uncached(path: &str, w: u64) -> String {
                 }
             }
         }
-        if chars as f64 > defaults::num("transcript.evidence_max_chars") as f64 {
-            return unsure();
+        if bad || chars as f64 > defaults::num("transcript.evidence_max_chars") as f64 {
+            bad = true;
+            return Flow::Stop;
         }
+        Flow::Next
+    }) else {
+        return "null".into();
+    };
+    if bad {
+        return unsure();
     }
-    answer(&items, tail.truncated)
+    answer(&items, truncated)
 }
 
 /// The answer text: `{"items":[...],"truncated":bool}` (the keys in the order a JSON object map prints them).
@@ -209,14 +217,20 @@ pub(super) fn answer<S: AsRef<str>>(items: &[S], truncated: bool) -> String {
 /// but never stopped, in the order the scan lists them: `{"teammates":[{"name","idleSinceMs"}]}`; `null` when the file is
 /// missing, unreadable or empty; `{"unsure":true}` for a relative path or anything JavaScript might read differently.
 pub fn teammates(path: &str, tail: f64) -> String {
-    use crate::checks::guardkit::tail::tail_lines;
+    use crate::checks::guardkit::tail::tail_lines_bounded;
     if !path.starts_with('/') {
         return unsure();
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((lines, _)) = tail_lines(path, n) else { return "null".into() };
-    match crate::checks::idle_agent_sweep::scan::finished_teammates(lines) {
+    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes")) else { return "null".into() };
+    let found = crate::checks::idle_agent_sweep::scan::finished_teammates(lines.by_ref());
+    // a line too long to hold may have carried a notice: the answer is then unknown, never "none finished"
+    if lines.skipped() > 0 {
+        crate::load::note_count("transcript_line_skipped_oversize", "reader", "teammates");
+        return unsure();
+    }
+    match found {
         Ok(v) => json!({"teammates": v.iter().map(|f| json!({"name": f.name, "idleSinceMs": f.idle_since_ms})).collect::<Vec<_>>()}).to_string(),
         Err(_) => unsure(),
     }
@@ -225,14 +239,19 @@ pub fn teammates(path: &str, tail: f64) -> String {
 /// `codex_agents(path, tail)`: JSON text. The agents a Codex rollout tail shows finished but never closed, in the order the
 /// rollout first spawned them: `{"agents":[{"id","label","idleSinceMs"}]}`; `null` and `{"unsure":true}` as [`teammates`].
 pub fn codex_agents(path: &str, tail: f64) -> String {
-    use crate::checks::guardkit::tail::tail_lines;
+    use crate::checks::guardkit::tail::tail_lines_bounded;
     if !path.starts_with('/') {
         return unsure();
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((lines, _)) = tail_lines(path, n) else { return "null".into() };
-    match crate::checks::idle_agent_sweep::codex::finished(lines) {
+    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes")) else { return "null".into() };
+    let found = crate::checks::idle_agent_sweep::codex::finished(lines.by_ref());
+    if lines.skipped() > 0 {
+        crate::load::note_count("transcript_line_skipped_oversize", "reader", "codex_agents");
+        return unsure();
+    }
+    match found {
         Ok(v) => json!({"agents": v.iter().map(|a| json!({"id": a.id, "label": a.label, "idleSinceMs": a.idle_since_ms})).collect::<Vec<_>>()}).to_string(),
         Err(_) => unsure(),
     }
@@ -272,6 +291,8 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
 #[cfg(test)]
 pub(in crate::script) mod reference {
     use super::*;
+    use crate::checks::replykit::io::read_window;
+    use crate::checks::replykit::transcript::tail_lines;
 
     pub(in crate::script) fn evidence_v0(path: &str, window: f64) -> String {
         if !path.starts_with('/') {

@@ -292,6 +292,18 @@ value = { kind = "counter", unit = "requests", labels = [] }
 doc = "Evaluations cut off by the per-request CPU budget."
 value = { kind = "counter", unit = "evaluations", labels = [] }
 
+[metric.guard_answer_dropped]
+doc = "Answers of guard events' checks that were not given, by reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred): the guard half of answers_dropped, so a Stop or PreToolUse gate that failed open stands out (#684). Lifetime."
+value = { kind = "counter", unit = "answers", labels = ["reason"] }
+
+[metric.verdicts_saved_by_cpu_budget]
+doc = "Per event, check answers given after the request passed daemon.request_wall_warn_ms of wall time (the wall deadline before #684), inside the wall ceiling daemon.request_hard_ms: verdicts a loaded host would have dropped when the wall clock was the deadline. Lifetime."
+value = { kind = "counter", unit = "answers", labels = ["event"] }
+
+[metric.wouldblock_retries]
+doc = "Replies written after the client's fail-fast wait (client.deadline_ms), by outcome (daemon.wouldblock_outcome_*): the client's read timed out (EAGAIN, os error 35 on macOS; logged once as client_late) and it kept waiting up to client.slow_fallback_max_ms less client.slow_wait_margin_ms. delivered = the client took the late verdict; lost = it had stopped waiting. Lifetime."
+value = { kind = "counter", unit = "replies", labels = ["outcome"] }
+
 [metric.answers_dropped]
 doc = "Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started."
 value = { kind = "counter", unit = "answers", labels = ["event", "kind", "reason"] }
@@ -880,3 +892,14 @@ value = { kind = "gauge", unit = "bytes", labels = [] }
 [metric.heap_burst_total]
 doc = "Times the live heap rose by more than mem_gate.burst_bytes within mem_gate.burst_window_ms (a transient allocation spike, whatever caused it)."
 value = { kind = "counter", unit = "bursts", labels = [] }
+[metric.transcript_scan_peak_bytes]
+doc = "The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.transcript_scan_waits]
+doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_scan_turn_bypassed]
+doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
+value = { kind = "counter", unit = "requests", labels = [] }

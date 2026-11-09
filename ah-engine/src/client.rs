@@ -26,6 +26,17 @@ thread_local! {
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
+    /// The hook event of the call this thread makes next (empty = unknown): its late-reply bound is the event's own.
+    static CALL_EVENT: std::cell::RefCell<String> = std::cell::RefCell::default();
+    /// Unit tests only: the progress gate is off (a test's fake daemon writes no heartbeat).
+    #[cfg(test)]
+    static GATE_OFF: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Name the hook event of the calls this thread makes next (empty = none): the late-reply bound `client.slow_fallback_max_ms`
+/// is per event (`client.slow_fallback_event_ms`), and the launcher's watchdog applies the same one.
+pub(crate) fn set_call_event(event: &str) {
+    CALL_EVENT.with(|e| event.clone_into(&mut e.borrow_mut()));
 }
 
 /// Mark the calls this thread makes next as a guard event's (or not): a guard call that finds no daemon waits for one to start
@@ -66,10 +77,10 @@ pub enum Exch {
     Hung(String, bool),
 }
 
-/// The longest one exchange waits for its reply: the deadline, extended to `client.slow_fallback_max_ms` less `client.slow_wait_margin_ms` (a daemon
+/// The longest one exchange waits for its reply: the deadline, extended to the event's `client.slow_fallback_max_ms` less `client.slow_wait_margin_ms` (a daemon
 /// that is alive answers late rather than never; the wrapper's watchdog waits for the whole `client.slow_fallback_max_ms`).
 fn wait_window(deadline: Duration) -> Duration {
-    let max = defaults::millis("client.slow_fallback_max_ms");
+    let max = CALL_EVENT.with(|e| Duration::from_millis(defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", &e.borrow())));
     let ends = if max.is_zero() { Duration::ZERO } else { max.saturating_sub(defaults::millis("client.slow_wait_margin_ms")) };
     deadline.max(ends)
 }
@@ -86,13 +97,76 @@ fn rearm_read_timeout(s: &UnixStream, left: Duration) {
 /// Why the daemon counts as hung, and whether that is confirmed: its heartbeat is older than `client.heartbeat_stale_ms` (0 =
 /// never; unknown = alive). One stale sample only raises a suspicion ([`health::weigh_stale`]).
 fn stale_heartbeat() -> Option<(String, bool)> {
-    let stale = defaults::millis("client.heartbeat_stale_ms");
+    hung_if_older_than(defaults::millis("client.heartbeat_stale_ms"))
+}
+
+/// [`stale_heartbeat`] with the age limit given (`ZERO` = never).
+fn hung_if_older_than(stale: Duration) -> Option<(String, bool)> {
     let hb = health::heartbeat_of_lock_holder().filter(|hb| !stale.is_zero() && hb.age > stale)?;
     let (pid, age) = (hb.pid, hb.age.as_millis());
     Some(match health::weigh_stale(&hb) {
         health::Hang::Suspected => (defaults::render("msg.client_hung", &[("pid", &pid), ("age", &age)]), false),
         health::Hang::Confirmed(held) => (defaults::render("msg.client_hung_confirmed", &[("pid", &pid), ("age", &age), ("held", &held)]), true),
     })
+}
+
+/// What a call past its deadline does when the daemon shows no progress.
+enum Stall {
+    /// The daemon's heartbeat itself stopped (older than `client.progress_stale_ms`): stopped or wedged, handled as [`Exch::Hung`].
+    Hung(String, bool),
+    /// The daemon beats but works on nothing the call can see: the call fails open as [`Exch::Slow`].
+    Idle(String),
+}
+
+impl Stall {
+    fn into_exch(self) -> Exch {
+        match self {
+            Stall::Hung(why, confirmed) => Exch::Hung(why, confirmed),
+            Stall::Idle(why) => Exch::Slow(why),
+        }
+    }
+}
+
+/// Past the deadline: `Some` when the daemon shows no progress on its work, so the call stops waiting at once instead of waiting out
+/// the late-reply bound. Progress is the age its longest-silent busy worker recorded in the heartbeat file (`progress_ms`) plus the
+/// heartbeat's own age; it must stay under `client.progress_stale_ms`. A heartbeat that is itself older than that is a stopped
+/// daemon ([`Stall::Hung`], so the replacement path sees it as early as the progress gate does); no heartbeat, or none carrying a
+/// figure, is no progress. 0 turns the gate off.
+fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
+    #[cfg(test)]
+    if GATE_OFF.get() {
+        return None;
+    }
+    let limit = defaults::millis("client.progress_stale_ms");
+    if limit.is_zero() {
+        return None;
+    }
+    if let Some((why, confirmed)) = hung_if_older_than(limit) {
+        return Some(Stall::Hung(why, confirmed));
+    }
+    let hb = health::heartbeat_of_lock_holder();
+    // the daemon says no worker is busy. That beat may predate the worker picking this request up, so the first idle beat seen is
+    // only remembered (by its modification time); the call fails open when a NEWER beat is still idle (the daemon looked again
+    // after the request arrived and still has no worker on it). No newer beat (a starved watchdog) falls to the stale-heartbeat
+    // bound above, never longer.
+    if let Some(h) = hb.as_ref().filter(|h| h.idle) {
+        match *idle_seen {
+            None => {
+                *idle_seen = Some(h.mtime_ns);
+                return None;
+            }
+            Some(first) if first == h.mtime_ns => return None,
+            Some(_) => {}
+        }
+        return Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &"idle"), ("limit", &limit.as_millis())])));
+    }
+    *idle_seen = None;
+    let age = hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age));
+    if age.is_some_and(|a| a < limit) {
+        return None;
+    }
+    let shown = age.map_or_else(|| "unknown".to_string(), |a| a.as_millis().to_string());
+    Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &shown), ("limit", &limit.as_millis())])))
 }
 
 /// Open the daemon socket after checking it is a socket of ours: `Err` carries the exchange result to return.
@@ -139,6 +213,7 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
     let mut buf = Vec::new();
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply"));
     let mut late = false;
+    let mut idle_seen = None;
     // read_to_end keeps the bytes read before an error, so a timeout resumes the same reply instead of restarting it
     while let Err(e) = (&mut s).take(max_reply.saturating_sub(buf.len() as u64)).read_to_end(&mut buf) {
         let why = defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]);
@@ -155,6 +230,9 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
         }
         if let Some((hung, confirmed)) = stale_heartbeat() {
             return Exch::Hung(hung, confirmed);
+        }
+        if let Some(stall) = stalled(&mut idle_seen) {
+            return stall.into_exch();
         }
         rearm_read_timeout(&s, left.min(defaults::millis("client.heartbeat_poll_ms")));
     }
@@ -248,6 +326,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     // acked: never resend from here; wait for the reply up to the hard window (the original read loop's rules)
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply") as usize);
     let mut late = false;
+    let mut idle_seen = None;
     if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
@@ -295,6 +374,9 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
                 if let Some((hung, confirmed)) = stale_heartbeat() {
                     return Once::Done(Exch::Hung(hung, confirmed));
                 }
+                if let Some(stall) = stalled(&mut idle_seen) {
+                    return Once::Done(stall.into_exch());
+                }
                 rearm_read_timeout(&s, left.min(defaults::millis("client.heartbeat_poll_ms")));
             }
         }
@@ -334,9 +416,13 @@ fn exchange_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
                 if retries >= defaults::num("wire.max_retries") || window.saturating_sub(began.elapsed()) < defaults::millis("wire.retry_min_ms") {
                     // no more resends: like the original exchange, keep watching the daemon's heartbeat for the rest of the window, so a
                     // daemon that went silent and stopped beating is reported hung (and replaced) instead of merely slow
+                    let mut idle_seen = None;
                     while window.saturating_sub(began.elapsed()) > Duration::ZERO {
                         if let Some((hung, confirmed)) = stale_heartbeat() {
                             return Exch::Hung(hung, confirmed);
+                        }
+                        if let Some(stall) = stalled(&mut idle_seen) {
+                            return stall.into_exch();
                         }
                         std::thread::sleep(defaults::millis("client.heartbeat_poll_ms").min(window.saturating_sub(began.elapsed())));
                     }
@@ -1128,6 +1214,7 @@ fn run_bytes(raw: Vec<u8>, unaskable: bool, fail_closed_unavailable: bool) -> Ou
     let cfg = ClientConfig::from_env();
     // Fail fast: an engine that cannot answer is no verdict, so hook callers fail open instead of waiting.
     let event_name = event_from_lossy(&raw);
+    set_call_event(event_name.as_deref().unwrap_or_default());
     let text = std::str::from_utf8(&raw).ok();
     if !unaskable && let Some(raw) = text {
         if let Some(body) = engine_attempt(raw, &cfg)
@@ -1275,7 +1362,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(400));
             std::io::Write::write_all(&mut c, &frame::encode(Kind::Ok, "late-ok")).unwrap();
         }); // dropping `c` closes the socket right after the write
+        GATE_OFF.set(true); // this fake daemon writes no heartbeat; the gate has its own tests
         let r = exchange_inner(&sock, b"CTL ping\n", Duration::from_millis(150), Duration::from_secs(5));
+        GATE_OFF.set(false);
         h.join().unwrap();
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
         assert!(matches!(&r, Exch::Reply(Kind::Ok, b) if b == "late-ok"), "{r:?}");

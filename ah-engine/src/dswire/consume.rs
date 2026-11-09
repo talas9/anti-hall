@@ -6,8 +6,9 @@ use crate::checks::guardkit::msg::render_with;
 use crate::defaults;
 use crate::devswarm_rt::detect::Mode;
 use crate::devswarm_rt::reconcile::Rt;
-use crate::devswarm_rt::state::{Activity, Edge, Lifecycle};
+use crate::devswarm_rt::state::{Activity, Edge, EdgeKind, Lifecycle};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn list(k: &str) -> Vec<String> {
@@ -20,8 +21,135 @@ fn seen_path(state_dir: &Path, session: &str) -> Option<PathBuf> {
     ok.then(|| state_dir.join(defaults::text("devswarm_wire.advisory_dir")).join(format!("{session}{}", defaults::text("mesh_write.json_suffix"))))
 }
 
-fn read_seen(p: &Path) -> Option<u64> {
-    serde_json::from_str::<Value>(&std::fs::read_to_string(p).ok()?).ok()?.get("gen")?.as_u64()
+/// The marker of a session: the generation it was told up to, when each workspace's activity change was last told, and the net
+/// changes the hysteresis is still holding back.
+#[derive(Default)]
+struct Marker {
+    gen_seen: Option<u64>,
+    told: BTreeMap<String, i64>,
+    held: BTreeMap<String, Held>,
+}
+
+/// A net activity change held back by the dwell: the state the session was last told, the state now, when it happened, and how many
+/// raw changes it folds.
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    from: String,
+    to: String,
+    at_ms: i64,
+    count: u64,
+}
+
+fn read_marker(p: &Path) -> Marker {
+    let v = std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null); // keep: a missing or bad marker is the empty one
+    let told = v
+        .get(defaults::text("devswarm_wire.advisory_act_key"))
+        .and_then(Value::as_object)
+        .map(|m| m.iter().filter_map(|(k, t)| Some((k.clone(), t.as_i64()?))).collect())
+        .unwrap_or_default();
+    let held = v
+        .get(defaults::text("devswarm_wire.advisory_pending_key"))
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, h)| {
+                    let s = |f: &str| h.get(f).and_then(Value::as_str).map(str::to_string);
+                    Some((k.clone(), Held { from: s("from")?, to: s("to")?, at_ms: h.get("at")?.as_i64()?, count: h.get("n")?.as_u64()? }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Marker { gen_seen: v.get("gen").and_then(Value::as_u64), told, held }
+}
+
+/// Hysteresis for the activity edges (`devswarm_rt.activity_min_dwell_s`): per workspace the batch (and what an earlier batch held
+/// back) is folded to its net change (a flip and its flip back leave nothing), and a net change within `dwell_ms` of the one this
+/// session was last told about is HELD, not dropped: it is told on the first look after the dwell (the net state stays pending, so a
+/// workspace that changes once and stays changed is still reported). `now` is the clock the dwell is measured on; a clock that went
+/// back (`now` or the told time ahead of it) counts as the dwell passed. Returns the edges to advise, the activity edges dropped, and
+/// the updated told-at and held maps (only workspaces whose change is advised move the told time).
+fn settle_activity(
+    edges: Vec<Edge>,
+    told: &BTreeMap<String, i64>,
+    held: &BTreeMap<String, Held>,
+    now: i64,
+    dwell_ms: i64,
+) -> (Vec<Edge>, u64, BTreeMap<String, i64>, BTreeMap<String, Held>) {
+    let mut told = told.clone();
+    let (mut out, mut dropped) = (Vec::with_capacity(edges.len()), 0u64);
+    let is_act = |e: &Edge| e.kind == EdgeKind::Activity;
+    let mut net: BTreeMap<String, Held> = held.clone();
+    for e in edges.iter().filter(|e| is_act(e)) {
+        let slot = net.entry(e.ws.clone()).or_insert_with(|| Held { from: e.from.clone(), to: e.to.clone(), at_ms: e.at_ms, count: 0 });
+        slot.to = e.to.clone();
+        slot.at_ms = e.at_ms;
+        slot.count += 1;
+    }
+    let mut held_now: BTreeMap<String, Held> = BTreeMap::new();
+    let mut kept_ws: Vec<&String> = Vec::new();
+    for (ws, h) in &net {
+        // the dwell runs from the telling to now; a told time ahead of now (the clock went back) is no evidence of a recent telling
+        let within_dwell = told.get(ws).is_some_and(|t| *t <= now && now.saturating_sub(*t) < dwell_ms);
+        if h.from == h.to {
+            dropped += h.count;
+        } else if within_dwell {
+            held_now.insert(ws.clone(), h.clone());
+        } else {
+            dropped += h.count.saturating_sub(1);
+            kept_ws.push(ws);
+            told.insert(ws.clone(), now.max(h.at_ms));
+        }
+    }
+    let mut emitted: std::collections::BTreeSet<&String> = std::collections::BTreeSet::new();
+    let net_edge = |ws: &String, base: Edge| {
+        let h = &net[ws];
+        Edge { from: h.from.clone(), to: h.to.clone(), at_ms: h.at_ms, ..base }
+    };
+    for e in &edges {
+        if !is_act(e) {
+            out.push(e.clone());
+        } else if kept_ws.contains(&&e.ws) && emitted.insert(&e.ws) {
+            // the net change, at the place of the workspace's first activity edge
+            out.push(net_edge(&e.ws, e.clone()));
+        }
+    }
+    // a change held by an earlier batch that is now due and had no edge in this one
+    for ws in kept_ws {
+        if emitted.insert(ws) {
+            let base = Edge {
+                ws: ws.clone(),
+                kind: EdgeKind::Activity,
+                from: String::new(),
+                to: String::new(),
+                generation: 0,
+                at_ms: 0,
+                while_down: false,
+                hold_until_ms: 0,
+            };
+            out.push(net_edge(ws, base));
+        }
+    }
+    (out, dropped, told, held_now)
+}
+
+/// The edges of generation `gen_now` or below (those a look that read `gen_now` as the current generation may use).
+fn up_to(mut edges: Vec<Edge>, gen_now: u64) -> Vec<Edge> {
+    edges.retain(|e| e.generation <= gen_now);
+    edges
+}
+
+/// The held map after `edges` are folded in without telling anything: per workspace the first `from` and the last `to`; a net
+/// no-change leaves nothing held. The folded edges are not counted: `count` is what the "suppressed" counter is made from once the
+/// change is told, and an edge folded while nothing was shown was never going to be shown (a new slot counts as one change).
+fn fold_held(edges: &[Edge], held: &BTreeMap<String, Held>) -> BTreeMap<String, Held> {
+    let mut net = held.clone();
+    for e in edges.iter().filter(|e| e.kind == EdgeKind::Activity) {
+        let slot = net.entry(e.ws.clone()).or_insert_with(|| Held { from: e.from.clone(), to: e.to.clone(), at_ms: e.at_ms, count: 1 });
+        slot.to = e.to.clone();
+        slot.at_ms = e.at_ms;
+    }
+    net.retain(|_, h| h.from != h.to);
+    net
 }
 
 fn prune_old(dir: &Path, now: i64) {
@@ -49,15 +177,33 @@ fn label(rt: &Rt, ws: &str) -> String {
 pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<String> {
     let path = seen_path(state_dir, session);
     let gen_now = rt.current().generation;
-    let seen = path.as_deref().and_then(read_seen);
-    let edges: Vec<Value> = seen
-        .map(|s| rt.edges_since(s))
-        .unwrap_or_default()
-        .iter()
-        .map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to}))
-        .collect();
+    let marker = path.as_deref().map(read_marker).unwrap_or_default();
+    let seen = marker.gen_seen.filter(|_| path.is_some());
+    let dwell_ms = defaults::num("devswarm_rt.activity_min_dwell_s") as i64 * 1000;
+    // `gen_now` was read before the edges: an edge published between the two reads (its generation is above `gen_now`) is not part of
+    // this look. The marker moves to `gen_now`, so that edge is the next look's; folding it now as well would apply it twice.
+    let raw_edges = up_to(seen.map(|s| rt.edges_since(s)).unwrap_or_default(), gen_now);
+    let (edges, dropped, mut told, mut held) = settle_activity(raw_edges.clone(), &marker.told, &marker.held, now, dwell_ms);
+    // per-workspace pruning: a workspace the (readable) state no longer knows keeps no told time and nothing held
+    let snap = rt.current();
+    if snap.app_readable {
+        told.retain(|ws, _| snap.workspaces.contains_key(ws));
+        held.retain(|ws, _| snap.workspaces.contains_key(ws));
+    }
+    let enabled = rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false);
+    if !enabled {
+        // nothing is told, so no told time moves; the activity edges seen meanwhile are FOLDED into what is held (not dropped, not
+        // told), so flips cancel (stuck -> working -> stuck = nothing) and a net change survives to be told after the dwell once the
+        // advisory is back on, versus what the session was last told
+        told = marker.told.clone();
+        held = fold_held(&raw_edges, &marker.held);
+        if snap.app_readable {
+            held.retain(|ws, _| snap.workspaces.contains_key(ws));
+        }
+    }
+    let edges: Vec<Value> = edges.iter().map(|e| json!({"ws": e.ws, "label": label(rt, &e.ws), "kind": e.kind.as_str(), "from": e.from, "to": e.to})).collect();
     let payload = json!({
-        "enabled": rt.mode() == Mode::On && defaults::raw("devswarm_wire.advisory_enabled").as_bool().unwrap_or(false),
+        "enabled": enabled,
         "sessionOk": path.is_some(), "seen": seen, "generation": gen_now, "edges": edges,
     });
     let env = crate::reqenv::RequestEnv::from_pairs([(defaults::env_name("home"), rt.detection().home.to_string_lossy().into_owned())]);
@@ -71,22 +217,44 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
         Some(Some(crate::checks::Verdict::Exact(x))) => serde_json::from_str::<Value>(&x.out).ok()?,
         _ => return None,
     };
-    if let Some(mark) = ans.get("mark").and_then(Value::as_u64) {
-        write_seen(path.as_deref()?, mark, now)?;
+    // the marker is rewritten when the script moves the generation, and also when a held change was told or newly held with no
+    // new generation (otherwise a change told after its dwell would be told again at every prompt). With the layer off the script
+    // never moves it, so the marker follows the state's generation: the edges it saw are not replayed at every prompt.
+    let mark = ans.get("mark").and_then(Value::as_u64).or_else(|| match enabled {
+        true => (told != marker.told || held != marker.held).then_some(seen).flatten(),
+        false => seen.filter(|s| *s != gen_now || held != marker.held).map(|_| gen_now),
+    });
+    if let Some(mark) = mark {
+        write_seen(path.as_deref()?, mark, &told, &held, now)?;
+        // the counts follow the record: a look that is not recorded is replayed, and would count the same edges again
+        if enabled && dropped > 0 {
+            crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_suppressed"))], dropped);
+        }
+    }
+    let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
+    // only the activity changes the text names count: the ones past the cap are a "+N more" and are not shown
+    let shown = ans.get("shownActivity").and_then(Value::as_u64).unwrap_or(0);
+    if advise.is_some() && mark.is_some() && shown > 0 {
+        crate::metrics::bump_by("devswarm_rt_activity_line", &[("result", defaults::text("devswarm_rt.activity_result_emitted"))], shown);
     }
     let nag = crate::dsact::nag::take_pending(state_dir);
-    let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
     match (advise, nag) {
         (Some(a), Some(n)) => Some(format!("{a}\n{n}")),
         (a, n) => a.or(n),
     }
 }
 
-fn write_seen(path: &Path, gen_now: u64, now: i64) -> Option<()> {
+fn write_seen(path: &Path, gen_now: u64, told: &BTreeMap<String, i64>, held: &BTreeMap<String, Held>, now: i64) -> Option<()> {
     let dir = path.parent()?;
     std::fs::create_dir_all(dir).ok()?;
     prune_old(dir, now);
-    crate::atomic::write(path, json!({"gen": gen_now}).to_string()).ok()
+    let held: serde_json::Map<String, Value> =
+        held.iter().map(|(k, h)| (k.clone(), json!({"from": h.from, "to": h.to, "at": h.at_ms, "n": h.count}))).collect();
+    crate::atomic::write(
+        path,
+        json!({"gen": gen_now, defaults::text("devswarm_wire.advisory_act_key"): told, defaults::text("devswarm_wire.advisory_pending_key"): held}).to_string(),
+    )
+    .ok()
 }
 
 /// The statusline segment: workspaces in progress, stuck, unread mail.
@@ -239,5 +407,157 @@ impl crate::checks::Check for RtAdvisory {
             }
             None => Verdict::Allow,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn act(ws: &str, from: &str, to: &str, gen_: u64, at: i64) -> Edge {
+        Edge { ws: ws.into(), kind: EdgeKind::Activity, from: from.into(), to: to.into(), generation: gen_, at_ms: at, while_down: false, hold_until_ms: 0 }
+    }
+
+    const DWELL: i64 = 300_000;
+
+    fn settle(
+        edges: Vec<Edge>,
+        told: &BTreeMap<String, i64>,
+        held: &BTreeMap<String, Held>,
+        now: i64,
+    ) -> (Vec<Edge>, u64, BTreeMap<String, i64>, BTreeMap<String, Held>) {
+        settle_activity(edges, told, held, now, DWELL)
+    }
+
+    #[test]
+    fn a_flip_and_its_flip_back_in_one_batch_are_silent_and_counted() {
+        let edges = vec![act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "working", 2, 2000)];
+        let (out, dropped, told, held) = settle(edges, &BTreeMap::new(), &BTreeMap::new(), 2000);
+        assert!(out.is_empty());
+        assert_eq!(dropped, 2);
+        assert!(told.is_empty() && held.is_empty());
+    }
+
+    #[test]
+    fn a_net_change_is_told_once_and_remembered() {
+        let edges = vec![act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "working", 2, 2000), act("w1", "working", "stuck", 3, 3000)];
+        let (out, dropped, told, held) = settle(edges, &BTreeMap::new(), &BTreeMap::new(), 3000);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].from.as_str(), out[0].to.as_str(), out[0].at_ms), ("working", "stuck", 3000));
+        assert_eq!(dropped, 2);
+        assert_eq!(told.get("w1"), Some(&3000));
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_change_within_the_dwell_is_held_and_one_after_it_is_told() {
+        let told = BTreeMap::from([("w1".to_string(), 1000i64)]);
+        let (out, dropped, kept, held) = settle(vec![act("w1", "stuck", "working", 5, 1000 + DWELL - 1)], &told, &BTreeMap::new(), 1000 + DWELL - 1);
+        assert!(out.is_empty());
+        assert_eq!(dropped, 0, "held, not dropped");
+        assert_eq!(kept.get("w1"), Some(&1000), "a held change does not move the told time");
+        assert_eq!(held.get("w1").map(|h| (h.from.as_str(), h.to.as_str(), h.count)), Some(("stuck", "working", 1)));
+        let (out, dropped, kept, held) = settle(vec![act("w1", "stuck", "working", 6, 1000 + DWELL)], &told, &BTreeMap::new(), 1000 + DWELL);
+        assert_eq!((out.len(), dropped), (1, 0));
+        assert_eq!(kept.get("w1"), Some(&(1000 + DWELL)));
+        assert!(held.is_empty());
+    }
+
+    /// The reported case: told stuck -> working at t=0, working -> stuck at t=60 s, then no further change. The session must be told
+    /// it is stuck once the dwell has passed, from the held net state alone (no new edge).
+    #[test]
+    fn a_change_inside_the_dwell_that_never_changes_again_is_told_after_the_dwell() {
+        let told = BTreeMap::from([("w1".to_string(), 0i64)]);
+        let (out, _, told, held) = settle(vec![act("w1", "working", "stuck", 2, 60_000)], &told, &BTreeMap::new(), 60_000);
+        assert!(out.is_empty());
+        assert_eq!(told.get("w1"), Some(&0));
+        assert_eq!(held.len(), 1);
+        // still inside the dwell at a later look, no edges: still held
+        let (out, _, told, held) = settle(Vec::new(), &told, &held, DWELL - 1);
+        assert!(out.is_empty());
+        assert_eq!(held.len(), 1);
+        // after the dwell, with no edge at all: told, and nothing is held afterwards
+        let (out, dropped, told, held) = settle(Vec::new(), &told, &held, DWELL);
+        assert_eq!((out.len(), dropped), (1, 0));
+        assert_eq!((out[0].ws.as_str(), out[0].from.as_str(), out[0].to.as_str()), ("w1", "working", "stuck"));
+        assert_eq!(told.get("w1"), Some(&DWELL));
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_held_change_that_flips_back_is_dropped_and_counted_with_what_it_folded() {
+        let told = BTreeMap::from([("w1".to_string(), 0i64)]);
+        let (_, _, told, held) = settle(vec![act("w1", "working", "stuck", 2, 60_000)], &told, &BTreeMap::new(), 60_000);
+        let (out, dropped, _, held) = settle(vec![act("w1", "stuck", "working", 3, 90_000)], &told, &held, 90_000);
+        assert!(out.is_empty() && held.is_empty());
+        assert_eq!(dropped, 2);
+    }
+
+    #[test]
+    fn an_edge_published_between_the_two_reads_is_left_to_the_next_look_not_folded_twice() {
+        // a flip pair split by a look: the first edge is in this look, the second (generation 6) came after `gen_now` (5) was read
+        let all = vec![act("w1", "working", "stuck", 5, 1000), act("w1", "stuck", "working", 6, 2000)];
+        let first = up_to(all.clone(), 5);
+        assert_eq!(first.len(), 1, "the edge above gen_now is not part of this look");
+        let held = fold_held(&first, &BTreeMap::new());
+        assert_eq!(held.get("w1").map(|h| (h.from.as_str(), h.to.as_str())), Some(("working", "stuck")));
+        // the next look starts from gen_now: only the late edge, and it cancels the held change; nothing is left held
+        let next = up_to(all.into_iter().filter(|e| e.generation > 5).collect(), 6);
+        assert!(fold_held(&next, &held).is_empty(), "the flip back cancels the held change");
+        // without the filter the late edge is folded in this look and again in the next one: a spurious held stuck -> working remains
+        let both = fold_held(&[act("w1", "working", "stuck", 5, 1000), act("w1", "stuck", "working", 6, 2000)], &BTreeMap::new());
+        assert!(both.is_empty());
+        let again = fold_held(&[act("w1", "stuck", "working", 6, 2000)], &both);
+        assert_eq!(again.get("w1").map(|h| (h.from.as_str(), h.to.as_str())), Some(("stuck", "working")), "this is what the filter prevents");
+    }
+
+    #[test]
+    fn edges_folded_while_the_advisory_is_off_are_not_counted_as_suppressed_when_it_is_back_on() {
+        // working -> stuck -> blocked while off: one net change; told after re-enable with nothing suppressed
+        let held = fold_held(&[act("w1", "working", "stuck", 1, 1000), act("w1", "stuck", "blocked", 2, 2000)], &BTreeMap::new());
+        assert_eq!(held.get("w1").map(|h| (h.from.as_str(), h.to.as_str(), h.count)), Some(("working", "blocked", 1)));
+        let (out, dropped, _, held) = settle(vec![], &BTreeMap::new(), &held, 1_000_000);
+        assert_eq!(out.len(), 1, "the net change is told");
+        assert_eq!(dropped, 0, "none of the edges folded while off is a suppressed one");
+        assert!(held.is_empty());
+        // a change held while it was on keeps its own count, and a fold while off adds nothing to it
+        let told = BTreeMap::from([("w1".to_string(), 10i64)]);
+        let (_, _, _, held_on) = settle(vec![act("w1", "a", "b", 1, 10), act("w1", "b", "c", 2, 20)], &told, &BTreeMap::new(), 20);
+        assert_eq!(held_on.get("w1").map(|h| h.count), Some(2));
+        assert_eq!(fold_held(&[act("w1", "c", "d", 3, 30)], &held_on).get("w1").map(|h| h.count), Some(2));
+    }
+
+    #[test]
+    fn the_marker_keeps_the_told_times_and_the_held_changes_between_looks() {
+        defaults::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("ah-advisory-marker-{}", std::process::id()));
+        let path = dir.join("s1.json");
+        let told = BTreeMap::from([("w1".to_string(), 7i64)]);
+        let held = BTreeMap::from([("w1".to_string(), Held { from: "working".into(), to: "stuck".into(), at_ms: 60_000, count: 2 })]);
+        write_seen(&path, 9, &told, &held, 0).unwrap();
+        let m = read_marker(&path);
+        assert_eq!((m.gen_seen, m.told, m.held), (Some(9), told, held));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_clock_that_went_back_does_not_silence_a_workspace_for_ever() {
+        // told at 10 s ahead of now: the dwell cannot be measured, so the change is told (and the told time is reset to now)
+        let told = BTreeMap::from([("w1".to_string(), 10_000_000i64)]);
+        let (out, _, kept, held) = settle(vec![act("w1", "working", "stuck", 2, 500)], &told, &BTreeMap::new(), 500);
+        assert_eq!(out.len(), 1);
+        assert_eq!(kept.get("w1"), Some(&500));
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn other_kinds_and_other_workspaces_are_untouched_and_a_zero_dwell_tells_every_net_change() {
+        let mut life = act("w2", "active", "archived", 2, 10);
+        life.kind = EdgeKind::Lifecycle;
+        let told = BTreeMap::from([("w1".to_string(), 1000i64)]);
+        let (out, dropped, _, _) =
+            settle_activity(vec![act("w1", "working", "stuck", 1, 1001), life.clone(), act("w3", "working", "stuck", 3, 20)], &told, &BTreeMap::new(), 1001, 0);
+        assert_eq!(dropped, 0);
+        assert_eq!(out.iter().map(|e| e.ws.as_str()).collect::<Vec<_>>(), ["w1", "w2", "w3"]);
     }
 }

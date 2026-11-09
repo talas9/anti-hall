@@ -167,6 +167,7 @@ fn facts_older_than_the_horizon_are_dropped_but_the_keyed_maps_remember() {
     write(&f, &format!("{head}{filler}"));
     let mut c = cfg();
     c.horizon = 8 * 1024;
+    c.agent_horizon = 8 * 1024;
     let st = store(c.clone());
     let size = file_len(&f);
     st.with(&f, 0, |v| {
@@ -187,6 +188,7 @@ fn the_keyed_task_map_outlives_the_horizon_when_it_was_seen() {
     let f = t.path("s.jsonl");
     let mut c = cfg();
     c.horizon = 8 * 1024;
+    c.agent_horizon = 8 * 1024;
     let st = store(c);
     write(
         &f,

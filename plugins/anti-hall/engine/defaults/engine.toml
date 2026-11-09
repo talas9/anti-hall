@@ -219,7 +219,7 @@ doc = "Client marker holding the count of consecutive slow (late) daemon replies
 value = "daemon.slow.streak"
 
 [files.heartbeat]
-doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir); the watchdog thread touches its modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms)."
+doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, or the idle marker (ten `i` characters, not a number) when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not. A call fails open on an idle marker only when a beat NEWER than the first idle one it saw is still idle (an idle beat can predate the worker picking the request up); with no newer beat the stale-heartbeat bound applies."
 value = "daemon.heartbeat"
 
 [files.heartbeat_suspect]
@@ -319,10 +319,36 @@ min = 0
 unit = "us"
 
 [daemon.request_hard_ms]
-doc = "HARD deadline of a request, measured from its arrival (less daemon.reply_slack_ms): the point where a scripted check still running is cut and a check not yet started gets no answer: both take the check's failure policy (script.failure_mode_by_check). The SOFT deadline is client.deadline_ms (past it the request is logged as deadline_soft and counted, nothing is cut). A client whose daemon is alive waits for a late reply up to client.slow_fallback_max_ms less client.slow_wait_margin_ms and uses it, so this must stay below that window."
+doc = "HARD wall-clock CEILING of a request, measured from its arrival (less daemon.reply_slack_ms): the point where a scripted check still running is cut and a check not yet started gets no answer: both take the check's failure policy (script.failure_mode_by_check). This is the ceiling of every event not listed in daemon.request_hard_event_ms; it only catches a truly hung request: the budget that drops a single check counts that check's own thread CPU (daemon.eval_budget_us, and the script's own CPU limit), so a loaded host that merely delays the worker never drops a verdict. The SOFT wall marks are client.deadline_ms (the client's fail-fast wait) and daemon.request_wall_warn_ms (counted, nothing is cut). A client whose daemon is alive waits for a late reply up to client.slow_fallback_max_ms (or its client.slow_fallback_event_ms row) less client.slow_wait_margin_ms and uses it, so this plus diagnostics.deadline_grace_cap_ms must stay inside that window (a test pins it)."
 value = 2000
 min = 1
 unit = "ms"
+
+[daemon.request_hard_event_ms]
+doc = "Per hook event, the HARD wall ceiling of a request (see daemon.request_hard_ms) for the events that may run longer: only the end-of-turn events Stop and SubagentStop, whose guards must keep deciding on a loaded host (#684: at 2000 ms, load 18-24 failed every Stop guard open) and whose hook timeout is 30 s. An event without a row uses daemon.request_hard_ms. Must stay inside the client's wait for the same event (client.slow_fallback_event_ms)."
+value = { Stop = 8000, SubagentStop = 8000 }
+unit = "ms"
+
+[daemon.host_call_share_pct]
+doc = "The longest ONE host call of a check (a git run, a spawned program, an agent-store git read) may take, as a percentage of the request's wall ceiling for its event (daemon.request_hard_ms or its daemon.request_hard_event_ms row), never more than the request has left. A call that drains the whole request clock starves every check after it (#684: one 1920 ms git call cut the 10 guards behind it), so a call that cannot finish within its share is cut and its check takes its failure policy while the next checks still run. 0 or 100 = no share (only the request clock bounds a call)."
+value = 50
+min = 0
+max = 100
+unit = "%"
+
+[daemon.request_wall_warn_ms]
+doc = "SOFT wall mark of a request (the hard deadline before #684), measured from its arrival: a check that still answers past it is counted verdicts_saved_by_cpu_budget (it would have been dropped when the wall clock was the deadline); nothing is cut here. The HARD wall ceiling is daemon.request_hard_ms."
+value = 2000
+min = 1
+unit = "ms"
+
+[daemon.wouldblock_outcome_delivered]
+doc = "Label value of metric wouldblock_retries for a reply written after the client's fail-fast wait (client.deadline_ms) that the waiting client still read: its read timed out (EAGAIN, os error 35 on macOS) and it kept waiting, as it should."
+value = "delivered"
+
+[daemon.wouldblock_outcome_lost]
+doc = "Label value of metric wouldblock_retries for a late reply (past client.deadline_ms) the client did not take: it had stopped waiting."
+value = "lost"
 
 [daemon.eval_budget_us]
 doc = "HARD thread CPU budget of ONE check: a check that used more than this alone loses its own answer (counted answers_dropped reason `cpu_budget`) and takes its failure policy; the checks after it still run and answer, and the request as a whole is bounded by daemon.request_hard_ms. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
@@ -626,9 +652,20 @@ value = 10
 unit = "ms"
 
 [client.slow_fallback_max_ms]
-doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
+doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed, but only while the daemon visibly makes progress (client.progress_stale_ms): a daemon that is alive and working answers late rather than never. This is the bound of every event not listed in client.slow_fallback_event_ms; a set AH_ENGINE_SLOW_FALLBACK_MAX_MS overrides every event. The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
 value = 3000
 env = "AH_ENGINE_SLOW_FALLBACK_MAX_MS"
+min = 0
+unit = "ms"
+
+[client.slow_fallback_event_ms]
+doc = "Per hook event, the late-reply bound (see client.slow_fallback_max_ms) for the events that may wait longer: only the end-of-turn events Stop and SubagentStop (hook timeout 30 s); every other event, SessionEnd (5 s timeout) included, keeps client.slow_fallback_max_ms, so a prompt or a tool call never blocks for seconds on a daemon that is not answering. The launcher carries the same table as its built-in copy. A set AH_ENGINE_SLOW_FALLBACK_MAX_MS overrides it."
+value = { Stop = 9000, SubagentStop = 9000 }
+unit = "ms"
+
+[client.progress_stale_ms]
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress: the age of its longest-silent busy worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
+value = 1000
 min = 0
 unit = "ms"
 
@@ -906,6 +943,12 @@ value = "fail_open"
 doc = "How much later than a dead daemon's last sign of life (its newest breadcrumb, or its start) the operating system must have booted for the unclean stop to be reported as a `system_restart` (the machine stopped under it) instead of a `crash`. A margin against clock steps."
 value = 0
 unit = "ms"
+
+[health.progress_digits]
+doc = "Width, in digits, of the progress age the daemon records in the fifth line of its heartbeat file (files.heartbeat), zero-padded so a rewrite is one fixed-size write that never leaves a longer number's digits behind. An age that does not fit is recorded as the largest number that does."
+value = 10
+min = 1
+max = 19
 
 [health.advisory_ttl_ms]
 doc = "A recorded failure older than this no longer produces an advisory."

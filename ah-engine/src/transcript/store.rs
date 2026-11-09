@@ -20,6 +20,7 @@ use super::facts::{AgentRow, Cut, Fact, FactKind, FifoMap, TaskRow};
 use super::persist;
 use super::reader::{LineReader, ReadCfg};
 use super::record::{Notification, Prompt, TaskEvent, ToolUse, cap_text, js_trim, parse_line};
+use crate::checks::agent_scan::lines::AgentState;
 use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
@@ -124,6 +125,14 @@ pub struct Cfg {
     pub snapshot_ttl_ms: u64,
     /// Most snapshot files kept.
     pub snapshot_max_files: usize,
+    /// How far behind the end of the file the agent-scan digests are kept.
+    pub agent_horizon: u64,
+    /// Bytes of agent-scan digests one session may hold.
+    pub agent_budget: usize,
+    /// Most open (unanswered) calls remembered for matching results.
+    pub agent_open_max: usize,
+    /// Most answered calls remembered for matching a further result.
+    pub agent_answered_max: usize,
 }
 
 impl Cfg {
@@ -154,6 +163,10 @@ impl Cfg {
             snapshot_max: num("transcript.snapshot_max_bytes") as usize,
             snapshot_ttl_ms: num("transcript.snapshot_ttl_ms"),
             snapshot_max_files: num("transcript.snapshot_max_files") as usize,
+            agent_horizon: num("transcript.agent_horizon_bytes"),
+            agent_budget: num("transcript.agent_budget_bytes") as usize,
+            agent_open_max: num("transcript.agent_open_calls_max") as usize,
+            agent_answered_max: num("transcript.agent_answered_calls_max") as usize,
         }
     }
 }
@@ -282,11 +295,13 @@ pub(super) struct Session {
     pub(super) task_ids: FifoMap<String>,
     pub(super) fact_bytes: usize,
     pub(super) map_bytes: usize,
+    /// The agent-scan digests (their own horizon, budget and coverage mark).
+    pub(super) agent: AgentState,
 }
 
 impl Session {
     pub(super) fn bytes(&self) -> usize {
-        self.fact_bytes + self.map_bytes + self.pending_bytes_estimate()
+        self.fact_bytes + self.map_bytes + self.pending_bytes_estimate() + self.agent.bytes()
     }
 
     fn pending_bytes_estimate(&self) -> usize {
@@ -326,7 +341,8 @@ impl Session {
                 self.covered_from = self.covered_from.max(o + 1);
             }
         }
-        while self.bytes() > cfg.session_budget {
+        self.agent.trim(size, cfg.agent_horizon, cfg.agent_budget, cfg.agent_open_max, cfg.agent_answered_max, cfg.fact_fixed);
+        while self.bytes() - self.agent.bytes() > cfg.session_budget {
             if !self.facts.is_empty() {
                 self.pop_front_fact(cfg);
             } else if self.tasks.pop_oldest().is_some() || self.agents.pop_oldest().is_some() || self.task_ids.pop_oldest().is_some() {
@@ -346,6 +362,9 @@ impl Session {
 
     /// Fold one parsed line in. `off` is the line's first byte.
     fn ingest(&mut self, cfg: &Cfg, off: u64, text: &str, pending: bool) {
+        if off >= self.agent.covered_from {
+            self.agent.ingest(text.as_bytes(), off, pending, cfg.fact_fixed);
+        }
         let trimmed_empty = js_trim(text).is_empty();
         if trimmed_empty {
             return;
@@ -689,6 +708,21 @@ impl View<'_> {
     pub fn bytes(&self) -> usize {
         self.s.bytes()
     }
+
+    /// The agent-scan digests.
+    pub fn agent_digests(&self) -> &AgentState {
+        &self.s.agent
+    }
+
+    /// Offsets of the lines skipped as over the line cap (those still remembered).
+    pub fn oversize(&self) -> Vec<u64> {
+        self.s.oversize.iter().copied().collect()
+    }
+
+    /// Device and inode of the file the facts were read from.
+    pub fn file_id(&self) -> Option<(u64, u64)> {
+        self.s.id
+    }
 }
 
 /// The registry of session stores.
@@ -1001,7 +1035,10 @@ impl Store {
             return Ok(Plan::Cold);
         }
         let size = meta.len();
-        let changed = s.id.is_some_and(|i| i != (meta.dev(), meta.ino())) || size < s.offset || !prefix_intact(s, file)?;
+        let changed = s.id.is_some_and(|i| i != (meta.dev(), meta.ino()))
+            || size < s.offset
+            || s.agent.stamp != crate::checks::agent_scan::lines::config_stamp()
+            || !prefix_intact(s, file)?;
         if changed {
             self.stats.rebuilds.fetch_add(1, Relaxed);
             return Ok(Plan::Rebuild);
@@ -1036,6 +1073,7 @@ impl Store {
         }
         cand.recount_maps();
         cand.fact_bytes = cand.facts.iter().map(|f| f.bytes(cfg.fact_fixed)).sum();
+        cand.agent.recount(cfg.fact_fixed);
         *s = cand;
         self.stats.snapshot_loads.fetch_add(1, Relaxed);
         true
@@ -1050,7 +1088,9 @@ impl Store {
             s.recount_maps();
         }
         let io = |e: std::io::Error| Unsure::Io(e.kind());
-        let start = size.saturating_sub(cfg.horizon);
+        // the agent digests may reach further back than the facts (the widest agent-scan window): the build reads from there, the
+        // facts before the fact horizon are dropped again by the trim below
+        let start = size.saturating_sub(cfg.horizon.max(cfg.agent_horizon));
         let mut from = start;
         if start > 0 {
             // a window starting inside a line drops the rest of that line, as readTail does; a window that starts at a line start keeps it
@@ -1067,6 +1107,7 @@ impl Store {
             }
         }
         s.covered_from = start;
+        s.agent = AgentState::starting_at(size.saturating_sub(cfg.agent_horizon).max(start));
         s.offset = from;
         s.id = Some((meta.dev(), meta.ino()));
         s.built = true;
@@ -1097,10 +1138,13 @@ impl Store {
         let io = |e: std::io::Error| Unsure::Io(e.kind());
         let mut r = LineReader::new(file, cfg.read, from, size);
         s.pending.clear();
+        s.agent.clear_pending(false);
         let mut consumed = 0u64;
         while let Some(line) = r.next_line().map_err(io)? {
             if !line.terminated {
-                if !line.oversize && line.len as usize <= cfg.read.max_line {
+                let over = line.oversize || line.len as usize > cfg.read.max_line;
+                s.agent.clear_pending(over);
+                if !over {
                     let text = String::from_utf8_lossy(r.bytes());
                     s.ingest(cfg, line.off, &text, true);
                 }
@@ -1115,7 +1159,7 @@ impl Store {
             }
             let text = String::from_utf8_lossy(r.bytes());
             s.ingest(cfg, line.off, &text, false);
-            if s.bytes() > cfg.session_budget {
+            if s.bytes() - s.agent.bytes() > cfg.session_budget || s.agent.bytes() > cfg.agent_budget {
                 s.trim(cfg, size);
             }
             #[cfg(test)]

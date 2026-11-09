@@ -23,6 +23,7 @@ pub mod persist;
 pub mod reader;
 pub mod record;
 pub mod registry;
+pub mod scan;
 pub mod store;
 
 pub use facts::{Cut, Fact, FactKind};

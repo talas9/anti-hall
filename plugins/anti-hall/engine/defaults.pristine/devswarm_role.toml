@@ -145,6 +145,18 @@ value = '''
 doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory."
 value = "{home}/.anti-hall/ah-engine/bin/ah-engine mesh"
 
+[devswarm_role.engine_bin]
+doc = "The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). engine_cli = engine_bin + \" \" + engine_verb (a test asserts it). Placeholder: {home}."
+value = "{home}/.anti-hall/ah-engine/bin/ah-engine"
+
+[devswarm_role.engine_verb]
+doc = "The verb after the engine binary for every DevSwarm CLI command (the {verb} part, kept OUTSIDE the quotes around the binary path)."
+value = "mesh"
+
+[devswarm_role.watcher_verb]
+doc = "The verbs after the engine binary for the mailbox watcher (the {wverb} part; engine_watcher = engine_bin + \" \" + watcher_verb, a test asserts it)."
+value = "devswarm wake-watch --auto"
+
 [devswarm_role.engine_watcher]
 doc = "The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}."
 value = "{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto"
@@ -289,24 +301,24 @@ doc = "The Stop decision word of a block."
 value = "block"
 
 [devswarm_role.pg_skip_cmd]
-doc = "The override command: {cli} (shell-quoted plugin CLI path) and {guard}."
-value = "{cli} skip {guard}"
+doc = "The override command: {cli} (the shell-quoted engine binary path only), {verb}, {guard}."
+value = "{cli} {verb} skip {guard}"
 
 [devswarm_role.pg_skip_ttl]
 doc = "Appended to the override command."
 value = " (15-min TTL)"
 
 [devswarm_role.pg_wake_tick]
-doc = "The tick command of the wake re-verify line: {id}."
-value = "`\"$CLI\" inbox tick {id} --quiet`"
+doc = "The tick command of the wake re-verify line: {id}, {verb}. $CLI holds the quoted binary path only; the verb follows it."
+value = "`\"$CLI\" {verb} inbox tick {id} --quiet`"
 
 [devswarm_role.pg_wake_watch]
-doc = "The watcher part of the wake re-verify line: {watcher} (double-quoted)."
-value = "; WATCH={watcher}, `Monitor` on `\"$WATCH\"` armed with timeout_ms 1800000 (never two)"
+doc = "The watcher part of the wake re-verify line: {watcher} (the double-quoted binary path only), {wverb}."
+value = "; WATCH={watcher}, `Monitor` on `\"$WATCH\" {wverb}` armed with timeout_ms 1800000 (never two)"
 
 [devswarm_role.pg_wake_line]
 doc = "The mailbox-wake re-verify line: {cli}, {cron}, {tick}, {watch}, {id}."
-value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{watch}. If missing, re-run `\"$CLI\" wake-directive {id}`."
+value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{watch}. If missing, re-run `\"$CLI\" {verb} wake-directive {id}`."
 
 [devswarm_role.pg_frame_head]
 doc = "First line of the framed block (block-message.js frame): {guard}, {headline}."

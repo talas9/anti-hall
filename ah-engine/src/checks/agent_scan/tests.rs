@@ -290,3 +290,215 @@ fn a_failed_widening_handle_never_proves_an_empty_count_complete() {
     assert!(proof.rows.is_none(), "an empty scan of a tail that missed the launch must be unknown, not complete: {:?}", proof.complete);
     assert!(!proof.complete);
 }
+
+#[test]
+fn an_answered_call_gives_up_its_input_unless_a_launch_or_a_retained_result_names_it() {
+    let mut w = Walk::new();
+    let mut seq = 0u64;
+    // a launch: its input is what `spawnInput` reports, so it stays
+    for l in launch_lines("aaaa1111").lines() {
+        feed(&mut w, &mut seq, l.as_bytes()).unwrap();
+    }
+    // an Agent call whose result is not a launch (a foreground agent's answer): nothing reads its input again
+    let call = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"lfg","name":"Agent","input":{"description":"fg","prompt":"a long prompt"}}]}}"#;
+    let result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"lfg","content":"all done"}]}}"#;
+    feed(&mut w, &mut seq, call.as_bytes()).unwrap();
+    assert!(w.tool_uses.get("lfg").unwrap().input.is_some(), "kept while the call is unanswered");
+    feed(&mut w, &mut seq, result.as_bytes()).unwrap();
+    assert!(w.tool_uses.get("lfg").unwrap().input.is_none(), "released once answered");
+    assert!(w.tool_uses.get("laaaa1111").unwrap().input.is_some(), "a launch record names it");
+    let scan = finish(&w, 0, "", &Opts { now_ms: 0.0, ignore_unanswered_stops: false }).unwrap();
+    let row = scan.launched.get("aaaa1111").unwrap();
+    assert_eq!(row.spawn_input.as_deref().and_then(|v| v.get("prompt")).and_then(Value::as_str), Some("w"));
+}
+
+/// A scan as text: every field the answer is made of, sets sorted (two scans that print alike answer alike).
+fn scan_text(r: &Res<Option<Scan>>) -> String {
+    match r {
+        Err(_) => "unsupported".into(),
+        Ok(None) => "null".into(),
+        Ok(Some(s)) => {
+            let mut terminal: Vec<&String> = s.terminal.iter().collect();
+            terminal.sort();
+            let mut stopped: Vec<&String> = s.stopped_agents.iter().collect();
+            stopped.sort();
+            let launched: Vec<String> = s.launched.iter().map(|(k, r)| format!("{k}={r:?}")).collect();
+            format!("launched {launched:?}\nterminal {terminal:?}\nstopped {stopped:?}\npending {:?}", s.pending)
+        }
+    }
+}
+
+/// The store's answer (or `None`: it could not answer) and the fresh scan's, for one window and mode.
+fn store_and_fresh(path: &str, tail: u64, ignore: bool) -> (Option<Res<Option<Scan>>>, Res<Option<Scan>>) {
+    let opts = Opts { now_ms: 1_800_000_000_000.0, ignore_unanswered_stops: ignore };
+    let f = std::fs::File::open(path).unwrap();
+    (scan_store(path, &f, tail, &opts), scan_transcript_uncached(path, tail, &opts))
+}
+
+/// Lines that exercise every step of the walk: launches, a foreground agent, resumes, a stop (answered and not), a teammate spawn,
+/// send and idle report, notifications in each shape, a task_status attachment, a delivery call quoting an agent, ordinary calls.
+fn walk_corpus() -> String {
+    let ts = |i: u32| format!("2026-10-06T12:{:02}:{:02}.000Z", i / 60 % 60, i % 60);
+    let mut out = String::new();
+    let mut i = 0u32;
+    let mut push = |s: String| {
+        out.push_str(&s);
+        out.push('\n');
+    };
+    for round in 0..40u32 {
+        let id = format!("{:016x}", 0xa000 + round);
+        let t = ts(i);
+        i += 7;
+        push(format!(
+            r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"l{id}","name":"Agent","input":{{"description":"d{id}","run_in_background":true,"prompt":"{}"}}}}]}}}}"#,
+            "p".repeat((round as usize % 5) * 300)
+        ));
+        push(format!(
+            r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"l{id}","content":"Async agent launched successfully.\nagentId: {id}\noutput_file: /nonexistent/tasks/{id}.output"}}]}}}}"#
+        ));
+        // an ordinary call answered later, with filler between
+        push(format!(
+            r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"b{round}","name":"Bash","input":{{"command":"ls"}}}}]}}}}"#
+        ));
+        push(format!(
+            r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+            "x".repeat(2000)
+        ));
+        push(format!(
+            r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"b{round}","content":"out {id} {}"}}]}}}}"#,
+            "y".repeat(500)
+        ));
+        match round % 6 {
+            0 => push(format!(
+                r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":"<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n</task-notification>"}}}}"#
+            )),
+            1 => {
+                push(format!(
+                    r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"o{round}","name":"TaskOutput","input":{{"task_id":"{id}"}}}}]}}}}"#
+                ));
+                push(format!(
+                    r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"o{round}","content":"agent {id} finished: all done"}}]}}}}"#
+                ));
+            }
+            2 => {
+                push(format!(
+                    r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"s{round}","name":"TaskStop","input":{{"task_id":"{id}"}}}}]}}}}"#
+                ));
+                if round % 4 == 0 {
+                    push(format!(
+                        r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"s{round}","content":"stopped"}}]}}}}"#
+                    ));
+                }
+            }
+            3 => {
+                let name = format!("mate{round}");
+                push(format!(
+                    r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"m{round}","name":"Agent","input":{{"description":"team {name}","name":"{name}"}}}}]}}}}"#
+                ));
+                push(format!(
+                    r#"{{"type":"user","timestamp":"{t}","toolUseResult":{{"status":"teammate_spawned","name":"{name}","agent_id":"{name}@team"}},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"m{round}","content":"spawned"}}]}}}}"#
+                ));
+                push(format!(
+                    r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"q{round}","name":"SendMessage","input":{{"to":"{name}","message":"hi"}}}}]}}}}"#
+                ));
+                push(format!(
+                    r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"q{round}","content":"{{\"success\":true,\"message\":\"Message sent to {name}'s inbox\"}}"}}]}}}}"#
+                ));
+            }
+            4 => push(format!(
+                r#"{{"type":"attachment","timestamp":"{t}","attachment":{{"type":"task_status","taskId":"bg{round}","status":"running","description":"bash {round}","outputFilePath":"/x/{round}","taskType":"local_bash","shell":{{"kind":"bash"}}}}}}"#
+            )),
+            _ => {
+                push(format!(
+                    r#"{{"type":"assistant","timestamp":"{t}","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"r{round}","name":"SendMessage","input":{{"to":"{id}","message":"continue"}}}}]}}}}"#
+                ));
+                push(format!(
+                    r#"{{"type":"user","timestamp":"{t}","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"r{round}","content":"{{\"success\":true,\"message\":\"Agent resumed\",\"resumedAgentId\":\"{id}\"}}"}}]}}}}"#
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The store answers every window like a fresh scan while the transcript grows in pieces cut anywhere (mid-line included), so
+/// calls answered across refreshes, the unterminated last line and windows that start between a call and its answer are covered.
+#[test]
+fn the_store_answers_like_a_fresh_scan_while_the_transcript_grows() {
+    use std::io::Write;
+    let corpus = walk_corpus();
+    let dir = std::env::temp_dir().join(format!("ah-scan-store-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    let tp = dir.join("t.jsonl");
+    let path = tp.to_str().unwrap().to_string();
+    std::fs::write(&tp, "").unwrap();
+    let bytes = corpus.as_bytes();
+    let (mut at, mut step, mut hits, mut checks) = (0usize, 0u64, 0u32, 0u32);
+    let mut rng = 0x2545_f491_4f6c_dd1du64;
+    while at < bytes.len() {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        let n = (rng % 3000 + 1) as usize;
+        let end = (at + n).min(bytes.len());
+        std::fs::OpenOptions::new().append(true).open(&tp).unwrap().write_all(&bytes[at..end]).unwrap();
+        at = end;
+        step += 1;
+        for tail in [700u64, 4_000, 20_000, 1 << 30] {
+            for ignore in [false, true] {
+                let (store, fresh) = store_and_fresh(&path, tail, ignore);
+                checks += 1;
+                if let Some(s) = store {
+                    hits += 1;
+                    assert_eq!(scan_text(&s), scan_text(&fresh), "step {step} at {at} tail {tail} ignore {ignore}");
+                }
+            }
+        }
+    }
+    crate::transcript::store::global().drop_session(&tp);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(hits * 10 >= checks * 9, "the store answered {hits} of {checks} windows");
+}
+
+#[test]
+#[ignore = "diagnostic: AH_WALK_SRC=<a.jsonl:b.jsonl> compares the store's answers with fresh scans on real transcripts"]
+fn zz_store_parity_real() {
+    let Ok(list) = std::env::var("AH_WALK_SRC") else { return };
+    for p in list.split(':') {
+        for tail in [1_500_000u64, 1_572_864, 12_000_000, 12_582_912, 64_000_000, 700_000_000] {
+            for ignore in [false, true] {
+                let t0 = std::time::Instant::now();
+                let (store, fresh) = store_and_fresh(p, tail, ignore);
+                let (a, b) = (store.as_ref().map(scan_text), scan_text(&fresh));
+                let verdict = match &a {
+                    None => "FALLBACK",
+                    Some(a) if *a == b => "SAME",
+                    Some(_) => "DIFF",
+                };
+                eprintln!("PARITY {p} tail {tail} ignore {ignore}: {verdict} ({} bytes, {:?})", b.len(), t0.elapsed());
+                if verdict == "DIFF" {
+                    let dump = std::env::temp_dir().join("ah-parity-diff");
+                    std::fs::create_dir_all(&dump).ok();
+                    std::fs::write(dump.join("store.txt"), a.unwrap_or_default()).ok();
+                    std::fs::write(dump.join("fresh.txt"), &b).ok();
+                    panic!("store and fresh scan differ on {p} tail {tail} ignore {ignore}; dumps in {}", dump.display());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "diagnostic: AH_WALK_SRC=<transcript> prints a digest of what the scan answers over several windows"]
+fn zz_scan_digest() {
+    use std::hash::{Hash, Hasher};
+    let Ok(p) = std::env::var("AH_WALK_SRC") else { return };
+    for tail in [1_500_000.0, 12_000_000.0, 64_000_000.0, 700_000_000.0] {
+        let out = crate::script::host_d::agent_scan(&p, tail, false) + &crate::script::host_d::agent_scan(&p, tail, true);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        out.hash(&mut h);
+        eprintln!("DIGEST {p} tail {tail}: {} bytes {:016x}", out.len(), h.finish());
+    }
+}

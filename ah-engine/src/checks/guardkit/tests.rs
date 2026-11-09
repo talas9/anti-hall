@@ -386,3 +386,46 @@ mod nodelock_tests {
         assert!(std::fs::read_to_string(&p).unwrap().contains("someone-else"));
     }
 }
+
+#[test]
+fn the_bounded_tail_reads_past_a_long_line_and_keeps_every_other_line_where_it_was() {
+    use super::tail::{tail_lines, tail_lines_bounded};
+    let h = home("tail-bounded");
+    let p = format!("{h}/t.jsonl");
+    let long = "z".repeat(5000);
+    let body = format!("one\n{long}\n\nthree\u{e9}\nlast");
+    std::fs::write(&p, &body).unwrap();
+    // unbounded: exactly the lines of the file
+    let (all, size) = tail_lines(&p, 1 << 20).unwrap();
+    assert_eq!(all.collect::<Vec<_>>(), vec!["one".to_string(), long.clone(), String::new(), "three\u{e9}".into(), "last".into()]);
+    assert_eq!(size, body.len() as u64);
+    // bounded: the long line is an empty line in its place, counted
+    let (mut b, _) = tail_lines_bounded(&p, 1 << 20, 1000).unwrap();
+    let got: Vec<String> = b.by_ref().collect();
+    assert_eq!(got, vec!["one".to_string(), String::new(), String::new(), "three\u{e9}".into(), "last".into()]);
+    assert_eq!(b.skipped(), 1);
+    // the piece a window starts inside is dropped and is not counted as a skipped line, however long it is
+    std::fs::write(&p, format!("{long}\nab\ncd")).unwrap();
+    let (mut cut, _) = tail_lines_bounded(&p, 5005, 1000).unwrap();
+    assert_eq!(cut.by_ref().collect::<Vec<_>>(), vec!["ab".to_string(), "cd".into()]);
+    assert_eq!(cut.skipped(), 0);
+    // a window ending on a newline has the empty last element, bounded or not
+    std::fs::write(&p, "a\nb\n").unwrap();
+    let (b, _) = tail_lines_bounded(&p, 1 << 20, 1000).unwrap();
+    assert_eq!(b.collect::<Vec<_>>(), vec!["a".to_string(), "b".into(), String::new()]);
+    // bytes that are not UTF-8 are read lossily, as before
+    std::fs::write(&p, b"ok\n\xff\xfe\n").unwrap();
+    let (b, _) = tail_lines_bounded(&p, 1 << 20, 1000).unwrap();
+    assert_eq!(b.collect::<Vec<_>>(), vec!["ok".to_string(), "\u{fffd}\u{fffd}".into(), String::new()]);
+}
+
+#[test]
+fn transcript_teammates_is_unsure_when_a_line_was_too_long_to_read() {
+    let h = home("teammates-long");
+    let p = format!("{h}/t.jsonl");
+    let cap = defaults::num("agent_scan.max_line_bytes") as usize;
+    std::fs::write(&p, format!("{{\"type\":\"user\",\"message\":{{\"content\":\"{}\"}}}}\n", "q".repeat(cap + 10))).unwrap();
+    assert_eq!(crate::script::host_ts::teammates(&p, 0.0), r#"{"unsure":true}"#);
+    std::fs::write(&p, "{\"type\":\"user\",\"message\":{\"content\":\"short\"}}\n").unwrap();
+    assert_eq!(crate::script::host_ts::teammates(&p, 0.0), r#"{"teammates":[]}"#);
+}

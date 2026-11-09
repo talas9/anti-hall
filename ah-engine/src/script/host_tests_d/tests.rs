@@ -1455,3 +1455,44 @@ fn a_hostile_heavy_patterns_override_leaves_the_command_guard_as_it_is_at_base()
     let hostile: Vec<_> = cmds.iter().map(|c| call("hostile", c)).collect();
     assert_eq!(hostile, base, "the owner's pattern list does not reach the command guard");
 }
+
+/// The `agentScan` answer written straight from the scan is, byte for byte, the text the value tree gave (the keys of a JSON object map
+/// print sorted; an unknown time is `null`).
+#[test]
+fn agent_scan_text_is_what_the_value_tree_printed() {
+    let h = home("agents-bytes");
+    let t = format!("{h}/t.jsonl");
+    let mut text = String::new();
+    for n in 0..3 {
+        let id = format!("a{n}b2c3d4e5f6071{n}");
+        let launch = format!(
+            "Async agent launched successfully. (internal metadata)\nagentId: {id} (internal ID)\nThe agent is working in the background.\noutput_file: /nonexistent/{id}.output\nDo NOT Read or tail this file via the shell tool."
+        );
+        text.push_str(&assistant_tool(
+            &format!("a{n}"),
+            "Agent",
+            json!({"description": format!("worker {n}"), "prompt": "p\u{e9}\"\\".repeat(n + 1), "run_in_background": true}),
+            "2026-10-06T12:00:00.000Z",
+        ));
+        text.push_str(&line(json!({"type": "user", "timestamp": "2026-10-06T12:00:01.000Z", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("a{n}"), "content": launch}]}, "toolUseResult": {"isAsync": true, "status": "async_launched", "agentId": id}})));
+    }
+    std::fs::write(&t, text).unwrap();
+    let opts = crate::checks::agent_scan::Opts { now_ms: 1.0, ignore_unanswered_stops: false };
+    let scan = crate::checks::agent_scan::scan_transcript_uncached(&t, 1_000_000, &opts).unwrap().unwrap();
+    let launched: Vec<Value> = scan.launched.iter().map(|(id, r)| host_d::rec_json(id, r)).collect();
+    let mut terminal: Vec<&String> = scan.terminal.iter().collect();
+    terminal.sort();
+    let fin = |x: f64| if x.is_finite() { json!(x) } else { Value::Null };
+    let pending: Vec<Value> = scan
+        .pending
+        .iter()
+        .map(|(name, p)| json!({"name": name, "agentId": p.agent_id, "sentAtMs": fin(p.sent_at_ms), "lastIdleMs": fin(p.last_idle_ms), "lastSeenMs": fin(p.last_seen_ms), "live": p.live}))
+        .collect();
+    let old = json!({"launched": launched, "terminal": terminal, "pending": pending}).to_string();
+    assert!(launched_len(&old) == 3, "{old}");
+    assert_eq!(host_d::agent_scan(&t, 1_000_000.0, false), old, "same text");
+}
+
+fn launched_len(s: &str) -> usize {
+    serde_json::from_str::<Value>(s).unwrap()["launched"].as_array().unwrap().len()
+}

@@ -570,6 +570,16 @@ pub fn num(key: &str) -> u64 {
     v
 }
 
+/// A numeric setting with a per-event override: the `event` row of the table setting `table_key` when it has one, else `key`
+/// (resolved by [`num`]). A set environment variable of `key` wins over the table for every event.
+pub fn num_for_event(key: &str, table_key: &str, event: &str) -> u64 {
+    let base = num(key);
+    if entry(key).env.and_then(|n| std::env::var(n).ok()).is_some_and(|s| s.trim().parse::<u64>().is_ok()) {
+        return base;
+    }
+    raw(table_key).get(event).and_then(V::as_integer).map_or(base, |v| v.max(0) as u64)
+}
+
 /// A numeric setting expressed in milliseconds, as a `Duration`.
 pub fn millis(key: &str) -> std::time::Duration {
     std::time::Duration::from_millis(num(key))

@@ -7,7 +7,7 @@ use crate::checks::agent_scan;
 use crate::defaults::{self, V};
 use regex::Regex;
 use serde_json::Value;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 
 fn pat(k: &str) -> Option<Regex> {
     static C: crate::defaults::Cache<Vec<(String, Option<Regex>)>> = crate::defaults::Cache::new();
@@ -34,11 +34,12 @@ pub(crate) fn words(s: &str) -> Vec<String> {
     s.to_lowercase().split(|c| split.contains(&c)).filter(|w| w.chars().count() >= min && !stop.contains(w)).map(str::to_string).collect()
 }
 
-fn result_text(c: &Value) -> String {
+/// The text of a result's content, borrowed when it is the string itself (a large tool result is never copied).
+fn result_text(c: &Value) -> std::borrow::Cow<'_, str> {
     match c {
-        Value::String(s) => s.clone(),
-        Value::Array(a) => a.iter().filter_map(|b| b.get(tr("text")).and_then(Value::as_str)).collect::<Vec<_>>().join(" "),
-        _ => String::new(),
+        Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+        Value::Array(a) => std::borrow::Cow::Owned(a.iter().filter_map(|b| b.get(tr("text")).and_then(Value::as_str)).collect::<Vec<_>>().join(" ")),
+        _ => std::borrow::Cow::Borrowed(""),
     }
 }
 
@@ -90,29 +91,41 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
     if f.seek(SeekFrom::Start(start)).is_err() {
         return;
     }
-    let mut buf = Vec::new();
-    if f.take(len - start).read_to_end(&mut buf).is_err() {
-        return;
-    }
-    let end = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    a.offset = start + end as u64;
-    let text = match std::str::from_utf8(&buf[..end]) {
-        Ok(text) => text,
-        Err(_) => {
-            a.partial = true;
-            return;
+    // one fixed buffer and one line at a time (a line over agent_scan.max_line_bytes is read past, never held): the tick no longer
+    // holds up to read_max_bytes of transcript, and no whole-buffer text beside the lines
+    let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, std::io::Read::take(f, len - start));
+    let mut buf: Vec<u8> = Vec::new();
+    let mut consumed = start;
+    loop {
+        let l = match agent_scan::read_line_bounded(&mut rd, &mut buf, defaults::num("agent_scan.max_line_bytes")) {
+            Ok(Some(l)) => l,
+            Ok(None) => break,
+            Err(_) => return,
+        };
+        if !l.newline {
+            break; // a half-written last line waits for the next tick
         }
-    };
-    let mut lines = text.lines();
-    if skip_first {
-        lines.next();
-    }
-    for l in lines {
-        match serde_json::from_str::<Value>(l) {
+        consumed += l.len;
+        if skip_first {
+            skip_first = false;
+            continue;
+        }
+        if l.oversize {
+            crate::load::note_count("transcript_line_skipped_oversize", "reader", "agent_tracker");
+            a.partial = true;
+            continue;
+        }
+        // a line that is not valid UTF-8 is a partial read of the transcript, like a line that is not JSON
+        let Ok(text) = std::str::from_utf8(&buf) else {
+            a.partial = true;
+            continue;
+        };
+        match serde_json::from_str::<Value>(text) {
             Ok(v) => line(a, &v, now),
             Err(_) => a.partial = true,
         }
     }
+    a.offset = consumed;
     a.transcript_complete = a.transcript_from_start && !a.partial && a.offset == len && std::fs::metadata(&a.path).is_ok_and(|m| m.len() == len);
 }
 
@@ -257,16 +270,15 @@ pub(crate) fn replay_turns(a: &mut Agent, since: u64) {
     if f.seek(SeekFrom::Start(start)).is_err() {
         return;
     }
-    let mut buf = Vec::new();
-    if f.take(end - start).read_to_end(&mut buf).is_err() {
-        return;
-    }
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines = text.lines();
-    if start > 0 {
-        lines.next(); // it may start mid-line
-    }
-    for l in lines {
+    let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, std::io::Read::take(f, end - start));
+    let mut buf: Vec<u8> = Vec::new();
+    let mut first = start > 0; // it may start mid-line
+    while let Ok(Some(l)) = agent_scan::read_line_bounded(&mut rd, &mut buf, defaults::num("agent_scan.max_line_bytes")) {
+        if std::mem::take(&mut first) || l.oversize {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let l = text.as_ref();
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         let Some(ts) = agent_scan::date_parse(str_of(&v, tr("ts"))).ok().filter(|t| t.is_finite()).map(|t| t as u64).filter(|t| *t > since) else { continue };
         if str_of(&v, tr("type_key")) != tr("assistant") {
@@ -309,7 +321,6 @@ fn owner_turn(v: &Value, content: Option<&Value>) -> bool {
 /// result to this agent. Counted once per task id, as the `agent_result` weight.
 fn task_results(a: &mut Agent, content: Option<&Value>) {
     let text = match content {
-        Some(Value::String(s)) => s.clone(),
         Some(c) => result_text(c),
         None => return,
     };
@@ -335,7 +346,6 @@ fn task_results(a: &mut Agent, content: Option<&Value>) {
 /// Terminal task notices in a user line that name a background shell task the agent started: the task ended.
 fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
     let text = match content {
-        Some(Value::String(s)) => s.clone(),
         Some(c) => result_text(c),
         None => return,
     };

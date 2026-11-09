@@ -122,11 +122,9 @@ impl Settings {
         self.table(key).value(key)
     }
 
-    /// A number: the environment override (all digits) if the key names one, else the file value, else the built-in; clamped to
-    /// the entry's min and max.
-    pub fn num(&self, key: &str) -> u64 {
-        let t = self.table(key);
-        let from_env = t
+    /// The environment override of a numeric key (all digits), when the key names one and it is set.
+    fn env_num(&self, key: &str) -> Option<u64> {
+        self.table(key)
             .entry(key)
             .and_then(|e| e.get("env"))
             .and_then(|e| e.as_str())
@@ -136,7 +134,30 @@ impl Settings {
                 (!v.is_empty() && v.chars().all(|c| c.is_ascii_digit()))
                     .then(|| v.parse().ok())
                     .flatten()
-            });
+            })
+    }
+
+    /// A number with a per-event override: the `event` row of the table `table_key` (the file's, else the built-in's) when it has
+    /// one, else `key`; a set environment variable of `key` wins over the table for every event.
+    pub fn num_event(&self, key: &str, table_key: &str, event: &str) -> u64 {
+        if self.env_num(key).is_some() {
+            return self.num(key);
+        }
+        let file = self
+            .table(table_key)
+            .value(table_key)
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get(event))
+            .and_then(nonneg);
+        file.or_else(|| builtin::table_num(table_key, event))
+            .unwrap_or_else(|| self.num(key))
+    }
+
+    /// A number: the environment override (all digits) if the key names one, else the file value, else the built-in; clamped to
+    /// the entry's min and max.
+    pub fn num(&self, key: &str) -> u64 {
+        let t = self.table(key);
+        let from_env = self.env_num(key);
         let mut v = from_env
             .or_else(|| t.value(key).and_then(nonneg))
             .or_else(|| builtin::num(key))

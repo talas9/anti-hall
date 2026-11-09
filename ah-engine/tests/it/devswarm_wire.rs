@@ -573,6 +573,138 @@ fn the_advisory_reaches_each_session_once() {
     assert!(consume::advisory(&rt, &w.state, "../etc", now()).is_none(), "an unsafe session id gets nothing");
 }
 
+/// The heartbeat of a workspace that went quiet two hours ago: with an open PR the state derives it as stuck.
+struct StaleProbe;
+impl Probe for StaleProbe {
+    fn heartbeat_ms(&self, _id: &str) -> Option<i64> {
+        Some(now() - 7_200_000)
+    }
+    fn plan_step(&self, _wt: &str) -> Option<String> {
+        None
+    }
+    fn unread(&self, _id: &str) -> Option<usize> {
+        Some(0)
+    }
+}
+
+/// What the activity-line counter holds now (the process-wide pending table is drained: one test per process under nextest).
+fn activity_line_counts() -> (u64, u64) {
+    let mut m = ah_engine::metrics::Metrics::default();
+    ah_engine::metrics::drain_pending(&mut m);
+    let one = |r: &str| m.counter("devswarm_rt_activity_line", &[("result", ah_engine::defaults::text(r))]);
+    (one("devswarm_rt.activity_result_emitted"), one("devswarm_rt.activity_result_suppressed"))
+}
+
+#[test]
+fn a_disabled_advisory_does_not_replay_the_edges_count_them_or_rewrite_the_marker_at_every_prompt() {
+    let w = world("adv-off");
+    let rt = rt(&w);
+    step(&rt, &w, Cause::Startup); // working (the probe beats now)
+    let s = "sess-off";
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "the first look records the generation");
+    let marker = w.state.join(ah_engine::defaults::text("devswarm_wire.advisory_dir")).join(format!("{s}.json"));
+    assert!(marker.exists());
+    // the workspace goes quiet while the advisory is turned off
+    ah_engine::defaults::set_overlay(&[("devswarm_wire.advisory_enabled", json!(false))]);
+    let app = sources::read_app(&w.db).unwrap();
+    let n = rt.run(Cause::Event, &Inputs { app: Some(&app), probe: &StaleProbe, gh: None, now: now() }, None).edges.len();
+    assert!(n > 0, "working -> stuck is an edge");
+    let _ = activity_line_counts();
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    age(&marker, 1_000_000); // an old mtime: a later rewrite shows
+    let old = std::fs::metadata(&marker).unwrap().modified().unwrap();
+    for _ in 0..2 {
+        assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    }
+    assert_eq!(std::fs::metadata(&marker).unwrap().modified().unwrap(), old, "the marker was written once, not at every prompt");
+    assert_eq!(activity_line_counts(), (0, 0), "nothing was shown, so nothing is counted, at any of the 3 prompts");
+    // turned back on, the edges are not replayed: the net change (working -> stuck) was folded into the held map while it was off
+    // and is told once, not once per prompt
+    ah_engine::defaults::set_overlay(&[]);
+    let t = consume::advisory(&rt, &w.state, s, now()).expect("the net change that happened while it was off is told once");
+    assert!(t.contains("stuck"), "{t}");
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "and only once");
+}
+
+/// The marker file of `session` in a world.
+fn marker_path(w: &World, session: &str) -> PathBuf {
+    w.state.join(ah_engine::defaults::text("devswarm_wire.advisory_dir")).join(format!("{session}.json"))
+}
+
+#[test]
+fn a_change_held_before_the_switch_went_off_is_not_told_stale_when_it_is_back_on() {
+    let w = world("adv-stale-held");
+    let rt = rt(&w);
+    step(&rt, &w, Cause::Startup); // working
+    let s = "sess-stale";
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "the first look records the generation");
+    // the session was told stuck, then the workspace went working and that change is held (the dwell); the dwell is long past
+    let g = rt.current().generation;
+    let (act, pend) = (ah_engine::defaults::text("devswarm_wire.advisory_act_key"), ah_engine::defaults::text("devswarm_wire.advisory_pending_key"));
+    let held = json!({"prim": {"from": "stuck", "to": "working", "at": now() - 2_000_000, "n": 1}});
+    write(&marker_path(&w, s), &json!({"gen": g, act: {"prim": now() - 3_000_000}, pend: held}));
+    // while the advisory is off the workspace goes stuck again (working -> stuck is passed, not told)
+    ah_engine::defaults::set_overlay(&[("devswarm_wire.advisory_enabled", json!(false))]);
+    let app = sources::read_app(&w.db).unwrap();
+    assert!(!rt.run(Cause::Event, &Inputs { app: Some(&app), probe: &StaleProbe, gh: None, now: now() }, None).edges.is_empty());
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    // back on, the dwell long over: the workspace IS stuck, so nothing may say "stuck -> working"
+    ah_engine::defaults::set_overlay(&[]);
+    let t = consume::advisory(&rt, &w.state, s, now());
+    // the held "stuck -> working" folded with "working -> stuck" is nothing; the other workspace's own net change is told
+    assert!(t.as_deref().is_some_and(|x| !x.contains("Primary") && !x.contains("stuck -> working")), "a stale held change was replayed: {t:?}");
+}
+
+#[test]
+fn a_net_change_held_across_an_off_on_switch_is_still_told() {
+    let w = world("adv-net-held");
+    let rt = rt(&w);
+    step(&rt, &w, Cause::Startup); // working
+    let s = "sess-net";
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "the first look records the generation");
+    // the workspace goes stuck; the session was told "working" long ago and the working -> stuck change is held (dwell)
+    let app = sources::read_app(&w.db).unwrap();
+    assert!(!rt.run(Cause::Event, &Inputs { app: Some(&app), probe: &StaleProbe, gh: None, now: now() }, None).edges.is_empty());
+    let g = rt.current().generation;
+    let (act, pend) = (ah_engine::defaults::text("devswarm_wire.advisory_act_key"), ah_engine::defaults::text("devswarm_wire.advisory_pending_key"));
+    let held = json!({"prim": {"from": "working", "to": "stuck", "at": now() - 2_000_000, "n": 1}});
+    write(&marker_path(&w, s), &json!({"gen": g, act: {"prim": now() - 3_000_000}, pend: held}));
+    // off: nothing is told and the held change is kept, not dropped
+    ah_engine::defaults::set_overlay(&[("devswarm_wire.advisory_enabled", json!(false))]);
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none());
+    // back on, the dwell over: the user hears the net change
+    ah_engine::defaults::set_overlay(&[]);
+    let t = consume::advisory(&rt, &w.state, s, now()).expect("the held net change survived the off/on switch");
+    assert!(t.contains("stuck"), "{t}");
+    assert!(consume::advisory(&rt, &w.state, s, now()).is_none(), "and is told once");
+}
+
+#[test]
+fn the_emitted_count_is_the_changes_named_not_the_ones_behind_the_more() {
+    let w = world("adv-emitted-cap");
+    let rt = rt(&w);
+    let c = Connection::open(&w.db).unwrap();
+    for i in 0..14 {
+        c.execute(
+            "INSERT INTO builders VALUES (?1,'r1','b',?2,?3,0,'p1','standard',1,NULL)",
+            params![format!("x{i}"), format!("/nowhere/{i}"), format!("Workspace {i}")],
+        )
+        .unwrap();
+    }
+    drop(c);
+    step(&rt, &w, Cause::Startup);
+    consume::advisory(&rt, &w.state, "s", now()); // the first look
+    let app = sources::read_app(&w.db).unwrap();
+    rt.run(Cause::Event, &Inputs { app: Some(&app), probe: &StaleProbe, gh: None, now: now() }, None);
+    let _ = activity_line_counts();
+    let t = consume::advisory(&rt, &w.state, "s", now()).expect("the workspaces went stuck");
+    let max = ah_engine::defaults::num("devswarm_wire.advisory_max_edges");
+    assert!(t.contains("more"), "the cap must bite for this test to mean anything: {t}");
+    let named = t.matches(" activity ").count() as u64;
+    assert!(named > 0 && named <= max, "{t}");
+    assert_eq!(activity_line_counts().0, named, "emitted counts what the text names: {t}");
+}
+
 #[test]
 fn the_advisory_is_capped() {
     let w = world("cap");

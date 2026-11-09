@@ -213,7 +213,7 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
         "pendingMessage": r.pending_message,
         "taskType": r.task_type,
         "shellKind": r.shell_kind,
-        "spawnInput": r.spawn_input,
+        "spawnInput": r.spawn_input.as_deref(),
     })
 }
 
@@ -229,17 +229,74 @@ pub fn agent_scan(path: &str, tail: f64, ignore_unanswered_stops: bool) -> Strin
         Err(_) => json!({"unsure": true}).to_string(),
         Ok(None) => "null".into(),
         Ok(Some(scan)) => {
-            let launched: Vec<Value> = scan.launched.iter().map(|(id, r)| rec_json(id, r)).collect();
             let mut terminal: Vec<&String> = scan.terminal.iter().collect();
             terminal.sort();
-            let fin = |x: f64| if x.is_finite() { json!(x) } else { Value::Null };
-            let pending: Vec<Value> = scan
-                .pending
-                .iter()
-                .map(|(name, p)| json!({"name": name, "agentId": p.agent_id, "sentAtMs": fin(p.sent_at_ms), "lastIdleMs": fin(p.last_idle_ms), "lastSeenMs": fin(p.last_seen_ms), "live": p.live}))
-                .collect();
-            json!({"launched": launched, "terminal": terminal, "pending": pending}).to_string()
+            // written straight from the scan: no tree of values (and no second copy of every launch input) beside the text
+            let view = ScanView {
+                launched: scan.launched.iter().map(|(id, r)| RecView { id, r }).collect(),
+                pending: scan.pending.iter().map(|(name, p)| PendingView { name, p }).collect(),
+                terminal,
+            };
+            serde_json::to_string(&view).unwrap_or_else(|_| json!({"unsure": true}).to_string())
         }
+    }
+}
+
+/// The `agentScan` answer as it is written. The keys are in the order a JSON object map prints them (sorted), so the text is the one
+/// the value tree gave.
+#[derive(serde::Serialize)]
+struct ScanView<'a> {
+    launched: Vec<RecView<'a>>,
+    pending: Vec<PendingView<'a>>,
+    terminal: Vec<&'a String>,
+}
+
+/// [`rec_json`], borrowed.
+struct RecView<'a> {
+    id: &'a str,
+    r: &'a agent_scan::Rec,
+}
+
+impl serde::Serialize for RecView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let r = self.r;
+        let mut m = s.serialize_map(Some(13))?;
+        m.serialize_entry("adopted", &r.adopted)?;
+        m.serialize_entry("description", &r.description)?;
+        m.serialize_entry("id", self.id)?;
+        m.serialize_entry("lastSeenMs", &r.last_seen_ms)?;
+        m.serialize_entry("launchedAtMs", &r.launched_at_ms)?;
+        m.serialize_entry("outputFile", &r.output_file)?;
+        m.serialize_entry("pendingMessage", &r.pending_message)?;
+        m.serialize_entry("resumedAtMs", &r.resumed_at_ms)?;
+        m.serialize_entry("shellKind", &r.shell_kind)?;
+        m.serialize_entry("spawnInput", &r.spawn_input.as_deref())?;
+        m.serialize_entry("taskType", &r.task_type)?;
+        m.serialize_entry("teammate", &r.teammate)?;
+        m.serialize_entry("toolUseId", &r.tool_use_id)?;
+        m.end()
+    }
+}
+
+/// One pending teammate message of the answer (a time that is unknown is `null`: the serializer writes a non-finite number so).
+struct PendingView<'a> {
+    name: &'a str,
+    p: &'a agent_scan::Pending,
+}
+
+impl serde::Serialize for PendingView<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let p = self.p;
+        let mut m = s.serialize_map(Some(6))?;
+        m.serialize_entry("agentId", &p.agent_id)?;
+        m.serialize_entry("lastIdleMs", &p.last_idle_ms)?;
+        m.serialize_entry("lastSeenMs", &p.last_seen_ms)?;
+        m.serialize_entry("live", &p.live)?;
+        m.serialize_entry("name", self.name)?;
+        m.serialize_entry("sentAtMs", &p.sent_at_ms)?;
+        m.end()
     }
 }
 

@@ -15,7 +15,7 @@ function build(parts, left, generation) {
 }
 
 function decide(p, opts, event) {
-  var res = { advise: null, mark: null };
+  var res = { advise: null, mark: null, shownActivity: 0 };
   if (p && p.enabled === true && p.sessionOk === true) {
     var gen = p.generation, seen = p.seen;
     if (typeof seen !== 'number') {
@@ -36,6 +36,8 @@ function decide(p, opts, event) {
           text = build(parts.slice(0, shown), edges.length - shown, gen);
         }
         res.advise = text.slice(0, maxChars);
+        // the activity changes actually named in the text (the rest is the "+N more" count), for the engine's emitted counter
+        res.shownActivity = edges.slice(0, shown).filter(function (e) { return e.kind === 'activity'; }).length;
       }
     }
   }
