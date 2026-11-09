@@ -164,9 +164,25 @@ impl Rig {
         ch
     }
 
-    fn status(&self) -> serde_json::Value {
+    /// `ah-engine status --json` once. The CLI prints the daemon's JSON only when the control exchange answers within
+    /// `client.ctl_timeout_ms`; a daemon still busy with the burst's scans (a slow CI runner) leaves it unanswered and the CLI prints
+    /// `{"running":false,...}` without a `memory` key (src/client.rs `status_value`).
+    fn status_once(&self) -> serde_json::Value {
         let o = self.cmd(&["status", "--json"]).output().unwrap();
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("status is not JSON ({e})"))
+    }
+
+    /// The daemon's status, asked again for up to 10 s while no reply was computed (no `memory` key, so the heap peak was not read
+    /// and reset: only a reply the daemon computed resets it). A daemon that never answers still fails the caller's `unwrap`.
+    fn status(&self) -> serde_json::Value {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let st = self.status_once();
+            if st.get("memory").is_some() || std::time::Instant::now() >= until {
+                return st;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
 
     fn memory(&self) -> serde_json::Value {
