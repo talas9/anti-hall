@@ -397,6 +397,10 @@ value = "anti-hall: the engine was still starting, so this {event} was not check
 doc = "Log detail for a hook call that skipped the daemon because a down marker, the breaker or the crash-loop cooldown was active."
 value = "skipped"
 
+[msg.client_no_progress]
+doc = "Log detail for a hook call that stopped waiting for a late reply because the daemon shows no progress on its work. {age} = the progress age in ms (heartbeat age plus the busy worker's silence), `idle` when two successive beats show no busy worker, or `unknown` when the heartbeat carries none; {limit} = client.progress_stale_ms."
+value = "daemon progress age {age} ms (limit {limit} ms): not working on the request, failing open"
+
 [msg.client_hung]
 doc = "Log detail for a hook call that stopped waiting because the daemon's heartbeat is stale, seen for the first time (a suspicion, nothing is signalled). {pid} = the daemon, {age} = the heartbeat's age in ms."
 value = "daemon {pid} heartbeat stale ({age} ms): suspected stopped or wedged"

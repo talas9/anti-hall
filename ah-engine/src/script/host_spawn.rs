@@ -91,6 +91,7 @@ fn budget(asked_ms: f64) -> Option<Duration> {
     let mut d = budget_ceiling(asked_ms);
     if let Some(left) = crate::deadline::remaining() {
         d = d.min(left.saturating_sub(defaults::millis("host_spawn.deadline_reserve_ms")));
+        d = crate::deadline::share(d);
     }
     (d >= defaults::millis("host_spawn.min_run_ms")).then_some(d)
 }

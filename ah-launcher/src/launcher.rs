@@ -565,7 +565,11 @@ impl L {
         ) {
             envs.push((name, p.display().to_string()));
         }
-        let mut slow_max = self.s.num("client.slow_fallback_max_ms");
+        let mut slow_max = self.s.num_event(
+            "client.slow_fallback_max_ms",
+            "client.slow_fallback_event_ms",
+            &self.event,
+        );
         slow_max = slow_max.min(
             self.event_timeout_s()
                 .unwrap_or(self.timeout_s)
@@ -1279,7 +1283,13 @@ pub fn run() -> i32 {
     } else {
         0
     };
-    let slow_ms = l.s.num("client.slow_fallback_max_ms").min(ev_ms);
+    let slow_ms =
+        l.s.num_event(
+            "client.slow_fallback_max_ms",
+            "client.slow_fallback_event_ms",
+            &l.event,
+        )
+        .min(ev_ms);
     let grace_ms = l.grace.as_millis() as u64;
     // the soft wall is a per-event setting; 0 (or no entry) keeps the fail-fast formula
     let soft_ms =

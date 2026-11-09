@@ -2080,8 +2080,11 @@ mod speculation_stop_gate {
         let hard = defaults::num("jev.stop_hard_ms");
         assert!(defaults::num("jev.stop_soft_ms") < hard);
         assert!(hard <= defaults::num("jev.timeout_ms"), "no longer than Node's 1500 ms ceiling");
-        assert!(hard < defaults::num("daemon.request_hard_ms") - defaults::num("daemon.reply_slack_ms"));
-        assert!(defaults::num("daemon.request_hard_ms") < defaults::num("client.slow_fallback_max_ms") - defaults::num("client.slow_wait_margin_ms"));
+        assert!(hard < crate::deadline::ceiling_ms("Stop") - defaults::num("daemon.reply_slack_ms"));
+        assert!(
+            crate::deadline::ceiling_ms("Stop")
+                < defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", "Stop") - defaults::num("client.slow_wait_margin_ms")
+        );
     }
 
     #[test]

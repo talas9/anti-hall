@@ -206,6 +206,10 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
                 crate::budget::note_dropped(guard_event, check, &meta.event, "cpu_budget");
                 Answer::Defer
             } else {
+                // #684: an answer given past the former wall deadline, inside the ceiling: the wall clock would have dropped it
+                if crate::deadline::elapsed_ms().is_some_and(|ms| ms > crate::defaults::num("daemon.request_wall_warn_ms")) {
+                    crate::metrics::bump("verdicts_saved_by_cpu_budget", &[("event", &meta.event)]);
+                }
                 // a block that keeps coming back from the same guard tells what is allowed and asks for a different approach
                 crate::learn::annotate(meta, p, check, a)
             }
@@ -430,6 +434,73 @@ mod tests {
         }
         let again = evaluate(&meta(), &p, &|_| false, &|_, _, _| {});
         assert!(again.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "in time it decides");
+    }
+
+    /// #684: on a loaded host a Stop request spends its wall time waiting for a core (and on child processes), not computing. Past
+    /// the former 2000 ms wall deadline, with every core busy, the Stop guards must still run and decide: the budget that drops a
+    /// check counts its own thread CPU (`daemon.eval_budget_us`), and the wall clock is only the higher ceiling `daemon.request_hard_ms`.
+    #[test]
+    fn a_cpu_starved_stop_request_past_the_old_wall_deadline_still_runs_its_guards() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let p = json!({"session_id": "s-684-starved", "cwd": "/", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "done"});
+        let stop = Meta { event: "Stop".into(), ..meta() };
+        // starve the host: one spinner per core plus one, for the length of the request only
+        let spin = std::sync::Arc::new(AtomicBool::new(true));
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let spinners: Vec<_> = (0..=cores)
+            .map(|_| {
+                let on = spin.clone();
+                std::thread::spawn(move || {
+                    while on.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        // the request already waited 2.5 s of wall time for a core (the live log: 1.2-2 s per Stop check under load 18-24)
+        let waited = std::time::Duration::from_millis(2500);
+        // the first read of a setting parses the shipped files (seconds in a debug build under load): not inside the request window
+        crate::defaults::millis("daemon.reply_slack_ms");
+        crate::deadline::ceiling_ms("Stop");
+        crate::deadline::begin(std::time::Instant::now() - waited);
+        crate::deadline::client_window(crate::defaults::num("client.deadline_ms"));
+        crate::deadline::set_event("Stop"); // the daemon names the event right after the window: Stop has the longer ceiling
+        let reasons = std::cell::RefCell::new(Vec::new());
+        let got = evaluate(&stop, &p, &|_| false, &|e, _, _| {
+            if let Some(r) = crate::budget::take_drop_reason() {
+                reasons.borrow_mut().push(format!("{}:{r}", e.id));
+            }
+        });
+        crate::deadline::end();
+        spin.store(false, Ordering::Relaxed);
+        for s in spinners {
+            s.join().unwrap();
+        }
+        assert!(got.len() >= 5, "the Stop guards were evaluated: {got:?}");
+        let cut: Vec<String> = reasons.into_inner().into_iter().filter(|r| r.ends_with(":hard_deadline")).collect();
+        assert!(cut.is_empty(), "a CPU-starved request inside the wall ceiling drops no guard to the deadline: {cut:?}");
+    }
+
+    /// #684: the wall ceiling still cuts a request that is truly stuck (here: one that arrived further back than the ceiling), so a
+    /// hung check fails open there instead of holding the hook.
+    #[test]
+    fn past_the_wall_ceiling_the_stop_guards_still_fail_open() {
+        let p = json!({"session_id": "s-684-hung", "cwd": "/", "hook_event_name": "Stop", "stop_hook_active": false, "last_assistant_message": "done"});
+        let stop = Meta { event: "Stop".into(), ..meta() };
+        let ceiling = crate::deadline::ceiling_ms("Stop") + crate::defaults::num("diagnostics.deadline_grace_cap_ms") + 1000;
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_millis(ceiling));
+        crate::deadline::client_window(crate::defaults::num("client.deadline_ms"));
+        crate::deadline::set_event("Stop");
+        let reasons = std::cell::RefCell::new(Vec::new());
+        let got = evaluate(&stop, &p, &|_| false, &|e, _, _| {
+            if let Some(r) = crate::budget::take_drop_reason() {
+                reasons.borrow_mut().push(format!("{}:{r}", e.id));
+            }
+        });
+        crate::deadline::end();
+        assert!(!got.is_empty());
+        assert!(reasons.borrow().iter().any(|r| r.ends_with(":hard_deadline")), "past the ceiling the guards are cut: {:?}", reasons.borrow());
+        assert!(got.iter().all(|(_, a)| !matches!(a, Answer::Defer)), "a cut answers by its policy, never a deferral");
     }
 
     /// A client that closed its connection (an ack-mode client gave up) has no use for the rest of the checks: none is started.
