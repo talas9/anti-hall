@@ -271,6 +271,31 @@ value = 1
 min = 1
 unit = "count"
 
+[transcript.cold_build_background]
+doc = "1 builds a session that is cold, rewritten or more than the horizon behind on one background worker thread (it takes the cold-build permits, has no request deadline, one build per transcript at a time) while the request that found it cold answers unsure at once, so a hook never waits out a build and a scan falls back to a transient fresh read; 0 builds on the requesting thread as before. Adopting a snapshot stays on the request."
+value = 1
+min = 0
+max = 1
+unit = "flag"
+
+[transcript.cold_build_queue_max]
+doc = "Most builds waiting for the background worker; a request that finds the queue full answers unsure and queues nothing (counted in transcript_store_cold_queue_full)."
+value = 24
+min = 1
+unit = "count"
+
+[transcript.build_thread]
+doc = "Name of the background build worker thread."
+value = "ah-transcript-build"
+
+[transcript.path_request]
+doc = "Value of the path label of transcript_store_cold_builds for a build made on the requesting thread."
+value = "request"
+
+[transcript.path_background]
+doc = "Value of the path label of transcript_store_cold_builds for a build made by the background worker."
+value = "background"
+
 [transcript.fact_fixed_bytes]
 doc = "Bytes charged to the budgets for every fact on top of its strings and JSON values (the record itself)."
 value = 96

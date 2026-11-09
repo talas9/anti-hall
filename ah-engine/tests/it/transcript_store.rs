@@ -16,6 +16,7 @@ const W: u64 = u64::MAX;
 fn cfg() -> Cfg {
     let mut c = Cfg::from_defaults();
     c.wait = Duration::from_millis(500);
+    c.background = false; // these tests build on the requesting thread; the background worker has its own tests below
     c
 }
 
@@ -617,4 +618,122 @@ fn a_corrupt_snapshot_is_counted_as_a_miss_and_the_sweep_caps_the_snapshot_direc
     let fourth = Store::with_cfg(c, Some(snap.clone()));
     fourth.with(&files[0], 0, |_| ()).unwrap();
     assert_eq!(fourth.stats().snapshot_misses, 0, "the survivor is the fresh, readable snapshot of the transcript");
+}
+
+fn bg_cfg() -> Cfg {
+    let mut c = cfg();
+    c.background = true;
+    c
+}
+
+/// Ask until the session answers (the worker builds it meanwhile); false when it never does within `wait`.
+fn answers_within(st: &Store, p: &std::path::Path, wait: Duration) -> bool {
+    let end = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < end {
+        if st.with(p, 0, |_| ()).is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
+#[test]
+fn a_cold_session_answers_unsure_at_once_and_the_worker_builds_it() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..50).map(|i| prompt_line(i, 100)).collect::<String>());
+    let st = store(bg_cfg());
+    assert_eq!(st.with(&f, 0, |_| ()), Err(Unsure::Busy), "the first touch queues the build and answers unsure");
+    assert_eq!(st.stats().cold_builds, 0, "no build ran on the requesting thread");
+    assert!(answers_within(&st, &f, Duration::from_secs(10)), "the worker built the session");
+    let s = st.stats();
+    assert_eq!((s.cold_builds, s.cold_builds_background), (0, 1), "{s:?}");
+    assert_eq!(prompts(&st, &f, W, Cut::Exact).len(), 50);
+    st.shutdown();
+}
+
+#[test]
+fn concurrent_requests_for_one_cold_session_queue_exactly_one_build() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..200).map(|i| prompt_line(i, 100)).collect::<String>());
+    let st = Arc::new(store(bg_cfg()));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let (st, f) = (st.clone(), f.clone());
+            std::thread::spawn(move || st.with(&f, 0, |_| ()))
+        })
+        .collect();
+    for h in handles {
+        assert!(matches!(h.join().unwrap(), Ok(()) | Err(Unsure::Busy)));
+    }
+    assert!(answers_within(&st, &f, Duration::from_secs(10)));
+    let s = st.stats();
+    assert_eq!((s.cold_builds, s.cold_builds_background), (0, 1), "{s:?}");
+    st.shutdown();
+}
+
+#[test]
+fn a_full_queue_answers_unsure_and_queues_nothing() {
+    let t = Tmp::new("ts");
+    let mut c = bg_cfg();
+    c.queue_max = 1;
+    c.permits = 1;
+    c.read.buf = 16; // a slow build, so the worker is busy while the others ask
+    let st = store(c);
+    let big = t.path("big.jsonl");
+    write(&big, &(0..6000).map(|i| prompt_line(i, 200)).collect::<String>());
+    let files: Vec<_> = (0..3)
+        .map(|i| {
+            let f = t.path(&format!("s{i}.jsonl"));
+            write(&f, &prompt_line(i, 10));
+            f
+        })
+        .collect();
+    assert_eq!(st.with(&big, 0, |_| ()), Err(Unsure::Busy));
+    // wait until the worker has taken the big build, so the queue is empty again
+    std::thread::sleep(Duration::from_millis(50));
+    for f in &files {
+        assert_eq!(st.with(f, 0, |_| ()), Err(Unsure::Busy));
+    }
+    // one waits in the queue, the others found it full
+    assert!(st.stats().cold_queue_full >= 1, "{:?}", st.stats());
+    st.shutdown();
+}
+
+#[test]
+fn with_the_switch_off_the_build_runs_on_the_requesting_thread_as_before() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &prompt_line(1, 10));
+    let mut c = cfg();
+    c.background = false;
+    let st = store(c);
+    assert!(st.with(&f, 0, |_| ()).is_ok());
+    let s = st.stats();
+    assert_eq!((s.cold_builds, s.cold_builds_background, s.cold_queue_full), (1, 0, 0), "{s:?}");
+}
+
+#[test]
+fn a_rewritten_file_is_rebuilt_by_the_worker_and_shutdown_drops_what_is_queued() {
+    let t = Tmp::new("ts");
+    let f = t.path("s.jsonl");
+    write(&f, &(0..20).map(|i| prompt_line(i, 50)).collect::<String>());
+    let st = store(bg_cfg());
+    assert!(st.with(&f, 0, |_| ()).is_err());
+    assert!(answers_within(&st, &f, Duration::from_secs(10)));
+    // the file is replaced by a shorter one: the next request queues a rebuild and answers unsure
+    write(&f, &prompt_line(99, 10));
+    assert_eq!(st.with(&f, 0, |_| ()), Err(Unsure::Busy));
+    assert!(answers_within(&st, &f, Duration::from_secs(10)));
+    assert_eq!(prompts(&st, &f, W, Cut::Exact), vec![format!("prompt-00099 {}", "x".repeat(10))]);
+    let s = st.stats();
+    assert_eq!((s.rebuilds, s.cold_builds_background), (1, 2), "{s:?}");
+    st.shutdown();
+    // after shutdown nothing is queued: a cold session answers unsure and stays cold
+    let g = t.path("g.jsonl");
+    write(&g, &prompt_line(5, 10));
+    assert_eq!(st.with(&g, 0, |_| ()), Err(Unsure::Busy));
+    assert_eq!(st.stats().cold_builds_background, 2);
 }

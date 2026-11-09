@@ -24,7 +24,7 @@ use crate::checks::agent_scan::lines::AgentState;
 use crate::defaults;
 use regex::Regex;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -133,6 +133,10 @@ pub struct Cfg {
     pub agent_open_max: usize,
     /// Most answered calls remembered for matching a further result.
     pub agent_answered_max: usize,
+    /// True when a cold build, rebuild or gap rebuild runs on the background worker and the requester answers unsure at once.
+    pub background: bool,
+    /// Most builds waiting for the background worker.
+    pub queue_max: usize,
 }
 
 impl Cfg {
@@ -167,6 +171,8 @@ impl Cfg {
             agent_budget: num("transcript.agent_budget_bytes") as usize,
             agent_open_max: num("transcript.agent_open_calls_max") as usize,
             agent_answered_max: num("transcript.agent_answered_calls_max") as usize,
+            background: num("transcript.cold_build_background") != 0,
+            queue_max: num("transcript.cold_build_queue_max") as usize,
         }
     }
 }
@@ -175,6 +181,8 @@ impl Cfg {
 #[derive(Default)]
 pub struct Stats {
     cold_builds: AtomicU64,
+    cold_builds_background: AtomicU64,
+    cold_queue_full: AtomicU64,
     cold_bytes: AtomicU64,
     refresh_bytes: AtomicU64,
     appended_bytes: AtomicU64,
@@ -194,8 +202,12 @@ pub struct Stats {
 /// A reading of [`Stats`] plus the live sizes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StatsSnapshot {
-    /// Sessions built from the file (a first touch with no usable snapshot, or a rebuild).
+    /// Sessions built from the file on the requesting thread (a first touch with no usable snapshot, or a rebuild).
     pub cold_builds: u64,
+    /// Sessions built from the file by the background worker.
+    pub cold_builds_background: u64,
+    /// Builds not queued because the queue was full.
+    pub cold_queue_full: u64,
     /// Bytes the cold builds read.
     pub cold_bytes: u64,
     /// Bytes the incremental refreshes parsed.
@@ -232,22 +244,24 @@ pub struct StatsSnapshot {
 
 impl StatsSnapshot {
     /// The monotonic counters as (metric name, value), for the daemon's telemetry.
-    pub fn counters(&self) -> Vec<(&'static str, u64)> {
+    pub fn counters(&self) -> Vec<Counter> {
         vec![
-            ("transcript_store_cold_builds", self.cold_builds),
-            ("transcript_store_cold_bytes", self.cold_bytes),
-            ("transcript_store_refresh_bytes", self.refresh_bytes),
-            ("transcript_store_appended_bytes", self.appended_bytes),
-            ("transcript_store_partial", self.partial),
-            ("transcript_store_waits", self.waits),
-            ("transcript_store_wait_timeouts", self.wait_timeouts),
-            ("transcript_store_oversize_lines", self.oversize_lines),
-            ("transcript_store_evictions", self.evictions),
-            ("transcript_store_rebuilds", self.rebuilds),
-            ("transcript_store_snapshot_loads", self.snapshot_loads),
-            ("transcript_store_snapshot_misses", self.snapshot_misses),
-            ("transcript_store_snapshot_writes", self.snapshot_writes),
-            ("transcript_store_snapshot_skipped", self.snapshot_skipped),
+            ("transcript_store_cold_builds", vec![("path", defaults::text("transcript.path_request"))], self.cold_builds),
+            ("transcript_store_cold_builds", vec![("path", defaults::text("transcript.path_background"))], self.cold_builds_background),
+            ("transcript_store_cold_queue_full", Vec::new(), self.cold_queue_full),
+            ("transcript_store_cold_bytes", Vec::new(), self.cold_bytes),
+            ("transcript_store_refresh_bytes", Vec::new(), self.refresh_bytes),
+            ("transcript_store_appended_bytes", Vec::new(), self.appended_bytes),
+            ("transcript_store_partial", Vec::new(), self.partial),
+            ("transcript_store_waits", Vec::new(), self.waits),
+            ("transcript_store_wait_timeouts", Vec::new(), self.wait_timeouts),
+            ("transcript_store_oversize_lines", Vec::new(), self.oversize_lines),
+            ("transcript_store_evictions", Vec::new(), self.evictions),
+            ("transcript_store_rebuilds", Vec::new(), self.rebuilds),
+            ("transcript_store_snapshot_loads", Vec::new(), self.snapshot_loads),
+            ("transcript_store_snapshot_misses", Vec::new(), self.snapshot_misses),
+            ("transcript_store_snapshot_writes", Vec::new(), self.snapshot_writes),
+            ("transcript_store_snapshot_skipped", Vec::new(), self.snapshot_skipped),
         ]
     }
 
@@ -259,6 +273,16 @@ impl StatsSnapshot {
             ("transcript_read_buf_max_bytes", self.read_buf_max_bytes as f64),
         ]
     }
+}
+
+/// A counter reading: metric name, label pairs, value.
+pub type Counter = (&'static str, Vec<(&'static str, &'static str)>, u64);
+
+/// Who runs a refresh: a request (answers within its deadline) or the background build worker (waits as long as it takes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Request,
+    Background,
 }
 
 /// Why a session was rebuilt.
@@ -725,15 +749,24 @@ impl View<'_> {
     }
 }
 
-/// The registry of session stores.
+/// What the background build worker works from: the paths waiting, the one being built and the stop flag.
+#[derive(Default)]
+struct BgState {
+    queue: VecDeque<PathBuf>,
+    /// Every path queued or being built (a second request for one of them enqueues nothing).
+    active: HashSet<PathBuf>,
+    stop: bool,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+struct Background {
+    state: Mutex<BgState>,
+    cv: Condvar,
+}
+
+/// The registry of session stores: a handle that stops the background build worker when it is dropped.
 pub struct Store {
-    slots: Mutex<HashMap<PathBuf, Arc<Slot>>>,
-    permits: Permits,
-    stats: Stats,
-    total_bytes: AtomicU64,
-    cfg: Option<Cfg>,
-    snap_dir: Option<PathBuf>,
-    published: Mutex<StatsSnapshot>,
+    core: Arc<Core>,
 }
 
 impl Default for Store {
@@ -742,23 +775,166 @@ impl Default for Store {
     }
 }
 
+impl std::ops::Deref for Store {
+    type Target = Core;
+    fn deref(&self) -> &Core {
+        &self.core
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        self.core.shutdown();
+    }
+}
+
 impl Store {
     /// A store with the shipped limits (re-read at every request, so a config reload takes effect).
     pub fn new() -> Store {
-        Store {
-            slots: Mutex::new(HashMap::new()),
-            permits: Permits { free: Mutex::new(None), cv: Condvar::new() },
-            stats: Stats::default(),
-            total_bytes: AtomicU64::new(0),
-            cfg: None,
-            snap_dir: None,
-            published: Mutex::new(StatsSnapshot::default()),
-        }
+        Store { core: Core::create(None, None) }
     }
 
     /// A store with explicit limits and snapshot directory (tests).
     pub fn with_cfg(cfg: Cfg, snap_dir: Option<PathBuf>) -> Store {
-        Store { cfg: Some(cfg), snap_dir, ..Store::new() }
+        Store { core: Core::create(Some(cfg), snap_dir) }
+    }
+}
+
+/// The state of a [`Store`], shared with its background worker.
+pub struct Core {
+    slots: Mutex<HashMap<PathBuf, Arc<Slot>>>,
+    permits: Permits,
+    stats: Stats,
+    total_bytes: AtomicU64,
+    cfg: Option<Cfg>,
+    snap_dir: Option<PathBuf>,
+    published: Mutex<StatsSnapshot>,
+    bg: Background,
+    me: std::sync::Weak<Core>,
+}
+
+impl Core {
+    fn create(cfg: Option<Cfg>, snap_dir: Option<PathBuf>) -> Arc<Core> {
+        Arc::new_cyclic(|me| Core {
+            slots: Mutex::new(HashMap::new()),
+            permits: Permits { free: Mutex::new(None), cv: Condvar::new() },
+            stats: Stats::default(),
+            total_bytes: AtomicU64::new(0),
+            cfg,
+            snap_dir,
+            published: Mutex::new(StatsSnapshot::default()),
+            bg: Background { state: Mutex::new(BgState::default()), cv: Condvar::new() },
+            me: me.clone(),
+        })
+    }
+
+    /// Stop the background worker: queued builds are dropped, a build in progress finishes (it persists nothing itself) and the
+    /// worker is joined. Later requests that find a session cold answer unsure without queueing.
+    pub fn shutdown(&self) {
+        let worker = {
+            let mut st = lock(&self.bg.state);
+            st.stop = true;
+            st.queue.clear();
+            st.worker.take()
+        };
+        self.bg.cv.notify_all();
+        self.permits.cv.notify_all();
+        if let Some(h) = worker
+            && h.thread().id() != std::thread::current().id()
+        {
+            crate::discard::harmless(h.join()); // keep: a worker that panicked has nothing left to join
+        }
+    }
+
+    /// Queue the build of `path` for the worker (starting it on first use). False when it was not queued: the queue is full or the
+    /// store is stopping. A path already queued or being built counts as queued.
+    fn enqueue(&self, path: &Path, cfg: &Cfg) -> bool {
+        let mut st = lock(&self.bg.state);
+        if st.stop {
+            return false;
+        }
+        if st.active.contains(path) {
+            return true;
+        }
+        if st.queue.len() >= cfg.queue_max {
+            self.stats.cold_queue_full.fetch_add(1, Relaxed);
+            return false;
+        }
+        if st.worker.is_none() {
+            let Some(core) = self.me.upgrade() else { return false };
+            match std::thread::Builder::new().name(defaults::text("transcript.build_thread").to_string()).spawn(move || core.work()) {
+                Ok(h) => st.worker = Some(h),
+                Err(_) => return false,
+            }
+        }
+        st.active.insert(path.to_path_buf());
+        st.queue.push_back(path.to_path_buf());
+        drop(st);
+        self.bg.cv.notify_one();
+        true
+    }
+
+    fn bg_active(&self, path: &Path) -> bool {
+        lock(&self.bg.state).active.contains(path)
+    }
+
+    fn bg_stopping(&self) -> bool {
+        lock(&self.bg.state).stop
+    }
+
+    fn bg_done(&self, path: &Path) {
+        lock(&self.bg.state).active.remove(path);
+    }
+
+    /// The worker's loop: build the queued paths one at a time until the store stops.
+    fn work(&self) {
+        loop {
+            let path = {
+                let mut st = lock(&self.bg.state);
+                loop {
+                    if st.stop {
+                        st.active.clear();
+                        return;
+                    }
+                    if let Some(p) = st.queue.pop_front() {
+                        break p;
+                    }
+                    st = self.bg.cv.wait(st).unwrap_or_else(|e| e.into_inner());
+                }
+            };
+            self.build_queued(&path);
+        }
+    }
+
+    /// Refresh the session of `path` on the worker: no request deadline, and the session is only built when its slot still exists.
+    fn build_queued(&self, path: &Path) {
+        let cfg = self.cfg();
+        let slot = lock(&self.slots).get(path).cloned();
+        let Some(slot) = slot else { return self.bg_done(path) };
+        {
+            let mut busy = lock(&slot.busy);
+            while *busy && !self.bg_stopping() {
+                busy = slot.cv.wait_timeout(busy, cfg.wait).unwrap_or_else(|e| e.into_inner()).0;
+            }
+            if *busy || slot.retired.load(SeqCst) || self.bg_stopping() {
+                drop(busy);
+                return self.bg_done(path);
+            }
+            *busy = true;
+        }
+        let _flight = BusyGuard(&slot);
+        let mut sess = lock(&slot.data);
+        crate::discard::harmless(self.refresh(&mut sess, path, &cfg, Instant::now(), Mode::Background)); // keep: a failed build leaves the session cold, and the next request asks again
+        let now_bytes = sess.bytes() as u64;
+        let before = slot.bytes.swap(now_bytes, SeqCst);
+        self.adjust_total(before, now_bytes);
+        if slot.retired.load(SeqCst) {
+            self.adjust_total(slot.bytes.swap(0, SeqCst), 0);
+        }
+        drop(sess);
+        // done before the slot is released, so a request that sees it free also sees it no longer queued
+        self.bg_done(path);
+        self.enforce_global(&cfg, path);
     }
 
     fn cfg(&self) -> Cfg {
@@ -774,6 +950,8 @@ impl Store {
         let s = &self.stats;
         StatsSnapshot {
             cold_builds: s.cold_builds.load(Relaxed),
+            cold_builds_background: s.cold_builds_background.load(Relaxed),
+            cold_queue_full: s.cold_queue_full.load(Relaxed),
             cold_bytes: s.cold_bytes.load(Relaxed),
             refresh_bytes: s.refresh_bytes.load(Relaxed),
             appended_bytes: s.appended_bytes.load(Relaxed),
@@ -797,9 +975,9 @@ impl Store {
     pub fn publish(&self, m: &mut crate::metrics::Metrics) {
         let now = self.stats();
         let mut last = lock(&self.published);
-        for ((name, v), (_, was)) in now.counters().into_iter().zip(last.counters()) {
+        for ((name, labels, v), (_, _, was)) in now.counters().into_iter().zip(last.counters()) {
             if v > was {
-                m.add(name, &[], v - was);
+                m.add(name, &labels, v - was);
             }
         }
         for (name, v) in now.gauges() {
@@ -844,6 +1022,10 @@ impl Store {
                 self.stats.waits.fetch_add(1, Relaxed);
             }
             while *busy {
+                if self.bg_active(path) {
+                    // the worker is building it: answer unsure at once instead of waiting out the build
+                    return Err(Unsure::Busy);
+                }
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     self.stats.wait_timeouts.fetch_add(1, Relaxed);
@@ -863,7 +1045,7 @@ impl Store {
         };
         let _flight = BusyGuard(&slot);
         let mut sess = lock(&slot.data);
-        let refreshed = self.refresh(&mut sess, path, &cfg, deadline);
+        let refreshed = self.refresh(&mut sess, path, &cfg, deadline, Mode::Request);
         let now_bytes = sess.bytes() as u64;
         let before = slot.bytes.swap(now_bytes, SeqCst);
         self.adjust_total(before, now_bytes);
@@ -994,7 +1176,7 @@ impl Store {
 
     // ---- the refresh ----------------------------------------------------------------------------------------
 
-    fn refresh(&self, s: &mut Session, path: &Path, cfg: &Cfg, deadline: Instant) -> Result<(), Unsure> {
+    fn refresh(&self, s: &mut Session, path: &Path, cfg: &Cfg, deadline: Instant, mode: Mode) -> Result<(), Unsure> {
         let file = match File::open(path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1020,12 +1202,41 @@ impl Store {
             }
             Plan::Append => self.append(s, &file, &meta, cfg),
             Plan::Cold | Plan::Rebuild | Plan::Gap => {
-                let Some(_permit) = self.permits.acquire(cfg.permits, deadline) else {
-                    self.stats.wait_timeouts.fetch_add(1, Relaxed);
+                if mode == Mode::Request && cfg.background {
+                    // the build runs on the worker; this request (and the ones until it is done) answer unsure at once
+                    self.enqueue(path, cfg);
+                    return Err(Unsure::Busy);
+                }
+                let permit = match mode {
+                    Mode::Request => self.permits.acquire(cfg.permits, deadline),
+                    Mode::Background => self.acquire_for_worker(cfg),
+                };
+                let Some(_permit) = permit else {
+                    if mode == Mode::Request {
+                        self.stats.wait_timeouts.fetch_add(1, Relaxed);
+                    }
                     return Err(Unsure::Busy);
                 };
-                self.stats.cold_builds.fetch_add(1, Relaxed);
+                if plan == Plan::Rebuild {
+                    self.stats.rebuilds.fetch_add(1, Relaxed);
+                }
+                match mode {
+                    Mode::Request => self.stats.cold_builds.fetch_add(1, Relaxed),
+                    Mode::Background => self.stats.cold_builds_background.fetch_add(1, Relaxed),
+                };
                 self.build(s, &file, &meta, cfg, plan == Plan::Gap)
+            }
+        }
+    }
+
+    /// A cold-build permit for the worker: it waits as long as it takes, but never past the end of the store.
+    fn acquire_for_worker(&self, cfg: &Cfg) -> Option<Permit<'_>> {
+        loop {
+            if self.bg_stopping() {
+                return None;
+            }
+            if let Some(p) = self.permits.acquire(cfg.permits, Instant::now() + cfg.wait) {
+                return Some(p);
             }
         }
     }
@@ -1040,7 +1251,6 @@ impl Store {
             || s.agent.stamp != crate::checks::agent_scan::lines::config_stamp()
             || !prefix_intact(s, file)?;
         if changed {
-            self.stats.rebuilds.fetch_add(1, Relaxed);
             return Ok(Plan::Rebuild);
         }
         if size - s.offset > cfg.horizon {
@@ -1218,7 +1428,7 @@ struct MemOwner;
 impl crate::mem::Owner for MemOwner {
     // A memory poll never creates the store: until a check asks it a question there is nothing to count or shrink.
     fn bytes(&self) -> usize {
-        global_if_started().map_or(0, Store::bytes)
+        global_if_started().map_or(0, |s| s.bytes())
     }
     fn shrink(&self, target: usize) {
         if let Some(st) = global_if_started() {
@@ -1255,10 +1465,10 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    type Probe = Box<dyn FnMut(&Store, &Session)>;
+    type Probe = Box<dyn FnMut(&Core, &Session)>;
     thread_local! { static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) }; }
 
-    pub(super) fn probe(st: &Store, s: &Session) {
+    pub(super) fn probe(st: &Core, s: &Session) {
         PROBE.with(|p| {
             if let Some(f) = p.borrow_mut().as_mut() {
                 f(st, s);
@@ -1288,6 +1498,7 @@ mod tests {
         let mut c = Cfg::from_defaults();
         c.wait = Duration::from_millis(500);
         c.session_budget = budget;
+        c.background = false;
         c
     }
 

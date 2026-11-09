@@ -123,6 +123,11 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
         v
     }
 
+    /// Snapshot the cached keys.
+    pub fn keys(&self) -> Vec<K> {
+        self.core.lock().keys()
+    }
+
     /// Snapshot the cached values.
     pub fn values(&self) -> Vec<V> {
         self.core.lock().values()

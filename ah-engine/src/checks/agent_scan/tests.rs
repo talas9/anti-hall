@@ -462,6 +462,34 @@ fn the_store_answers_like_a_fresh_scan_while_the_transcript_grows() {
     assert!(hits * 10 >= checks * 9, "the store answered {hits} of {checks} windows");
 }
 
+/// Once the store answers a transcript, the walks kept for it are dropped: one structure per transcript, not two.
+#[test]
+fn a_store_hit_drops_the_walks_kept_for_that_transcript() {
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("ah-scan-evict-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let tp = dir.join("t.jsonl");
+    let path = tp.to_str().unwrap().to_string();
+    std::fs::write(&tp, walk_corpus()).unwrap();
+    let opts = Opts { now_ms: 1_800_000_000_000.0, ignore_unanswered_stops: false };
+    let f = std::fs::File::open(&tp).unwrap();
+    let m = f.metadata().unwrap();
+    // a walk is kept for the transcript (the store was cold or could not answer when it was built)
+    assert!(scan_kept(&path, 1 << 30, &f, &m, &opts).is_ok());
+    assert_eq!(kept_usage().0, 1, "the kept walk is there before the store answers");
+    // the store builds the session off the request path: ask until it answers
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut hit = None;
+    while hit.is_none() && std::time::Instant::now() < end {
+        hit = scan_store(&path, &f, 1 << 30, &opts);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(hit.is_some(), "the store never answered");
+    assert_eq!(kept_usage().0, 0, "a store hit drops the walks kept for that transcript");
+    crate::transcript::store::global().drop_session(&tp);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 #[ignore = "diagnostic: AH_WALK_SRC=<a.jsonl:b.jsonl> compares the store's answers with fresh scans on real transcripts"]
 fn zz_store_parity_real() {

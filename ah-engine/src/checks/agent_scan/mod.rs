@@ -1459,6 +1459,16 @@ fn line_at(file: &std::fs::File, off: u64, size: u64) -> Option<Vec<u8>> {
     (!l.oversize && l.off == off).then(|| r.bytes().to_vec())
 }
 
+/// The store answers `path` now, so the walks kept for it (one per window size) are dropped: a transcript holds one structure, not two.
+fn drop_kept_walks(path: &str) {
+    let cache = walk_cache();
+    for key in cache.keys().into_iter().filter(|k| k.0 == path) {
+        if cache.remove(&key).is_some() {
+            crate::load::note_count("agent_scan_kept_evicted", "reason", "store_hit");
+        }
+    }
+}
+
 /// The scan of the window answered from the transcript store's agent digests (`agent_scan.use_store`). `None` when the store
 /// cannot answer it (not covered, busy, another file, settings changed): the caller then reads the window afresh. Counted in
 /// `agent_scan_store{result}`.
@@ -1515,6 +1525,7 @@ fn scan_store(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Optio
     match finish_with(&walk, 0, path, opts, &mut load) {
         Ok(Some(scan)) => {
             crate::load::note_count("agent_scan_store", "result", "hit");
+            drop_kept_walks(path);
             Some(Ok(Some(scan)))
         }
         Ok(None) => {
