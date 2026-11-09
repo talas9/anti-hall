@@ -330,16 +330,22 @@ pub const STRS: &[(&str, &str)] = &[
 ];
 
 /// Per-field number tables (`{ default = .., <Event> = .. }`).
-pub const TABLES: &[(&str, &[(&str, u64)])] = &[(
-    "launcher.wall_soft_ms",
-    &[
-        ("default", 0),
-        ("SessionStart", 1100),
-        ("UserPromptSubmit", 900),
-        ("SessionEnd", 800),
-        ("Stop", 3000),
-    ],
-)];
+pub const TABLES: &[(&str, &[(&str, u64)])] = &[
+    (
+        "launcher.wall_soft_ms",
+        &[
+            ("default", 0),
+            ("SessionStart", 1100),
+            ("UserPromptSubmit", 900),
+            ("SessionEnd", 800),
+            ("Stop", 3000),
+        ],
+    ),
+    (
+        "client.slow_fallback_event_ms",
+        &[("Stop", 9000), ("SubagentStop", 9000)],
+    ),
+];
 
 pub const LISTS: &[(&str, &[&str])] = &[
     ("cli.help_flags", &["--help", "-h"]),

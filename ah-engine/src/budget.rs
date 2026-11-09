@@ -69,6 +69,9 @@ pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
     let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
     crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
     crate::metrics::bump("delivery_lost", &[("check", check), ("reason", reason)]);
+    if guard {
+        crate::metrics::bump("guard_answer_dropped", &[("reason", reason)]);
+    }
     crate::funnel::dropped(check, reason);
     let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
     if m.len() < crate::defaults::num("answer_drop.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {

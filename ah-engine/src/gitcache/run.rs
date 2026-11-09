@@ -43,7 +43,7 @@ impl<'a> Runner<'a> {
         }
         // never past the time the daemon's client still waits (review finding 4); a timed-out run is never cached. The run
         // is bounded end to end: its group is killed on timeout and a leftover holding stdout cannot hang it (findings 7, 8)
-        let timeout = crate::deadline::clamp(self.lim.timeout);
+        let timeout = crate::deadline::share(self.lim.timeout);
         let o = crate::proc::run(cmd, &self.lim.git_binary, timeout, self.lim.poll).map_err(|e| fail(e.into_io()))?;
         Ok(o.status.success().then(|| String::from_utf8_lossy(&o.stdout).to_string()))
     }
