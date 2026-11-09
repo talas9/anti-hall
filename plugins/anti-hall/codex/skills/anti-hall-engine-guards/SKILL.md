@@ -69,6 +69,8 @@ What the automatic guards check and how to read a block.
 - `context.shrinkInline` = true: Master switch of the inline caps
 - `context.inlinePinned` = true: Pinned inline
 - `guards.pushedNotDone` = true: Pushed work is not done switch
+- `guards.denyChildQuestions` = true: Where the child-workspace deny switch is read from (guards.denyChildQuestions, default on): a...
+- `guards.denyPrimaryQuestions` = true: Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the...
 - `guards.allowNestedSpawns` = false: On lets subagents and teammates start agents
 - `guards.maxConcurrentAgents` = 6: Cap on agents running at once (default 6, 0 = no cap)
 - `guards.spawnCeiling` = true: On by default; off makes the fan-out ceiling a no-op

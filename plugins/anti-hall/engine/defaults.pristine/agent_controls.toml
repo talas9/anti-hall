@@ -754,3 +754,39 @@ unit = "bytes"
 doc = "Bytes at the start of a transcript, and bytes just before the kept offset, hashed to notice a rewritten or rotated file; a kept walk whose file no longer matches is rebuilt from the start."
 value = 4096
 unit = "bytes"
+
+[ask_guard.child_deny_setting]
+doc = "Where the child-workspace deny switch is read from (guards.denyChildQuestions, default on): a DevSwarm child workspace never opens AskUserQuestion; the call is refused with a pointer to the mesh (GH #694). The DESTRUCTIVE:/CREDENTIAL: marker does not exempt a child."
+value = { section = "guards", key = "denyChildQuestions", env = "ANTIHALL_DENY_CHILD_QUESTIONS", aliases = [], option = "", default = true }
+
+[ask_guard.primary_deny_setting]
+doc = "Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the Primary session of a DevSwarm repo (ask_guard.primary_env set, ask_guard.child_env blank) never opens AskUserQuestion either; the owner is reached through the progress file (GH #694)."
+value = { section = "guards", key = "denyPrimaryQuestions", env = "ANTIHALL_DENY_PRIMARY_QUESTIONS", aliases = [], option = "", default = true }
+
+[ask_guard.primary_env]
+doc = "Environment variable whose non-blank value marks a session running under DevSwarm; with ask_guard.child_env blank it is the Primary."
+value = "DEVSWARM_REPO_ID"
+
+[ask_guard.child_deny_what]
+doc = "Headline of the child deny message."
+value = "a workspace agent never asks the user."
+
+[ask_guard.child_deny_instead]
+doc = "What a denied child does instead."
+value = "ask the Primary with `ah-engine mesh send --to-primary --question ...` and keep working on the rest."
+
+[ask_guard.primary_deny_what]
+doc = "Headline of the Primary deny message."
+value = "the Primary never blocks on a question."
+
+[ask_guard.primary_deny_instead]
+doc = "What a denied Primary does instead."
+value = "take the safe reversible default, note `NEEDS OWNER: <question>` in the progress file, continue."
+
+[ask_guard.deny_kind_child]
+doc = "Label of the ask_guard_denied counter for a denied child workspace."
+value = "child"
+
+[ask_guard.deny_kind_primary]
+doc = "Label of the ask_guard_denied counter for a denied Primary."
+value = "primary"

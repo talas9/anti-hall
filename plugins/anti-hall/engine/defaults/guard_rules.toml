@@ -9,6 +9,8 @@ value = [
   { id = "advisor.second", setting = "guards.advisorRetry", hosts = ["claude"], tier = "skill", source = "advisor.msg_second_what" },
   { id = "ask_guard.advise", setting = "", hosts = ["claude"], tier = "skill", source = "ask_guard.advise_what" },
   { id = "ask_guard.block", setting = "", hosts = ["claude"], tier = "skill", source = "ask_guard.block_what" },
+  { id = "ask_guard.child_deny", setting = "guards.denyChildQuestions", hosts = ["claude"], tier = "skill", source = "ask_guard.child_deny_what" },
+  { id = "ask_guard.primary_deny", setting = "guards.denyPrimaryQuestions", hosts = ["claude"], tier = "skill", source = "ask_guard.primary_deny_what" },
   { id = "silent_nudge.msg", setting = "", tier = "skill", source = "silent_nudge.msg_what" },
   { id = "silent_nudge.runtime", setting = "", tier = "skill", source = "silent_nudge.msg_rt_what" },
   { id = "broad_kill.pattern", setting = "", tier = "skill", source = "broad_kill.msg_what_pattern" },

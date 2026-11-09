@@ -21,6 +21,8 @@ advisor.sw_say_do	- advisor.say_do: This turn says it will ask the advisor, but 
 advisor.sw_retry	- advisor.second: A second fix dispatch for ... from a non-flagship main, with no advisor call since the first.
 	- ask_guard.advise: do not hold work on a question.
 	- ask_guard.block: this question would pause authorized work.
+ask_guard.child_deny_setting	- ask_guard.child_deny: a workspace agent never asks the user.
+ask_guard.primary_deny_setting	- ask_guard.primary_deny: the Primary never blocks on a question.
 	- silent_nudge.msg: ... of your own ... have gone silent past the ...m threshold: .......
 	- silent_nudge.runtime: ...... still running past the runtime block step, not finished and not stopped.
 	- broad_kill.pattern: `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
