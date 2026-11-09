@@ -160,7 +160,7 @@ jobs:
       # The separate debug symbols of the packaged binary (package.sh writes them to dist/symbols/): a workflow artifact named per version
       # and target (a burst dump names its build id and version, so its symbols are found by them), kept
       # out of the release assets that ah-engine.lock pins. They symbolise `sample` and backtraces of the stripped binary.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: symbols-v${{ needs.plan.outputs.version }}-${{ matrix.triple }}
           path: dist/symbols/*

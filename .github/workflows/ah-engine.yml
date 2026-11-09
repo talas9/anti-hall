@@ -165,7 +165,7 @@ jobs:
         run: cargo nextest run --cargo-profile ci-test --profile quick
       - name: Upload generated reference on mismatch
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ah-engine-generated-reference-quick
           path: ${{ runner.temp }}/ah-engine-generated-reference.md
@@ -276,7 +276,7 @@ jobs:
           AH_TEST_CARGO_PROFILE: ci-test
       - name: Upload generated reference on mismatch
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ah-engine-generated-reference-${{ matrix.os }}
           path: ${{ runner.temp }}/ah-engine-generated-reference.md
@@ -332,7 +332,7 @@ jobs:
           AH_ENGINE_SCRIPT_TIME_MS: "2000"
       - name: Upload the harness reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: no-node-reports-${{ matrix.os }}
           path: ah-engine/target/tmp/no_node/
