@@ -1642,6 +1642,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
     telemetry::stage_begin();
     crate::failopen::begin_request();
+    crate::burst::begin();
     let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
@@ -1719,6 +1720,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
+    crate::burst::request_end(&crate::burst::Ctx { event: &event, busy: sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64 });
     crate::failopen::drain_into(&sh.telemetry);
     crate::checks::guardkit::settings::drain_invalid_into(&sh.telemetry);
     crate::failopen::sync_notice(false);

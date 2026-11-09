@@ -352,7 +352,29 @@ impl Telemetry {
                 let mut v = report::summary_json(self.tel.as_ref(), Some(&self.rec), days, now);
                 v["dropped"]["inbox_refused"] = json!(self.inbox_bad.load(std::sync::atomic::Ordering::Relaxed));
                 v["agent_cost"] = crate::agents::cost_report();
+                self.add_check_mem(&mut v);
                 v
+            }
+        }
+    }
+
+    /// Per-check heap columns on the `by_hook` rows (`query checks`): the worst peak growth and allocation of one call and the p95 peak,
+    /// from the live byte histograms (since the daemon started or the metrics were last restored; not windowed).
+    fn add_check_mem(&self, v: &mut Value) {
+        let snap = self.with_metrics(|m| m.snapshot(""));
+        let find = |name: &str, check: &str| {
+            snap["histograms"].as_array().and_then(|a| a.iter().find(|h| h["name"] == name && h["labels"]["check"] == check)).cloned()
+        };
+        if let Some(rows) = v["by_hook"].as_array_mut() {
+            for r in rows {
+                let h = r["h"].as_str().unwrap_or_default().to_string();
+                if let Some(p) = find("check_mem_peak_bytes", &h) {
+                    r["peak_heap_max_bytes"] = p["max_bytes"].clone();
+                    r["peak_heap_p95_bytes"] = p["p95_bytes"].clone();
+                }
+                if let Some(a) = find("check_mem_alloc_bytes", &h) {
+                    r["alloc_max_bytes"] = a["max_bytes"].clone();
+                }
             }
         }
     }

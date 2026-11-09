@@ -214,7 +214,7 @@ doc = "The Command Center web dashboard (GH #266): `open` (default) starts the l
 value = { args = "[open|status] [--no-open] [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
 
 [cmd.diag]
-doc = "Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring. Needs no feature flag and changes nothing."
+doc = "Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring. Needs no feature flag and changes nothing. `burst-dump [--symbolize [<dump>]]` lists the burst dumps, or names the frames of one from its build's symbol file."
 value = { args = "<cpu|mem|threads|hooks|mesh|jev|fs|locks|trace>", read_only = true, status = "implemented" }
 
 [cmd.describe]
