@@ -227,7 +227,7 @@ impl MeshReader {
     /// The registry (Node's `listRegistry`), one descriptor per row in id order.
     pub fn roster(&self) -> Res<Vec<Value>> {
         let mut st = self.conn.prepare_cached(sql::MESH_REGISTRY)?;
-        let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        let names: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         let col = |n: &str| names.iter().position(|c| c == n);
         let (id, wt, sess, inbox, cur, nudge, upd, wseq) = (
             col("id"),

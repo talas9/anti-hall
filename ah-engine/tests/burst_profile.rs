@@ -25,10 +25,16 @@ fn allocator_name() -> String {
     format!("{}_allocator", black_box("synthetic_burst"))
 }
 
-/// True when this test binary still carries its symbol names (a build that is not stripped); a shipped-style release build does not.
-fn binary_carries_names() -> bool {
-    let needle = allocator_name().into_bytes();
-    std::fs::read(std::env::current_exe().unwrap()).unwrap().windows(needle.len()).any(|w| w == needle.as_slice())
+/// True when THIS PROCESS can name the allocating function, which is what the profiler's in-process `dladdr` sees. That is not the same
+/// as the file holding the name: on Linux `dladdr` reads only the dynamic symbol table, so an unstripped test binary (the `ci-test` profile
+/// keeps `.symtab`) still gives no name to a local function, while macOS `dladdr` reads the full symbol table. Ask `dladdr` itself.
+fn process_can_name_functions() -> bool {
+    // SAFETY: Dl_info is plain C data, valid all-zero.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    let f: fn() -> Vec<Vec<u8>> = synthetic_burst_allocator;
+    // SAFETY: `info` is a writable Dl_info; dladdr only reads the address of this function.
+    let ok = unsafe { libc::dladdr(f as usize as *const libc::c_void, &mut info) } != 0;
+    ok && !info.dli_sname.is_null()
 }
 
 #[inline(never)]
@@ -81,10 +87,10 @@ fn a_burst_writes_one_dump_naming_the_allocating_function() {
     }
     assert_eq!(doc["checks"][0]["check"], "synthetic-check");
     let text = doc["sites"].to_string();
-    if binary_carries_names() {
+    if process_can_name_functions() {
         assert!(text.contains(&allocator_name()), "the dump names the allocating function: {text}");
     } else {
-        // a stripped build (the shipped one): the process has no names to give. The dump holds the image offset of each frame instead,
+        // a build the process cannot name from (stripped, as shipped; or Linux with only a static symbol table): no in-process names. The dump holds the image offset of each frame instead,
         // and the names come from the kept symbols: `a_dump_of_a_stripped_binary_is_named_from_its_symbol_file` (macOS, dSYM) and
         // `a_stripped_linux_binary_is_named_from_its_kept_debug_file` (Linux) prove that path.
         let frames: Vec<&serde_json::Value> = doc["sites"].as_array().unwrap().iter().flat_map(|s| s["frames"].as_array().unwrap()).collect();

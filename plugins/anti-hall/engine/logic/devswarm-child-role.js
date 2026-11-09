@@ -42,12 +42,19 @@ function dwNodeRoot(root) {
 // The command agents run for the DevSwarm CLI / the mailbox watcher: the engine binary (devswarm_role.engine_cli / engine_watcher).
 function dwEngineCmd(key, home) { return text.render(ah.cfg(key), { home: home }); }
 
-// {home, cli, watcher}: the commands the texts name (devswarm_role.engine_cli / engine_watcher, the engine binary itself); null only without
+// A path as one sh word: bare when it holds only characters sh never treats specially, else in single quotes (nothing inside expands).
+function dwShWord(s) { return /^[A-Za-z0-9_\-.\/:@%+=,]+$/.test(s) ? s : "'" + s.split("'").join("'\\''") + "'"; }
+
+// The CLI command the texts name ({cli}): the engine binary (quoted when its path needs it) then the verb.
+function dwCliCmd(home) { return dwShWord(dwEngineCmd('devswarm_role.engine_bin', home)) + ' ' + ah.cfg('devswarm_role.engine_verb'); }
+
+// {home, cli, watcher, bin, verb, wverb}: the commands the texts name (devswarm_role.engine_cli / engine_watcher, the engine binary itself); null only without
 // a usable home or plugin root. The engine writes no launcher file.
 function dwLaunchers(root, wantWatcher) {
   var home = dwUsableHome();
   if (home === null || !root) return null;
-  return { home: home, cli: dwEngineCmd('devswarm_role.engine_cli', home), watcher: dwEngineCmd('devswarm_role.engine_watcher', home) };
+  return { home: home, cli: dwCliCmd(home), watcher: dwEngineCmd('devswarm_role.engine_watcher', home),
+    bin: dwEngineCmd('devswarm_role.engine_bin', home), verb: ah.cfg('devswarm_role.engine_verb'), wverb: ah.cfg('devswarm_role.watcher_verb') };
 }
 
 // The same commands (kept under this name for the scripts that build on this one).

@@ -888,8 +888,8 @@ function pgGate(p, root, l) {
     ? pgReason(blocking, own, escalateTimes, hasIntent,
       { unanswered: unanswered, informational: informational, truncated: truncated, qEscalate: qEscalateTimes, waiting: pgWaitingSeg(home, blocking) })
     : ah.cfg('devswarm_role.pg_reason_parked_only');
-  var cli = dwEngineCmd('devswarm_role.engine_cli', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: pgShQuote(cli), guard: ah.cfg('devswarm_role.gate_guard') });
+  var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: pgShQuote(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: ah.cfg('devswarm_role.gate_guard') });
   fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + wake, skip) }) + '\n';
   pgCountFired(escalateTimes !== null || qEscalateTimes !== null ? 'escalation' : 'block');
   return fx;
@@ -1090,8 +1090,8 @@ function pgWakeLine(ownId, l) {
   var id;
   if (ownId !== null && valid(ownId)) id = ownId;
   else { var b = ah.env.get(ah.cfg('devswarm_role.builder_env')); id = valid(b) ? b : ah.cfg('devswarm_role.id_placeholder'); }
-  var tick = text.render(ah.cfg('devswarm_role.pg_wake_tick'), { id: id }), watch = text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: pgDq(l.watcher) });
-  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: pgDq(l.cli), cron: dwWakeCron(), tick: tick, watch: watch, id: id });
+  var tick = text.render(ah.cfg('devswarm_role.pg_wake_tick'), { id: id, verb: l.verb }), watch = text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: pgDq(l.bin), wverb: l.wverb });
+  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: pgDq(l.bin), verb: l.verb, cron: dwWakeCron(), tick: tick, watch: watch, id: id });
 }
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js.
