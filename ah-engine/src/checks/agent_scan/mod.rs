@@ -20,6 +20,7 @@ use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::OnceLock;
 
+pub mod lines;
 #[cfg(test)]
 mod tests;
 
@@ -70,7 +71,7 @@ pub struct Rec {
     /// The `shell.kind` of the `task_status` attachment that adopted it (`monitor` for a Monitor-tool task, `bash` for a Bash one); empty when launched or unknown.
     pub shell_kind: String,
     /// The input of the Agent/Task call that launched it (Node `rec.spawnInput`); `None` when that call is outside the window.
-    pub spawn_input: Option<Value>,
+    pub spawn_input: Option<std::sync::Arc<Value>>,
 }
 
 /// A teammate message that has not been answered.
@@ -337,19 +338,49 @@ pub fn extract_texts(node: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// [`extract_texts`], borrowed: a large tool result is read where it sits in the parsed line, never copied.
+fn extract_text_refs<'a>(node: &'a Value, out: &mut Vec<&'a str>) {
+    match node {
+        Value::String(s) => out.push(s),
+        Value::Array(a) => a.iter().for_each(|x| extract_text_refs(x, out)),
+        Value::Object(o) => {
+            if let Some(Value::String(t)) = o.get("text") {
+                out.push(t);
+            }
+            if let Some(c) = o.get("content") {
+                extract_text_refs(c, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `text.toLowerCase().includes(needle)` without the lower-cased copy when both are ASCII (a copy of a multi-megabyte tool result
+/// otherwise); any other text takes the copy, so the answer is the same for every input.
+fn lower_contains(text: &str, needle: &str) -> bool {
+    if !(text.is_ascii() && needle.is_ascii()) {
+        return text.to_lowercase().contains(needle);
+    }
+    let (t, n) = (text.as_bytes(), needle.as_bytes());
+    if n.is_empty() {
+        return true;
+    }
+    t.windows(n.len()).any(|w| w.iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b))
+}
+
 /// `notificationTexts(entry)` of `companion/lib/devswarm-idle.js`: the texts of this entry that hold a completion notice.
-fn notification_texts(e: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn notification_texts(e: &Value) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
     let content = prop(e, "message").and_then(|m| prop(m, "content"));
     match sprop(e, "type") {
         Some("user") => match content {
-            Some(Value::String(s)) => out.push(s.clone()),
+            Some(Value::String(s)) => out.push(s),
             Some(Value::Array(a)) => {
                 for b in a {
                     if sprop(b, "type") == Some("text")
                         && let Some(t) = sprop(b, "text")
                     {
-                        out.push(t.to_string());
+                        out.push(t);
                     }
                 }
             }
@@ -357,12 +388,12 @@ fn notification_texts(e: &Value) -> Vec<String> {
         },
         Some("attachment") => {
             if let Some(p) = prop(e, "attachment").and_then(|a| sprop(a, "prompt")) {
-                out.push(p.to_string());
+                out.push(p);
             }
         }
         Some("queue-operation") => {
             if let Some(c) = sprop(e, "content") {
-                out.push(c.to_string());
+                out.push(c);
             }
         }
         _ => {}
@@ -623,10 +654,89 @@ impl Prefilter {
 
 // ---- the walk ----------------------------------------------------------------------------------------------
 
+/// The 128-bit key of an id: two independent SipHash-1-3 digests of its bytes (fixed keys, so it is the same on every run). A kept
+/// walk holds one entry per tool call and per tool result of a window of up to tens of megabytes; keying them by this digest
+/// instead of by the id text keeps a third of the memory, and two ids that collide (about 2^-128 per pair) would have to be
+/// ids of one session's own calls.
+fn id_key(id: &str) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let digest = |seed: u8| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        seed.hash(&mut h);
+        id.as_bytes().hash(&mut h);
+        h.finish()
+    };
+    (u128::from(digest(1)) << 64) | u128::from(digest(2))
+}
+
+/// A hasher for keys that are already digests.
+#[derive(Default, Clone, Copy)]
+struct DigestHasher(u64);
+
+impl std::hash::Hasher for DigestHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
+        }
+    }
+    fn write_u128(&mut self, i: u128) {
+        self.0 = (i as u64) ^ ((i >> 64) as u64);
+    }
+}
+
+type DigestBuild = std::hash::BuildHasherDefault<DigestHasher>;
+
+/// A set of ids, held as their digests.
+#[derive(Clone, Default)]
+struct IdSet(HashSet<u128, DigestBuild>);
+
+impl IdSet {
+    fn insert(&mut self, id: &str) -> bool {
+        self.0.insert(id_key(id))
+    }
+    fn contains(&self, id: &str) -> bool {
+        self.0.contains(&id_key(id))
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// A map keyed by ids, held as their digests.
+#[derive(Clone)]
+struct IdMap<V>(HashMap<u128, V, DigestBuild>);
+
+impl<V> Default for IdMap<V> {
+    fn default() -> Self {
+        IdMap(HashMap::default())
+    }
+}
+
+impl<V> IdMap<V> {
+    fn get(&self, id: &str) -> Option<&V> {
+        self.0.get(&id_key(id))
+    }
+    fn get_mut(&mut self, id: &str) -> Option<&mut V> {
+        self.0.get_mut(&id_key(id))
+    }
+    fn insert(&mut self, id: &str, v: V) -> Option<V> {
+        self.0.insert(id_key(id), v)
+    }
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.0.values()
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 #[derive(Clone)]
 struct ToolUse {
     name: Option<String>,
-    input: Option<Value>,
+    input: Option<std::sync::Arc<Value>>,
     /// Offset of the line that made the call (kept walks only).
     off: u64,
     /// Offset of the last line that looked this call up to judge its answer (kept walks only).
@@ -662,6 +772,8 @@ struct Other {
     ts: f64,
     /// Offset of the line the text came from (kept walks only).
     off: u64,
+    /// Where the text sits in its line when it is not held (`text` is then empty): block, text, byte length (store replays only).
+    at: Option<(u32, u32, u64)>,
 }
 
 #[derive(Clone)]
@@ -671,13 +783,15 @@ struct Walk {
     desc_by_tool_use: HashMap<String, String>,
     others: Vec<Other>,
     other_bytes: u64,
-    dropped_ids: HashSet<String>,
-    tool_uses: HashMap<String, ToolUse>,
+    dropped_ids: IdSet,
+    tool_uses: IdMap<ToolUse>,
+    /// Tool-use ids whose call input an answer is made of (a launch record or a retained result names them): never released.
+    pinned: IdSet,
     stops: Vec<Stop>,
-    errored: HashSet<String>,
+    errored: IdSet,
     /// Tool-use ids whose result says the task does not exist (already ended).
-    gone: HashSet<String>,
-    answered: HashSet<String>,
+    gone: IdSet,
+    answered: IdSet,
     team_events: OMap<Vec<TeamEv>>,
     team_info: OMap<TeamInfo>,
     terminal_ev: HashMap<String, Vec<(u64, f64)>>,
@@ -718,12 +832,13 @@ impl Walk {
             desc_by_tool_use: HashMap::new(),
             others: Vec::new(),
             other_bytes: 0,
-            dropped_ids: HashSet::new(),
-            tool_uses: HashMap::new(),
+            dropped_ids: IdSet::default(),
+            tool_uses: IdMap::default(),
+            pinned: IdSet::default(),
             stops: Vec::new(),
-            errored: HashSet::new(),
-            gone: HashSet::new(),
-            answered: HashSet::new(),
+            errored: IdSet::default(),
+            gone: IdSet::default(),
+            answered: IdSet::default(),
             team_events: OMap::default(),
             team_info: OMap::default(),
             terminal_ev: HashMap::new(),
@@ -780,8 +895,13 @@ impl Walk {
             return Err(Unsupported);
         }
         self.tool_uses.insert(
-            id.to_string(),
-            ToolUse { name: name.map(str::to_string), input: if keep { input.cloned() } else { None }, off: self.cur_off, used: std::cell::Cell::new(0) },
+            id,
+            ToolUse {
+                name: name.map(str::to_string),
+                input: if keep { input.map(|i| std::sync::Arc::new(i.clone())) } else { None },
+                off: self.cur_off,
+                used: std::cell::Cell::new(0),
+            },
         );
         Ok(())
     }
@@ -902,7 +1022,7 @@ impl Walk {
         // (b) a terminal notification, in any of its three shapes.
         if has_notif {
             for text in notification_texts(&entry) {
-                for bm in pats().block.captures_iter(&text) {
+                for bm in pats().block.captures_iter(text) {
                     let body = bm.get(1).map_or("", |m| m.as_str());
                     let tid = pats().task_id.captures(body).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let st = pats().status.captures(body).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
@@ -965,29 +1085,29 @@ impl Walk {
                 && prop(block, "is_error") == Some(&Value::Bool(true))
                 && let Some(id) = tuid
             {
-                self.errored.insert(id.to_string());
+                self.errored.insert(id);
             }
             if is_tool_result && let Some(id) = tuid {
-                self.answered.insert(id.to_string());
+                self.answered.insert(id);
             }
-            let mut texts = Vec::new();
-            extract_texts(block_content, &mut texts);
+            let mut texts: Vec<&str> = Vec::new();
+            extract_text_refs(block_content, &mut texts);
             if is_tool_result
                 && let Some(id) = tuid
-                && texts.iter().any(|t| t.to_lowercase().contains(defaults::text("agent_scan.stop_gone_text")))
+                && texts.iter().any(|t| lower_contains(t, defaults::text("agent_scan.stop_gone_text")))
             {
-                self.gone.insert(id.to_string());
+                self.gone.insert(id);
             }
             for text in texts {
                 if is_tool_result
                     && has_launch
                     && self.answers(tuid, "agent_scan.launch_tools")
-                    && trim_start(&text).starts_with(defaults::text("agent_scan.launch_text"))
+                    && trim_start(text).starts_with(defaults::text("agent_scan.launch_text"))
                 {
-                    let idm = pats().agent_id.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
+                    let idm = pats().agent_id.captures(text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let sid = prop(&entry, "toolUseResult").and_then(|t| sprop(t, "agentId")).filter(|s| pats().hex_id.is_match(s)).map(str::to_string);
                     if let Some(id) = sid.or(idm) {
-                        let of = pats().output_file.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())).unwrap_or_default();
+                        let of = pats().output_file.captures(text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())).unwrap_or_default();
                         self.rel();
                         self.launched.set(
                             &id,
@@ -1006,9 +1126,12 @@ impl Walk {
                                 spawn_input: None,
                             },
                         );
+                        if let Some(t) = tuid {
+                            self.pinned.insert(t);
+                        }
                     }
                 }
-                let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(&text)? } else { None };
+                let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(text)? } else { None };
                 if let Some((rid, full)) = resume {
                     self.rel();
                     if full {
@@ -1022,10 +1145,10 @@ impl Walk {
                     }
                     continue;
                 }
-                if is_queued_result(&text)? {
+                if is_queued_result(text)? {
                     continue;
                 }
-                let inbox = if is_tool_result && self.answers(tuid, "agent_scan.send_tools") { parse_inbox_send(&text)? } else { None };
+                let inbox = if is_tool_result && self.answers(tuid, "agent_scan.send_tools") { parse_inbox_send(text)? } else { None };
                 if let Some(name) = inbox {
                     self.team_event(&name, "send", entry_ts, seq);
                     continue;
@@ -1037,7 +1160,7 @@ impl Walk {
                         && !c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n))
                     {
                         if let Some(id) = tuid {
-                            self.dropped_ids.insert(id.to_string());
+                            self.dropped_ids.insert(id);
                         }
                         continue;
                     }
@@ -1045,8 +1168,21 @@ impl Walk {
                     if self.other_bytes > defaults::num("agent_scan.retain_bytes") {
                         return Err(Unsupported);
                     }
-                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text, seq, ts: entry_ts, off: self.cur_off });
+                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text: text.to_string(), seq, ts: entry_ts, off: self.cur_off, at: None });
+                    if let Some(t) = tuid {
+                        self.pinned.insert(t);
+                    }
                 }
+            }
+            // The call is answered. Its input is read later only for a launch record that names the call and for a retained result
+            // of it; for every other call (nearly all of them: the walk would hold a copy of each launch prompt of the window) it is
+            // released now.
+            if is_tool_result
+                && let Some(t) = tuid
+                && !self.pinned.contains(t)
+                && let Some(c) = self.tool_uses.get_mut(t)
+            {
+                c.input = None;
             }
         }
         Ok(())
@@ -1296,6 +1432,16 @@ fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) 
     if !path.starts_with('/') {
         return Err(Unsupported);
     }
+    if defaults::num("agent_scan.use_store") == 1 {
+        if let Some(r) = scan_store(path, file, tail, opts) {
+            return r;
+        }
+        // the store could not answer this window: it is read afresh, and no walk is kept (the store is the cache)
+        let _turn = crate::transcript::scan::permit();
+        return scan_window(path, file, tail, opts);
+    }
+    // one transcript window is walked at a time in the daemon; a request that gets no turn before its deadline walks anyway
+    let _turn = crate::transcript::scan::permit();
     if defaults::num("agent_scan.cache_max_paths") > 0
         && let Ok(m) = file.metadata()
         && m.len() > 0
@@ -1304,6 +1450,82 @@ fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) 
         return scan_kept(path, tail, file, &m, opts);
     }
     scan_window(path, file, tail, opts)
+}
+
+/// The line of `file` at `off` (no newline), read with the store's reader; `None` when it cannot be read or is over the line cap.
+fn line_at(file: &std::fs::File, off: u64, size: u64) -> Option<Vec<u8>> {
+    let mut r = crate::transcript::reader::LineReader::new(file, crate::transcript::reader::ReadCfg::from_defaults(), off, size);
+    let l = r.next_line().ok()??;
+    (!l.oversize && l.off == off).then(|| r.bytes().to_vec())
+}
+
+/// The scan of the window answered from the transcript store's agent digests (`agent_scan.use_store`). `None` when the store
+/// cannot answer it (not covered, busy, another file, settings changed): the caller then reads the window afresh. Counted in
+/// `agent_scan_store{result}`.
+fn scan_store(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Option<Res<Option<Scan>>> {
+    let m = file.metadata().ok()?;
+    let size = m.len();
+    if size == 0 {
+        return None;
+    }
+    let id = (m.dev(), m.ino());
+    let replayed = crate::transcript::store::global().with(std::path::Path::new(path), now_ms() as u64, |v| {
+        // the store refreshed after this handle was measured: a file that only grew is the same file, read at its newer size
+        if v.size() < size || v.file_id() != Some(id) {
+            return Err(lines::Miss::Reread);
+        }
+        let size = v.size();
+        let s = size - window_len(size, tail);
+        let oversize = v.oversize();
+        v.agent_digests().replay(s, &oversize, &mut |off| line_at(file, off, size)).map(|r| r.map(|w| (w, size)))
+    });
+    let ((mut walk, loads), size) = match replayed {
+        Err(u) => {
+            crate::load::note_count("agent_scan_store", "result", u.code());
+            return None;
+        }
+        Ok(Err(miss)) => {
+            crate::load::note_count("agent_scan_store", "result", miss.label());
+            return None;
+        }
+        Ok(Ok(Err(e))) => {
+            crate::load::note_count("agent_scan_store", "result", "unsupported");
+            return Some(Err(e));
+        }
+        Ok(Ok(Ok(w))) => w,
+    };
+    // what the answer reads of a call (a launch's spawnInput and description, a delivery call's name and input, a teammate's
+    // description), read again from each call's line
+    for l in loads {
+        let Some(c) = line_at(file, l.off, size).and_then(|raw| lines::call_at(&raw, &l.id)) else {
+            crate::load::note_count("agent_scan_store", "result", "reread");
+            return None;
+        };
+        if let Some(d) = c.desc {
+            walk.desc_by_tool_use.insert(l.id.clone(), d);
+        }
+        if l.tool
+            && let Some(t) = walk.tool_uses.get_mut(&l.id)
+        {
+            t.name = c.name;
+            t.input = c.input.map(std::sync::Arc::new);
+        }
+    }
+    let mut load = |o: &Other| o.at.and_then(|at| line_at(file, o.off, size).and_then(|raw| lines::text_at(&raw, at)));
+    match finish_with(&walk, 0, path, opts, &mut load) {
+        Ok(Some(scan)) => {
+            crate::load::note_count("agent_scan_store", "result", "hit");
+            Some(Ok(Some(scan)))
+        }
+        Ok(None) => {
+            crate::load::note_count("agent_scan_store", "result", "reread");
+            None
+        }
+        Err(e) => {
+            crate::load::note_count("agent_scan_store", "result", "unsupported");
+            Some(Err(e))
+        }
+    }
 }
 
 /// How far before the window start a kept walk may begin before it is rebuilt: `agent_scan.window_slack_pct` percent of the window.
@@ -1542,6 +1764,12 @@ fn kept_miss_reason(k: &Kept, gen_: u64, m: &std::fs::Metadata, size: u64, s: u6
 }
 
 fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
+    finish_with(w, others_from, path, opts, &mut |_| None).map(|s| s.unwrap_or_default())
+}
+
+/// [`finish`], with `load` giving the text of a retained result the walk does not hold (`Other::at`). `Ok(None)` when a text
+/// cannot be read again (the caller then scans afresh).
+fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut dyn FnMut(&Other) -> Option<String>) -> Res<Option<Scan>> {
     // finish only borrows the walk (a kept walk is cached for the next call and must not be cloned whole): the few fields it
     // changes are copied here, the big read-only ones (calls, answers, the text of other lines) are read in place
     let mut launched = w.launched.clone();
@@ -1557,7 +1785,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
             r.description = d;
         }
         // `rec.spawnInput`: the input of the launching call when it is in the window (an object or array, as `typeof` says)
-        let spawn = launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t)).and_then(|c| c.input.clone());
+        let spawn = launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t.as_str())).and_then(|c| c.input.clone());
         if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), launched.get_mut(id)) {
             r.spawn_input = Some(i);
         }
@@ -1568,10 +1796,10 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
     background.extend(terminal.iter().cloned());
 
     for s in &stops {
-        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t)) {
+        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t.as_str())) {
             continue;
         }
-        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t)) {
+        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t.as_str())) {
             continue;
         }
         mark_terminal_in(&mut terminal, &mut terminal_ev, &s.id, s.seq, s.ts);
@@ -1590,7 +1818,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
     let mut stopped_agents: HashSet<String> = HashSet::new();
     for s in &stops {
         let Some(tuid) = s.tool_use_id.as_ref() else { continue };
-        if (w.errored.contains(tuid) && !w.gone.contains(tuid)) || !(w.answered.contains(tuid)) {
+        if (w.errored.contains(tuid.as_str()) && !w.gone.contains(tuid.as_str())) || !(w.answered.contains(tuid.as_str())) {
             continue;
         }
         let Some(info) = w.team_info.get(&s.id).filter(|i| !i.agent_id.is_empty()) else { continue };
@@ -1600,31 +1828,51 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
         }
     }
 
-    // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id.
+    // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id. Each agent takes the first
+    // retained answer that quotes it; the answers are visited once each (in order) and asked about every agent not yet found, which
+    // looks at the same (agent, answer) pairs as one pass per agent, so a text that is not held is read at most once.
     let launched_ids: Vec<String> = launched.keys().cloned().collect();
-    for id in &launched_ids {
-        if terminal.contains(id) {
-            continue;
+    let live_ids: Vec<&String> = launched_ids.iter().filter(|id| !terminal.contains(*id)).collect();
+    let mut hits: Vec<Option<(u64, f64)>> = vec![None; live_ids.len()];
+    for o in w.others.iter().filter(|o| o.off >= others_from) {
+        if hits.iter().all(Option::is_some) {
+            break;
         }
-        let own = launched.get(id).and_then(|r| r.tool_use_id.clone());
-        let mut hit: Option<(u64, f64)> = None;
-        for o in w.others.iter().filter(|o| o.off >= others_from) {
+        let mut loaded: Option<String> = None;
+        for (i, id) in live_ids.iter().enumerate() {
+            if hits[i].is_some() {
+                continue;
+            }
+            let own = launched.get(id.as_str()).and_then(|r| r.tool_use_id.clone());
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
-            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t));
+            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t.as_str()));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
-                if !(delivery && names_agent(c.input.as_ref(), id, &launched)?) {
+                if !(delivery && names_agent(c.input.as_deref(), id, &launched)?) {
                     continue;
                 }
             }
-            if o.text.split('\n').any(|ln| ln.contains(id.as_str()) && !pats().running_row.is_match(ln)) {
-                hit = Some((o.seq, o.ts));
-                break;
+            let text: &str = match o.at {
+                None => &o.text,
+                Some(_) => {
+                    if loaded.is_none() {
+                        match load(o) {
+                            Some(t) => loaded = Some(t),
+                            None => return Ok(None),
+                        }
+                    }
+                    loaded.as_deref().unwrap_or("")
+                }
+            };
+            if text.split('\n').any(|ln| ln.contains(id.as_str()) && !pats().running_row.is_match(ln)) {
+                hits[i] = Some((o.seq, o.ts));
             }
         }
-        if let Some((seq, ts)) = hit {
+    }
+    for (i, id) in live_ids.iter().enumerate() {
+        if let Some((seq, ts)) = hits[i] {
             mark_terminal_in(&mut terminal, &mut terminal_ev, id, seq, ts);
         }
     }
@@ -1772,7 +2020,7 @@ fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
         );
         terminal.remove(&name);
     }
-    Ok(Scan { launched, terminal, stopped_agents, pending })
+    Ok(Some(Scan { launched, terminal, stopped_agents, pending }))
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows

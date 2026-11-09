@@ -167,14 +167,14 @@ fn ts_of(s: &str) -> Result<f64, Defer> {
     }
 }
 
-/// `extractTexts(node)`: every string leaf of a message `content` value.
-fn extract_texts(node: &Value, out: &mut Vec<String>) {
+/// `extractTexts(node)`: every string leaf of a message `content` value, borrowed (a large tool result is never copied).
+fn extract_texts<'a>(node: &'a Value, out: &mut Vec<&'a str>) {
     match node {
-        Value::String(s) => out.push(s.clone()),
+        Value::String(s) => out.push(s),
         Value::Array(a) => a.iter().for_each(|x| extract_texts(x, out)),
         Value::Object(o) => {
             if let Some(Value::String(t)) = o.get("text") {
-                out.push(t.clone());
+                out.push(t);
             }
             if let Some(c) = o.get("content") {
                 extract_texts(c, out);
@@ -185,18 +185,18 @@ fn extract_texts(node: &Value, out: &mut Vec<String>) {
 }
 
 /// `notificationTexts(entry)` of `devswarm-idle.js`: the entry's texts that start a `<task-notification>` block.
-fn notification_texts(e: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn notification_texts(e: &Value) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
     let content = e.get("message").and_then(|m| m.get("content"));
     match e.get("type").and_then(Value::as_str) {
         Some("user") => match content {
-            Some(Value::String(s)) => out.push(s.clone()),
+            Some(Value::String(s)) => out.push(s),
             Some(Value::Array(a)) => {
                 for b in a {
                     if str_of(b, "type") == Some("text")
                         && let Some(t) = str_of(b, "text")
                     {
-                        out.push(t.to_string());
+                        out.push(t);
                     }
                 }
             }
@@ -204,12 +204,12 @@ fn notification_texts(e: &Value) -> Vec<String> {
         },
         Some("attachment") => {
             if let Some(p) = e.get("attachment").and_then(|a| str_of(a, "prompt")) {
-                out.push(p.to_string());
+                out.push(p);
             }
         }
         Some("queue-operation") => {
             if let Some(c) = str_of(e, "content") {
-                out.push(c.to_string());
+                out.push(c);
             }
         }
         _ => {}
@@ -389,7 +389,7 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
         // (b) terminal notifications, in every transcript shape.
         if has_notif {
             for text in notification_texts(&entry) {
-                for m in r.notification_block.captures_iter(&text) {
+                for m in r.notification_block.captures_iter(text) {
                     let body = &m[1];
                     let tid = r.task_id.captures(body).map(|c| c[1].to_string());
                     let status = r.status.captures(body).map(|c| c[1].to_string());
@@ -443,7 +443,7 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
             {
                 sc.errored.insert(t.to_string());
             }
-            let mut texts = Vec::new();
+            let mut texts: Vec<&str> = Vec::new();
             extract_texts(b.inner, &mut texts);
             if b.is_tool_result
                 && let Some(t) = b.tuid
@@ -458,20 +458,20 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
                     && text.trim_start_matches(is_js_space).starts_with(launch_phrase)
                 {
                     let sid = entry.get("toolUseResult").and_then(|t| str_of(t, "agentId")).filter(|id| r.hex_id.is_match(id)).map(str::to_string);
-                    let idm = r.agent_id.captures(&text).map(|c| c[1].to_string());
+                    let idm = r.agent_id.captures(text).map(|c| c[1].to_string());
                     if let Some(id) = sid.or(idm) {
                         sc.launched.insert(id);
                     }
                 }
-                if b.is_tool_result && sc.answers(b.tuid, "idle_sweep.resume_tools") && is_resume_result(&text) {
+                if b.is_tool_result && sc.answers(b.tuid, "idle_sweep.resume_tools") && is_resume_result(text) {
                     continue;
                 }
-                if is_queued_message(&text) {
+                if is_queued_message(text) {
                     continue;
                 }
                 if b.is_tool_result
                     && sc.answers(b.tuid, "idle_sweep.send_tools")
-                    && let Some(name) = inbox_target(&text)
+                    && let Some(name) = inbox_target(text)
                 {
                     sc.event(&name, Kind::Send, ts, seq, "");
                 }

@@ -884,3 +884,15 @@ value = { kind = "counter", unit = "bursts", labels = [] }
 [metric.ask_guard_denied]
 doc = "AskUserQuestion calls the ask guard refused outright because the session kind never asks the user (GH #694), by kind (child, primary)."
 value = { kind = "counter", unit = "calls", labels = ["kind"] }
+
+[metric.transcript_scan_peak_bytes]
+doc = "The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.transcript_scan_waits]
+doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_scan_turn_bypassed]
+doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
+value = { kind = "counter", unit = "requests", labels = [] }

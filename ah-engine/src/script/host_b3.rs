@@ -84,58 +84,98 @@ fn heredoc_at(cmd: &str, i: usize) -> Option<Vec<i64>> {
 /// them (a plain substring, as `indexOf`) come back, in order: a script that skips every other line anyway no longer pulls them
 /// into the interpreter. `None` where `readTail` answers `null`.
 pub(super) fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: &[String]) -> Option<Vec<String>> {
-    let text = read_tail(path, window)?;
-    let pieces = text.split('\n').collect::<Vec<_>>();
-    let last = pieces.len().saturating_sub(1);
-    let mut out = Vec::new();
-    for (i, piece) in pieces.into_iter().enumerate() {
-        let line = if crlf && i != last { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
+    use crate::transcript::scan::{Flow, Window};
+    let mut w = Window::open(path, window)?;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = false;
+    w.lines_ex(|piece, last| {
+        seen = true;
+        // the last piece of the split has no newline after it, so no `\r` goes with a separator
+        let piece = if crlf && !last { piece.strip_suffix(b"\r").unwrap_or(piece) } else { piece };
+        let line = String::from_utf8_lossy(piece);
         if needles.is_empty() || needles.iter().any(|n| line.contains(n.as_str())) {
-            out.push(line.to_string());
+            out.push(line.into_owned());
         }
+        Flow::Next
+    })
+    .ok()?;
+    if !seen && (needles.is_empty() || needles.iter().any(|n| n.is_empty())) {
+        // a cut window with no newline in it: `readTail` answers the empty text, which splits into one empty piece
+        out.push(String::new());
     }
     Some(out)
 }
 
 /// `tailLinesNewest(path, window, crlf, needles, max)`: the same lines as `tailLines`, newest first, at most `max` of them (`0` = no
 /// cap): a script that only wants the newest line of some kind no longer pulls every matching line of the window into the interpreter.
-/// `None` where `readTail` answers `null`.
+/// The window is read backward in blocks and the read stops at the `max`th match. `None` where `readTail` answers `null`.
 pub(super) fn tail_lines_newest(path: &str, window: u64, crlf: bool, needles: &[String], max: usize) -> Option<Vec<String>> {
+    use crate::transcript::scan::{Flow, Window};
     if crate::metrics::recent_on() {
         crate::metrics::bump("tail_newest_reads", &[("mode", crate::defaults::text(if max > 0 { "recent_tel.tail_capped" } else { "recent_tel.tail_full" }))]);
     }
-    let text = read_tail(path, window)?;
-    let mut out = Vec::new();
-    let mut first = true; // the last piece of the split has no newline after it, so no `\r` goes with a separator
-    for piece in text.rsplit('\n') {
-        let line = if crlf && !first { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
-        first = false;
+    let mut w = Window::open(path, window)?;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = false;
+    w.lines_rev_ex(|piece, last| {
+        seen = true;
+        // the last piece of the split has no newline after it, so no `\r` goes with a separator
+        let piece = if crlf && !last { piece.strip_suffix(b"\r").unwrap_or(piece) } else { piece };
+        let line = String::from_utf8_lossy(piece);
         if needles.is_empty() || needles.iter().any(|n| line.contains(n.as_str())) {
-            out.push(line.to_string());
+            out.push(line.into_owned());
             if max != 0 && out.len() >= max {
-                break;
+                return Flow::Stop;
             }
         }
+        Flow::Next
+    })
+    .ok()?;
+    if !seen && (needles.is_empty() || needles.iter().any(|n| n.is_empty())) {
+        // a cut window with no newline in it: `readTail` answers the empty text, which splits into one empty piece
+        out.push(String::new());
     }
     Some(out)
 }
 
 /// `tailHasAny(path, window, needles, lowerNeedles)`: `readTail(path, window)` holds one of `needles` (`indexOf`), or
-/// `readTail(...).toLowerCase()` holds one of `lowerNeedles`. `None` where `readTail` answers `null`.
+/// `readTail(...).toLowerCase()` holds one of `lowerNeedles`. Read line by line (a lowercase never reaches across a newline, and a needle
+/// without one cannot either); a needle that holds a newline takes the whole-window read. `None` where `readTail` answers `null`.
 fn tail_has_any(path: &str, window: u64, needles: &[String], lower_needles: &[String]) -> Option<bool> {
-    let text = read_tail(path, window)?;
-    if needles.iter().any(|n| text.contains(n.as_str())) {
+    use crate::transcript::scan::{Flow, Window};
+    if needles.iter().chain(lower_needles).any(|n| n.contains('\n')) {
+        let text = read_tail(path, window)?;
+        if needles.iter().any(|n| text.contains(n.as_str())) {
+            return Some(true);
+        }
+        if lower_needles.is_empty() {
+            return Some(false);
+        }
+        let lower = text.to_lowercase();
+        return Some(lower_needles.iter().any(|n| lower.contains(n.as_str())));
+    }
+    // the text always exists (maybe empty), so an empty needle is held by it
+    let mut w = Window::open(path, window)?;
+    if needles.iter().chain(lower_needles).any(String::is_empty) {
         return Some(true);
     }
-    if lower_needles.is_empty() {
-        return Some(false);
-    }
-    let lower = text.to_lowercase();
-    Some(lower_needles.iter().any(|n| lower.contains(n.as_str())))
+    let mut hit = false;
+    w.lines(|piece| {
+        let line = String::from_utf8_lossy(piece);
+        hit = needles.iter().any(|n| line.contains(n.as_str()))
+            || (!lower_needles.is_empty() && {
+                let lower = line.to_lowercase();
+                lower_needles.iter().any(|n| lower.contains(n.as_str()))
+            });
+        if hit { Flow::Stop } else { Flow::Next }
+    })
+    .ok()?;
+    Some(hit)
 }
 
 pub(super) fn read_tail(path: &str, window: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
+    let _turn = crate::transcript::scan::permit();
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     crate::load::note_scan(size.min(window));
