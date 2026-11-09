@@ -1884,6 +1884,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `transcript.unsure_io` | `io` |  |  | Short word for a question left unsure because the transcript could not be read. |
 | `transcript.unsure_missing` | `missing` |  |  | Short word for a question left unsure because the transcript is missing or empty. |
 | `transcript.unsure_partial` | `partial` |  |  | Short word for a question left unsure because the window starts before what the store still holds or covers a skipped line. |
+| `transcript.wait_for_build` | `1` |  | flag | 1 makes a request that finds the session's background build queued or running wait for it, at most transcript.wait_ms, and answer from the built session (past the wait it answers unsure and falls back to a fresh read as before), so the requests of a burst share one build and do not each read the window; 0 answers unsure at once. Only with transcript.cold_build_background = 1. |
 | `transcript.wait_ms` | `2000` |  | ms | How long a request waits for another request's refresh of the same session, or for a cold-build permit, before it answers unsure instead of reading the file itself. |
 
 ### gitcache.toml / gitcache
@@ -15276,6 +15277,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `transcript_scan_turn_bypassed` | counter | requests |  | Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer. |
 | `transcript_scan_waits` | counter | requests |  | Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once). |
 | `transcript_store_appended_bytes` | counter | bytes |  | Bytes the transcripts grew by between incremental refreshes. |
+| `transcript_store_build_panics` | counter | builds |  | Background builds that panicked; the worker kept running and the session was cleared. |
+| `transcript_store_build_wait_timeouts` | counter | requests |  | Of those, the ones whose wait ran out (transcript.wait_ms); they answered unsure. |
+| `transcript_store_build_waits` | counter | requests |  | Requests that waited for the background build of their session (transcript.wait_for_build) instead of answering unsure at once. |
 | `transcript_store_bytes` | gauge | bytes |  | Bytes the session stores hold now. |
 | `transcript_store_cold_builds` | counter | builds | path | Session stores built from the transcript file (a first touch with no usable snapshot, or a rebuild), by where the build ran: on the requesting thread (request) or on the background worker (background). |
 | `transcript_store_cold_bytes` | counter | bytes |  | Transcript bytes the cold builds read. |

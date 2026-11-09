@@ -809,6 +809,18 @@ value = { kind = "counter", unit = "builds", labels = ["path"] }
 doc = "Builds not queued for the background worker because its queue (transcript.cold_build_queue_max) was full; the request answered unsure."
 value = { kind = "counter", unit = "builds", labels = [] }
 
+[metric.transcript_store_build_waits]
+doc = "Requests that waited for the background build of their session (transcript.wait_for_build) instead of answering unsure at once."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_store_build_wait_timeouts]
+doc = "Of those, the ones whose wait ran out (transcript.wait_ms); they answered unsure."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_store_build_panics]
+doc = "Background builds that panicked; the worker kept running and the session was cleared."
+value = { kind = "counter", unit = "builds", labels = [] }
+
 [metric.transcript_store_cold_bytes]
 doc = "Transcript bytes the cold builds read."
 value = { kind = "counter", unit = "bytes", labels = [] }

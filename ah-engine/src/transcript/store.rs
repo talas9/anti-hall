@@ -137,6 +137,8 @@ pub struct Cfg {
     pub background: bool,
     /// Most builds waiting for the background worker.
     pub queue_max: usize,
+    /// True when a request that finds its session's background build queued or running waits for it (at most `wait`).
+    pub wait_for_build: bool,
 }
 
 impl Cfg {
@@ -173,6 +175,7 @@ impl Cfg {
             agent_answered_max: num("transcript.agent_answered_calls_max") as usize,
             background: num("transcript.cold_build_background") != 0,
             queue_max: num("transcript.cold_build_queue_max") as usize,
+            wait_for_build: num("transcript.wait_for_build") != 0,
         }
     }
 }
@@ -183,6 +186,9 @@ pub struct Stats {
     cold_builds: AtomicU64,
     cold_builds_background: AtomicU64,
     cold_queue_full: AtomicU64,
+    build_waits: AtomicU64,
+    build_wait_timeouts: AtomicU64,
+    build_panics: AtomicU64,
     cold_bytes: AtomicU64,
     refresh_bytes: AtomicU64,
     appended_bytes: AtomicU64,
@@ -208,6 +214,12 @@ pub struct StatsSnapshot {
     pub cold_builds_background: u64,
     /// Builds not queued because the queue was full.
     pub cold_queue_full: u64,
+    /// Requests that waited for the background build of their session.
+    pub build_waits: u64,
+    /// Of those, the ones that gave up.
+    pub build_wait_timeouts: u64,
+    /// Background builds that panicked.
+    pub build_panics: u64,
     /// Bytes the cold builds read.
     pub cold_bytes: u64,
     /// Bytes the incremental refreshes parsed.
@@ -249,6 +261,9 @@ impl StatsSnapshot {
             ("transcript_store_cold_builds", vec![("path", defaults::text("transcript.path_request"))], self.cold_builds),
             ("transcript_store_cold_builds", vec![("path", defaults::text("transcript.path_background"))], self.cold_builds_background),
             ("transcript_store_cold_queue_full", Vec::new(), self.cold_queue_full),
+            ("transcript_store_build_waits", Vec::new(), self.build_waits),
+            ("transcript_store_build_wait_timeouts", Vec::new(), self.build_wait_timeouts),
+            ("transcript_store_build_panics", Vec::new(), self.build_panics),
             ("transcript_store_cold_bytes", Vec::new(), self.cold_bytes),
             ("transcript_store_refresh_bytes", Vec::new(), self.refresh_bytes),
             ("transcript_store_appended_bytes", Vec::new(), self.appended_bytes),
@@ -630,7 +645,7 @@ struct BusyGuard<'a>(&'a Slot);
 impl Drop for BusyGuard<'_> {
     fn drop(&mut self) {
         *lock(&self.0.busy) = false;
-        self.0.cv.notify_one();
+        self.0.cv.notify_all(); // the worker and requests waiting for its build share this condvar: wake them all
     }
 }
 
@@ -902,7 +917,21 @@ impl Core {
                     st = self.bg.cv.wait(st).unwrap_or_else(|e| e.into_inner());
                 }
             };
-            self.build_queued(&path);
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.build_queued(&path))).is_err() {
+                self.build_panicked(&path);
+            }
+        }
+    }
+
+    /// A build panicked: the path stops being queued (its requests answer from a fresh read or ask again), the half-built session
+    /// is cleared and the worker keeps running.
+    fn build_panicked(&self, path: &Path) {
+        self.stats.build_panics.fetch_add(1, Relaxed);
+        self.bg_done(path);
+        if let Some(slot) = lock(&self.slots).get(path).cloned() {
+            lock(&slot.data).clear();
+            self.adjust_total(slot.bytes.swap(0, SeqCst), 0);
+            slot.cv.notify_all();
         }
     }
 
@@ -923,6 +952,8 @@ impl Core {
             *busy = true;
         }
         let _flight = BusyGuard(&slot);
+        #[cfg(test)]
+        tests::worker_hook(path);
         let mut sess = lock(&slot.data);
         crate::discard::harmless(self.refresh(&mut sess, path, &cfg, Instant::now(), Mode::Background)); // keep: a failed build leaves the session cold, and the next request asks again
         let now_bytes = sess.bytes() as u64;
@@ -952,6 +983,9 @@ impl Core {
             cold_builds: s.cold_builds.load(Relaxed),
             cold_builds_background: s.cold_builds_background.load(Relaxed),
             cold_queue_full: s.cold_queue_full.load(Relaxed),
+            build_waits: s.build_waits.load(Relaxed),
+            build_wait_timeouts: s.build_wait_timeouts.load(Relaxed),
+            build_panics: s.build_panics.load(Relaxed),
             cold_bytes: s.cold_bytes.load(Relaxed),
             refresh_bytes: s.refresh_bytes.load(Relaxed),
             appended_bytes: s.appended_bytes.load(Relaxed),
@@ -1015,49 +1049,71 @@ impl Core {
     pub fn with<R>(&self, path: &Path, now_ms: u64, f: impl FnOnce(&View) -> R) -> Result<R, Unsure> {
         let cfg = self.cfg();
         let deadline = Instant::now() + cfg.wait;
-        let slot = loop {
-            let slot = self.slot(path, now_ms, &cfg);
-            let mut busy = lock(&slot.busy);
-            if *busy {
-                self.stats.waits.fetch_add(1, Relaxed);
-            }
-            while *busy {
-                if self.bg_active(path) {
-                    // the worker is building it: answer unsure at once instead of waiting out the build
-                    return Err(Unsure::Busy);
+        // set once this request has waited for the background build of its session (it waits for one build only)
+        let mut waited = false;
+        'again: loop {
+            let slot = loop {
+                let slot = self.slot(path, now_ms, &cfg);
+                let mut busy = lock(&slot.busy);
+                if *busy {
+                    self.stats.waits.fetch_add(1, Relaxed);
                 }
-                let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    self.stats.wait_timeouts.fetch_add(1, Relaxed);
-                    return Err(Unsure::Busy);
+                let wait_build = cfg.background && cfg.wait_for_build;
+                let mut counted = waited;
+                // a request does not take the slot while the worker has the build queued (it would find the session cold and queue it again)
+                while *busy || (wait_build && self.bg_active(path)) {
+                    if !wait_build && self.bg_active(path) {
+                        // the worker is building it: answer unsure at once instead of waiting out the build
+                        return Err(Unsure::Busy);
+                    }
+                    if wait_build && !counted && self.bg_active(path) {
+                        counted = true;
+                        self.stats.build_waits.fetch_add(1, Relaxed);
+                    }
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        self.stats.wait_timeouts.fetch_add(1, Relaxed);
+                        if counted {
+                            self.stats.build_wait_timeouts.fetch_add(1, Relaxed);
+                        }
+                        return Err(Unsure::Busy);
+                    }
+                    busy = slot.cv.wait_timeout(busy, left).unwrap_or_else(|e| e.into_inner()).0;
                 }
-                busy = slot.cv.wait_timeout(busy, left).unwrap_or_else(|e| e.into_inner()).0;
-            }
+                if slot.retired.load(SeqCst) {
+                    // left the map while this request waited: the map's slot (or a new one) is the one to use. BusyGuard wakes one
+                    // waiter; pass the wakeup on so every other waiter on this dead slot moves to the map's slot too.
+                    slot.cv.notify_all();
+                    continue;
+                }
+                *busy = true;
+                drop(busy);
+                break slot;
+            };
+            let _flight = BusyGuard(&slot);
+            let mut sess = lock(&slot.data);
+            let refreshed = self.refresh(&mut sess, path, &cfg, deadline, Mode::Request);
+            let now_bytes = sess.bytes() as u64;
+            let before = slot.bytes.swap(now_bytes, SeqCst);
+            self.adjust_total(before, now_bytes);
             if slot.retired.load(SeqCst) {
-                // left the map while this request waited: the map's slot (or a new one) is the one to use. BusyGuard wakes one
-                // waiter; pass the wakeup on so every other waiter on this dead slot moves to the map's slot too.
-                slot.cv.notify_all();
-                continue;
+                // the session ended during this refresh: its bytes are no longer anyone's
+                self.adjust_total(slot.bytes.swap(0, SeqCst), 0);
             }
-            *busy = true;
-            drop(busy);
-            break slot;
-        };
-        let _flight = BusyGuard(&slot);
-        let mut sess = lock(&slot.data);
-        let refreshed = self.refresh(&mut sess, path, &cfg, deadline, Mode::Request);
-        let now_bytes = sess.bytes() as u64;
-        let before = slot.bytes.swap(now_bytes, SeqCst);
-        self.adjust_total(before, now_bytes);
-        if slot.retired.load(SeqCst) {
-            // the session ended during this refresh: its bytes are no longer anyone's
-            self.adjust_total(slot.bytes.swap(0, SeqCst), 0);
+            if refreshed == Err(Unsure::Busy) && cfg.background && cfg.wait_for_build && !waited && self.bg_active(path) {
+                // this request queued the build (or found it queued): let the slot go and wait for the build like the requests that follow
+                waited = true;
+                self.stats.build_waits.fetch_add(1, Relaxed);
+                drop(sess);
+                drop(_flight);
+                continue 'again;
+            }
+            refreshed?;
+            let out = f(&View { s: &sess, stats: &self.stats });
+            drop(sess);
+            self.enforce_global(&cfg, path);
+            return Ok(out);
         }
-        refreshed?;
-        let out = f(&View { s: &sess, stats: &self.stats });
-        drop(sess);
-        self.enforce_global(&cfg, path);
-        Ok(out)
     }
 
     fn adjust_total(&self, before: u64, after: u64) {
@@ -1476,6 +1532,25 @@ mod tests {
         });
     }
 
+    /// What the background worker does for one path before it builds it (set by a test; consumed once).
+    pub(super) enum Hook {
+        Panic,
+        Delay(Duration),
+    }
+    static HOOKS: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
+
+    pub(super) fn worker_hook(path: &Path) {
+        let hook = {
+            let mut h = lock(&HOOKS);
+            h.iter().position(|(p, _)| p == path).map(|i| h.remove(i).1)
+        };
+        match hook {
+            Some(Hook::Panic) => panic!("injected build panic"),
+            Some(Hook::Delay(d)) => std::thread::sleep(d),
+            None => {}
+        }
+    }
+
     fn line(i: usize, pad: usize) -> String {
         format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"prompt-{i:05} {}\"}}}}\n", "x".repeat(pad))
     }
@@ -1546,5 +1621,60 @@ mod tests {
         PROBE.with(|p| *p.borrow_mut() = None);
         let s = st.stats();
         assert_eq!((s.sessions, s.bytes), (0, 0), "{s:?}");
+    }
+    fn bg_cfg() -> Cfg {
+        let mut c = cfg_with_budget(1 << 20);
+        c.background = true;
+        c.wait = Duration::from_secs(10);
+        c
+    }
+
+    fn file_of(d: &Dir) -> PathBuf {
+        let f = d.0.join("s.jsonl");
+        std::fs::write(&f, (0..30).map(|i| line(i, 400)).collect::<String>()).unwrap();
+        f
+    }
+
+    /// A request that finds its session's build queued or running waits for it and answers from the built session.
+    #[test]
+    fn a_request_waits_for_the_background_build_of_its_session() {
+        let d = Dir::new("bgwait");
+        let f = file_of(&d);
+        lock(&HOOKS).push((f.clone(), Hook::Delay(Duration::from_millis(300))));
+        let mut cfg = bg_cfg();
+        cfg.wait_for_build = true;
+        let st = Arc::new(Store::with_cfg(cfg, None));
+        let hs: Vec<_> = (0..3)
+            .map(|_| {
+                let (st, f) = (st.clone(), f.clone());
+                std::thread::spawn(move || st.with(&f, 0, |v| v.size()))
+            })
+            .collect();
+        for h in hs {
+            assert!(h.join().unwrap().is_ok(), "a request answered unsure instead of waiting for the build");
+        }
+        let s = st.stats();
+        assert_eq!((s.cold_builds, s.cold_builds_background), (0, 1), "{s:?}");
+    }
+
+    /// A build that panics does not take the worker down or leave its path queued for ever.
+    #[test]
+    fn a_panicking_build_leaves_the_path_buildable() {
+        let d = Dir::new("bgpanic");
+        let f = file_of(&d);
+        lock(&HOOKS).push((f.clone(), Hook::Panic));
+        let mut cfg = bg_cfg();
+        cfg.wait_for_build = false;
+        let st = Store::with_cfg(cfg, None);
+        assert_eq!(st.with(&f, 0, |_| ()), Err(Unsure::Busy));
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if st.with(&f, 1, |_| ()).is_ok() {
+                break;
+            }
+            assert!(Instant::now() < until, "the path still answers Busy after the build panicked: {:?}", st.stats());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(st.stats().build_panics, 1);
     }
 }
