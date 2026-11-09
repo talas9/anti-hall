@@ -32,7 +32,7 @@ value = "⚠️ anti-hall · ah-engine: {hint}. Using the built-in checks instea
 
 [msg.advisory_degraded]
 doc = "Once-per-session notice that the engine is running below full strength. Placeholders: {restarts} self-restarts and {fallbacks} fallbacks to Node in the last {mins} minutes, {log} the event-log path."
-value = "anti-hall engine degraded: {restarts} self-restarts, {fallbacks} Node fallbacks in the last {mins} min (`ah-engine status --json`, log {log})."
+value = "anti-hall engine degraded: {restarts} self-restarts, {fallbacks} hand-backs (calls passed through unchecked) in the last {mins} min (`ah-engine status --json`, log {log})."
 
 [msg.advisory_permanent]
 doc = "Once-per-session advisory for a permanent failure; nothing is ever filed automatically. Placeholders: {reason}, {diagnostics}."
@@ -87,7 +87,7 @@ value = "node fallback output not read to the end"
 
 [msg.fallback_read_timeout]
 doc = "Printed on stderr when the Node fallback finished but its output could not be read to the end in time, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1."
-value = "anti-hall: the Node hook finished but its output was not complete before the deadline; no decision was made for this call"
+value = "anti-hall: the hook finished but its output was not complete before the deadline; no decision was made for this call"
 
 [msg.log_operator_reset]
 doc = "Log detail for `reset`."
@@ -374,8 +374,20 @@ doc = "The {why} of the engine-unreachable notice when the client could not reac
 value = "the engine daemon could not be reached"
 
 [msg.launcher_stale_engine]
-doc = "Printed once per session on stderr by the thin client when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned)."
-value = "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install` (or the anti-hall setup skill) to update it."
+doc = "Printed once per session on stderr by the thin client (and by hooks/install.sh, whose SessionStart call also shows it as the JSON notice) when the installed engine is older than the version the plugin pins (ah-engine.lock): guards written for the newer engine may not run. Placeholders: {have} (installed), {want} (pinned)."
+value = "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install -v` (or the anti-hall setup skill) to update it; if the update fails, the reason is in ~/.anti-hall/ah-engine/bootstrap.log."
+
+[msg.install_defaults_failed]
+doc = "Shown by hooks/install.sh at SessionStart (JSON notice, and once per host process on stderr) when the installed engine could not load this plugin's defaults (its defaults.error is newer than the plugin's defaults): every hook call is then handed back and passes UNCHECKED. Placeholders: {have} (installed engine version, or unknown), {want} (version the plugin pins)."
+value = "anti-hall: the installed engine ({have}) cannot load this plugin's settings (it expects {want}), so the guards are NOT running: every hook call passes through unchecked. Run `ah-hook install -v` to update the engine (or `sh <plugin>/hooks/install.sh --download -v`); the reason, if it fails, is in ~/.anti-hall/ah-engine/bootstrap.log."
+
+[msg.install_engine_missing]
+doc = "Shown by hooks/install.sh at SessionStart (JSON notice, and once per host process on stderr) when the hook client is installed, the engine binary is missing, and a fresh defaults.error exists: the missing engine, not the defaults, is the problem. Placeholders: {have} (installed engine version, or unknown), {want} (version the plugin pins)."
+value = "anti-hall: the engine binary is missing (installed marker: {have}, plugin expects {want}), so the guards are NOT running: every hook call passes through unchecked. Run `sh <plugin>/hooks/install.sh --download -v` (or /anti-hall:activate) to reinstall it; the reason, if it fails, is in ~/.anti-hall/ah-engine/bootstrap.log."
+
+[msg.install_notice_json_template]
+doc = "The JSON object hooks/install.sh prints on stdout for a SessionStart notice (the user sees systemMessage; the model gets additionalContext). {text} is the notice text, JSON-escaped by the script. The backslashes are TOML escapes: the script reads the raw line and removes them."
+value = "{\"systemMessage\":\"{text}\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"{text}\"}}"
 
 [msg.cold_guard_notice]
 doc = "Printed once per session on stderr when a guard event gave up waiting for a cold-starting daemon and was let through unchecked; {event} is the event name."
@@ -384,6 +396,10 @@ value = "anti-hall: the engine was still starting, so this {event} was not check
 [msg.client_skip]
 doc = "Log detail for a hook call that skipped the daemon because a down marker, the breaker or the crash-loop cooldown was active."
 value = "skipped"
+
+[msg.client_no_progress]
+doc = "Log detail for a hook call that stopped waiting for a late reply because the daemon shows no progress on its work. {age} = the progress age in ms (heartbeat age plus the busy worker's silence), `idle` when two successive beats show no busy worker, or `unknown` when the heartbeat carries none; {limit} = client.progress_stale_ms."
+value = "daemon progress age {age} ms (limit {limit} ms): not working on the request, failing open"
 
 [msg.client_hung]
 doc = "Log detail for a hook call that stopped waiting because the daemon's heartbeat is stale, seen for the first time (a suspicion, nothing is signalled). {pid} = the daemon, {age} = the heartbeat's age in ms."
@@ -838,6 +854,10 @@ value = "anti-hall: ignoring unknown --host value"
 [msg.install_notice]
 doc = "The one line per session hooks/install.sh prints on stderr while the thin client is not installed (hook calls pass through unchecked)."
 value = "anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through."
+
+[msg.install_notice_no_client]
+doc = "Like msg.install_notice, for an engine that is installed without its hook client (the 0.300 bootstrap installed only the engine): hooks/install.sh could not install the client. Placeholder: {installer} (the path of install.sh)."
+value = "anti-hall: the engine is installed but its hook client (ah-hook) is missing, so the guards are not running and every hook call passes through unchecked. Run `sh {installer} --download -v` (or /anti-hall:activate) to install it; a failure is logged in ~/.anti-hall/ah-engine/bootstrap.log."
 
 [msg.install_done]
 doc = "Printed by `hooks/install.sh --download` when it installed the binaries. Placeholders: {version}, {triple}, {path}."
@@ -1521,3 +1541,11 @@ value = "ah-engine docs: nothing was generated for format '{what}' (is the plugi
 [msg.docs_write_failed]
 doc = "Printed to stderr when `docs --out` could not write its file. Placeholders: out, err."
 value = "ah-engine docs: could not write '{out}': {err}"
+
+[msg.log_supervised_start]
+doc = "Detail of a supervised_start event: the service manager started this daemon and it won the singleton lock."
+value = "started by the service manager"
+
+[msg.log_sqlite_alloc_failed]
+doc = "Event-log detail when SQLite could not be routed through the engine's allocator (it had already started); it stays on the C library's allocator."
+value = "sqlite already initialised: staying on the C library allocator"

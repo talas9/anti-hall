@@ -276,6 +276,9 @@ pub const STRS: &[(&str, &str)] = &[
     ("paths.base_dir", ".anti-hall"),
     ("paths.state_dir", "ah-engine"),
     ("paths.socket_file", "e.sock"),
+    ("paths.fallback_tmp", "/tmp"),
+    ("paths.private_dir_prefix", "anti-hall-"),
+    ("paths.short_socket_ext", ".sock"),
     ("files.daemon_down_marker", "daemon.down.until"),
     ("files.breaker_until", "breaker.until"),
     ("files.crashloop_until", "crashloop.until"),
@@ -284,7 +287,7 @@ pub const STRS: &[(&str, &str)] = &[
     ("files.launcher_stale_notice", "stale-engine.notice"),
     (
         "msg.launcher_stale_engine",
-        "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install` (or the anti-hall setup skill) to update it.",
+        "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install -v` (or the anti-hall setup skill) to update it; if the update fails, the reason is in ~/.anti-hall/ah-engine/bootstrap.log.",
     ),
     ("install.file_marker", "bootstrap.installed"),
     ("client.cold_guard_kick_event", "ColdStartKick"),
@@ -327,16 +330,22 @@ pub const STRS: &[(&str, &str)] = &[
 ];
 
 /// Per-field number tables (`{ default = .., <Event> = .. }`).
-pub const TABLES: &[(&str, &[(&str, u64)])] = &[(
-    "launcher.wall_soft_ms",
-    &[
-        ("default", 0),
-        ("SessionStart", 1100),
-        ("UserPromptSubmit", 900),
-        ("SessionEnd", 800),
-        ("Stop", 3000),
-    ],
-)];
+pub const TABLES: &[(&str, &[(&str, u64)])] = &[
+    (
+        "launcher.wall_soft_ms",
+        &[
+            ("default", 0),
+            ("SessionStart", 1100),
+            ("UserPromptSubmit", 900),
+            ("SessionEnd", 800),
+            ("Stop", 3000),
+        ],
+    ),
+    (
+        "client.slow_fallback_event_ms",
+        &[("Stop", 9000), ("SubagentStop", 9000)],
+    ),
+];
 
 pub const LISTS: &[(&str, &[&str])] = &[
     ("cli.help_flags", &["--help", "-h"]),

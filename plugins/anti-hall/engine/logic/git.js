@@ -66,7 +66,22 @@ function gitBuildTables() {
   // GH #457: a session trailer key (any value) and a session link on a line of its own or behind a trailer key
   t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
   t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
-  t.expansionPatterns = c('commit_expansion_patterns').map((p) => new RegExp('^(?:' + p + ')'));
+  // the patterns are matched sticky at index k of the whole text, so one that looks BEFORE k (a lookbehind, \b / \B, a `^` anywhere)
+  // would see text it must not. A bad pattern never throws (the git guard is fail-closed, so a throw would block every Bash call):
+  // it is dropped and named once per session in an advisory (S.badExpansion), and the rest keep working. The look-back tokens are
+  // found left to right with escapes (a literal `\\b` is a backslash and a `b`) and character classes (`[^a]`, `[\b]`) skipped over.
+  t.badExpansion = [];
+  t.expansionSticky = [];
+  const lookBack = /(\\[bB]|\(\?<[=!]|\^)|\\[\s\S]|\[(?:\\[\s\S]|[^\]\\])*\]/g;
+  for (const p of c('commit_expansion_patterns')) {
+    let re = null;
+    lookBack.lastIndex = 0;
+    let m = lookBack.exec(p);
+    while (m !== null && m[1] === undefined) m = lookBack.exec(p);
+    if (m === null) { try { re = new RegExp('(?:' + p + ')', 'y'); } catch (e) { re = null; } }
+    if (re === null) t.badExpansion.push(p); else t.expansionSticky.push(re);
+  }
+  if (t.badExpansion.length) { try { ah.metric('git_expansion_pattern_dropped', []); } catch (e) { /* counting never fails a hook */ } }
   t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
   t.pushSkipOpts = set(c('push_skip_opts'));
   t.sameCallSubs = set(c('push_same_call_subs'));
@@ -660,6 +675,12 @@ function unresolvedExpansion(raw0) {
 
 function expansionShown(tail) { return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars')); }
 
+// true when a commit expansion pattern matches at index `k` of `s` (the text from `k` on starts with an expansion)
+function expansionAt(s, k) {
+  for (const re of TB.expansionSticky) { re.lastIndex = k; if (re.test(s)) return true; }
+  return false;
+}
+
 // the allowed form `tail` starts with (the matched text), or null
 function expansionAllowMatch(tail) {
   for (const re of TB.expansionAllow) { const m = re.exec(tail); if (m) return m[0]; }
@@ -679,8 +700,8 @@ function scanExpansionWord(s, i, mode, whole) {
     if (ch === '\\') { i++; continue; }
     if (ch === "'" && mode === 0) { mode = 1; continue; }
     if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    if (!expansionAt(s, i)) continue;
     const tail = s.slice(i);
-    if (!TB.expansionPatterns.some((re) => re.test(tail))) continue;
     const m = expansionAllowMatch(tail);
     if (m === null) {
       if (!whole && /^\$\([ \t]*$/.test(tail)) return { cut: true, end: s.length };
@@ -711,8 +732,7 @@ function heredocSubstClose(s, at, m) {
     const body = h.body;
     for (let k = 0; k < body.length && shown === null; k++) {
       if (body.charAt(k) === '\\') { k++; continue; }
-      const tail = body.slice(k);
-      if (TB.expansionPatterns.some((re) => re.test(tail))) shown = expansionShown(tail);
+      if (expansionAt(body, k)) shown = expansionShown(body.slice(k));
     }
   }
   let k = h.end;
@@ -2070,6 +2090,7 @@ function pushCreditVerdict(ev, lastCdDir) {
       const fresh = unpushedCredit(dir, repo, ev.env, scope, recurse);
       if (fresh.scoped) ah.metric('git_push_scoped', []);
       if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
+      if (scopeOn && !fresh.scoped) ah.metric('git_push_unscoped', ['reason', !proven ? ah.cfg('git.unscoped_reason_unproven') : scope === null ? ah.cfg('git.unscoped_reason_form') : fresh.why || ah.cfg('git.unscoped_reason_query')]);
       S.pushChecks.set(ckey, fresh);
     }
     const r = S.pushChecks.get(ckey);
@@ -2225,7 +2246,8 @@ function pushNarrowDir(cmd, dir) {
   for (const sg of segs) {
     for (const re of res) {
       const m = re.exec(sg);
-      if (m && m[1]) { at = normalizeGuardPath(m[1], at) || m[1]; break; }
+      const tgt = m ? m[m.length - 1] : null; // the target is the last capture group (an optional opening quote and its closing twin come before it)
+      if (tgt) { at = normalizeGuardPath(tgt, at) || tgt; break; }
     }
   }
   return at;
@@ -2277,7 +2299,9 @@ function pushScope(ev) {
     if (!src || refRe.test(src)) return null;
     if (!revs.includes(src)) revs.push(src);
   }
-  return revs.length ? revs : null;
+  if (!revs.length) return null;
+  revs.explicit = true; // the command line names the refspec: git ignores push.default and remote.<name>.push then (pushConfigNarrow)
+  return revs;
 }
 
 // GH #506: true when the repository's configuration cannot make a push send more than the refs its command line names. Git itself
@@ -2293,12 +2317,15 @@ function pushConfigQuery(tplKey, pattern, dir, repo, env) {
   return out.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-function pushConfigNarrow(dir, repo, env) {
+function pushConfigNarrow(dir, repo, env, explicit) {
   for (const p of ah.cfg('git.push_scope_bool_patterns')) {
     const lines = pushConfigQuery('git.push_argv_config_bool', p, dir, repo, env);
     if (lines === null) return false;
     if (lines.some((l) => !/ false$/.test(l))) return false; // true, or anything git did not report as false
   }
+  // GH #593: a refspec on the command line overrides remote.<name>.push and push.default (git reads both only when none is named),
+  // so neither can widen a push that names its refspec; the boolean widening above (mirror, followTags) holds either way
+  if (explicit) return true;
   for (const p of ah.cfg('git.push_scope_any_patterns')) {
     const lines = pushConfigQuery('git.push_argv_config_raw', p, dir, repo, env);
     if (lines === null || lines.length) return false;
@@ -2381,10 +2408,13 @@ function unpushedCredit(dir, repo, env, scope, recurse) {
   // GH #506: a push the command line and the configuration narrow reads only the commits it sends (its refspec sources, or HEAD,
   // not on any remote), so unpushed work on other branches or worktrees neither blocks it nor fills the cap. A scoped query that
   // fails (an unknown revision, a timeout) falls back to every unpushed commit of the repository, never to fewer.
-  if (scope && gitSettingOn('git.setting_push_credit_scope') && pushConfigNarrow(dir, repo, execEnv)) {
-    scan(dir, repo, execEnv, null, scope);
-    if (out.unchecked) { out.unchecked = false; out.over = false; out.hits = []; count = 0; unpushed.clear(); }
-    else out.scoped = true;
+  if (scope && gitSettingOn('git.setting_push_credit_scope')) {
+    if (!pushConfigNarrow(dir, repo, execEnv, scope.explicit === true)) out.why = ah.cfg('git.unscoped_reason_config');
+    else {
+      scan(dir, repo, execEnv, null, scope);
+      if (out.unchecked) { out.unchecked = false; out.over = false; out.hits = []; count = 0; unpushed.clear(); out.why = ah.cfg('git.unscoped_reason_query'); }
+      else out.scoped = true;
+    }
   }
   if (!out.scoped) scan(dir, repo, execEnv, null);
   out.over = out.over || count > cap;
@@ -3451,6 +3481,20 @@ function countBlock(hit) {
   } catch (e) { /* counting never fails a hook */ }
 }
 
+// The config advisory for a dropped commit_expansion_patterns entry: shown once per session (a stamp in the state directory; without a
+// session id, or when the stamp cannot be written, on each call, which is loud rather than silent).
+function badExpansionAdvisory(session, bad) {
+  const msg = text.render(ah.cfg('git.expansion_pattern_advisory'), { shown: bad.map((p) => JSON.stringify(p)).join(', ') });
+  if (!session) return msg;
+  const name = ah.cfg('git.expansion_advisory_state_prefix') + session.replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('replykit.json_ext');
+  const rel = ah.cfg('replykit.state_dir') + '/' + name;
+  let told = false;
+  try { const prev = ah.state.readText(rel); told = prev !== null && prev !== ''; } catch (e) { told = false; }
+  if (told) return '';
+  try { ah.state.writeAtomic(rel, JSON.stringify({ told: bad })); } catch (e) { /* the advisory is shown regardless */ }
+  return msg;
+}
+
 function decide(p, opts, event) {
   try { return decideScan(p, opts, event); } finally { TOK_MEMO.clear(); SEG_MEMO.clear(); }
 }
@@ -3482,6 +3526,10 @@ function decideScan(p, opts, event) {
   if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
   if (S.scriptUnchecked !== null) notes.push(text.render(ah.cfg('git.script_unchecked_advisory'), { file: S.scriptUnchecked }));
   if (S.pushAckNote) notes.push(S.pushAckNote);
+  if (TB.badExpansion.length) {
+    const bad = badExpansionAdvisory(session, TB.badExpansion);
+    if (bad) notes.push(bad);
+  }
   if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
   if (notes.length) {
     return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };

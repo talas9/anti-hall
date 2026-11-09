@@ -8,7 +8,7 @@ fail-fast = false
 default-filter = 'not test(/^memory_soak::/)'
 
 # The pull-request gate (GitHub Actions sets CI=true). Left out, and run by the `nightly` profile instead: the memory soak and the
-# wall-clock benches (script_latency, telemetry_overhead, watch_bench: 62 s, and the DevSwarm scale budget test: 36 s, on the ubuntu job of run 40181393883), which measure the machine and fail on a shared runner, and the heavy
+# wall-clock benches (task_stop_cost is #[ignore]d and test.sh's timed pass runs it, with --run-ignored, only outside this profile, so the nightly tier and local runs get it and the pull-request gate does not; script_latency, telemetry_overhead, watch_bench: 62 s, and the DevSwarm scale budget test: 36 s, on the ubuntu job of run 40181393883), which measure the machine and fail on a shared runner, and the heavy
 # Node parity sweeps (the `heavy-sweeps` group below), which took most of the gate's 56 min; every other parity lane, and every
 # policy gate (compiled logic, hardcoded tunables, process environment, temp leaks, the daemon-survivor check), stays in.
 [profile.ci]

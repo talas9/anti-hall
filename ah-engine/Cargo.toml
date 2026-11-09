@@ -20,7 +20,7 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 # Jev (D34-D38): a pure-Rust HTTPS client. `ureq` over `rustls` (ring provider, webpki roots) is blocking, which suits the
 # daemon's thread model, has no OpenSSL or async runtime, and exposes the knobs the key rules need (no redirects, no proxy,
 # one global deadline). `ring` is already in the tree through rustls; it is named here only for its SHA-256.
-ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 ring = { version = "0.17", default-features = false }
 # The atomically swapped snapshot of the shipped defaults that every settings read loads (src/defaults.rs, #195). Chosen by A/B
 # against the std `RwLock<Option<Arc<_>>>` it replaces: equal uncontended (~30 ns a read), 84 ns against 733 ns a read with 8
@@ -81,7 +81,8 @@ opt-level = 3
 lto = true
 strip = true
 codegen-units = 1
-# Debug symbols ship SEPARATELY (macOS: ah-engine.dSYM beside the binary; Linux: a packed .dwp), so `sample`, Instruments and
+# Debug symbols ship SEPARATELY (macOS: ah-engine.dSYM beside the binary; Linux: ah-engine.debug, the unstripped build that
+# scripts/build.sh keeps with split-symbols.sh before it strips the shipped binary; build.sh overrides strip/split-debuginfo there), so `sample`, Instruments and
 # crash backtraces can be symbolised while the shipped binary stays stripped. Line tables and function names only: enough to
 # name every frame. Measured 2026-10-15 (macOS arm64): the stripped binary grows 16.6 KB (0.17%, debug info changes a few
 # codegen decisions under LTO); the dSYM is 53 MB ("limited" gives 90 MB for the same frames).

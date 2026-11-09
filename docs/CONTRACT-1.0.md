@@ -227,7 +227,7 @@ Not registered in `hooks.json` and so not covered: `doctor.js` (a CLI, section 2
 `agent-watchdog.js` (a manual helper), the `*-refresh.js` workers, and the shared modules
 `skip-guard.js`, `coordinator-detect.js`, `omc-detect.js`, `limit-conserve.js`,
 `session-history-index.js` and `verify-first-core.js` (libraries). The one monitor,
-`devswarm-wake-watch` (`plugins/anti-hall/monitors/monitors.json`), is stable by name.
+`wake-watch` (`plugins/anti-hall/monitors/monitors.json`; it runs `agents wake-watch --auto`, one process for the agent and the mesh wake rows), is stable by name. The former monitor names `devswarm-wake-watch` and `agent-wake-watch` and the old verb `devswarm wake-watch` are aliases of it: they run the same merged watcher (the verb prints a deprecation note on stderr only).
 
 **Kill switches**, narrowest first:
 

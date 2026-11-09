@@ -35,6 +35,10 @@ use std::time::{Duration, Instant};
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
 static INT: AtomicBool = AtomicBool::new(false);
+/// The first drain was asked for by an outside SIGTERM (not by a stop request, a handoff or the idle timer).
+static TERM_DRAIN: AtomicBool = AtomicBool::new(false);
+/// The service manager started this daemon (start reason launchd or systemd): it exits the way its supervisor expects.
+static SUPERVISED: AtomicBool = AtomicBool::new(false);
 extern "C" fn on_hup(_: libc::c_int) {
     HUP.store(true, SeqCst);
 }
@@ -420,6 +424,7 @@ impl Shared {
             "allocator": crate::memstat::active_allocator().as_str(),
             "allocator_config": self.cfg().effective.text("diagnostics.allocator"),
             "allocator_stats": crate::memdiag::allocator_stats(),
+            "sqlite_global_allocator": crate::sqlalloc::routed(),
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
@@ -902,6 +907,16 @@ pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u6
         });
     }
     t.with_metrics(|m| {
+        if let Some(store) = crate::transcript::store::global_if_started() {
+            store.publish(m);
+        }
+        crate::memstat::note_burst_sampled();
+        static BURSTS_PUBLISHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seen = crate::memstat::bursts();
+        let was = BURSTS_PUBLISHED.swap(seen, std::sync::atomic::Ordering::Relaxed);
+        if seen > was {
+            m.add("heap_burst_total", &[], seen - was);
+        }
         let l = [("check", check), ("size", size.as_str())];
         m.add("check_bytes_read", &l, bytes);
         m.add("check_cpu_us", &[("check", check)], cpu);
@@ -1623,6 +1638,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
     telemetry::stage_begin();
     crate::failopen::begin_request();
+    crate::burst::begin();
     let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
@@ -1638,6 +1654,16 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     let soft_scripts = crate::script::take_soft_overruns();
     if soft_scripts > 0 {
         sh.telemetry.with_metrics(|m| m.add("script_soft", &[], soft_scripts));
+    }
+    let lim = crate::script::take_limit_counts();
+    if lim != crate::script::LimitCounts::default() {
+        sh.telemetry.with_metrics(|m| {
+            m.add("script_limit_trips", &[("kind", "soft")], lim.soft_trips);
+            m.add("script_limit_trips", &[("kind", "hard")], lim.hard_trips);
+            m.add("script_unloads", &[], lim.unloads);
+            m.add("script_reloads", &[], lim.reloads);
+            m.add("script_module_loads", &[], lim.module_loads);
+        });
     }
     let gone_skips = crate::deadline::take_client_gone_skips();
     if gone_skips > 0 {
@@ -1687,9 +1713,18 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         SLOW_REPLIES.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("slow_replies", &[]));
         sh.telemetry.with_metrics(|m| m.inc("deadline_soft", &[]));
+        // #684: the client's read timed out at its fail-fast wait (EAGAIN) and it kept waiting; did the late verdict reach it?
+        let taken = match &res {
+            Some(ResWait::Got(..)) => true,
+            Some(ResWait::Missing(_)) => false,
+            None => delivered,
+        };
+        let outcome = defaults::text(if taken { "daemon.wouldblock_outcome_delivered" } else { "daemon.wouldblock_outcome_lost" });
+        sh.telemetry.with_metrics(|m| m.inc("wouldblock_retries", &[("outcome", outcome)]));
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
+    crate::burst::request_end(&crate::burst::Ctx { event: &event, busy: sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64 });
     crate::failopen::drain_into(&sh.telemetry);
     crate::checks::guardkit::settings::drain_invalid_into(&sh.telemetry);
     crate::failopen::sync_notice(false);
@@ -1791,6 +1826,12 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     if first {
         crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
         crate::wire::withdraw();
+        // the session stores are written for the next start: a restart then parses only what was appended meanwhile
+        std::thread::spawn(|| {
+            if let Some(store) = crate::transcript::store::global_if_started() {
+                store.persist_all();
+            }
+        });
     }
     let armed = if forced_exit { &sh.forced_timer } else { &sh.drain_timer };
     if armed.swap(true, SeqCst) {
@@ -1808,8 +1849,19 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
         health::clear_marker();
         health::log_event("exit", code, &why);
         health::flush_log(); // the line is only queued for the log thread; process::exit below would drop it
-        std::process::exit(defaults::num("daemon.forced_exit_code") as i32);
+        std::process::exit(if forced_exit { defaults::num("daemon.forced_exit_code") as i32 } else { clean_exit_code() });
     });
+}
+
+/// The exit status of a drain that was not forced: 0, except a daemon its supervisor started that an outside SIGTERM drained
+/// (`daemon.sigterm_exit_code`, so the supervisor starts it again), and a clean drain cut off by the timer
+/// (`daemon.drain_timeout_exit_code`).
+fn clean_exit_code() -> i32 {
+    drain_exit_code(SUPERVISED.load(SeqCst), TERM_DRAIN.load(SeqCst))
+}
+
+fn drain_exit_code(supervised: bool, by_term: bool) -> i32 {
+    if supervised && by_term { defaults::num("daemon.sigterm_exit_code") as i32 } else { defaults::num("daemon.drain_timeout_exit_code") as i32 }
 }
 
 /// The exit timer fired: when the database close is under way, wait for it to finish (at most `max`). True when it finished.
@@ -1835,6 +1887,13 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
     now.saturating_sub(beat) > stall_ms
 }
 
+/// How many ms the longest-silent busy worker has gone without progress (`None` = no worker is busy): what the heartbeat file carries,
+/// so a client waiting past its fail-fast deadline can tell a daemon that is working on its request from one that is not.
+fn oldest_busy_silence(sh: &Shared) -> Option<u64> {
+    let now = sh.ms();
+    sh.busy_since.iter().map(|b| b.load(SeqCst)).filter(|since| *since != 0).map(|since| now.saturating_sub(since - 1)).max()
+}
+
 fn watchdog(sh: Arc<Shared>) {
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
@@ -1844,7 +1903,7 @@ fn watchdog(sh: Arc<Shared>) {
     health::heartbeat_init();
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
-        health::heartbeat();
+        health::heartbeat(oldest_busy_silence(&sh));
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
         // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
         // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
@@ -2158,7 +2217,15 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
 
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
-    health::record_failure("start_fail", code, detail);
+    let recorded = health::record_failure("start_fail", code, detail);
+    // A start by the service manager that keeps failing obeys the same crash-loop rule: the failure above counts (start_fail is a
+    // crashy kind), and once the rule trips this exits 0, which launchd (KeepAlive SuccessfulExit=false, no start limit) leaves alone
+    // until the interval tick asks again after the cooldown. Below the threshold it exits 78 and the manager starts it again.
+    // When the state directory cannot be written the failure cannot be counted and the rule would never trip, so a supervised start
+    // exits 0 at once: the interval tick retries, instead of the manager re-running it every throttle interval for ever.
+    if SUPERVISED.load(SeqCst) && (!recorded || health::crashloop_tripped(&crate::config::ClientConfig::from_env())) {
+        std::process::exit(defaults::num("daemon.drain_timeout_exit_code") as i32);
+    }
     std::process::exit(defaults::num("daemon.start_fail_exit_code") as i32);
 }
 
@@ -2166,9 +2233,35 @@ fn io_code(e: &std::io::Error) -> String {
     format!("os{}", e.raw_os_error().unwrap_or(0))
 }
 
+/// The supervision counters of this start: `supervised_start` (by start reason) when the service manager started this daemon, and
+/// `unit_kickstart` (by code) for the clients' asks to the service manager since the previous daemon started. Those asks are
+/// logged by the hook client process, which has no metrics, so the daemon counts them from the event log when it starts.
+fn count_supervision(sh: &Shared, supervised: bool, start_reason: &str) {
+    if supervised {
+        sh.telemetry.with_metrics(|m| m.inc("supervised_start", &[("reason", start_reason)]));
+    }
+    let events = health::events();
+    let (start, ask) = (defaults::text("health.start_kind"), defaults::text("units.kickstart_log_kind"));
+    // the current start is already logged; the one before it bounds the asks that led to this daemon
+    let since = events.iter().rev().filter(|e| e.kind == start).nth(1).map_or(0, |e| e.ts);
+    for e in events.iter().filter(|e| e.kind == ask && e.ts > since) {
+        sh.telemetry.with_metrics(|m| m.inc("unit_kickstart", &[("code", e.code.as_str())]));
+    }
+}
+
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
-pub fn serve(start_reason: &str) {
+pub fn serve(start_reason: &str) -> i32 {
     crate::crash::mark_daemon(true);
+    // set before the first thing that can fail, so a failed start by the service manager is recognised as one (see `start_fail`)
+    SUPERVISED.store(crate::setup::supervise::supervised_reason(start_reason), SeqCst);
+    // SQLite takes its allocator when it first starts, so this comes before anything opens a database
+    if defaults::num("storage.sqlite_use_global_allocator") != 0 {
+        let routed = crate::sqlalloc::route_through_global_allocator();
+        crate::metrics::bump("sqlite_alloc_routing", &[("result", if routed { "routed" } else { "failed" })]);
+        if !routed {
+            health::log_event("sqlite", "alloc", defaults::text("msg.log_sqlite_alloc_failed"));
+        }
+    }
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
     let initial_parent = unsafe { libc::getppid() };
@@ -2192,7 +2285,7 @@ pub fn serve(start_reason: &str) {
                     &[("path", &sock.display()), ("pid", &holder.pid), ("live_engine", &holder.live_engine), ("answers", &holder.answers)]
                 )
             );
-            return;
+            return 0;
         }
         Err(e) => start_fail(&io_code(&e), &defaults::render("msg.log_lock_fail", &[("path", &lock_path.display()), ("err", &e)])),
     };
@@ -2200,7 +2293,17 @@ pub fn serve(start_reason: &str) {
     // pid recorded in the lock file is still a live engine (flock not honoured here), do not steal.
     let prev: u32 = std::fs::read_to_string(&lock_path).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
     if prev != 0 && prev != std::process::id() && health::pid_is_engine(prev) && crate::client::ping(&sock).is_some() {
-        return;
+        return 0;
+    }
+    // A start by the service manager obeys the crash-loop rule the clients obey, and counts as a daemon start for its spawn-rate
+    // half: a binary that dies at once is started again at the manager's throttle, so without this nothing would ever stop that
+    // loop. Stopped, `serve` exits 0 (which the supervisor leaves alone) and the interval tick asks again after the cooldown.
+    let supervised = SUPERVISED.load(SeqCst);
+    if supervised {
+        if health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
+            return 0;
+        }
+        health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));
     }
     crate::memdiag::apply_decay_if_untuned();
     crate::jev::shared::set_resident();
@@ -2245,6 +2348,7 @@ pub fn serve(start_reason: &str) {
     crate::dispatch::sweep_stale_spool();
 
     crate::mem::register_defaults_leak();
+    crate::transcript::store::register_mem();
     let rules_path = paths::rules_file();
     let host_rules = crate::layers::load_host_rules(&rules_path, defaults::env_var("rules").is_some()).map(|(r, _)| r).unwrap_or_default();
     let mut sh = Shared::new(cfg, &crate::version(), host_rules, rules_path);
@@ -2263,6 +2367,8 @@ pub fn serve(start_reason: &str) {
     drain_spool(&sh); // writes spooled while the engine was down, before any new one
     crate::memstat::configure_measure_from_defaults(); // the per-call memory knobs, from the defaults the owner's files overlay
     let sh = Arc::new(sh);
+    crate::setup::supervise::trim_unit_log(&paths::dir());
+    count_supervision(&sh, supervised, start_reason);
     {
         let s = sh.clone();
         crate::db::set_panic_restart(Some(Arc::new(move |thread| {
@@ -2331,10 +2437,12 @@ pub fn serve(start_reason: &str) {
     }
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
-    health::log_event("exit", "clean", "drained");
+    let by_term = TERM_DRAIN.load(SeqCst);
+    health::log_event("exit", if by_term { "sigterm" } else { "clean" }, if by_term { defaults::text("msg.exit_reason_sigterm") } else { "drained" });
     health::flush_log();
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
+    if by_term && supervised { drain_exit_code(true, true) } else { 0 }
 }
 
 /// Start the DevSwarm wiring (lane dswire): nothing at all unless DevSwarm is detected and `devswarm_rt.mode` is not `off`.
@@ -2577,6 +2685,9 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             std::thread::sleep(Duration::from_millis(st)); // test hook: simulate a wedged loop
         }
         if TERM.swap(false, SeqCst) {
+            if !sh.draining.load(SeqCst) {
+                TERM_DRAIN.store(true, SeqCst);
+            }
             begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
         }
         if INT.swap(false, SeqCst) {
@@ -2718,6 +2829,14 @@ mod tests {
         assert!(loop_stalled(0, false, 61_000, 5_000, 60_000), "a start that never reaches the loop is still caught");
         assert!(loop_stalled(10_000, false, 15_001, 5_000, 60_000), "a running loop silent past stall_ms is a stall");
         assert!(!loop_stalled(10_000, false, 15_000, 5_000, 60_000));
+    }
+
+    #[test]
+    fn an_outside_sigterm_exits_non_zero_only_for_a_supervised_daemon_and_a_cut_off_clean_drain_exits_zero() {
+        assert_eq!(drain_exit_code(true, true), 75, "the supervisor starts it again");
+        assert_eq!(drain_exit_code(false, true), 0, "a daemon nobody supervises exits clean");
+        assert_eq!(drain_exit_code(true, false), 0, "a stop, handoff or idle drain that ran long is not restarted");
+        assert_ne!(defaults::num("daemon.sigterm_exit_code"), defaults::num("daemon.drain_timeout_exit_code"));
     }
 
     #[test]

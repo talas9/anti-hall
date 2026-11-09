@@ -96,7 +96,31 @@ fn take_queue(h: &Path, key: &str) {
     std::fs::write(cur, queue(h, key).len().to_string()).unwrap();
 }
 
+/// Every session on disk has a live wake-watch (its stamp renewed as of the clock), so the re-arm line stays out of tests about other
+/// signals; `ticks_unarmed` leaves the stamps dead for the tests about that line.
+fn arm_all(e: &Env) {
+    if let Ok(dir) = std::fs::read_dir(e.home.join(".claude/projects/p")) {
+        for f in dir.flatten() {
+            let p = f.path();
+            if p.extension().is_some_and(|x| x == "jsonl")
+                && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+            {
+                arm_wake(e, stem);
+            }
+        }
+    }
+}
+
 fn ticks(h: &Path, st: &mut State, at: &[u64]) {
+    for n in at {
+        let e = env(h, *n);
+        arm_all(&e);
+        tick(&e, st);
+    }
+}
+
+/// Like `ticks`, with the wake stamps left dead.
+fn ticks_unarmed(h: &Path, st: &mut State, at: &[u64]) {
     for n in at {
         tick(&env(h, *n), st);
     }
@@ -868,7 +892,7 @@ fn background_work_with_no_wake_path_gets_an_arm_reminder() {
     // A child doing work has a live launching session.
     register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
-    ticks(&h, &mut st, &[n, n + MIN]);
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     let f = agent(&st, "parent").flags.get("monitor_unarmed").expect("monitor_unarmed");
     assert_eq!(f.evidence, 1);
     let q = queue(&h, "parent");
@@ -883,6 +907,202 @@ fn an_armed_monitor_keeps_the_reminder_quiet() {
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(!agent(&st, "parent").flags.contains_key("monitor_unarmed"));
+}
+
+// ---- wake-watch auto re-arm (T-0e) --------------------------------------------------------------------------
+
+/// A main session with no child and no background task at all.
+fn idle_main_alone(tag: &str, n: u64) -> PathBuf {
+    let h = home(tag);
+    write(&sess(&h, "s1"), &[prompt(n - 5 * MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "done"}]), Some("end_turn"))]);
+    register(&h, std::process::id(), "s1", "busy", n);
+    h
+}
+
+/// A main session with one running subagent: something for a wake-watch to watch.
+fn idle_main(tag: &str, n: u64) -> PathBuf {
+    let h = idle_main_alone(tag, n);
+    write(
+        &h.join(".claude/projects/p/s1/subagents/agent-bg1.jsonl"),
+        &[prompt(n - 5 * MIN, "/w"), asst(n - MIN, "b1", 5, 5, json!([{"type": "text", "text": "running"}]), None)],
+    );
+    h
+}
+
+fn arm_reminders(h: &Path) -> Vec<Value> {
+    queue(h, "s1").into_iter().filter(|r| r["signal"] == "monitor_unarmed").collect()
+}
+
+#[test]
+fn a_dead_watcher_with_a_live_child_gets_one_exact_rearm_line_and_is_then_rate_limited() {
+    let n = now0();
+    let h = idle_main("rearm-dead", n);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 3 * MIN, n + 4 * MIN]);
+    let rows = arm_reminders(&h);
+    assert_eq!(rows.len(), 1, "one prompt, then the cooldown holds: {rows:?}");
+    let t = rows[0]["text"].as_str().unwrap();
+    assert!(t.contains("~/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto 2>&1") && t.contains("1800000") && t.contains("re-arm"), "{t}");
+    // once the cooldown has passed (and the first line was taken) it is asked again
+    take_queue(&h, "s1");
+    ticks_unarmed(&h, &mut st, &[n + 30 * MIN]);
+    assert_eq!(arm_reminders(&h).len(), 2);
+}
+
+/// A main whose only child is idle with an open task is exactly the session an idle-open wake row is for: it is told to re-arm.
+/// Fails on the old code (only `running` children were counted).
+#[test]
+fn a_dead_watcher_with_an_idle_child_holding_an_open_task_is_asked_to_rearm() {
+    let h = home("rearm-idle-child");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 3 * MIN]);
+    assert!(agent(&st, "w1").open && !agent(&st, "w1").running);
+    let rows: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "monitor_unarmed").collect();
+    assert_eq!(rows.len(), 1, "{:?}", queue(&h, "parent"));
+}
+
+/// A panic of the agent half of the merged watcher is not silent: one stdout line names the half, the counter moves, and the half
+/// counts as never armed (the other half keeps the process).
+#[test]
+fn a_panic_of_the_agent_half_prints_one_line_naming_it_and_is_counted() {
+    crate::metrics::reset_this_thread();
+    let mut lines: Vec<String> = Vec::new();
+    let code = wake::guarded(|| -> Option<i32> { panic!("boom") }, &mut |l| lines.push(l.to_string()));
+    assert_eq!(code, None);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[agent-wake]") && lines[0].contains("agent half") && lines[0].contains("crashed"), "{lines:?}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("merged_watch_failed", &[("half", "agent")]), 1);
+    // a half that returns normally prints nothing and keeps its code
+    let mut quiet: Vec<String> = Vec::new();
+    assert_eq!(wake::guarded(|| Some(0), &mut |l| quiet.push(l.to_string())), Some(0));
+    assert!(quiet.is_empty());
+}
+
+/// #614: the re-arm line asked for an action the session had no use for: with no live child and no background task there is nothing to
+/// wake it for. Fails on the old code (monitor_min_bg = 0 raised the flag for any live main session).
+#[test]
+fn a_dead_watcher_with_no_live_child_is_not_asked_to_rearm_and_the_suppression_is_counted() {
+    let n = now0();
+    let h = idle_main_alone("rearm-nochild", n);
+    let mut st = State::default();
+    crate::metrics::reset_this_thread();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 3 * MIN]);
+    assert!(arm_reminders(&h).is_empty() && !agent(&st, "s1").flags.contains_key("monitor_unarmed"), "{:?}", queue(&h, "s1"));
+    assert!(crate::metrics::bumped_on_this_thread("monitor_nag_suppressed", &[("reason", "no_live_child")]) >= 1);
+    // the moment a child runs, the same dead watcher is asked for
+    write(
+        &h.join(".claude/projects/p/s1/subagents/agent-bg1.jsonl"),
+        &[prompt(n + 4 * MIN, "/w"), asst(n + 5 * MIN - 1000, "b1", 5, 5, json!([{"type": "text", "text": "running"}]), None)],
+    );
+    ticks_unarmed(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN, n + 7 * MIN]);
+    assert_eq!(arm_reminders(&h).len(), 1, "{:?}", queue(&h, "s1"));
+}
+
+#[test]
+fn a_session_inside_the_start_up_grace_is_not_asked_to_rearm() {
+    let n = now0();
+    let h = idle_main("rearm-grace", n);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN / 4]);
+    assert!(!agent(&st, "s1").flags.contains_key("monitor_unarmed"));
+}
+
+#[test]
+fn a_live_watcher_keeps_the_rearm_line_silent_and_a_recovery_is_counted() {
+    let n = now0();
+    let h = idle_main("rearm-live", n);
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let e = env(&h, t);
+        arm_wake(&e, "s1");
+        tick(&e, &mut st);
+    }
+    assert!(arm_reminders(&h).is_empty() && !agent(&st, "s1").flags.contains_key("monitor_unarmed"));
+    // the watcher dies: asked once; it comes back: the flag clears as recovered
+    ticks_unarmed(&h, &mut st, &[n + 10 * MIN, n + 11 * MIN, n + 12 * MIN]);
+    assert_eq!(arm_reminders(&h).len(), 1);
+    let e = env(&h, n + 13 * MIN);
+    arm_wake(&e, "s1");
+    tick(&e, &mut st);
+    assert!(!agent(&st, "s1").flags.contains_key("monitor_unarmed"));
+    assert_eq!(st.day(&e).recovered, 1);
+}
+
+#[test]
+fn a_switched_off_watcher_is_said_once_and_never_asked_for() {
+    let n = now0();
+    let h = idle_main("rearm-off", n);
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN, n + 40 * MIN, n + 90 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        tick(&e, &mut st);
+    }
+    assert!(arm_reminders(&h).is_empty());
+    let off: Vec<Value> = queue(&h, "s1").into_iter().filter(|r| r["signal"] == "monitor_off").collect();
+    assert_eq!(off.len(), 1, "{off:?}");
+    assert!(off[0]["text"].as_str().unwrap().contains("agents.wakeWatch=false"));
+}
+
+/// Switch the watcher off through the plugin option the DevSwarm setting reads (`devswarm.wakeWatch`).
+fn devswarm_watch_off(e: &mut Env) {
+    let key = format!("{}{}", defaults::text("guardkit.plugin_option_prefix"), "devswarm_wake_watch".to_ascii_uppercase());
+    e.settings.env.insert(key, "false".into());
+}
+
+#[test]
+fn a_workspace_with_an_unarmed_lock_and_the_switch_off_gets_the_off_notice_not_the_arm_command() {
+    let h = home("ws-off");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN));
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        devswarm_watch_off(&mut e);
+        tick(&e, &mut st);
+    }
+    assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(false));
+    assert!(!agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
+    let q = queue(&h, "sessW");
+    assert!(q.iter().all(|r| r["signal"] != "monitor_unarmed"), "{q:?}");
+    let off: Vec<&Value> = q.iter().filter(|r| r["signal"] == "monitor_off").collect();
+    assert_eq!(off.len(), 1, "{q:?}");
+    let t = off[0]["text"].as_str().unwrap();
+    assert!(t.contains("devswarm.wakeWatch=false") && !t.contains("--auto"), "{t}");
+}
+
+#[test]
+fn a_workspace_follows_devswarm_wake_watch_not_agents_wake_watch() {
+    let h = home("ws-own-switch");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN));
+    let mut st = State::default();
+    // agents.wakeWatch off must not silence a workspace whose own switch is on
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_WAKE_WATCH".into(), "false".into());
+        tick(&e, &mut st);
+    }
+    assert!(agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
+    assert!(queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_off"));
+}
+
+#[test]
+fn codex_is_never_asked_to_arm_a_monitor() {
+    let h = home("rearm-codex");
+    let n = now0();
+    let day = h.join(".codex/sessions/2026/10/22");
+    std::fs::create_dir_all(&day).unwrap();
+    let meta = json!({"type": "session_meta", "payload": {"id": "01a16132-cccc", "cwd": "/cx"}}).to_string();
+    write(&day.join("rollout-2026-10-22T05-21-20-01a16132-cccc.jsonl"), &[meta, json!({"type": "response_item", "payload": {}}).to_string()]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "01a16132-cccc");
+    assert_eq!(a.kind, "codex");
+    assert!(a.flags.is_empty(), "{:?}", a.flags.keys().collect::<Vec<_>>());
 }
 
 // ---- DevSwarm -----------------------------------------------------------------------------------------------
@@ -930,6 +1150,8 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
     .unwrap();
     e.now_ms = n + MIN;
     tick(&e, &mut st);
+    e.now_ms = n + 2 * MIN;
+    tick(&e, &mut st);
     let a = agent(&st, "sessW");
     assert_eq!(a.kind, kind_name("workspace"));
     assert_eq!(a.step, "Wire telemetry export", "the plan step is the declared step");
@@ -944,12 +1166,12 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
             && !rows[0]["text"].as_str().unwrap().contains("node "),
         "{rows:?}"
     );
-    assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
+    assert!(rows[0]["text"].as_str().unwrap().contains("agents wake-watch --auto"), "{rows:?}");
     // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
     // delivery that reaches it; it is a session, and its hook delivers the queue
     let q = queue(&h, "sessW");
     assert_eq!(q.len(), 1, "{q:?}");
-    assert!(q[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto") && !q[0]["text"].as_str().unwrap().contains("node "), "{q:?}");
+    assert!(q[0]["text"].as_str().unwrap().contains("agents wake-watch --auto") && !q[0]["text"].as_str().unwrap().contains("node "), "{q:?}");
 }
 
 #[test]
@@ -1411,7 +1633,7 @@ fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watche
             std::fs::File::options().write(true).open(&stamp).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(n)).unwrap();
         }
         let mut st = State::default();
-        ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+        ticks_unarmed(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
         (agent(&st, "m1").flags.contains_key("monitor_unarmed"), queue(&h, "m1"))
     };
     let (flagged, q) = run("unarmed-main", false);
@@ -1681,6 +1903,41 @@ fn a_primary_is_not_told_to_arm_the_devswarm_watcher_it_declines_while_idle() {
     assert!(outbox(&h).is_empty() && queue(&h, "sessW").iter().all(|r| !r["text"].as_str().unwrap().contains("wake-watch --auto")), "nobody is told to arm it");
 }
 
+/// #614: the re-arm line must be judged by the very predicate `wake-watch --auto` arms by (`resolve_identity`). A Primary session
+/// whose recorded directory is a subdirectory of its checkout is a Primary to the watcher (it declines on idle-skip), so the nag may
+/// not ask for the arming the watcher refuses.
+#[test]
+fn a_primary_the_watcher_declines_is_not_nagged_whatever_directory_form_it_is_recorded_under() {
+    let h = home("primary-ws-subdir");
+    let n = now0();
+    devswarm(&h, n, None);
+    let checkout = h.join("checkout");
+    std::fs::create_dir_all(checkout.join("sub")).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&checkout).status().unwrap().success());
+    let sub = checkout.join("sub");
+    let pid = crate::meshw::ident::primary_workspace_id(checkout.to_str().unwrap()).unwrap();
+    std::fs::remove_file(h.join(".anti-hall/devswarm/workspaces/ws1.json")).unwrap();
+    std::fs::write(h.join(format!(".anti-hall/devswarm/workspaces/{pid}.json")), json!({"id": pid, "sessionId": "sessW", "worktreePath": sub}).to_string())
+        .unwrap();
+    // the premise: the watcher itself reads this session as a Primary with no live child, and declines
+    let e = env(&h, n);
+    let proc = crate::wakew::who::Proc {
+        home: h.clone(),
+        cwd: sub.to_string_lossy().into_owned(),
+        env: e.settings.env.clone(),
+        st: e.settings.clone(),
+        root: String::new(),
+    };
+    assert!(crate::wakew::who::resolve_identity(&proc).unwrap().unwrap().primary);
+    assert!(matches!(crate::wakew::arch::idle_skip(&proc), Ok(crate::wakew::arch::IdleSkip::Applies)));
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(a.ws.as_ref().is_some_and(|w| w.armed == Some(true)), "the nag and the watcher decide alike: {:?}", a.ws);
+    assert!(!a.flags.contains_key("monitor_unarmed") && queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_unarmed"), "{:?}", queue(&h, "sessW"));
+}
+
 // ---- teammates the host no longer lists (#15) -----------------------------------------------------------------
 
 /// The host's team roster (`<home>/.claude/teams/<team>/config.json`): the lead plus the members that are still alive.
@@ -1918,6 +2175,8 @@ fn six_wake_rows_in_a_burst_print_six_lines_before_and_one_coalesced_line_after(
 fn nudge_env(h: &Path, now: u64, extra: &[(&str, &str)]) -> Env {
     let mut e = env(h, now);
     e.settings.env.clear();
+    // the runtime steps (GH #687) are off unless a test asks for them: the older nudge scenarios run past 45 minutes
+    e.settings.env.insert("ANTIHALL_AGENT_NUDGE_RUNTIME".into(), "false".into());
     for (k, v) in extra {
         e.settings.env.insert((*k).into(), (*v).into());
     }
@@ -4243,4 +4502,215 @@ fn a_rewound_clock_restarts_the_windows_and_the_stall_comes_back() {
     // the quiet stretch then runs from there: a full window later the agent is flagged again
     ticks(&h, &mut st, &[back + 16 * MIN, back + 16 * MIN + 30_000]);
     assert!(stalled_flag(&st), "a rewound clock does not hide a stall for ever");
+}
+
+// ---- GH #687: escalating runtime steps ----------------------------------------------------------------------
+
+/// One tick of the nudge loop at `t`, the child having written a small reply a minute before (so it stays running and its spend stays tiny).
+fn rt_tick(h: &Path, child: &Path, st: &mut State, t: u64, k: u64) -> Env {
+    append(child, &[asst(t - MIN, &format!("rt{k}"), 100, 10, json!([{"type": "text", "text": "working"}]), None)]);
+    let e = nudge_env(h, t, &[("ANTIHALL_AGENT_NUDGE_RUNTIME", "true")]);
+    arm_wake(&e, "parent");
+    tick(&e, st);
+    e
+}
+
+/// The texts of the runtime nudges delivered to the parent so far (queue and wake feed).
+fn rt_texts(h: &Path) -> Vec<String> {
+    queue(h, "parent")
+        .into_iter()
+        .chain(wake_rows(h, "parent"))
+        .filter_map(|r| r["text"].as_str().map(String::from))
+        .filter(|t| t.contains("agent runtime"))
+        .collect()
+}
+
+fn rt_fired(step: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("agent_runtime_step_fired", &[("step", step)])
+}
+
+/// A child WITH outcomes (a commit) and tiny spend: nothing before the first step's minutes, then step 1 (advise) at 45 minutes, in the
+/// house format (fact line, then `Do now:`), with no question. The old loop only ever nudged on tokens with no outcome.
+#[test]
+fn rt_step_1_advise_fires_at_45_minutes_for_an_agent_with_outcomes() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-s1");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + 38 * MIN, 2);
+    assert!(
+        rt_texts(&h).is_empty() && rt_fired("advise") == 0,
+        "nothing before 45 minutes of running (a runtime is measured from the transcript's creation, about n)"
+    );
+    rt_tick(&h, &child, &mut st, n + 46 * MIN, 3);
+    assert_eq!(rt_fired("advise"), 1, "step 1 fired once");
+    let t = rt_texts(&h);
+    assert_eq!(t.len(), 1, "one delivery: {t:?}");
+    assert!(
+        t[0].starts_with("⚠️ agent runtime:") && t[0].contains("last outcome") && t[0].contains("\nDo now: get its status and ETA"),
+        "house format: {}",
+        t[0]
+    );
+    assert!(!t[0].contains('?') && !t[0].to_lowercase().contains("advisory only"), "no question: {}", t[0]);
+    assert!(st.nudges.get("abc").is_some_and(|x| x.trigger == "runtime"), "the nudge is a runtime nudge");
+}
+
+/// The token side of a step: 1.0 x the per-agent budget (1M) fires step 1 long before 45 minutes, even with outcomes.
+#[test]
+fn rt_step_1_fires_on_one_budget_of_tokens_before_45_minutes() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-tok");
+    drained();
+    let mut st = State::default();
+    append(&child, &[asst(n + 3 * MIN, "big", 1_100_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    append(&child, &[tool(n + 5 * MIN, "kc", 10, "gc", "Bash", json!({"command": "git commit -m done"})), result(n + 5 * MIN + 1000, "gc", "ok", false)]);
+    rt_tick(&h, &child, &mut st, n + 10 * MIN, 1);
+    assert_eq!(rt_fired("advise"), 1, "1.1M tokens >= 1.0 x budget fires step 1 at 15 minutes of running");
+}
+
+/// Steps climb: advise, then order (90 min), then block (120 min). An extension moves the agent on to the next step (never back to
+/// zero): the extended step does not repeat, the next one fires on its own thresholds even while the extension runs. The block step
+/// publishes the escalation the coordinator's Stop reads; an extension with a stated reason lifts it and the reason is recorded.
+#[test]
+fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-climb");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let mut k = 0;
+    let mut at = |st: &mut State, m: u64| {
+        k += 1;
+        rt_tick(&h, &child, st, n + m * MIN, k)
+    };
+    at(&mut st, 20);
+    let e = at(&mut st, 46);
+    assert_eq!(rt_fired("advise"), 1);
+    let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "waiting on a long CI job", "min": 0})).unwrap();
+    at(&mut st, 47);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "advise"), ("action", "extend")]), 1, "acted_on extend counted");
+    assert_eq!(st.nudges.get("abc").map(|x| x.reason.clone()).as_deref(), Some("waiting on a long CI job"), "the extend reason is recorded");
+    at(&mut st, 80);
+    assert_eq!(rt_texts(&h).len(), 1, "an extended step does not repeat, even past its refire time");
+    at(&mut st, 92);
+    assert_eq!(rt_fired("order"), 1, "step 2 fires on its own threshold, not reset by the extension");
+    assert!(rt_texts(&h).last().is_some_and(|t| t.contains("Do now: message it for a status, or stop it")), "{:?}", rt_texts(&h));
+    assert!(
+        std::fs::read_to_string(h.join(".anti-hall/agent-tracker/runtime-escalations.json")).map_or(true, |b| !b.contains("abc")),
+        "no block before step 3"
+    );
+    at(&mut st, 123);
+    assert_eq!(rt_fired("block"), 1, "step 3 fires at 120 minutes");
+    let last = rt_texts(&h).last().cloned().unwrap_or_default();
+    assert!(last.starts_with("⛔") && last.contains("Do now: stop it, or extend it with a stated reason"), "{last}");
+    let first = rt_stop(&h);
+    assert!(first.contains("\"decision\":\"block\""), "step 3 blocks the coordinator's Stop: {first}");
+    sinks::append(&ans, &json!({"ts": e.now_ms + 124 * MIN, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
+    at(&mut st, 125);
+    let body = std::fs::read_to_string(h.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap_or_default();
+    assert!(!body.contains("abc"), "an extended block step leaves the Stop check: {body}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "block"), ("action", "extend")]), 1);
+}
+
+/// GH #689 review P1-1/P1-2: the block step keeps blocking every Stop until the owner acts (stop or extend), on its own count so a
+/// repeated-reminder escalation cannot use it up, and the block reads as an order in the house format, never "advisory".
+#[test]
+fn rt_block_step_blocks_every_stop_until_extended_and_never_says_advisory() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt689-block");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let mut k = 0;
+    let mut at = |st: &mut State, m: u64| {
+        k += 1;
+        rt_tick(&h, &child, st, n + m * MIN, k)
+    };
+    at(&mut st, 20);
+    let e = at(&mut st, 123);
+    assert_eq!(rt_fired("block"), 1, "the block step fired");
+    at(&mut st, 124); // the escalation is published by the next follow
+    let stops: Vec<String> = (0..3).map(|_| rt_stop(&h)).collect();
+    for (i, s) in stops.iter().enumerate() {
+        assert!(s.contains("\"decision\":\"block\""), "Stop {i} is still blocked until the owner acts: {s}");
+        assert!(!s.to_lowercase().contains("advisory") && !s.contains("auto-killed"), "an order, not advisory: {s}");
+        assert!(s.contains("Stop stays blocked until you act") && s.contains("stop it, or extend it"), "the fact and the action in view: {s}");
+    }
+    let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
+    at(&mut st, 126);
+    assert!(!rt_stop(&h).contains("decision"), "an extended block step lets the Stop pass");
+}
+
+/// GH #689 review P2: a runtime extension with no stated reason holds only the shortest time even when an earlier `wrong` report left
+/// text in the nudge's reason.
+#[test]
+fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt689-stale");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "an old explanation", "min": 0})).unwrap();
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "", "min": 60})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    let nd = st.nudges.get("abc").expect("the nudge stays open");
+    assert!(nd.reason.is_empty(), "the stale reason is dropped: {:?}", nd.reason);
+    assert_eq!(nd.snooze_min, 10, "no reason = the shortest hold (snooze_min_min), not the asked 60");
+}
+
+/// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
+#[test]
+fn rt_msg_and_wrong_are_counted_per_step() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-acts");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "it is waiting on CI", "min": 0})).unwrap();
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "msg", "text": "status", "min": 0})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    let c = |a: &str| crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "advise"), ("action", a)]);
+    assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_reported_wrong", &[("step", "advise")]), 1);
+    assert_eq!((c("msg"), c("stop"), c("extend")), (1, 0, 0));
+    assert!(st.nudges.contains_key("abc"), "the report left the nudge open");
+}
+
+/// The existing 0-outcome rule keeps firing but is worded in the house format: a fact line, then `Do now:`, and no question.
+#[test]
+fn zero_outcome_nudge_uses_the_house_format_without_a_question() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt687-zero");
+    let mut st = State::default();
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    let e = nudge_env(&h, n + MIN, &[]);
+    arm_wake(&e, "parent");
+    tick(&e, &mut st);
+    append(&child, &spend);
+    let e = nudge_env(&h, n + 18 * MIN, &[]);
+    arm_wake(&e, "parent");
+    tick(&e, &mut st);
+    let nd = st.nudges.get("abc").expect("the 0-outcome nudge still opens");
+    assert_eq!(nd.trigger, "waste");
+    assert!(
+        nd.last_text.starts_with("⚠️ agent health:") && nd.last_text.contains("looks unhealthy") && nd.last_text.contains("\nDo now: "),
+        "{}",
+        nd.last_text
+    );
+    assert!(!nd.last_text.contains("Do you want"), "no question: {}", nd.last_text);
 }

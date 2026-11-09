@@ -5,6 +5,7 @@
 //! whether anything moves.
 mod health;
 mod live;
+mod load;
 mod manage;
 mod ops;
 mod route;
@@ -267,22 +268,36 @@ fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<Ev
     current.set_value(Some(es));
 }
 
-fn set_theme(dark: bool) {
+/// The colour-scheme choices the header switch cycles through, in order.
+const THEMES: [&str; 3] = ["system", "light", "dark"];
+
+/// Show `theme` (`system` follows the computer's setting: no `data-theme`, so the style sheet's light-dark() decides).
+fn apply_theme(theme: &str) {
     if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
-        let _ = root.set_attribute("data-theme", if dark { "dark" } else { "light" });
-    }
-    if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = st.set_item("ah-theme", if dark { "dark" } else { "light" });
+        let _ = if theme == "system" { root.remove_attribute("data-theme") } else { root.set_attribute("data-theme", theme) };
     }
 }
 
-fn stored_dark() -> Option<bool> {
-    let st = web_sys::window()?.local_storage().ok().flatten()?;
-    match st.get_item("ah-theme").ok().flatten().as_deref() {
-        Some("dark") => Some(true),
-        Some("light") => Some(false),
-        _ => None,
+/// Counts colour-scheme changes (the header switch, or the computer's setting while on `system`): what draws with scheme colours in
+/// code (the charts) tracks it and redraws.
+#[derive(Clone, Copy)]
+struct ThemeTick(RwSignal<u32>);
+
+pub(crate) fn theme_tick() -> RwSignal<u32> {
+    use_context::<ThemeTick>().map_or_else(|| RwSignal::new(0), |t| t.0)
+}
+
+/// Show `theme` and remember it in this browser.
+fn set_theme(theme: &str) {
+    apply_theme(theme);
+    if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = st.set_item("ah-theme", theme);
     }
+}
+
+fn stored_theme() -> Option<String> {
+    let st = web_sys::window()?.local_storage().ok().flatten()?;
+    st.get_item("ah-theme").ok().flatten().filter(|t| THEMES.contains(&t.as_str()))
 }
 
 fn stored_mode() -> Option<String> {
@@ -426,6 +441,14 @@ fn App(boot: Boot) -> impl IntoView {
     };
     provide_context(ctx);
     provide_context(health::HealthState::new());
+    let tick = RwSignal::new(0u32);
+    provide_context(ThemeTick(tick));
+    // the computer's setting changing matters only while the page follows it; the tick tells the charts either way
+    if let Some(mq) = web_sys::window().and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten()) {
+        let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || tick.update(|n| *n += 1));
+        let _ = mq.add_event_listener_with_callback("change", wasm_bindgen::JsCast::unchecked_ref(cb.as_ref()));
+        cb.forget();
+    }
     let snap = ctx.snap;
     let conn = ctx.conn;
     let selected = ctx.selected;
@@ -434,7 +457,7 @@ fn App(boot: Boot) -> impl IntoView {
     let health_on = RwSignal::new(false);
     let topo_on = RwSignal::new(false);
     let manage_on = RwSignal::new(false);
-    // 0 = no ops screen, 1 accounts, 2 updates, 3 logs, 4 telemetry, 5 impact
+    // 0 = no ops screen, 1 accounts, 2 updates, 3 logs, 4 telemetry, 5 impact (the last two are the tabs of Reports)
     let ops_screen = RwSignal::new(0u8);
     // the agents view is shown unless another screen is chosen
     let other_on = Memo::new(move |_| live_on.get() || health_on.get() || topo_on.get() || manage_on.get() || ops_screen.get() != 0);
@@ -445,34 +468,51 @@ fn App(boot: Boot) -> impl IntoView {
         manage_on.set(manage);
         ops_screen.set(ops);
     };
-    // the screen is part of the address: a reload, a pasted link and back/forward land on the same one
-    let screens: [(&str, [bool; 4], u8); 10] = [
-        ("route_agents", [false; 4], 0),
-        ("route_live", [true, false, false, false], 0),
-        ("route_telemetry", [false; 4], 4),
-        ("route_impact", [false; 4], 5),
-        ("route_health", [false, true, false, false], 0),
-        ("route_topology", [false, false, true, false], 0),
-        ("route_logs", [false; 4], 3),
-        ("route_settings", [false, false, false, true], 0),
-        ("route_accounts", [false; 4], 1),
-        ("route_updates", [false; 4], 2),
-    ];
-    let screen_now = move || {
-        let state = ([live_on.get(), health_on.get(), topo_on.get(), manage_on.get()], ops_screen.get());
-        screens.iter().find(|(_, f, o)| *f == state.0 && *o == state.1).map(|(k, _, _)| tx(k)).unwrap_or_default()
+    // which view is open, by the id `web.screens` gives it
+    let go_id = move |id: &str| match id {
+        "live" => go(true, false, false, false, 0),
+        "health" => go(false, true, false, false, 0),
+        "settings" => go(false, false, false, true, 0),
+        "accounts" => go(false, false, false, false, 1),
+        "updates" => go(false, false, false, false, 2),
+        "logs" => go(false, false, false, false, 3),
+        "reports" => go(false, false, false, false, if ops_screen.get_untracked() == 5 { 5 } else { 4 }),
+        _ => go(false, false, false, false, 0),
     };
+    let screen_now = move || {
+        if live_on.get() {
+            "live"
+        } else if health_on.get() || topo_on.get() {
+            "health"
+        } else if manage_on.get() {
+            "settings"
+        } else {
+            match ops_screen.get() {
+                1 => "accounts",
+                2 => "updates",
+                3 => "logs",
+                4 | 5 => "reports",
+                _ => "agents",
+            }
+        }
+    };
+    // the view is part of the address: a reload, a pasted link and back/forward land on the same one; a view that is switched off lands home
+    let bnav = boot.clone();
     let apply_route = move |r: route::Route| {
-        let (_, f, o) = screens.iter().find(|(k, _, _)| tx(k) == r.screen).copied().unwrap_or(screens[0]);
-        go(f[0], f[1], f[2], f[3], o);
+        // links made before Telemetry and Impact became tabs of Reports, and before Topology became a toggle of Health
+        match r.screen.as_str() {
+            "telemetry" if bnav.screen_on("reports") => go(false, false, false, false, 4),
+            "impact" if bnav.screen_on("reports") => go(false, false, false, false, 5),
+            "topology" if bnav.screen_on("health") && bnav.switch("topology_toggle") => go(false, false, true, false, 0),
+            other => go_id(&bnav.resolve_screen(other)),
+        }
     };
     apply_route(route::current());
     route::on_change(apply_route);
-    Effect::new(move |_| route::enter(&screen_now(), manage_on.get()));
-    let dark = RwSignal::new(stored_dark().unwrap_or(true));
-    if let Some(d) = stored_dark() {
-        set_theme(d);
-    }
+    Effect::new(move |_| route::enter(screen_now(), manage_on.get()));
+    // the colour scheme: the person's choice (kept in the browser), else the configured start (web.theme)
+    let theme = RwSignal::new(stored_theme().unwrap_or_else(|| if THEMES.contains(&boot.theme.as_str()) { boot.theme.clone() } else { THEMES[0].to_string() }));
+    apply_theme(&theme.get_untracked());
     // the tier: the person's choice (kept in the browser), else the configured start; the stream follows it live
     let mode = RwSignal::new(stored_mode().unwrap_or_else(|| boot.mode.clone()));
     let stream: StoredValue<Option<EventSource>, LocalStorage> = StoredValue::new_local(None);
@@ -505,75 +545,93 @@ fn App(boot: Boot) -> impl IntoView {
     let pill = move |pick: fn(&Pulse) -> u64, warn: u64, bad: u64, label: &'static str, fmt: fn(u64) -> String, tip: fn(&Pulse) -> String| {
         view! {
             <span title=move || snap.with(|s| s.pulse.as_ref().map(tip).unwrap_or_default()) class=move || snap.with(|s| s.pulse.as_ref().map_or("pill", |p| level(pick(p), warn, bad)))>
-                {tx(label)} " " {move || snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| fmt(pick(p))))}
+                <span class="pill-k">{tx(label)}</span> " " <span class="pill-v">{move || snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| fmt(pick(p))))}</span>
             </span>
         }
+        .into_any()
     };
     let PulseLimits { cpu_warn_permille, cpu_bad_permille, mem_warn_mb, mem_bad_mb, err_warn, err_bad } = lim;
-    let cpu_pill = pill(|p| p.cpu_permille.unwrap_or(0), cpu_warn_permille, cpu_bad_permille, "pill_cpu", |v| format!("{:.1}%", v as f64 / 10.0), |_| String::new());
+    let mut strip: HashMap<&str, AnyView> = HashMap::new();
+    strip.insert("cpu", pill(|p| p.cpu_permille.unwrap_or(0), cpu_warn_permille, cpu_bad_permille, "pill_cpu", |v| format!("{:.1}%", v as f64 / 10.0), |_| String::new()));
     // the memory pill shows the footprint (the figure the engine's budget is measured on); RSS only where the engine reports no footprint
-    let mem_pill = pill(
-        |p| p.footprint_kb.unwrap_or(p.rss_kb) / 1024,
-        mem_warn_mb,
-        mem_bad_mb,
-        "pill_mem",
-        |v| format!("{v} MB"),
-        |p| match p.footprint_kb {
-            Some(fp) => tx("pill_mem_tip").replace("{fp}", &format!("{} MB", fp / 1024)).replace("{rss}", &format!("{} MB", p.rss_kb / 1024)),
-            None => tx("pill_mem_rss_only").replace("{rss}", &format!("{} MB", p.rss_kb / 1024)),
-        },
+    strip.insert(
+        "mem",
+        pill(
+            |p| p.footprint_kb.unwrap_or(p.rss_kb) / 1024,
+            mem_warn_mb,
+            mem_bad_mb,
+            "pill_mem",
+            |v| format!("{v} MB"),
+            |p| match p.footprint_kb {
+                Some(fp) => tx("pill_mem_tip").replace("{fp}", &format!("{} MB", fp / 1024)).replace("{rss}", &format!("{} MB", p.rss_kb / 1024)),
+                None => tx("pill_mem_rss_only").replace("{rss}", &format!("{} MB", p.rss_kb / 1024)),
+            },
+        ),
     );
-    let req_pill = pill(|p| p.requests, u64::MAX, u64::MAX, "pill_req", compact, |_| String::new());
-    let err_pill = pill(|p| p.errors, err_warn, err_bad, "pill_err", compact, |_| String::new());
+    strip.insert("req", pill(|p| p.requests, u64::MAX, u64::MAX, "pill_req", compact, |_| String::new()));
+    strip.insert("err", pill(|p| p.errors, err_warn, err_bad, "pill_err", compact, |_| String::new()));
+    let pills: Vec<AnyView> = boot.strip_pills.iter().filter_map(|id| strip.remove(id.as_str())).collect();
     let b3 = boot.clone();
+    let bnav2 = boot.clone();
+    let btop = boot.clone();
+    let bmain = boot.clone();
+    let bside = boot.clone();
+    let hb_tip = hb_tip(&boot);
+    let blocks_only = RwSignal::new(false);
 
     view! {
         <div class="shell">
             <header class="top">
                 <div class="brand">
-                    <img class=move || if snap.with(|s| s.engine_ok) { "logo live" } else { "logo" } src="/static/logo.svg" alt=tx("logo_alt") width="30" height="30" />
+                    <Logo />
                     <span class="brand-name">{tx("brand")}</span>
                     <span class="brand-product">{tx("product")}</span>
                 </div>
                 <div class="pills">
-                    <span class=move || if snap.with(|s| s.engine_ok) { "pill pill-ok" } else { "pill pill-bad" }>
+                    <span class=move || if snap.with(|s| s.engine_ok) { "eng eng-ok" } else { "eng eng-down" }>
+                        <i class="sdot"></i>
                         {tx("engine")} " "
                         {move || if snap.with(|s| s.engine_ok) { tx("running") } else { tx("stopped") }}
                     </span>
-                    {cpu_pill}
-                    {mem_pill}
-                    {req_pill}
-                    {err_pill}
+                    {pills}
                 </div>
-                <VersionBadge snap=snap />
+                <SkewNotice snap=snap />
                 <div class="grow"></div>
-                <div class="seg" role="group" aria-label=tx("mode_label")>
-                    {["auto", "full", "lite"].into_iter().map(|m| view! {
-                        <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); reload_if_other_build(m); }>{tx(&format!("mode_{m}"))}</button>
-                    }).collect_view()}
-                </div>
-                <button type="button" class="theme" aria-label=tx("theme_label") on:click=move |_| {
-                    let d = !dark.get_untracked();
-                    dark.set(d);
-                    set_theme(d);
-                }>{move || if dark.get() { tx("theme_light") } else { tx("theme_dark") }}</button>
-                <label class="search">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path></svg>
-                    <input aria-label=tx("search_label") placeholder=tx("search") disabled />
-                </label>
+                {btop.switch("search").then(|| view! {
+                    <label class="search">
+                        <input aria-label=tx("search_label") placeholder=tx("search") disabled />
+                    </label>
+                })}
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } title=tx("nav_agents") on:click=move |_| go(false, false, false, false, 0)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
-                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_live") on:click=move |_| go(true, false, false, false, 0)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 4 { "nav-item on" } else { "nav-item" } title=tx("nav_telemetry") on:click=move |_| go(false, false, false, false, 4)><span class="glyph">"\u{2248}"</span><span>{tx("nav_telemetry")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 5 { "nav-item on" } else { "nav-item" } title=tx("nav_impact") on:click=move |_| go(false, false, false, false, 5)><span class="glyph">"\u{2191}"</span><span>{tx("nav_impact")}</span></button>
-                    <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_health") on:click=move |_| go(false, true, false, false, 0)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
-                    <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_topology") on:click=move |_| go(false, false, true, false, 0)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 3 { "nav-item on" } else { "nav-item" } title=tx("nav_logs") on:click=move |_| go(false, false, false, false, 3)><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></button>
-                    <button type="button" class=move || if manage_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_settings") on:click=move |_| go(false, false, false, true, 0)><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 1 { "nav-item on" } else { "nav-item" } title=tx("nav_accounts") on:click=move |_| go(false, false, false, false, 1)><span class="glyph">"\u{25D4}"</span><span>{tx("nav_accounts")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 2 { "nav-item on" } else { "nav-item" } title=tx("nav_updates") on:click=move |_| go(false, false, false, false, 2)><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></button>
+                    <div class="nav-items">
+                        {bnav2.nav().into_iter().map(|s| {
+                            let id = s.id.clone();
+                            let id2 = id.clone();
+                            view! {
+                                <button type="button" class=move || if screen_now() == id { "nav-item on" } else { "nav-item" } title=tx(&s.label) on:click=move |_| go_id(&id2)>
+                                    <span class="glyph"><Icon name=s.icon.clone() /></span><span>{tx(&s.label)}</span>
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                    <div class="nav-foot">
+                        {bside.switch("tier_switch").then(|| view! {
+                            <div class="seg" role="group" aria-label=tx("mode_label")>
+                                {["auto", "full", "lite"].into_iter().map(|m| view! {
+                                    <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); reload_if_other_build(m); }>{tx(&format!("mode_{m}"))}</button>
+                                }).collect_view()}
+                            </div>
+                        })}
+                        <button type="button" class="theme" aria-label=move || format!("{}: {}", tx("theme_label"), tx(&format!("theme_{}", theme.get()))) on:click=move |_| {
+                            let now = theme.get_untracked();
+                            let next = THEMES[(THEMES.iter().position(|t| *t == now).unwrap_or(0) + 1) % THEMES.len()];
+                            theme.set(next.to_string());
+                            set_theme(next);
+                            tick.update(|n| *n += 1);
+                        }>{move || tx(&format!("theme_{}", theme.get()))}</button>
+                    </div>
                 </nav>
                 <main class="main" hidden=move || other_on.get()>
                     <div class="main-head">
@@ -586,55 +644,83 @@ fn App(boot: Boot) -> impl IntoView {
                         </span>
                         <span class="conn">{move || match conn.get() { Conn::Connecting => tx("connecting"), Conn::Reconnecting => tx("reconnecting"), Conn::Live => String::new() }}</span>
                         <div class="grow"></div>
-                        <div class="seg" role="group" aria-label=tx("layout_label")>
-                            <button type="button" class=move || if graph.get() { "on" } else { "" } on:click=move |_| graph.set(true)>{tx("tab_graph")}</button>
-                            <button type="button" class=move || if graph.get() { "" } else { "on" } on:click=move |_| graph.set(false)>{tx("tab_tree")}</button>
-                        </div>
+                        {bmain.switch("graph_tab").then(|| view! {
+                            <div class="seg" role="group" aria-label=tx("layout_label")>
+                                <button type="button" class=move || if graph.get() { "on" } else { "" } on:click=move |_| graph.set(true)>{tx("tab_graph")}</button>
+                                <button type="button" class=move || if graph.get() { "" } else { "on" } on:click=move |_| graph.set(false)>{tx("tab_tree")}</button>
+                            </div>
+                        })}
                     </div>
-                    <section class="canvas" hidden=move || !graph.get()>
-                        <div class="placeholder">
-                            <strong>{tx("graph_placeholder")}</strong>
-                            <span>{tx("graph_hint")}</span>
-                        </div>
-                        <div class="legend">
-                            <span>"\u{25C6} " {tx("legend_primary")}</span>
-                            <span>"\u{25CF} " {tx("legend_workspace")}</span>
-                            <span>"\u{25CB} " {tx("legend_subagent")}</span>
-                            <span>"\u{25C7} " {tx("legend_codex")}</span>
-                        </div>
-                    </section>
-                    <HeartbeatLegend />
+                    {bmain.switch("graph_tab").then(|| view! {
+                        <section class="canvas" hidden=move || !graph.get()>
+                            <div class="placeholder">
+                                <strong>{tx("graph_placeholder")}</strong>
+                                <span>{tx("graph_hint")}</span>
+                            </div>
+                            <div class="legend">
+                                <span>{tx("legend_primary")}</span>
+                                <span>{tx("legend_workspace")}</span>
+                                <span>{tx("legend_subagent")}</span>
+                                <span>{tx("legend_codex")}</span>
+                            </div>
+                        </section>
+                    })}
+                    <load::StaleNote failed=Signal::derive(move || conn.get() == Conn::Reconnecting) last_ok=Signal::derive(move || snap.with(|s| s.generated_ms)) />
                     <section class="tree" hidden=move || graph.get()>
                         <div class="tree-cols" aria-hidden="true">
                             <span class="twist-sp"></span>
-                            <div class="row-cols"><span class="dot-sp"></span><span class="c-name">{tx("col_name")}</span><span class="c-kind">{tx("col_kind")}</span><span class="c-hb">{tx("col_hb")}</span><span class="c-brief">{tx("col_brief")}</span></div>
+                            <div class="row-cols"><span class="dot-sp"></span><span class="c-name">{tx("col_name")}</span><span class="c-kind">{tx("col_kind")}</span><span class="c-hb" title=hb_tip.clone()>{tx("col_hb")}</span><span class="c-brief">{tx("col_brief")}</span></div>
                             <span class="kebab-sp"></span>
                         </div>
-                        <Show when=move || rows.with(|r| r.is_empty())>
+                        <Show when=move || rows.with(|r| r.is_empty()) && conn.get() != Conn::Live>
+                            <load::Skel shape="tree" />
+                        </Show>
+                        <Show when=move || rows.with(|r| r.is_empty()) && conn.get() == Conn::Live>
                             <p class="empty">{tx("empty")}</p>
                         </Show>
                         <For each=move || rows.get() key=|r| format!("{}|{}|{}", r.key, r.depth, r.kids) children=move |r| view! { <TreeLine row=r by_id=by_id current=current collapsed=collapsed /> } />
                     </section>
+                    <Ribbon snap=snap />
                 </main>
-                <main class="main live-main" hidden=move || !live_on.get() || ops_screen.get() != 0>
-                    <live::LiveScreen mode=mode active=live_on.into() />
-                </main>
-                <main class="main live-main" hidden=move || !health_on.get()>
-                    <health::HealthScreen active=health_on.into() />
-                </main>
-                <main class="main live-main" hidden=move || !topo_on.get()>
-                    <health::TopologyScreen mode=mode active=topo_on.into() />
-                </main>
-                <Show when=move || health_on.get() || topo_on.get()><health::Poller mode=mode /></Show>
-                <main class="main manage-main" hidden=move || !manage_on.get()>
-                    <manage::ManageScreen active=manage_on.into() />
-                </main>
-                <main class="main tel-main" hidden=move || ops_screen.get() != 4>
-                    <tel::TelScreen active=Signal::derive(move || ops_screen.get() == 4) />
-                </main>
-                <main class="main tel-main" hidden=move || ops_screen.get() != 5>
-                    <tel::ImpactScreen active=Signal::derive(move || ops_screen.get() == 5) />
-                </main>
+                {b3.screen_on("live").then(|| view! {
+                    <main class="main live-main" hidden=move || !live_on.get() || ops_screen.get() != 0>
+                        <live::LiveScreen mode=mode active=live_on.into() />
+                    </main>
+                })}
+                {b3.screen_on("health").then(|| view! {
+                    <div class="view-wrap" hidden=move || !(health_on.get() || topo_on.get())>
+                    <ViewTabs alt=Signal::derive(move || topo_on.get()) shown=b3.switch("topology_toggle")
+                        first="topo_toggle_health" second="topo_toggle_topology"
+                        pick=move |second| { health_on.set(!second); topo_on.set(second); } />
+                    <main class="main live-main" hidden=move || !health_on.get()>
+                        <health::HealthScreen active=health_on.into() />
+                    </main>
+                    {b3.switch("topology_toggle").then(|| view! {
+                        <main class="main live-main" hidden=move || !topo_on.get()>
+                            <health::TopologyScreen mode=mode active=topo_on.into() />
+                        </main>
+                    })}
+                    </div>
+                    <Show when=move || health_on.get() || topo_on.get()><health::Poller mode=mode /></Show>
+                })}
+                {b3.screen_on("settings").then(|| view! {
+                    <main class="main manage-main" hidden=move || !manage_on.get()>
+                        <manage::ManageScreen active=manage_on.into() />
+                    </main>
+                })}
+                {b3.screen_on("reports").then(|| view! {
+                    <div class="view-wrap" hidden=move || !matches!(ops_screen.get(), 4 | 5)>
+                    <ViewTabs alt=Signal::derive(move || ops_screen.get() == 5) shown=true
+                        first="rep_tel" second="rep_impact"
+                        pick=move |second| ops_screen.set(if second { 5 } else { 4 }) />
+                    <main class="main tel-main" hidden=move || ops_screen.get() != 4>
+                        <tel::TelScreen active=Signal::derive(move || ops_screen.get() == 4) />
+                    </main>
+                    <main class="main tel-main" hidden=move || ops_screen.get() != 5>
+                        <tel::ImpactScreen active=Signal::derive(move || ops_screen.get() == 5) />
+                    </main>
+                    </div>
+                })}
                 <ops::OpsScreens screen=ops_screen />
                 <aside class="detail" aria-label=tx("selected_label") hidden=move || other_on.get()>
                     {move || match current.get() {
@@ -653,9 +739,9 @@ fn App(boot: Boot) -> impl IntoView {
                                 </div>
                                 <Feedback_ id=a.id.clone() />
                                 <div class="stats">
-                                    <div class="stat"><div class="stat-k">{tx("heartbeat")}</div><div class=format!("stat-v {hbc}")>{hb}</div></div>
-                                    <div class="stat"><div class="stat-k">{tx("running_for")}</div><div class="stat-v">{compact(a.tokens_out)}</div></div>
-                                    <div class="stat"><div class="stat-k">{tx("model")}</div><div class="stat-v small">{if a.idle_shell { tx("ops_idle_shell") } else { a.state.clone() }}</div></div>
+                                    <div class="stat"><div class="stat-k">{tx("tile_heartbeat")}</div><div class=format!("stat-v {hbc}")>{hb}</div></div>
+                                    <div class="stat"><div class="stat-k">{tx("tile_tokens")}</div><div class="stat-v">{compact(a.tokens_out)}</div></div>
+                                    <div class="stat"><div class="stat-k">{tx("tile_state")}</div><div class="stat-v small">{if a.idle_shell { tx("ops_idle_shell") } else { a.state.clone() }}</div></div>
                                 </div>
                                 <div><div class="sect">{tx("doing_now")}</div><p class="brief">{a.step.clone()}</p></div>
                                 <Details id=a.id.clone() />
@@ -663,29 +749,143 @@ fn App(boot: Boot) -> impl IntoView {
                         }
                     }}
                     <div class="feed-wrap">
-                        <div class="sect">{tx("feed_title")}</div>
+                        <div class="sect-row">
+                            <div class="sect">{tx("feed_title")}</div>
+                            <button type="button" class=move || if blocks_only.get() { "chip on" } else { "chip" } aria-pressed=move || blocks_only.get().to_string() on:click=move |_| blocks_only.update(|v| *v = !*v)>{tx("feed_only_block")}</button>
+                        </div>
                         <ol class="feed" aria-live="polite">
-                            <For each=move || snap.with(|s| s.feed.iter().rev().cloned().collect::<Vec<FeedItem>>()) key=|f| f.n children=move |f| view! {
-                                <li class=format!("feed-item tone-{}", f.tone)><span class="feed-text">{f.text.clone()}</span><span class="feed-age">{since(f.ts_ms)}</span></li>
+                            <For each=move || snap.with(|s| s.feed.iter().rev().filter(|f| !blocks_only.get() || f.tone == "block").cloned().collect::<Vec<FeedItem>>()) key=|f| f.n children=move |f| {
+                                let tag = verdict_key(&f.tone).map(|k| (k, tx(k)));
+                                view! {
+                                    <li class=format!("feed-item tone-{}", f.tone)>
+                                        {tag.map(|(k, t)| view! { <span class=format!("vtag {k}")>{t}</span> })}
+                                        <span class="feed-text">{f.text.clone()}</span><span class="feed-age">{since(f.ts_ms)}</span>
+                                    </li>
+                                }
                             } />
                         </ol>
                         <Show when=move || snap.with(|s| s.feed.is_empty())>
                             <p class="soft-note">{tx("feed_empty")}</p>
                         </Show>
                     </div>
-                    <div class="compose">
-                        <label for="cmd" class="sect">{tx("send_label")}</label>
-                        <textarea id="cmd" rows="3" placeholder=tx("send_placeholder") disabled></textarea>
-                        <div class="actions">
-                            <button type="button" class="btn primary" disabled>{tx("send")}</button>
+                    {bside.switch("compose").then(|| view! {
+                        <div class="compose">
+                            <label for="cmd" class="sect">{tx("send_label")}</label>
+                            <textarea id="cmd" rows="3" placeholder=tx("send_placeholder") disabled></textarea>
+                            <div class="actions">
+                                <button type="button" class="btn primary" disabled>{tx("send")}</button>
+                            </div>
+                            <p class="soft-note">{tx("controls_note")}</p>
                         </div>
-                        <p class="soft-note">{tx("controls_note")}</p>
-                    </div>
+                    })}
                 </aside>
             </div>
-            <ConfirmBox boot=b3 />
+            <ConfirmBox boot=b3.clone() />
         </div>
     }
+}
+
+/// The word that tags a feed line by its tone (`web.ui` key), if it is a decision.
+fn verdict_key(tone: &str) -> Option<&'static str> {
+    match tone {
+        "block" => Some("v_block"),
+        "advisory" => Some("v_advise"),
+        "error" => Some("v_error"),
+        _ => None,
+    }
+}
+
+/// What the heartbeat ages mean, from the configured thresholds (the title of the column heading).
+fn hb_tip(b: &Boot) -> String {
+    let (warn, stale) = (fmt_age(b.heartbeat_warn_s), fmt_age(b.heartbeat_stale_s));
+    format!(
+        "{}: {} \u{b7} {} \u{b7} {}",
+        tx("hb_legend_title"),
+        tx("hb_legend_ok").replace("{t}", &warn),
+        tx("hb_legend_warn").replace("{t}", &stale),
+        tx("hb_legend_stale").replace("{t}", &stale)
+    )
+}
+
+/// The wordmark's shield, one flat line drawing in the text colour.
+#[component]
+fn Logo() -> impl IntoView {
+    view! {
+        <svg class="logo" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label=tx("logo_alt")>
+            <path d="M12 3 4.5 6v5.5c0 4.6 3.1 8 7.5 9.5 4.4-1.5 7.5-4.9 7.5-9.5V6L12 3Z"></path>
+            <path d="m8.5 12 2.5 2.5 4.5-5"></path>
+        </svg>
+    }
+}
+
+/// A nav icon: one line set, 16px, 1.5 stroke, in the text colour of its row.
+#[component]
+fn Icon(name: String) -> impl IntoView {
+    let d = match name.as_str() {
+        "agents" => "M4 6h16M8 12h12M12 18h8",
+        "health" => "M3 12h4l2-6 4 12 2-6h6",
+        "logs" => "m5 8 5 4-5 4M12 17h7",
+        "settings" => "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4",
+        "accounts" => "M12 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM5 20a7 7 0 0 1 14 0",
+        "updates" => "M12 16V5M7.5 9.5 12 5l4.5 4.5M5 20h14",
+        "reports" => "M6 20v-8M12 20V5M18 20v-5",
+        "live" => "M5 12a7 7 0 0 1 14 0M8.5 12a3.5 3.5 0 0 1 7 0M12 12v.01",
+        _ => "M5 12h14",
+    };
+    view! { <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=d></path></svg> }
+}
+
+/// A two-way toggle above a view that holds two screens (Health and Topology, Telemetry and Impact). `pick(true)` chose the second one.
+#[component]
+fn ViewTabs(alt: Signal<bool>, shown: bool, first: &'static str, second: &'static str, pick: impl Fn(bool) + Copy + 'static) -> impl IntoView {
+    shown.then(|| {
+        view! {
+            <div class="view-tabs seg" role="group">
+                <button type="button" class=move || if alt.get() { "" } else { "on" } on:click=move |_| pick(false)>{tx(first)}</button>
+                <button type="button" class=move || if alt.get() { "on" } else { "" } on:click=move |_| pick(true)>{tx(second)}</button>
+            </div>
+        }
+    })
+}
+
+/// The last hour of decisions as one thin timeline: a slot per stretch of time, a tall mark where the engine blocked, a short grey one for advice.
+#[component]
+fn Ribbon(snap: RwSignal<Snapshot>) -> impl IntoView {
+    let b = expect_context::<Arc<Boot>>();
+    let (window_ms, slots) = (b.ribbon_window_s.max(1) * 1000, b.ribbon_buckets.max(1));
+    let cells = Memo::new(move |_| {
+        let now = now_ms();
+        snap.with(|s| {
+            let mut v = vec![(0u32, 0u32); slots];
+            for f in s.feed.iter().filter(|f| verdict_key(&f.tone).is_some()) {
+                let age = now.saturating_sub(f.ts_ms);
+                if age >= window_ms {
+                    continue;
+                }
+                let i = slots - 1 - (age * slots as u64 / window_ms) as usize;
+                if f.tone == "block" { v[i].0 += 1 } else { v[i].1 += 1 }
+            }
+            v
+        })
+    });
+    let totals = move || cells.with(|c| c.iter().fold((0, 0), |a, x| (a.0 + x.0, a.1 + x.1)));
+    view! {
+        <div class="ribbon" role="img" aria-label=tx("ribbon_title")>
+            <span class="ribbon-k">{tx("ribbon_title")}</span>
+            <div class="ribbon-track">
+                {move || cells.get().into_iter().map(|(block, other)| { let class = if block > 0 { "rb rb-block" } else if other > 0 { "rb rb-other" } else { "rb" }; view! { <i class=class></i> } }).collect_view()}
+            </div>
+            <span class="ribbon-sum">{move || { let (bl, ad) = totals(); if bl + ad == 0 { tx("ribbon_none") } else { tx("ribbon_summary").replace("{block}", &bl.to_string()).replace("{advise}", &ad.to_string()) } }}</span>
+        </div>
+    }
+}
+
+/// Shown only when the dashboard and the engine loaded different plugin versions; the versions themselves are on Updates.
+#[component]
+fn SkewNotice(snap: RwSignal<Snapshot>) -> impl IntoView {
+    let plugin = expect_context::<Arc<Boot>>().plugin_version.clone();
+    let skew = Memo::new(move |_| snap.with(|s| s.pulse.as_ref().map(|p| p.plugin_version.clone())).is_some_and(|e| !e.is_empty() && !plugin.is_empty() && e != plugin));
+    view! { <Show when=move || skew.get()><span class="ver-skew" title=tx("ver_skew")>{tx("strip_skew")}</span></Show> }
 }
 
 /// The inline outcome of the last action on `id` ("working", "done", the reason it failed).
@@ -800,7 +1000,7 @@ pub(crate) fn Twist(key: String, kids: bool, collapsed: RwSignal<HashSet<String>
 #[component]
 fn TreeLine(row: TreeRow, by_id: Memo<HashMap<String, Agent>>, current: Memo<Option<Agent>>, collapsed: RwSignal<HashSet<String>>) -> impl IntoView {
     match (row.agent.clone(), row.project.clone()) {
-        (Some(id), _) => view! { <Row id=id key=row.key.clone() depth=row.depth guides=row.guides.clone() kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
+        (Some(id), _) => view! { <Row id=id key=row.key.clone() guides=row.guides.clone() kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
         (None, Some((name, live, all))) => view! {
             <div class="row-wrap proj-row">
                 <Twist key=row.key.clone() kids=row.kids collapsed=collapsed label_key="proj_toggle" />
@@ -816,7 +1016,6 @@ fn TreeLine(row: TreeRow, by_id: Memo<HashMap<String, Agent>>, current: Memo<Opt
 fn Row(
     id: String,
     key: String,
-    depth: usize,
     guides: Vec<u8>,
     kids: bool,
     suffix: String,
@@ -848,7 +1047,11 @@ fn Row(
                 <span class=move || a.get().map(|a| format!("dot {}", role_class(&a))).unwrap_or_default()></span>
                 <span class="c-name" class:ghost=placeholder title=move || if placeholder() { tx("placeholder_tip") } else { String::new() }>{move || a.get().map(|a| a.label).unwrap_or_default()}{suffix}{move || a.get().filter(|a| a.idle_shell).map(|_| view! { <em class="badge-idle" title=tx("ops_idle_shell_tip")>{tx("ops_idle_shell")}</em> })}</span>
                 <span class="c-kind">{move || a.get().map(|a| kind_label(&a)).unwrap_or_default()}</span>
-                <span class=move || {
+                <span style=move || {
+                    // how far the heartbeat is along its way to stale, in percent: the colour of the age follows it
+                    let b = expect_context::<Arc<Boot>>();
+                    a.get().and_then(|a| a.last_output_s).map(|s| format!("--age:{}", (s * 100 / b.heartbeat_stale_s.max(1)).min(100))).unwrap_or_default()
+                } class=move || {
                     let b = expect_context::<Arc<Boot>>();
                     a.get().map(|a| format!("c-hb {}", if a.placeholder { "hb-none" } else { hb_class(&b, &a) })).unwrap_or_default()
                 }>{move || a.get().and_then(|a| a.last_output_s).map(fmt_age).unwrap_or_else(|| "\u{2014}".into())}</span>
@@ -860,21 +1063,6 @@ fn Row(
     }
 }
 
-/// What the heartbeat colours mean, from the configured thresholds.
-#[component]
-fn HeartbeatLegend() -> impl IntoView {
-    let b = expect_context::<Arc<Boot>>();
-    let (warn, stale) = (fmt_age(b.heartbeat_warn_s), fmt_age(b.heartbeat_stale_s));
-    view! {
-        <p class="hb-legend">
-            <span>{tx("hb_legend_title")}</span>
-            <span class="hb-ok">{tx("hb_legend_ok").replace("{t}", &warn)}</span>
-            <span class="hb-warn">{tx("hb_legend_warn").replace("{t}", &stale)}</span>
-            <span class="hb-stale">{tx("hb_legend_stale").replace("{t}", &stale)}</span>
-        </p>
-    }
-}
-
 /// A build stamp (`<version>+<branch>.<sha8>[-dirty]`) as the short display `<version> (<sha8>)`; the text is the `ver_short` template. A stamp
 /// that does not have that shape (a release build: only the version) is shown as it is.
 fn short_stamp(stamp: &str) -> String {
@@ -882,39 +1070,4 @@ fn short_stamp(stamp: &str) -> String {
     let tail = tail.strip_suffix("-dirty").unwrap_or(tail);
     let sha = tail.rsplit('.').next().unwrap_or(tail);
     tx("ver_short").replace("{version}", version).replace("{sha}", sha)
-}
-
-/// The header's version badge: the plugin and engine versions at a glance (amber when they differ), a popover with all of them.
-#[component]
-fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
-    let boot = expect_context::<Arc<Boot>>();
-    let (plugin, web) = (boot.plugin_version.clone(), boot.web_version.clone());
-    let none = tx("ver_unavailable");
-    let pulse = move |f: fn(&Pulse) -> String| snap.with(|s| s.pulse.as_ref().map(f)).filter(|v| !v.is_empty());
-    let sha = move || pulse(|p| p.build_sha.clone());
-    let engine_plugin = move || pulse(|p| p.plugin_version.clone());
-    let plugin2 = plugin.clone();
-    // amber only on a real mismatch: the plugin the engine says it loaded against the plugin this server serves
-    let skew = Memo::new(move |_| engine_plugin().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
-    let (n1, n3, n5) = (none.clone(), none.clone(), none.clone());
-    let hook_none = tx("ver_hook_none");
-    let p1 = plugin.clone();
-    view! {
-        <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver"
-            title=move || pulse(|p| p.version.clone()).map(|v| tx("ver_tip").replace("{full}", &v)).unwrap_or_default()>
-            {move || pulse(|p| p.version.clone()).map(|v| format!("{} {}", tx("ver_engine"), short_stamp(&v))).or_else(|| sha().map(|s| format!("{} {s}", tx("ver_engine")))).unwrap_or_else(|| n1.clone())}
-        </button>
-        <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
-            <dl class="kv">
-                <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { none.clone() } else { format!("v{p1}") }}</dd>
-                <dt>{tx("ver_engine_plugin")}</dt><dd>{move || engine_plugin().map(|v| format!("v{v}")).unwrap_or_else(|| n5.clone())}</dd>
-                <dt>{tx("ver_engine")}</dt><dd title=move || pulse(|p| p.version.clone()).unwrap_or_default()>{move || pulse(|p| p.version.clone()).map(|v| short_stamp(&v)).unwrap_or_else(|| n3.clone())}</dd>
-                <dt>{tx("ver_web")}</dt><dd title=web.clone()>{short_stamp(&web)}</dd>
-                <dt>{tx("ver_hook")}</dt><dd title=move || pulse(|p| p.hook_version.clone()).unwrap_or_default()>{move || pulse(|p| p.hook_version.clone()).filter(|v| !v.is_empty()).map(|v| short_stamp(&v)).unwrap_or_else(|| hook_none.clone())}</dd>
-                <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
-                <dt>{tx("ver_update")}</dt><dd>{tx("ver_update_unknown")}</dd>
-            </dl>
-            <Show when=move || skew.get()><p class="fb fb-bad">{tx("ver_skew")}</p></Show>
-        </div>
-    }
 }

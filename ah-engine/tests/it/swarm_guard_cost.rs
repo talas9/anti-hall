@@ -308,3 +308,33 @@ fn a_failing_swarm_guard_still_fails_open_when_the_engine_runs_on_the_pristine_c
     assert!(!out.contains("BLOCKED") && !err.contains("BLOCKED"), "not blocked: {out} {err}");
     assert_eq!(out.matches("swarm-guard guard could not run").count(), 1, "exactly one notice: {out}");
 }
+
+/// The pinned pristine `script.toml` predates the shared-include settings; they ship in `script_shared.toml`, mirrored in the pristine
+/// copy, so the engine loads it and answers. Here the editable `script.toml` is malformed and no last-known-good copy exists, so the
+/// engine runs on `defaults.pristine`, and the owner's cap still refuses an over-cap spawn there (a true positive, not only a
+/// fail-open).
+#[test]
+fn an_over_cap_spawn_is_still_refused_when_the_engine_runs_on_the_pristine_copy() {
+    let h = scratch("cost-pristine-cap");
+    put(&h, ".anti-hall/settings.json", r#"{"guards":{"maxConcurrentAgents":6}}"#);
+    put(&h, "t.jsonl", &big_transcript());
+    tracked_spread(&h, 5);
+    let plugin = h.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    copy_tree(&src.join("hooks"), &plugin.join("hooks"));
+    let pristine = std::fs::read_to_string(plugin.join("engine/defaults.pristine/script.toml")).unwrap();
+    assert!(!pristine.contains("shared_includes"), "the pinned pristine script.toml predates the shared-include settings");
+    let shared = std::fs::read_to_string(plugin.join("engine/defaults.pristine/script_shared.toml")).unwrap();
+    assert!(shared.contains("script.shared_includes"), "the pristine copy carries the shared-include settings in script_shared.toml");
+    std::fs::write(plugin.join("engine/defaults/script.toml"), "[script\nnot toml").unwrap();
+    let root = plugin.to_string_lossy().into_owned();
+    let (code, out, err) = run(
+        &h,
+        &["hook", "--event", "PreToolUse", "--tool", "Agent"],
+        &payload(&h),
+        &[("AH_ENGINE_DISPATCH_IN_PROCESS", "1"), ("AH_ENGINE_PLUGIN_ROOT", &root)],
+    );
+    assert_eq!(code, 2, "{out} {err}");
+    assert!(out.contains("agents are running (limit 6, your guards.maxConcurrentAgents cap)"), "{out}");
+}

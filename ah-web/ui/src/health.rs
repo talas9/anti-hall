@@ -29,12 +29,13 @@ pub struct HealthState {
     pub doc: RwSignal<Option<Health>>,
     pub rates: RwSignal<Rates>,
     pub failed: RwSignal<bool>,
+    pub last_ok: RwSignal<u64>,
     pub out: RwSignal<Option<(String, String, String)>>,
 }
 
 impl HealthState {
     pub fn new() -> HealthState {
-        HealthState { doc: RwSignal::new(None), rates: RwSignal::new(Rates::default()), failed: RwSignal::new(false), out: RwSignal::new(None) }
+        HealthState { doc: RwSignal::new(None), rates: RwSignal::new(Rates::default()), failed: RwSignal::new(false), last_ok: RwSignal::new(0), out: RwSignal::new(None) }
     }
 }
 
@@ -90,6 +91,7 @@ fn read_now(st: HealthState) {
                     st.rates.set(r);
                 }
                 st.failed.set(false);
+                st.last_ok.set(crate::now_ms());
                 st.doc.set(Some(h));
             }
             Err(_) => st.failed.set(true),
@@ -257,12 +259,17 @@ pub fn HealthScreen(active: Signal<bool>) -> impl IntoView {
 #[component]
 fn HealthBody() -> impl IntoView {
     let st = expect_context::<HealthState>();
+    let skeleton = view! {
+        <crate::load::StaleNote failed=st.failed.into() last_ok=st.last_ok.into() />
+        <crate::load::Pending have=Signal::derive(move || st.doc.with(Option::is_some)) failed=st.failed.into() endpoint=ah_web_proto::HEALTH_PATH retry=move || { st.failed.set(false); read_now(st); } shape="cards" />
+    };
     let topo = expect_context::<Arc<Boot>>().topo.clone();
     let body = move || {
         st.doc.get().map(|h| {
             let cpu = h.cpu_permille;
             let tip = fill(tx("h_mem_tip"), &[("rss", mb(h.rss_kb))]);
-            let holders = h.holders.clone();
+            // a holder that rounds to 0.0 MB says nothing: only the ones that hold memory get a row
+            let holders: Vec<_> = h.holders.iter().filter(|x| format!("{:.1}", x.bytes as f64 / 1_048_576.0) != "0.0").cloned().collect();
             let mut clients: Vec<ClientRow> = h.clients.clone();
             clients.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.id.cmp(&b.id)));
             clients.truncate(topo.clients_max);
@@ -290,8 +297,11 @@ fn HealthBody() -> impl IntoView {
                     {tile(tx("h_queue"), format!("{} / {}", h.queue_depth, h.workers), "")}
                     {tile(tx("h_degraded"), if h.degraded { tx("h_yes") } else { tx("h_no") }, if h.degraded { "t-bad" } else { "" })}
                     {tile(tx("h_uptime"), fmt_age(h.uptime_s), "")}
+                    {h.load_per_core.is_some().then(|| tile(tx("h_load"), load.clone(), ""))}
+                    {h.disk_free_kb.is_some().then(|| tile(tx("h_disk"), disk.clone(), ""))}
                 </div>
-                <div class="h-cols">
+                // the system figures are single numbers, so they are stat tiles above; the holders card exists only when one holds memory
+                {(!holders.is_empty()).then(|| view! {
                     <section class="h-card">
                         <div class="sect">{tx("h_holders")}</div>
                         <p class="soft-note">{tx("h_holders_note")}</p>
@@ -302,16 +312,7 @@ fn HealthBody() -> impl IntoView {
                             }).collect_view()}
                         </ul>
                     </section>
-                    {(h.load_per_core.is_some() || h.disk_free_kb.is_some()).then(|| view! {
-                        <section class="h-card">
-                            <div class="sect">{tx("h_system")}</div>
-                            <dl class="kv">
-                                {h.load_per_core.is_some().then(|| view! { <dt>{tx("h_load")}</dt><dd>{load.clone()}</dd> })}
-                                {h.disk_free_kb.is_some().then(|| view! { <dt>{tx("h_disk")}</dt><dd>{disk.clone()}</dd> })}
-                            </dl>
-                        </section>
-                    })}
-                </div>
+                })}
                 <section class="h-card">
                     <div class="sect">{tx("h_clients")}</div>
                     <p class="soft-note">{tx("h_clients_note")}</p>
@@ -334,6 +335,7 @@ fn HealthBody() -> impl IntoView {
         <div class="health">
             <div class="main-head"><h1>{tx("hl_title")}</h1><div class="grow"></div></div>
             <Headline />
+            {skeleton}
             {body}
         </div>
     }

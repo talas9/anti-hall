@@ -393,7 +393,11 @@ impl L {
         if self.state_dir.as_os_str().is_empty() {
             return None;
         }
-        let sock = self.state_dir.join(sock_name);
+        // a state directory whose plain socket path is too long for sun_path has its socket at the engine's private hashed path
+        // (the same one the engine uses): the cold wait must watch THAT path, not skip the wait (a long HOME let the first
+        // cold guard call through unchecked at the launcher's 560 ms budget)
+        let sock = crate::util::engine_socket(&self.s, &self.state_dir);
+        let hashed = sock != self.state_dir.join(sock_name);
         if sock.as_os_str().len() as u64 > sock_max {
             return None;
         }
@@ -403,6 +407,9 @@ impl L {
         );
         if probed == Sock::Live {
             return None;
+        }
+        if hashed {
+            limits::bump(Ctr::ColdWaitHashed); // the wait runs for a state dir whose socket is at the hashed private path (it was skipped)
         }
         // a socket file nobody listens on that is NEWER than a start request is a daemon that request started and that then died: the
         // request is no reason to keep waiting (a daemon still starting has not bound its socket yet, so the file is older than its request)
@@ -509,6 +516,9 @@ impl L {
             "cold_guard_gave_up event={} cap_ms={cap}",
             self.event
         ));
+        if hashed {
+            limits::bump(Ctr::ColdWaitHashedExpired);
+        }
         self.cold_notice();
         Some(0)
     }
@@ -555,7 +565,11 @@ impl L {
         ) {
             envs.push((name, p.display().to_string()));
         }
-        let mut slow_max = self.s.num("client.slow_fallback_max_ms");
+        let mut slow_max = self.s.num_event(
+            "client.slow_fallback_max_ms",
+            "client.slow_fallback_event_ms",
+            &self.event,
+        );
         slow_max = slow_max.min(
             self.event_timeout_s()
                 .unwrap_or(self.timeout_s)
@@ -1269,7 +1283,13 @@ pub fn run() -> i32 {
     } else {
         0
     };
-    let slow_ms = l.s.num("client.slow_fallback_max_ms").min(ev_ms);
+    let slow_ms =
+        l.s.num_event(
+            "client.slow_fallback_max_ms",
+            "client.slow_fallback_event_ms",
+            &l.event,
+        )
+        .min(ev_ms);
     let grace_ms = l.grace.as_millis() as u64;
     // the soft wall is a per-event setting; 0 (or no entry) keeps the fail-fast formula
     let soft_ms =

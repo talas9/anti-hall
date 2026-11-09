@@ -14,6 +14,7 @@ mod live;
 mod manage;
 mod model;
 mod ops;
+mod reject;
 mod server;
 mod tel;
 
@@ -133,12 +134,33 @@ async fn main() {
         std::process::exit(75);
     });
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let token: String = random_bytes(settings.token_bytes)
-        .unwrap_or_default()
+    // `--require-token <true|false>` is the effective web.require_token the engine hands over (the owner's override of the shipped key);
+    // without it the key in this file decides
+    let require_token = args
         .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let url = format!("http://{}:{port}/?t={token}", settings.bind_host);
+        .position(|a| a == "--require-token")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(settings.require_token);
+    let token: String = if require_token {
+        random_bytes(settings.token_bytes)
+            .unwrap_or_default()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    } else {
+        String::new()
+    };
+    if require_token && token.is_empty() {
+        // no token made: serving without one would silently drop the protection the setting asks for
+        eprintln!("ah-web: cannot make the session token");
+        std::process::exit(75);
+    }
+    let url = if require_token {
+        format!("http://{}:{port}/?t={token}", settings.bind_host)
+    } else {
+        format!("http://{}:{port}/", settings.bind_host)
+    };
     let state_path = state.join(&settings.state_file);
     let body =
         serde_json::json!({ "pid": std::process::id(), "port": port, "token": token, "url": url })
@@ -170,6 +192,7 @@ async fn main() {
         token,
         port,
     ));
+    let _ = app.state.set(state.clone()); // keep: set once, before any request
 
     // idle exit and settings reload share one timer
     let watcher = {

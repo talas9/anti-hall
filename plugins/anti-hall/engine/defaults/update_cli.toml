@@ -500,8 +500,8 @@ doc = "The placeholder in that file the installer replaces with the plugin direc
 value = "${PLUGIN_ROOT}"
 
 [codex_install.hook_group_re]
-doc = "An anti-hall hook command (after backslashes become slashes): its legacy hook directory, retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection."
-value = '/plugins/anti-hall/hooks/|/hooks/ah-hook\.sh["\x27]|/\.anti-hall/ah-engine/bin/ah-hook["\x27]'
+doc = "An anti-hall hook command (after backslashes become slashes): its legacy hook directory (a repo clone, or a plugin-cache version directory), retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection."
+value = '/plugins/anti-hall/hooks/|/anti-hall/[0-9][^/]*/hooks/[\w-]+\.js["\x27]|/hooks/ah-hook\.sh["\x27]|/\.anti-hall/ah-engine/bin/ah-hook["\x27]'
 
 [codex_install.features_with_hooks_re]
 doc = "A [features] table that already sets `hooks`."

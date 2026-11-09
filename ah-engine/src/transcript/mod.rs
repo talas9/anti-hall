@@ -14,13 +14,22 @@
 //! the incremental reader, [`registry`] holds one index per transcript path with a size cap and an idle TTL.
 //!
 //! Not wired into any guard yet (D75 wave 2): this is the API the ported checks will call.
+//!
+//! [`store`] is the successor of [`index`]: one fact store per session, a fixed read buffer, facts with byte offsets, byte budgets
+//! (see its header). The consumers migrate onto it lane by lane; [`index`] goes when the last one has.
+pub mod facts;
 pub mod index;
+pub mod persist;
+pub mod reader;
 pub mod record;
 pub mod registry;
+pub mod store;
 
+pub use facts::{Cut, Fact, FactKind};
 pub use index::{Index, Limits, Rebuild, Refresh};
 pub use record::{Assistant, Notification, Prompt, Shape, TaskEvent, TaskStatus, ToolUse};
 pub use registry::Indexes;
+pub use store::{Store, Unsure};
 
 use crate::defaults;
 use std::fmt;

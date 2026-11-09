@@ -94,6 +94,8 @@ pub struct Theme {
     pub wire: String,
     pub wire_hot: String,
     pub particle: String,
+    /// Colour of the Live screen's background stars (their alpha is `fx.star_alpha`).
+    pub star: String,
     pub kinds: HashMap<String, KindStyle>,
     pub status: HashMap<String, String>,
     pub fallback_kind: String,
@@ -172,6 +174,9 @@ pub struct Texts {
 pub struct FxCfg {
     /// Effect colour by key (`allow`, `advise`, `block`, `inject`, `travel`, ...), OKLCH; the caller names the key in an event.
     pub colors: HashMap<String, String>,
+    /// The same keys for a light page (`web.graph.fx.colors_light.*`); a key missing here keeps its `colors` value.
+    #[serde(default)]
+    pub colors_light: HashMap<String, String>,
     /// Hard cap on effect particles drawn in one frame.
     pub particles_max: usize,
     /// Events held while the page is busy; the oldest are dropped past it.
@@ -212,6 +217,9 @@ pub struct FxCfg {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphConfig {
     pub theme: Theme,
+    /// The same keys for a light page (`web.graph.theme_light.*`); absent = the one theme in both colour schemes.
+    #[serde(default)]
+    pub theme_light: Option<Theme>,
     pub fx: FxCfg,
     pub budget: Budget,
     pub geometry: Geometry,
@@ -220,6 +228,24 @@ pub struct GraphConfig {
 }
 
 impl GraphConfig {
+    /// The theme for the page's colour scheme now.
+    pub fn theme_for(&self, dark: bool) -> &Theme {
+        if dark { &self.theme } else { self.theme_light.as_ref().unwrap_or(&self.theme) }
+    }
+
+    /// A CSS value that follows the page's colour scheme: `light-dark(<light>, <dark>)`, or the dark value alone when there is no light one.
+    pub fn scheme_css(dark: &str, light: Option<&String>) -> String {
+        match light {
+            Some(l) if l != dark => format!("light-dark({l}, {dark})"),
+            _ => dark.to_string(),
+        }
+    }
+
+    /// An effect colour key as a CSS value that follows the colour scheme.
+    pub fn fx_css(&self, key: &str) -> String {
+        self.fx.colors.get(key).map(|d| Self::scheme_css(d, self.fx.colors_light.get(key))).unwrap_or_default()
+    }
+
     pub fn kind(&self, k: &str) -> Option<&KindStyle> {
         self.theme.kinds.get(k).or_else(|| self.theme.kinds.get(&self.theme.fallback_kind))
     }

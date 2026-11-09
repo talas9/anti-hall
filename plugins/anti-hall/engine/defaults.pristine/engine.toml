@@ -210,12 +210,16 @@ value = "cold-guard.notice"
 doc = "Short-lived client marker: when a hook client finds the daemon absent or hung, other clients skip connecting until this expires."
 value = "daemon.down.until"
 
+[files.supervisor_unhealthy_marker]
+doc = "Short-lived client marker (units.unhealthy_ttl_ms): the service manager accepted an ask to start the engine unit but no daemon answered, so clients start the daemon themselves until this expires. Doctor reports it."
+value = "supervisor.unhealthy.until"
+
 [files.slow_streak]
 doc = "Client marker holding the count of consecutive slow (late) daemon replies and when the streak began; a normal reply removes it."
 value = "daemon.slow.streak"
 
 [files.heartbeat]
-doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir); the watchdog thread touches its modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms)."
+doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, or the idle marker (ten `i` characters, not a number) when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not. A call fails open on an idle marker only when a beat NEWER than the first idle one it saw is still idle (an idle beat can predate the worker picking the request up); with no newer beat the stale-heartbeat bound applies."
 value = "daemon.heartbeat"
 
 [files.heartbeat_suspect]
@@ -315,10 +319,36 @@ min = 0
 unit = "us"
 
 [daemon.request_hard_ms]
-doc = "HARD deadline of a request, measured from its arrival (less daemon.reply_slack_ms): the point where a scripted check still running is cut and a check not yet started gets no answer: both take the check's failure policy (script.failure_mode_by_check). The SOFT deadline is client.deadline_ms (past it the request is logged as deadline_soft and counted, nothing is cut). A client whose daemon is alive waits for a late reply up to client.slow_fallback_max_ms less client.slow_wait_margin_ms and uses it, so this must stay below that window."
+doc = "HARD wall-clock CEILING of a request, measured from its arrival (less daemon.reply_slack_ms): the point where a scripted check still running is cut and a check not yet started gets no answer: both take the check's failure policy (script.failure_mode_by_check). This is the ceiling of every event not listed in daemon.request_hard_event_ms; it only catches a truly hung request: the budget that drops a single check counts that check's own thread CPU (daemon.eval_budget_us, and the script's own CPU limit), so a loaded host that merely delays the worker never drops a verdict. The SOFT wall marks are client.deadline_ms (the client's fail-fast wait) and daemon.request_wall_warn_ms (counted, nothing is cut). A client whose daemon is alive waits for a late reply up to client.slow_fallback_max_ms (or its client.slow_fallback_event_ms row) less client.slow_wait_margin_ms and uses it, so this plus diagnostics.deadline_grace_cap_ms must stay inside that window (a test pins it)."
 value = 2000
 min = 1
 unit = "ms"
+
+[daemon.request_hard_event_ms]
+doc = "Per hook event, the HARD wall ceiling of a request (see daemon.request_hard_ms) for the events that may run longer: only the end-of-turn events Stop and SubagentStop, whose guards must keep deciding on a loaded host (#684: at 2000 ms, load 18-24 failed every Stop guard open) and whose hook timeout is 30 s. An event without a row uses daemon.request_hard_ms. Must stay inside the client's wait for the same event (client.slow_fallback_event_ms)."
+value = { Stop = 8000, SubagentStop = 8000 }
+unit = "ms"
+
+[daemon.host_call_share_pct]
+doc = "The longest ONE host call of a check (a git run, a spawned program, an agent-store git read) may take, as a percentage of the request's wall ceiling for its event (daemon.request_hard_ms or its daemon.request_hard_event_ms row), never more than the request has left. A call that drains the whole request clock starves every check after it (#684: one 1920 ms git call cut the 10 guards behind it), so a call that cannot finish within its share is cut and its check takes its failure policy while the next checks still run. 0 or 100 = no share (only the request clock bounds a call)."
+value = 50
+min = 0
+max = 100
+unit = "%"
+
+[daemon.request_wall_warn_ms]
+doc = "SOFT wall mark of a request (the hard deadline before #684), measured from its arrival: a check that still answers past it is counted verdicts_saved_by_cpu_budget (it would have been dropped when the wall clock was the deadline); nothing is cut here. The HARD wall ceiling is daemon.request_hard_ms."
+value = 2000
+min = 1
+unit = "ms"
+
+[daemon.wouldblock_outcome_delivered]
+doc = "Label value of metric wouldblock_retries for a reply written after the client's fail-fast wait (client.deadline_ms) that the waiting client still read: its read timed out (EAGAIN, os error 35 on macOS) and it kept waiting, as it should."
+value = "delivered"
+
+[daemon.wouldblock_outcome_lost]
+doc = "Label value of metric wouldblock_retries for a late reply (past client.deadline_ms) the client did not take: it had stopped waiting."
+value = "lost"
 
 [daemon.eval_budget_us]
 doc = "HARD thread CPU budget of ONE check: a check that used more than this alone loses its own answer (counted answers_dropped reason `cpu_budget`) and takes its failure policy; the checks after it still run and answer, and the request as a whole is bounded by daemon.request_hard_ms. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
@@ -361,8 +391,8 @@ doc = "The word that selects the resident set for `daemon.mem_metric`."
 value = "rss"
 
 [daemon.rss_cap_kb]
-doc = "Owner decision 2026-10-23: the restart cap sits at the hard memory limit (mem.global_hard_bytes, 200 MB; 204800 KB = 209715200 bytes), never below it. Memory cap, compared with the figure `daemon.mem_metric` selects (default: the footprint, not the resident set); above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. The measurement below is of the resident set. Set from measurement, not guessed (DECISIONS.md 1.111, 2026-10-09): on the real-payload replay (2,113 recorded hook calls, unpaced, isolated home) the engine with 16 scripted checks sits at 69 MB after one pass and 78 MB after three (jemalloc, aarch64-apple-darwin), and at 102 MB after one pass with the system allocator (the x86_64-apple-darwin and musl builds, measured as a system-allocator build on this Mac); the live heap is 45-52 MB. The engine before the scripted checks (live4) measured 62 and 68 MB on the same replay, so the previous 64 MB cap (set from a synthetic soak with a 16-18 MB live heap) sat inside the steady state of both: the daemon restarted 4 times in 600 s and the crash-loop breaker sent every hook to Node. The cap sits above the larger figure with room for the slow growth both builds show on repeated passes (about 1.5 MB per 1,000 calls), so only real growth trips it."
-value = 204800
+doc = "Memory plan C phase 0 (2026-11-08): the restart cap sits STRICTLY ABOVE the hard memory limit (mem.global_hard_bytes, 200 MB = 204800 KB), at 256 MB (262144 KB). Owner decision 2026-10-23 put it AT the hard limit, never below it; with the two equal the hard-limit path (recycle every holder, restart only if still over after mem.global_restart_after_s) never ran, because the cap fired first: a transient of 40-90 MB for under half a second while a large transcript was scanned (39 of 40 live cap restarts) restarted the daemon (#636). Now a transient is absorbed by the hard path and the cap is only the absolute backstop. Memory cap, compared with the figure `daemon.mem_metric` selects (default: the footprint, not the resident set); above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. The measurement below is of the resident set. Set from measurement, not guessed (DECISIONS.md 1.111, 2026-10-09): on the real-payload replay (2,113 recorded hook calls, unpaced, isolated home) the engine with 16 scripted checks sits at 69 MB after one pass and 78 MB after three (jemalloc, aarch64-apple-darwin), and at 102 MB after one pass with the system allocator (the x86_64-apple-darwin and musl builds, measured as a system-allocator build on this Mac); the live heap is 45-52 MB. The engine before the scripted checks (live4) measured 62 and 68 MB on the same replay, so the previous 64 MB cap (set from a synthetic soak with a 16-18 MB live heap) sat inside the steady state of both: the daemon restarted 4 times in 600 s and the crash-loop breaker sent every hook to Node. The cap sits above the larger figure with room for the slow growth both builds show on repeated passes (about 1.5 MB per 1,000 calls), so only real growth trips it."
+value = 262144
 env = "AH_ENGINE_RSS_CAP_KB"
 unit = "KB"
 
@@ -584,6 +614,14 @@ unit = "ms"
 doc = "Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon."
 value = 75
 
+[daemon.sigterm_exit_code]
+doc = "Exit status of a daemon the service manager started (start reason launchd or systemd) that drained because an outside SIGTERM asked it to (a plain `kill`): non-zero, so the supervisor starts it again. The exit is logged as exit/sigterm, never as a crash. 75 = EX_TEMPFAIL, the same as a forced drain; systemd counts it as a success (SuccessExitStatus) so `systemctl stop` leaves the unit inactive, not failed."
+value = 75
+
+[daemon.drain_timeout_exit_code]
+doc = "Exit status of a clean drain (handoff, stop, idle, SIGTERM) that outlasted daemon.drain_max_ms and was cut off. 0, so a supervisor does not start the daemon again after an idle or stop that merely ran long; a forced drain keeps daemon.forced_exit_code."
+value = 0
+
 [daemon.thread_restart_max]
 doc = "Panics a daemon service thread may recover from before the daemon requests a clean restart."
 value = 3
@@ -614,9 +652,20 @@ value = 10
 unit = "ms"
 
 [client.slow_fallback_max_ms]
-doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
+doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed, but only while the daemon visibly makes progress (client.progress_stale_ms): a daemon that is alive and working answers late rather than never. This is the bound of every event not listed in client.slow_fallback_event_ms; a set AH_ENGINE_SLOW_FALLBACK_MAX_MS overrides every event. The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision. Nothing by then fails the call open and counts toward client.slow_down_n. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
 value = 3000
 env = "AH_ENGINE_SLOW_FALLBACK_MAX_MS"
+min = 0
+unit = "ms"
+
+[client.slow_fallback_event_ms]
+doc = "Per hook event, the late-reply bound (see client.slow_fallback_max_ms) for the events that may wait longer: only the end-of-turn events Stop and SubagentStop (hook timeout 30 s); every other event, SessionEnd (5 s timeout) included, keeps client.slow_fallback_max_ms, so a prompt or a tool call never blocks for seconds on a daemon that is not answering. The launcher carries the same table as its built-in copy. A set AH_ENGINE_SLOW_FALLBACK_MAX_MS overrides it."
+value = { Stop = 9000, SubagentStop = 9000 }
+unit = "ms"
+
+[client.progress_stale_ms]
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress: the age of its longest-silent busy worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
+value = 1000
 min = 0
 unit = "ms"
 
@@ -850,6 +899,10 @@ doc = "Longest kind, code or detail written to one log line (newlines and tabs b
 value = 300
 unit = "chars"
 
+[health.spawn_kinds]
+doc = "Event kinds that count as one daemon start for the crash-loop spawn-rate rule (client.spawn_n within client.spawn_window_s): a client's spawn attempt and a service-manager start that won the singleton lock."
+value = ["client_spawn_attempt", "supervised_start"]
+
 [health.judged_kinds]
 doc = "Event kinds that mark a crash-loop judgement (a trip, a reset by a new binary, an operator reset): crashes and daemon starts logged before the latest of them no longer count toward the next trip."
 value = ["crashloop", "crashloop_reset", "reset"]
@@ -890,6 +943,12 @@ value = "fail_open"
 doc = "How much later than a dead daemon's last sign of life (its newest breadcrumb, or its start) the operating system must have booted for the unclean stop to be reported as a `system_restart` (the machine stopped under it) instead of a `crash`. A margin against clock steps."
 value = 0
 unit = "ms"
+
+[health.progress_digits]
+doc = "Width, in digits, of the progress age the daemon records in the fifth line of its heartbeat file (files.heartbeat), zero-padded so a rewrite is one fixed-size write that never leaves a longer number's digits behind. An age that does not fit is recorded as the largest number that does."
+value = 10
+min = 1
+max = 19
 
 [health.advisory_ttl_ms]
 doc = "A recorded failure older than this no longer produces an advisory."
@@ -1420,6 +1479,64 @@ value = "stale-engine-hook.notice"
 [install.file_notice]
 doc = "Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory)."
 value = "install.notice"
+
+[install.file_defaults_error]
+doc = "The note the engine writes (in the state directory) when it could not load the plugin's defaults; hooks/install.sh reads it to tell the session that the guards are not running."
+value = "defaults.error"
+
+[install.defaults_probe_verb]
+doc = "The engine verb hooks/install.sh runs, before it tells the session that the guards are not running, when a defaults.error file is present: it loads this plugin's defaults and exits non-zero only when they cannot be loaded. It is not read-only: a load that fails rewrites defaults.error (the note it reads). A stale defaults.error (the engine rewrites it at every failure and never removes it) with a passing probe says nothing."
+value = "config"
+
+[install.defaults_probe_ms]
+doc = "Milliseconds the defaults probe may run before it is sent TERM. A probe that does not finish in time is not taken as a failure: the notice stays silent. Together with defaults_probe_grace_ms and install.hook_overhead_allowance_ms it must stay under install.hook_budget_ms (every hook fails open in under 1 s)."
+value = 400
+min = 100
+max = 5000
+
+[install.defaults_probe_grace_ms]
+doc = "Milliseconds the defaults probe gets, after the TERM sent at defaults_probe_ms, before it is killed (KILL). The probe is bounded by defaults_probe_ms plus this (550 ms by default), so an engine that ignores TERM cannot hold SessionStart."
+value = 150
+min = 0
+max = 5000
+
+[install.hook_budget_ms]
+doc = "Milliseconds the whole SessionStart hook (hooks/install.sh with a TERM-ignoring defaults probe) must stay under: every hook fails open in under 1 s. A test checks defaults_probe_ms + defaults_probe_grace_ms + hook_overhead_allowance_ms against it."
+value = 1000
+min = 100
+max = 10000
+
+[install.hook_overhead_allowance_ms]
+doc = "Measured allowance, in milliseconds, for the hook's own work around the defaults probe (shell start, config reads, the notice join); about 220 ms on a loaded laptop."
+value = 300
+min = 0
+max = 5000
+
+[install.file_notice_log]
+doc = "Record of the SessionStart JSON notices hooks/install.sh showed (one line each: time, kind), inside the state directory. Nothing reads it yet (it is not ingested into the telemetry counters); it is a record for a person or a later change to read."
+value = "install-notices.log"
+
+[install.explicit_fail_exit]
+doc = "Exit code of an explicit `ah-hook install` (not --auto, with install.explicit_ignores_retry on) that did not install: a failure, or a skip other than 'already current'."
+value = 1
+min = 1
+max = 125
+
+[install.file_json_notice]
+doc = "Holds the process id of the host process that already got the SessionStart JSON notice of hooks/install.sh (inside the state directory), so the notice shows once per host process."
+value = "install-json.notice"
+
+[install.sessionstart_json_notice]
+doc = "1 (default): at SessionStart hooks/install.sh shows the 'guards are not running / engine out of date' notice to the user as JSON on stdout (systemMessage plus additionalContext), because Claude Code never shows the stderr of a hook that exits 0. 0: stderr only. The installed client's own SessionStart output is kept (the notice is merged in, never a second JSON object)."
+value = 1
+min = 0
+max = 1
+
+[install.explicit_ignores_retry]
+doc = "1 (default): an explicit `ah-hook install` (without --auto) ignores the retry window of the last failed automatic attempt, prints why it failed on stderr (msg.install_failed) and exits non-zero on a failure. 0: as before (silent, exit 0, skipped for install.retry_s after an attempt)."
+value = 1
+min = 0
+max = 1
 
 [install.file_marker]
 doc = "Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten."

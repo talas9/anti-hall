@@ -20,7 +20,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `ask_guard.advise` (skill): do not hold work on a question. Instead: continue with the recommended reversible option.
 - `ask_guard.block` (skill): this question would pause authorized work. Why: Work should not wait on a question. Instead: continue with the recommended reversible option.
 - `silent_nudge.msg` (skill): ... of your own ... have gone silent past the ...m threshold: ....... Why: Advisory only; nothing was auto-killed. Instead: check the silent agents for progress.
-- `silent_nudge.runtime` (skill): ...... still running after repeated runtime nudges, not finished and not stopped. Instead: check its output now, then stop it or re-task it with a tighter scope; this block is shown once per session.
+- `silent_nudge.runtime` (skill): ...... still running past the runtime block step, not finished and not stopped. Instead: stop it, or extend it with a stated reason (agents nudge <child> other "<reason>"); this block is shown once per session.
 - `broad_kill.pattern` (skill): `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
 - `broad_kill.everyone` (skill): `...` is blocked: it signals every process you own, or your whole process group.
 - `broad_kill.lookup` (skill): `...` is blocked: it kills whatever a name or port lookup returns, not a process you started.
@@ -95,7 +95,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `inference.msg` (skill): your reply states a cause as fact ('...') but no tool output in this session mentions it.
 - `speculation_judge.msg` (skill): your reply states an unchecked claim as fact. Why: Unverified claims read as facts. Instead: verify the claim or label it unverified.
 - `lane_test.policy` (skill, switch `guards.allowTestSuites`): tests are off by owner policy (...): ... Why: The owner chose to verify at deploy instead of running tests here. Instead: Build or check syntax, then report the change and that tests were not run.
-- `lane_test.msg` (skill, switch `guards.allowTestSuites`): a helper cannot run this full suite (...): ... Why: Full suites can queue behind a shared build lock and waste the work budget. Instead: Run a build check or one allowed module test, then report the result.
+- `lane_test.msg` (skill, switch `guards.allowTestSuites`): a helper cannot run this full suite (...): ... Why: Full suites can queue behind a shared build lock and waste the work budget. Instead: Run a build check or one allowed module test, then report the result. The full suite: integration gate only.
 - `queued_wait.bg` (skill): a helper cannot start this build or test in the background: ... Instead: Run the command in the foreground under the shared lock.
 - `queued_wait.sleep` (skill): this wait is too long (...s; limit ...s): ... Instead: End the turn and wait for the completion notification.
 - `queued_wait.loop` (skill): this poll loop waits too long (...s per round; limit ...s): ...

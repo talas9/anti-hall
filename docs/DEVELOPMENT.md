@@ -295,7 +295,7 @@ roll back the engine on a hunch: roll back only when hooks exceed their timeout 
    sizes of the in-memory structures. Both are described in [CPU and memory profiling](AH-ENGINE.md#cpu-and-memory-profiling).
 4. **A profile.** [samply](https://github.com/mstange/samply) works on both platforms: `samply record -p <pid>` samples the
    daemon until you stop it and opens the Firefox Profiler; on macOS the `ah-engine.dSYM` beside a local build (or the release's
-   `symbols-<triple>` artifact for the same build) names the frames. Without samply, macOS has `sample <pid> 5 -file s.txt`,
+   `symbols-v<version>-<triple>` artifact for the same build, or `<state>/symbols/<build id>/`) names the frames. Without samply, macOS has `sample <pid> 5 -file s.txt`,
    symbolised with `atos -o ah-engine.dSYM/Contents/Resources/DWARF/ah-engine -arch arm64 -l <load address> <address>`; Linux
    has `perf record -g -p <pid>`.
 5. **A frozen daemon.** If `ah-engine ctl ping` does not answer, do not restart it first: take its stacks. With the debugger

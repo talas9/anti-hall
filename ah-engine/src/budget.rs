@@ -69,6 +69,9 @@ pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
     let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
     crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
     crate::metrics::bump("delivery_lost", &[("check", check), ("reason", reason)]);
+    if guard {
+        crate::metrics::bump("guard_answer_dropped", &[("reason", reason)]);
+    }
     crate::funnel::dropped(check, reason);
     let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
     if m.len() < crate::defaults::num("answer_drop.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {
@@ -219,6 +222,8 @@ impl State {
             "cpu_over_windows": self.over_windows,
             "mem_mb": self.mem_kb / 1024,
             "mem_budget_mb": mem_budget_mb,
+            "mem_target_mb": crate::defaults::num("diagnostics.mem_target_mb"),
+            "over_target": crate::defaults::num("diagnostics.mem_target_mb") > 0 && self.mem_kb / 1024 > crate::defaults::num("diagnostics.mem_target_mb"),
             "breached": breached,
             "breaches": self.breaches,
             "cpu_hard_budget_pct": self.hard_limit_pct,

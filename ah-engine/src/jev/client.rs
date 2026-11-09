@@ -322,6 +322,7 @@ impl JevClient {
     /// Run a call through the primary and, when eligible, the backup, inside `total_ms` (Node: `runWithFallback`).
     fn run_with_fallback(&self, s: &JevSettings, scope: Option<&str>, total_ms: u64, body_for: &dyn Fn(&str) -> String, parse: Parse<'_>) -> CallResult {
         let total_ms = total_ms.min(defaults::num("jev.max_timeout_ms")); // belt and braces: no caller can lift the ceiling
+        crate::deadline::beat_for(std::time::Duration::from_millis(total_ms)); // a bounded call: the daemon is working on its request until it ends
         let primary_key = resolve_key(s, s.transport).key;
         let Some(primary_key) = primary_key else {
             let mut r = CallResult::failed(Reason::NoKey);
