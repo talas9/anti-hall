@@ -4324,7 +4324,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ask_guard.note_setting` | `6 entries` |  |  | Where the in-flight agents note switch is read from (guards.questionAgentsNote, default on). |
 | `ask_guard.note_tail` | `). They may act on one of these options before the answer arrives: pause them...` |  |  | Text that ends the in-flight note. |
 | `ask_guard.note_unnamed` | `unnamed agent` |  |  | Name the in-flight note gives an agent with no description. |
-| `ask_guard.primary_deny_instead` | `take the safe reversible default, note `NEEDS OWNER: <question>` in the progr...` |  |  | What a denied Primary does instead. |
+| `ask_guard.primary_deny_instead` | `ask the owner in plain text in your reply, note NEEDS OWNER: <question> in th...` |  |  | What a denied Primary does instead. |
 | `ask_guard.primary_deny_setting` | `6 entries` |  |  | Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the Primary session of a DevSwarm repo (ask_guard.primary_env set, ask_guard.child_env blank) never opens AskUserQuestion either; the owner is reached through the progress file (GH #694). |
 | `ask_guard.primary_deny_what` | `the Primary never blocks on a question.` |  |  | Headline of the Primary deny message. |
 | `ask_guard.primary_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable whose non-blank value marks a session running under DevSwarm; with ask_guard.child_env blank it is the Primary. |

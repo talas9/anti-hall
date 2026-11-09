@@ -20,7 +20,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `ask_guard.advise` (skill): do not hold work on a question. Instead: continue with the recommended reversible option.
 - `ask_guard.block` (skill): this question would pause authorized work. Why: Work should not wait on a question. Instead: continue with the recommended reversible option.
 - `ask_guard.child_deny` (skill, switch `guards.denyChildQuestions`): a workspace agent never asks the user. Instead: ask the Primary with `ah-engine mesh send --to-primary --question ...` and keep working on the rest.
-- `ask_guard.primary_deny` (skill, switch `guards.denyPrimaryQuestions`): the Primary never blocks on a question. Instead: take the safe reversible default, note `NEEDS OWNER: <question>` in the progress file, continue.
+- `ask_guard.primary_deny` (skill, switch `guards.denyPrimaryQuestions`): the Primary never blocks on a question. Instead: ask the owner in plain text in your reply, note NEEDS OWNER: <question> in the progress file, keep working.
 - `silent_nudge.msg` (skill): ... of your own ... have gone silent past the ...m threshold: ....... Why: Advisory only; nothing was auto-killed. Instead: check the silent agents for progress.
 - `silent_nudge.runtime` (skill): ...... still running past the runtime block step, not finished and not stopped. Instead: stop it, or extend it with a stated reason (agents nudge <child> other "<reason>"); this block is shown once per session.
 - `broad_kill.pattern` (skill): `...` is blocked: it kills every process that matches a name or pattern, not one process you started.
