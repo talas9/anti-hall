@@ -1833,7 +1833,6 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
         // the session stores are written for the next start: a restart then parses only what was appended meanwhile
         std::thread::spawn(|| {
             if let Some(store) = crate::transcript::store::global_if_started() {
-                store.shutdown(); // queued builds are dropped and the worker joined, so no half build is written below
                 store.persist_all();
             }
         });

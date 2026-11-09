@@ -408,10 +408,6 @@ value = { kind = "counter", unit = "bytes", labels = ["check", "size"] }
 doc = "Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss."
 value = { kind = "counter", unit = "lookups", labels = ["result"] }
 
-[metric.agent_scan_kept_evicted]
-doc = "Kept walks dropped before their time, by reason: store_hit (the transcript store answered the scan, so the walk kept for that transcript was dropped)."
-value = { kind = "counter", unit = "walks", labels = ["reason"] }
-
 [metric.agent_scan_kept_miss]
 doc = "Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised)."
 value = { kind = "counter", unit = "lookups", labels = ["reason"] }
@@ -814,11 +810,7 @@ doc = "Memory-registry leak notices, by largest holder."
 value = { kind = "counter", unit = "notices", labels = ["top"] }
 
 [metric.transcript_store_cold_builds]
-doc = "Session stores built from the transcript file (a first touch with no usable snapshot, or a rebuild), by where the build ran: on the requesting thread (request) or on the background worker (background)."
-value = { kind = "counter", unit = "builds", labels = ["path"] }
-
-[metric.transcript_store_cold_queue_full]
-doc = "Builds not queued for the background worker because its queue (transcript.cold_build_queue_max) was full; the request answered unsure."
+doc = "Session stores built from the transcript file (a first touch with no usable snapshot, or a rebuild)."
 value = { kind = "counter", unit = "builds", labels = [] }
 
 [metric.transcript_store_cold_bytes]

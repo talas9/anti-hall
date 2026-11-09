@@ -169,29 +169,6 @@ impl Rig {
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("status is not JSON ({e})"))
     }
 
-    /// The sum of the counter `name` over the series whose labels pass `keep` (`query counters --json`).
-    fn counter_sum(&self, name: &str, keep: impl Fn(&serde_json::Value) -> bool) -> u64 {
-        let o = self.cmd(&["query", "counters", "--limit", "5000", "--json"]).output().unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
-        v["meta"]["metrics"]["counters"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|r| r["name"].as_str() == Some(name) && keep(&r["labels"]))
-            .filter_map(|r| r["value"].as_f64())
-            .sum::<f64>() as u64
-    }
-
-    /// Scan turns that read without a turn (the wait ran out) since the daemon started.
-    fn bypassed(&self) -> u64 {
-        self.counter_sum("transcript_scan_turn_bypassed", |_| true)
-    }
-
-    /// Cold builds made on a request's own thread (a series without a `path` label is the old, always-inline count).
-    fn request_cold_builds(&self) -> u64 {
-        self.counter_sum("transcript_store_cold_builds", |l| l["path"].as_str() != Some("background"))
-    }
-
     fn memory(&self) -> serde_json::Value {
         self.status()["memory"].clone()
     }
@@ -250,7 +227,6 @@ impl Rig {
         }
         let before = self.memory();
         let live0 = before["heap_live_kb"].as_u64().unwrap();
-        let (bypassed0, request_builds0) = (self.bypassed(), self.request_cold_builds());
         // the four processes are up before any payload is sent, so the four requests reach the daemon together
         let plan = [
             ("Stop", payload(0, stop_extra())),
@@ -266,10 +242,6 @@ impl Rig {
         for k in &mut kids {
             k.wait().unwrap();
         }
-        let (bypassed, request_builds) = (self.bypassed() - bypassed0, self.request_cold_builds() - request_builds0);
-        eprintln!("scan-peak {mb} MB burst: transcript_scan_turn_bypassed={bypassed} request-path cold builds={request_builds}");
-        assert_eq!(bypassed, 0, "{mb} MB: a scan gave up waiting for its turn and read on its own (transcript_scan_turn_bypassed)");
-        assert_eq!(request_builds, 0, "{mb} MB: a cold build ran on a request's thread (transcript_store_cold_builds{{path=request}})");
         let st = self.status();
         // which checks grew the heap most in one call (`diagnostics.check_mem`): where a regression is
         let mut worst: Vec<(u64, String)> =

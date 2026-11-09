@@ -183,11 +183,6 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         self.map.values().map(|s| s.value.clone()).collect()
     }
 
-    /// The active keys, cloned without changing recency.
-    pub fn keys(&self) -> Vec<K> {
-        self.map.keys().cloned().collect()
-    }
-
     /// Drop `k` from memory (SQLite keeps it).
     pub fn remove(&mut self, k: &K) {
         if let Some(s) = self.map.remove(k) {
