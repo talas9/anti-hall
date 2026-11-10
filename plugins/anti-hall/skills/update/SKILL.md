@@ -45,7 +45,7 @@ takes effect in-session — this skill does not over-promise.
 
 ## What the helper does (`ah-engine update`)
 
-Runs inside the thin client (`ah-engine update`), macOS + Linux (Windows is not supported), fail-open
+Runs inside the thin client (`ah-engine update`), macOS on Apple silicon (Linux, Apple Intel and Windows: coming soon, not supported), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
 the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a **new**
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).

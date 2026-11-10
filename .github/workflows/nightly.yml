@@ -36,7 +36,7 @@ concurrency:
 jobs:
   hardening:
     name: engine hardening bar
-    runs-on: ubuntu-latest
+    runs-on: macos-latest # Apple silicon; the Linux runner is paused (owner decision 2026-11-10 / #708)
     timeout-minutes: 90
     defaults:
       run:

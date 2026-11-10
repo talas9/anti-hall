@@ -41,7 +41,7 @@ Where each is declared:
 
 ## Branch flow
 
-- Day-to-day work reaches `dev` through pull requests (the `dev` ruleset requires `tests-passed` and `privacy-scan`). A push to `dev` or `main` also runs the full pack of `ah-engine.yml`; a pull request into `dev` runs its quick gate (`fmt`, `lint`, `quick`) unless it carries the label `full-ci`.
+- Day-to-day work reaches `dev` through pull requests (since 2026-11-10 the `dev` ruleset requires only `privacy-scan`; the `main` ruleset still requires `tests-passed`). A push to `dev` or `main` also runs the full pack of `ah-engine.yml`; a pull request into `dev` runs its quick gate (`fmt`, `lint`, `quick`) unless it carries the label `full-ci`.
 - `main` changes only through a pull request from `dev`. A repository ruleset blocks direct pushes, force pushes and deletion of `main`.
 - A pull request to `main` runs the engine workflow (`ah-engine.yml`: the full pack, jobs `rust`, `no-node`, `ah-hook`, `doc-check`, `supply-chain`) and `.github/workflows/pr-source.yml`. Required to merge: `dev-only` (from `pr-source.yml`), which fails unless the source branch is this repository's `dev`, `privacy-scan`, and `tests-passed`, the always-running aggregator job of `ah-engine.yml`, which fails when any job failed or was cancelled, or when a job that the full tier should have run (`fmt`, `launcher`, `rust`, `no-node`, `supply-chain`) did not succeed.
 - `main` is what users and the plugin directory install from, so every merge to `main` is a release-quality event.

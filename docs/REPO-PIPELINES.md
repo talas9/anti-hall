@@ -28,12 +28,12 @@ Required checks and the working rules are in [Development guide](DEVELOPMENT.md#
 
 | When | What runs |
 |---|---|
-| Pull request or push to `dev`, touching engine, launcher, plugin engine files | `ah-engine` workflow: `rust` (Linux gate with `./test.sh`, macOS build and smoke), `ah-hook` build on both, `doc-check` |
-| Pull request touching `ah-engine/`, `ah-launcher/`, `plugins/anti-hall/` | `no-node` (Linux and macOS) |
+| Pull request or push to `dev`, touching engine, launcher, plugin engine files | `ah-engine` workflow: `rust` (macOS Apple silicon gate with `./test.sh`; the Linux leg is dispatch or tag only), `ah-hook` build, `doc-check` |
+| Pull request touching `ah-engine/`, `ah-launcher/`, `plugins/anti-hall/` | `no-node` (macOS Apple silicon) |
 | Every pull request | `tests-passed` (placeholder), `privacy-scan`, `pr-title`, PR check labels |
 | Pull request to `main` | `dev-only` (source must be `dev`); strict docs build when docs change |
 | Push to `main` | docs deploy (when docs change), `tests-passed`, `privacy-scan` |
-| Nightly and weekly | Full engine suite on both OSes, hardening bar, weekly full `doc-check`; a failure opens or updates one issue |
+| Nightly and weekly | Full engine suite on macOS Apple silicon, hardening bar, weekly full `doc-check`; a failure opens or updates one issue |
 
 Pushes to `dev` run the path-filtered engine workflow and the privacy scan only.
 

@@ -1,6 +1,6 @@
 # Development guide
 
-How to build, test, run and release anti-hall from a fresh checkout on macOS or Linux (including WSL). Windows is not supported. It covers the plugin (skills, TOML defaults, engine rule logic) and the `ah-engine/` Rust engine. Anything not built yet is marked **planned (D-n)**, where `D-n` is an entry in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
+How to build, test, run and release anti-hall from a fresh checkout on macOS on Apple silicon (Linux, Apple Intel and native Windows are coming soon, not supported yet). It covers the plugin (skills, TOML defaults, engine rule logic) and the `ah-engine/` Rust engine. Anything not built yet is marked **planned (D-n)**, where `D-n` is an entry in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 
 Every shell command in this guide is run by `ah-engine/scripts/doc-check.sh` in a fresh clone (see [Keeping this guide true](#keeping-this-guide-true)). A command that needs credentials, installs something globally or writes outside the clone is marked as skipped there.
 
@@ -165,7 +165,7 @@ git diff --stat -- REFERENCE.md
 | Layer | What it checks | Where | Cost |
 |---|---|---|---|
 | Property tests | no panic, bounded time per input, structural invariants (a heredoc opener parses totally, JSON round-trips, `glob_match` equals a regex-compiled oracle) | `ah-engine/tests/it/prop_parsers.rs`, part of `./test.sh` | about 1,000 cases per property by default; `PROPTEST_CASES=100000` for a soak run |
-| Fuzzing | no panic, no hang (`-timeout`), no OOM (`-rss_limit_mb`) on arbitrary bytes | `ah-engine/fuzz/` (three targets: `heredoc`, `json`, `glob`), nightly CI in `.github/workflows/ah-engine-fuzz.yml` | needs the nightly toolchain and `cargo install cargo-fuzz` |
+| Fuzzing | no panic, no hang (`-timeout`), no OOM (`-rss_limit_mb`) on arbitrary bytes | `ah-engine/fuzz/` (three targets: `heredoc`, `json`, `glob`), run by hand (manual dispatch of `.github/workflows/ah-engine-fuzz.yml`; the nightly schedule is paused, #708) | needs the nightly toolchain and `cargo install cargo-fuzz` |
 | Benchmarks | `glob_match` (including the `*a` and `**a` worst cases for a backtracking matcher) | `ah-engine/benches/parsers.rs` | a few minutes |
 
 A property or fuzz failure is a real bug: fix it at the root, check what the Node original does for the same input (D74: never weaker than Node), and keep the minimal input as a regression test. The proptest run prints the shrunk input; a fuzz crash leaves a reproducer under `ah-engine/fuzz/artifacts/<target>/`.
@@ -197,7 +197,7 @@ cargo bench --locked --bench parsers
 ~/.anti-hall/ah-engine/bin/ah-hook doctor --check
 ```
 
-A green local build is not a green CI run. CI runs on ubuntu and macOS, slower, with a real `HOME` and a detached `HEAD`; read the Actions result on your pull request. Never point anything you run at the real home: see "Isolation" in [CONTRIBUTING.md](../CONTRIBUTING.md).
+A green local build is not a green CI run. CI runs on macOS Apple silicon (Linux is paused until release, #708), slower, with a real `HOME` and a detached `HEAD`; read the Actions result on your pull request. Never point anything you run at the real home: see "Isolation" in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Run the plugin against a local engine
 
@@ -460,7 +460,7 @@ The plugin and the engine have separate versions and separate release procedures
 | `<!-- doc-check: needs tool ... -->` | run only when every tool is installed, otherwise skipped and reported |
 | `<!-- doc-check: long -->` | a full test suite; skipped with `--fast` |
 
-The CI job `doc-check` in `.github/workflows/ah-engine.yml` runs it on ubuntu and macOS.
+The CI job `doc-check` in `.github/workflows/ah-engine.yml` runs it on macOS Apple silicon (the Linux leg runs on a manual dispatch or a tag only).
 
 <!-- doc-check: skip (it would run itself) -->
 ```sh

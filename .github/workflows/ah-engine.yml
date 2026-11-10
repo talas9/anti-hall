@@ -1,11 +1,16 @@
 name: ah-engine
 
+# PLATFORM SCOPE (owner decision 2026-11-10 / #708): every product build and test job runs on macOS Apple silicon only
+# (`macos-latest` is arm64, see the runner-images README). The Linux legs (ubuntu-latest matrix entries) and the Intel-Mac
+# cross check are paused until release: they run on a manual dispatch and on a version tag only, and the matrices below keep the
+# entries so they can return. Non-product plumbing (`changes`, `nightly-report`, `supply-chain`, `plugin-validate`, `tests-passed`)
+# stays on ubuntu runners: it builds and tests nothing of the product's platform behaviour.
 # The one CI workflow of the repository (the old test.yml stub and no-node.yml are folded in). Two tiers:
 # - the QUICK gate (a push to engine-proto, a pull request into dev): `fmt`, `lint` (clippy) and `quick` (the `quick` nextest
-#   profile of ah-engine/.config/nextest.toml on one ubuntu job, built with the ci-test profile). Target: a few minutes, with a warm cache;
+#   profile of ah-engine/.config/nextest.toml on one macOS job, built with the ci-test profile). Target: a few minutes, with a warm cache;
 # - the FULL pack (a pull request into main, a push to main or dev, or a version tag, the nightly schedule, a manual dispatch, or a pull
-#   request into dev carrying the label `full-ci`): fmt, the thin client on both OSes, the `ci` profile gate on ubuntu and macOS (the
-#   `nightly` profile on the schedule, a dispatch and a tag), the no-Node harness on both OSes, doc-check, and the supply-chain audit.
+#   request into dev carrying the label `full-ci`): fmt, the thin client, the `ci` profile gate on macOS Apple silicon (Linux: dispatch or tag only; the
+#   `nightly` profile on the schedule, a dispatch and a tag), the no-Node harness, doc-check, and the supply-chain audit.
 # A pull request that changes only docs (`docs/**` and `*.md` outside ah-engine/, plugins/ and .github/, except docs/AH-ENGINE.md and
 # docs/DEVELOPMENT.md, which tests read) skips every Rust job. Because the paths are decided by the `changes` job and not by a
 # workflow-level `paths:` filter, the workflow always starts and `tests-passed` (the required check of the dev and main rulesets)
@@ -19,8 +24,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
-    - cron: '17 3 * * *' # nightly: the full suite on both OSes
-    - cron: '47 4 * * 1' # weekly: the full doc-check on both OSes
+    - cron: '17 3 * * *' # nightly: the full suite (macOS Apple silicon)
+    - cron: '47 4 * * 1' # weekly: the full doc-check (macOS Apple silicon)
   workflow_dispatch:
 
 permissions:
@@ -85,7 +90,7 @@ jobs:
   fmt:
     needs: changes
     if: needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 10
     defaults:
       run:
@@ -102,7 +107,7 @@ jobs:
   lint:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full != 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 25
     defaults:
       run:
@@ -120,11 +125,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
       - run: cargo clippy --locked --all-targets -- -D warnings
 
-  # Quick tier only: the deterministic unit / invariant / golden tests (nextest profile `quick`) on one ubuntu job.
+  # Quick tier only: the deterministic unit / invariant / golden tests (nextest profile `quick`) on one macOS (Apple silicon) job.
   quick:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full != 'true'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 30
     defaults:
       run:
@@ -174,7 +179,7 @@ jobs:
 
   # ---- the full pack ----
 
-  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the full pack builds it on both OSes.
+  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the full pack builds it on macOS Apple silicon (Linux: dispatch or tag only).
   launcher:
     name: ah-hook (${{ matrix.os }})
     needs: changes
@@ -184,7 +189,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # paused until release: owner decision 2026-11-10 / #708 (Linux leg: dispatch or tag only)
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["macos-latest","ubuntu-latest"]' || '["macos-latest"]') }}
     defaults:
       run:
         working-directory: ah-launcher
@@ -206,12 +212,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
     runs-on: ${{ matrix.os }}
-    # the gate fits well inside an hour; the full run (soak, benches, heavy sweeps) gets more
-    timeout-minutes: ${{ ((github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && 150 || 60 }}
+    # 150 min for every tier: the macOS full gate (test.sh on the ci-test profile) has no measured wall time yet (a release build of all test
+    # binaries took 98m25s on macOS vs 25m34s on ubuntu); read the real figure off the first full run and tighten this then.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # paused until release: owner decision 2026-11-10 / #708 (Linux leg: dispatch or tag only)
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["macos-latest","ubuntu-latest"]' || '["macos-latest"]') }}
     defaults:
       run:
         working-directory: ah-engine
@@ -241,8 +249,9 @@ jobs:
           tool: cargo-nextest
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      # Apple Intel is paused (# paused until release: owner decision 2026-11-10 / #708): the x86_64-apple-darwin cross check runs on a dispatch or a tag only.
       - name: Check target without jemalloc (macOS x86_64)
-        if: matrix.os == 'macos-latest'
+        if: matrix.os == 'macos-latest' && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
         run: |
           rustup target add x86_64-apple-darwin
           cargo check --target x86_64-apple-darwin
@@ -250,22 +259,18 @@ jobs:
         working-directory: ah-launcher
         run: cargo build --release --locked
       # The missing-ah-hook path (first install, binary removed) is owned by hooks/install.sh: rc 0, empty stdout, one notice per
-      # session (#183). Pure shell against a scratch HOME and a file:// release; runs on both OSes in every tier.
+      # session (#183). Pure shell against a scratch HOME and a file:// release; runs in every tier.
       - name: install.sh tests
         run: sh "$GITHUB_WORKSPACE/tests/install/install-sh.sh"
-      # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
-      # daemon-survivor check). Clippy runs only here, once.
+      # The gate on macOS Apple silicon (Linux is paused until release: owner decision 2026-11-10 / #708): test.sh (release clippy -D warnings,
+      # the `ci` nextest profile, doctests, the release mem_reload guard, the wrapper and bootstrap shell tests, the daemon-survivor check).
+      # Clippy runs only here, once. The bulk builds on the `ci-test` Cargo profile (LTO-linking ~36 release test binaries took 106-111 min
+      # on the macOS runner, see test.sh). Measure the wall time on a full-ci run against this job's timeout.
       - name: test.sh (gate)
-        if: matrix.os == 'ubuntu-latest' && env.AH_FULL != 'true'
-        run: ./test.sh
-      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions), the
-      # archive-cap retention fixture, and the wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
-      - name: build + smoke (macOS gate)
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
-        run: |
-          cargo nextest run --cargo-profile ci-test --profile ci --no-run
-          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
-          sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
+        run: ./test.sh
+        env:
+          AH_TEST_CARGO_PROFILE: ci-test
       - name: test.sh (full)
         if: env.AH_FULL == 'true'
         run: ./test.sh
@@ -283,7 +288,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       - run: cargo doc --no-deps
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'macos-latest'
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -300,8 +305,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS arm64 and Linux x86_64 first (issue checklist); macOS Intel and Linux arm64 follow with the platform lane.
-        os: [macos-latest, ubuntu-latest]
+        # paused until release: owner decision 2026-11-10 / #708 (Linux leg: dispatch or tag only)
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["macos-latest","ubuntu-latest"]' || '["macos-latest"]') }}
     defaults:
       run:
         working-directory: ah-engine
@@ -361,19 +366,20 @@ jobs:
           if [ -n "$n" ]; then printf '%s' "$body" | ./.github/scripts/bot-comment.sh "$n" ci-failure; else gh issue create --title "$title" --body "$body"; fi
 
   # Runs the shell commands in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo. A push
-  # or pull request runs it with --fast on ubuntu (the blocks marked `long`, the full test suites, are skipped: the rust job
-  # already runs them); the weekly schedule and a manual dispatch run every block on both OSes.
+  # or pull request runs it with --fast on macOS (Apple silicon) (the blocks marked `long`, the full test suites, are skipped: the rust job
+  # already runs them); the weekly schedule and a manual dispatch run every block (a dispatch or tag adds the Linux leg).
   doc-check:
     name: doc-check (${{ matrix.os }})
     needs: changes
-    # the full pack, or a change to the guide / the script itself; the weekly cron and a dispatch run every block on both OSes
+    # the full pack, or a change to the guide / the script itself; the weekly cron and a dispatch run every block (a dispatch or tag adds the Linux leg)
     if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.devdocs == 'true') && (github.event_name != 'schedule' || github.event.schedule == '47 4 * * 1')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+        # paused until release: owner decision 2026-11-10 / #708 (Linux leg: dispatch or tag only)
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && '["macos-latest","ubuntu-latest"]' || '["macos-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -422,7 +428,7 @@ jobs:
   coverage:
     name: coverage (informational)
     if: (github.event_name == 'schedule' && github.event.schedule == '47 4 * * 1') || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     continue-on-error: true
     defaults:
       run:
@@ -449,7 +455,7 @@ jobs:
   size:
     name: size report (informational)
     if: (github.event_name == 'schedule' && github.event.schedule == '47 4 * * 1') || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     continue-on-error: true
     defaults:
       run:
@@ -513,7 +519,9 @@ jobs:
   # The required check of the dev and main rulesets. It always runs (`if: always()`), so a skipped or cancelled dependency can never
   # leave the pull request waiting for a check that does not exist, and it never takes a skipped job for a pass: it fails when a job
   # that this run should have executed did not succeed. Quick tier (dev): fmt, lint, quick. Full pack (main, `full-ci`): fmt,
-  # launcher, rust, no-node, doc-check, supply-chain. A docs-only pull request passes with every Rust job skipped.
+  # launcher, rust, no-node, doc-check, supply-chain. A docs-only pull request passes with every Rust job skipped. The jobs listed in
+  # `needs` are macOS-only on a pull request or a push (the Linux matrix legs are paused, paused until release: owner decision 2026-11-10 / #708); the matrix result is the
+  # aggregate of the legs that exist, so tests-passed needs no per-OS condition and never waits for an absent Linux leg.
   tests-passed:
     name: tests-passed
     needs: [changes, fmt, lint, quick, launcher, rust, no-node, doc-check, supply-chain]

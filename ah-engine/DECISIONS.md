@@ -7,7 +7,7 @@ Status: living document. Owner decisions from 2026-10-04, recorded in the order 
 ## Why an engine
 
 - **D1. The problem is bloat, not start time.** Measured on 0.201.0: each Bash call spawns 9 Node hooks before the tool runs and 6 after. The 9 PreToolUse hooks peak at about 409 MB combined and use 187 ms of CPU. Node start costs about 16 ms of CPU and 44 MB per process, which is 65–100% of each hook's cost. Machine-wide that is about 196k hook processes and about 68 CPU-minutes a day (estimate), plus about 300 MB of resident ingest daemons.
-- **D2. Language: Rust.** Prototype measurements: the client uses 2.0 MB vs 44 MB for Node, a call takes 2.9 ms vs 19.7 ms, the daemon is 3.7 MB, and the binary is 1.1 MB. Shipping is unix-only: macOS and Linux, including WSL.
+- **D2. Language: Rust.** Prototype measurements: the client uses 2.0 MB vs 44 MB for Node, a call takes 2.9 ms vs 19.7 ms, the daemon is 3.7 MB, and the binary is 1.1 MB. Shipping is unix-only: macOS and Linux, including WSL. *(Platform scope superseded 2026-11-10, #708: Apple silicon only until release; Linux (including WSL), Apple Intel and native Windows are coming soon.)*
 - **D3. One system-wide engine per user (the gateway).** Every project and session registers with it, sending project path, role (Rick, Meeseek or plain), plugin version and host. It replaces the DevSwarm daemons, cron ticks, supervisor, reaper, wake-watch and Jev worker.
   - Any agent that starts also starts the engine, and keeps a Monitor task running for the whole session so it can receive messages from the engine. The engine likewise receives messages from every agent: Ricks, Meeseeks and plain sessions.
   - Source: "we make one system wide very thin ... all projects report to it including project path ... any agent that starts starts it and have monitor task running all time so it can receive messages from it, and vice versa the engine can receive messages from all agents, ricks and meeseks" (2026-10-04T17:19:12Z).
@@ -255,7 +255,7 @@ item cites its Node source in its doc comment; the module doc has the file-by-fi
   - Consolidate where possible without exceeding file-size limits, without packing or bundling files into blobs, and without hurting performance.
   - This is a separate track from the engine (see `consolidation-plan-2026-10-04.md`); the engine is the larger lever for the same bloat.
   - Source: "we have now a lot of hooks and skills, any chance we can consolidate some without exceeding file size or packing them or affect performance?" (2026-10-04T17:06:06Z).
-- **D47. README states platform support.** The README must say that Unix-based systems are supported, including WSL, and that Windows is not supported at the moment. Complements D2.
+- **D47. README states platform support.** The README must say that Unix-based systems are supported, including WSL, and that Windows is not supported at the moment. Complements D2. *(Superseded 2026-11-10, #708: Apple silicon only until release; the README says Linux (including WSL), Apple Intel and native Windows are coming soon.)*
   - Source: "we need to metion support in readme that we support unix based systems including wsl but not windows at the moemnt" (2026-10-04T17:08:26Z).
 - **D48. `plugin.json` `supportUrl` is the GitHub issues link.** The directory form reads it from the file (the form does not let the owner edit it), so the file must hold the issues URL for `talas9/anti-hall`.
   - Source: "shouldn't this be the issues link in gh? ... plugin.json key: supportUrl" (2026-10-04T16:58:13Z); "the form doesn't let me it picks them up from the file" (16:59:41Z).
@@ -572,7 +572,7 @@ matching files asks for a rescan when its listing changes. A 10000-write storm p
 new files produced one rescan.
 
 **Not verified here.** Only the aarch64-apple-darwin target is installed on the build machine: the Linux inotify path,
-Intel macOS and WSL2 are covered by CI builds and by fixture tests of the mount-table parser (`tests/` of `fstype.rs`), not run.
+Intel macOS and WSL2 were covered by CI builds and by fixture tests of the mount-table parser (`tests/` of `fstype.rs`), not run. *(Superseded 2026-11-10, #708: those CI builds are paused; Linux and Apple Intel run on a manual dispatch or a tag only.)*
 FSEvents replays changes made a moment before a stream starts; they are hints, and a consumer reconciles at start anyway.
 
 ## Debug logging backend (lane B, 2026-10-15)

@@ -1,6 +1,6 @@
 # Contributing to anti-hall
 
-Thanks for helping. anti-hall is a Rust engine (`ah-engine`) behind a Rust thin client (`ah-hook`), with its rules as plugin JS run inside the engine and every value and text in plugin TOML; it runs on macOS and Linux. The original Node hooks are a backup outside the published plugin (`plugins/anti-hall-node`) and get bug fixes only: no new Node code. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first.
+Thanks for helping. anti-hall is a Rust engine (`ah-engine`) behind a Rust thin client (`ah-hook`), with its rules as plugin JS run inside the engine and every value and text in plugin TOML; it runs on macOS on Apple silicon (Linux, Apple Intel and native Windows are coming soon). The original Node hooks are a backup outside the published plugin (`plugins/anti-hall-node`) and get bug fixes only: no new Node code. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## Project layout
 
