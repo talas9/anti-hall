@@ -255,7 +255,7 @@ item cites its Node source in its doc comment; the module doc has the file-by-fi
   - Consolidate where possible without exceeding file-size limits, without packing or bundling files into blobs, and without hurting performance.
   - This is a separate track from the engine (see `consolidation-plan-2026-10-04.md`); the engine is the larger lever for the same bloat.
   - Source: "we have now a lot of hooks and skills, any chance we can consolidate some without exceeding file size or packing them or affect performance?" (2026-10-04T17:06:06Z).
-- **D47. README states platform support.** The README must say that Unix-based systems are supported, including WSL, and that Windows is not supported at the moment. Complements D2.
+- **D47. README states platform support.** The README must say that Unix-based systems are supported, including WSL, and that Windows is not supported at the moment. Complements D2. *(Superseded 2026-11-10, #708: Apple silicon only until release; the README says Linux (including WSL), Apple Intel and native Windows are coming soon.)*
   - Source: "we need to metion support in readme that we support unix based systems including wsl but not windows at the moemnt" (2026-10-04T17:08:26Z).
 - **D48. `plugin.json` `supportUrl` is the GitHub issues link.** The directory form reads it from the file (the form does not let the owner edit it), so the file must hold the issues URL for `talas9/anti-hall`.
   - Source: "shouldn't this be the issues link in gh? ... plugin.json key: supportUrl" (2026-10-04T16:58:13Z); "the form doesn't let me it picks them up from the file" (16:59:41Z).

@@ -46,8 +46,8 @@ a small Rust binary that hands the event to the `ah-engine` binary. Both are dow
 only if their sha256 equals the one pinned in `ah-engine.lock`; the plugin's one shell file, `hooks/install.sh`, does that on first
 install. No Node and no other script runs on a hook path. If the engine is missing, broken or unreachable, hooks let the call
 through and print one notice per session. Commands call the engine directly: `ah-engine <verb>`. Its rules,
-settings and texts are plain files in `engine/`, hot-reloaded with fallbacks (edited, last-known-good, pristine). macOS and
-Linux; Windows is not supported yet. Details:
+settings and texts are plain files in `engine/`, hot-reloaded with fallbacks (edited, last-known-good, pristine). macOS on
+Apple silicon; Linux, Apple Intel and native Windows are coming soon. Details:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md).
 
 ## Binary download and verification

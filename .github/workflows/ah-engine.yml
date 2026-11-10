@@ -213,7 +213,9 @@ jobs:
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.code == 'true' && (github.event_name != 'schedule' || github.event.schedule == '17 3 * * *')
     runs-on: ${{ matrix.os }}
     # the gate fits well inside an hour; the full run (soak, benches, heavy sweeps) gets more
-    timeout-minutes: ${{ ((github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && 150 || 60 }}
+    # 150 min for every tier: the macOS full gate (test.sh on the ci-test profile) has no measured wall time yet (a release build of all test
+    # binaries took 98m25s on macOS vs 25m34s on ubuntu); read the real figure off the first full run and tighten this then.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:

@@ -122,7 +122,7 @@ Building, testing and releasing the plugin and the Rust engine: [Development gui
 
 The ordered plan (engine back online, hardening, Node removal, features, then 1.0) with each release's exit gate is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-**Coming soon: Linux (including WSL), Apple Intel and native Windows.** anti-hall currently supports and tests macOS on Apple silicon only. Linux and Apple Intel are paused, not dropped: the code stays and CI for them runs only on a manual dispatch or a release. Native Windows is parked, not promised: it would need a Windows process-control layer and a non-shell hook wrapper in the Rust engine.
+**Coming soon: Linux (including WSL), Apple Intel and native Windows.** anti-hall currently supports and tests macOS on Apple silicon only. Linux and Apple Intel are paused, not dropped: the code stays and CI for them runs only on a manual dispatch or a release. Native Windows is coming soon but not yet scheduled: it would need a Windows process-control layer and a non-shell hook wrapper in the Rust engine.
 
 ## License
 
