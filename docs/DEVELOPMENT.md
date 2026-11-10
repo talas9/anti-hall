@@ -197,7 +197,7 @@ cargo bench --locked --bench parsers
 ~/.anti-hall/ah-engine/bin/ah-hook doctor --check
 ```
 
-A green local build is not a green CI run. CI runs on ubuntu and macOS, slower, with a real `HOME` and a detached `HEAD`; read the Actions result on your pull request. Never point anything you run at the real home: see "Isolation" in [CONTRIBUTING.md](../CONTRIBUTING.md).
+A green local build is not a green CI run. CI runs on macOS Apple silicon (Linux is paused until release, #708), slower, with a real `HOME` and a detached `HEAD`; read the Actions result on your pull request. Never point anything you run at the real home: see "Isolation" in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Run the plugin against a local engine
 
@@ -460,7 +460,7 @@ The plugin and the engine have separate versions and separate release procedures
 | `<!-- doc-check: needs tool ... -->` | run only when every tool is installed, otherwise skipped and reported |
 | `<!-- doc-check: long -->` | a full test suite; skipped with `--fast` |
 
-The CI job `doc-check` in `.github/workflows/ah-engine.yml` runs it on ubuntu and macOS.
+The CI job `doc-check` in `.github/workflows/ah-engine.yml` runs it on macOS Apple silicon (the Linux leg runs on a manual dispatch or a tag only).
 
 <!-- doc-check: skip (it would run itself) -->
 ```sh

@@ -26,7 +26,7 @@ Jev integrations.
 The hooks apply globally once enabled. To try it without installing:
 `claude --plugin-dir /path/to/anti-hall`. The old anti-hall statusline installer is retired; use uninstall-statusline only to clean up older installs.
 
-**No Node.js needed.** Every hook runs the `ah-hook` client and the `ah-engine` binary (macOS and Linux). If the engine
+**No Node.js needed.** Every hook runs the `ah-hook` client and the `ah-engine` binary (macOS on Apple silicon; Linux, Apple Intel and native Windows are coming soon). If the engine
 is missing or cannot answer, hooks let the call through and print one notice per session.
 
 ### Enable Jev

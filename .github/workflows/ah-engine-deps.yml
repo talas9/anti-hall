@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest # Apple silicon; the Linux runner is paused (owner decision 2026-11-10 / #708)
     timeout-minutes: 60
     permissions:
       contents: write

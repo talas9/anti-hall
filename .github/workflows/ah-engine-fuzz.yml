@@ -2,10 +2,12 @@ name: ah-engine-fuzz
 
 # Nightly fuzzing of the engine's hand-written parsers (ah-engine/fuzz: a separate crate on the nightly toolchain). Each
 # target runs for a bounded time; the corpus persists between runs in the Actions cache and a crash uploads its reproducer.
-# Scheduled and manual only, so a push or pull request never waits for it.
+# Manual only (schedule paused, see below), so a push or pull request never waits for it.
+# The nightly schedule is paused until release: owner decision 2026-11-10 / #708: the fuzz job and its target are Linux (x86_64-unknown-linux-gnu),
+# so it runs on a manual dispatch only. Restore the cron below when Linux support returns.
 on:
-  schedule:
-    - cron: '41 2 * * *'
+  # schedule:
+  #   - cron: '41 2 * * *'
   workflow_dispatch:
     inputs:
       seconds:

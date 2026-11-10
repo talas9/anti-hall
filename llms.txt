@@ -8,7 +8,7 @@
 > LLM judge), task-list discipline, and a TTL'd user-override escape hatch
 > (`~/.anti-hall/skip.json`). Optional parts: a two-line statusline, an MCP-orphan reaper,
 > the Jev classifier, and DevSwarm multi-workspace coordination (dormant unless DevSwarm is
-> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS + Linux. No Node.js is needed (the engine is the only runtime). Windows is not supported yet.
+> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS on Apple silicon. No Node.js is needed (the engine is the only runtime). Linux (including WSL), Apple Intel and native Windows are coming soon, not supported yet.
 
 anti-hall targets four failure modes of coding agents: eagerness (acting before
 investigating), hallucination (unverified facts stated as truth), fix-before-diagnosis, and
@@ -19,7 +19,7 @@ is in [CHANGELOG.md](https://github.com/talas9/anti-hall/blob/main/CHANGELOG.md)
 
 ## Install
 
-No Node.js needed; the plugin fetches the sha256-pinned engine (setup skill, or the opt-in `engine.bootstrap`). macOS and Linux only (Windows is not supported).
+No Node.js needed; the plugin fetches the sha256-pinned engine (setup skill, or the opt-in `engine.bootstrap`). macOS on Apple silicon only (Linux, Apple Intel and Windows are coming soon, not supported yet).
 
 ```
 /plugin marketplace add talas9/anti-hall
@@ -336,5 +336,5 @@ message bodies to gzip, then prunes them. Full reference:
 - [plugins/anti-hall/.codex-plugin/plugin.json](https://github.com/talas9/anti-hall/blob/main/plugins/anti-hall/.codex-plugin/plugin.json): the Codex manifest, bumped together with the Claude one.
 - [.claude-plugin/marketplace.json](https://github.com/talas9/anti-hall/blob/main/.claude-plugin/marketplace.json): the marketplace entry (carries no version).
 - [tests/](https://github.com/talas9/anti-hall/tree/main/tests/): zero-dependency `node --test`; v0.108.0 end-to-end scenarios in `tests/e2e/v0108/`.
-- [.github/workflows/ah-engine.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/ah-engine.yml): CI for the engine and the thin client: build and tests on ubuntu-latest and macos-latest, on pull requests, pushes to `dev` and `main`, `v*` tags, plus a nightly full-suite schedule (the `dev` → `main` pull request is the merge gate). The Node `tests/` suite is the legacy suite of the Node era.
+- [.github/workflows/ah-engine.yml](https://github.com/talas9/anti-hall/blob/main/.github/workflows/ah-engine.yml): CI for the engine and the thin client: build and tests on macos-latest (Apple silicon) only, on pull requests, pushes to `dev` and `main` and `v*` tags (the Linux legs run on a manual dispatch or a `v*` tag only), plus a nightly full-suite schedule (the `dev` → `main` pull request is the merge gate). The Node `tests/` suite is the legacy suite of the Node era.
 - [RELEASING.md](https://github.com/talas9/anti-hall/blob/main/RELEASING.md): bump both manifests + CHANGELOG on `dev`, pull request `dev` → `main`, tag, GitHub Release.

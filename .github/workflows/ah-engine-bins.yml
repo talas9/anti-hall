@@ -1,6 +1,6 @@
 name: ah-engine prebuilt binaries
 
-# On each push to engine-proto that changes ah-engine/: build every target and publish a GitHub PRE-RELEASE
+# On each push to engine-proto that changes ah-engine/: build the Apple-silicon target (every target on a manual dispatch: Linux and Apple Intel are paused, owner decision 2026-11-10 / #708) and publish a GitHub PRE-RELEASE
 # `ah-engine-dev-<sha8>` (archives + SHA256SUMS + COMMIT + build attestation) that `ah-hook update --channel dev` installs.
 # Releases are never deleted: dev pre-releases beyond the newest 5 are only marked superseded (a pre-release is never "latest").
 
@@ -20,13 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { triple: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
-          - { triple: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
-          - { triple: aarch64-apple-darwin,      runner: macos-15 }
-          - { triple: x86_64-apple-darwin,       runner: macos-15-intel }
-          - { triple: x86_64-unknown-linux-musl,  runner: ubuntu-24.04,    apt: musl-tools }
-          - { triple: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, apt: musl-tools }
+        # A push builds the Apple-silicon target only. The Linux and Apple Intel targets are paused until release: owner decision 2026-11-10 / #708:
+        # they build on a manual dispatch only (the full six-target set, kept here so they can return).
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch'
+          && '[{"triple":"x86_64-unknown-linux-gnu","runner":"ubuntu-22.04"},{"triple":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm"},{"triple":"aarch64-apple-darwin","runner":"macos-15"},{"triple":"x86_64-apple-darwin","runner":"macos-15-intel"},{"triple":"x86_64-unknown-linux-musl","runner":"ubuntu-24.04","apt":"musl-tools"},{"triple":"aarch64-unknown-linux-musl","runner":"ubuntu-24.04-arm","apt":"musl-tools"}]'
+          || '[{"triple":"aarch64-apple-darwin","runner":"macos-15"}]') }}
     defaults:
       run:
         working-directory: ah-engine
@@ -141,7 +139,8 @@ jobs:
           echo "SHORT=$short" >> "$GITHUB_ENV"
           cd dist
           n="$(find . -maxdepth 1 -name 'ah-engine-dev-*.tar.gz' | wc -l)"
-          [ "$n" -eq 6 ] || { echo "::error::expected 6 archives, found $n"; exit 1; }
+          want=${{ github.event_name == 'workflow_dispatch' && 6 || 1 }}
+          [ "$n" -eq "$want" ] || { echo "::error::expected $want archives, found $n"; exit 1; }
           sha256sum ./ah-engine-dev-*.tar.gz | sed 's|  \./|  |' > SHA256SUMS
           sha256sum -c SHA256SUMS
           git -C "$GITHUB_WORKSPACE" rev-parse HEAD > COMMIT
