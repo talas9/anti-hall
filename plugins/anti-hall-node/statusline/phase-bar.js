@@ -181,7 +181,8 @@ function contextLine(input) {
   let tokens = '';
   const used = (typeof cw.used_tokens === 'number') ? cw.used_tokens
              : (typeof cw.tokens === 'number') ? cw.tokens : null;
-  const max  = (typeof cw.max_tokens === 'number') ? cw.max_tokens
+  const max  = (typeof cw.context_window_size === 'number') ? cw.context_window_size
+             : (typeof cw.max_tokens === 'number') ? cw.max_tokens
              : (typeof cw.total_tokens === 'number') ? cw.total_tokens
              : (typeof cw.context_size === 'number') ? cw.context_size : null;
   if (used != null && max != null && max > 0) {
@@ -214,7 +215,8 @@ function persistContextPct(input) {
     pct = Math.max(0, Math.min(100, pct));
     const usedTokens = (typeof cw.used_tokens === 'number') ? cw.used_tokens
       : (typeof cw.tokens === 'number') ? cw.tokens : null;
-    const maxTokens = (typeof cw.max_tokens === 'number') ? cw.max_tokens
+    const maxTokens = (typeof cw.context_window_size === 'number') ? cw.context_window_size
+      : (typeof cw.max_tokens === 'number') ? cw.max_tokens
       : (typeof cw.total_tokens === 'number') ? cw.total_tokens
       : (typeof cw.context_size === 'number') ? cw.context_size : null;
     const store = require('../hooks/lib/context-pct-store.js');

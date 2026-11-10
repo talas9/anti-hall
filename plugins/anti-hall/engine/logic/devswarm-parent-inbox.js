@@ -1462,11 +1462,11 @@ function piDecide(p, opts) {
   if (parked !== null) pending.push({ kind: 'plain', rank: 120, text: parked });
   if (urgentList.length) {
     var us = piUrgentSegment(urgentList, home, cliPath);
-    pending.push({ kind: 'dedupe', rank: 130, o: { sessionId: sid, key: 'parent-inbox-urgent', content: us, transcriptPath: tp, keepaliveTurns: 10 }, text: us });
+    pending.push({ kind: 'dedupe', rank: 130, o: { sessionId: sid, key: 'parent-inbox-urgent', content: us, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_parent.urgent_keepalive') }, text: us });
   }
   if (normalList.length) {
     var ns = piUnreadSegment(normalList, home, cliPath, now);
-    pending.push({ kind: 'dedupe', rank: 140, o: { sessionId: sid, key: 'parent-inbox-nudge', content: ns, transcriptPath: tp, normalize: piNormInbox, keepaliveTurns: 2 }, text: ns, suppressedLog: normalList.some(function (w) { return w.notDraining; }) });
+    pending.push({ kind: 'dedupe', rank: 140, o: { sessionId: sid, key: 'parent-inbox-nudge', content: ns, transcriptPath: tp, normalize: piNormInbox, keepaliveTurns: ah.cfgNum('devswarm_parent.nudge_keepalive') }, text: ns, suppressedLog: normalList.some(function (w) { return w.notDraining; }) });
   }
   if (archiveList.length) pending.push({ kind: 'plain', rank: 150, text: piArchiveSegment(archiveList, cliPath) });
   // every dedupe record must be decidable before the first write

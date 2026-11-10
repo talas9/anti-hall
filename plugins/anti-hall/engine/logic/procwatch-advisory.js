@@ -18,13 +18,15 @@ function pwReport() {
 
 function pwStateRel() { return ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + ah.cfg('procwatch.state_rel'); }
 
+function pwObj(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
+
 function pwLoad() {
   var raw = pwRead(pwStateRel());
-  if (raw === null) return { last: {}, dirty: false };
+  if (raw === null) return { last: {}, disk: {}, dirty: false };
   try {
     var o = JSON.parse(raw);
-    return { last: (o && typeof o.last === 'object' && o.last !== null && !Array.isArray(o.last)) ? o.last : {}, dirty: false };
-  } catch (e) { return { last: {}, dirty: false }; }
+    return { last: pwObj(o && o.last), disk: pwObj(o && o.disk), dirty: false };
+  } catch (e) { return { last: {}, disk: {}, dirty: false }; }
 }
 
 // True (and remembered) when `key` has not fired within `cooldown` seconds.
@@ -40,7 +42,8 @@ function pwSave(st, nowS) {
   if (!st.dirty) return;
   var keep = ah.cfgNum('procwatch.state_keep_s');
   Object.keys(st.last).forEach(function (k) { if (nowS - st.last[k] > keep) delete st.last[k]; });
-  try { ah.state.writeAtomic(pwStateRel(), JSON.stringify({ last: st.last })); } catch (e) { /* a lost cooldown record repeats one warning */ }
+  Object.keys(st.disk).forEach(function (k) { var e = st.disk[k]; if (!e || typeof e.at !== 'number' || nowS - e.at > keep) delete st.disk[k]; });
+  try { ah.state.writeAtomic(pwStateRel(), JSON.stringify({ last: st.last, disk: st.disk })); } catch (e) { /* a lost cooldown record repeats one warning */ }
 }
 
 function pwMore(n, shown) { return n > shown ? text.render(ah.cfg('procwatch.msg_more'), { m: n - shown }) : ''; }
@@ -113,6 +116,50 @@ function pwResource(r, sid, myPid, st, parts) {
   parts.push(pwMsg('warn', text.render(ah.cfg('resource_watch.msg_what'), { list: lines.join('; ') }), ah.cfg('resource_watch.msg_why'), ah.cfg('resource_watch.msg_instead')));
 }
 
+// The free space of a volume line ("38.0 GB", "512 MB") in GB, or NaN.
+function pwFreeGb(text0) {
+  var m = /^\s*([0-9]+(?:\.[0-9]+)?)\s*(GB|MB)\s*$/.exec(String(text0));
+  if (m === null) return NaN;
+  return m[2] === 'GB' ? Number(m[1]) : Number(m[1]) * ah.cfgNum('disk_watch.bytes_per_mb') / ah.cfgNum('disk_watch.bytes_per_gb');
+}
+
+// diskWatch.repeatOnChangeOnly: the low-space warning is due when a volume's level changed (a worse level is never held back), its
+// free space fell by `diskWatch.repeatDropGb` since the last warning, or `diskWatch.repeatSeconds` passed (the reminder floor);
+// the drop and the floor also wait out the cooldown. A volume that is no longer low is forgotten, so a relapse warns at once.
+function pwDiskDue(st, sid, low, nowS, cooldown) {
+  var drop = ah.settings.num('disk_watch.num_repeat_drop_gb'), floorS = ah.settings.num('disk_watch.num_repeat_s');
+  var prefix = sid + ':', seen = {}, due = false;
+  low.forEach(function (v) {
+    var key = prefix + v.path, prev = pwObj(st.disk[key]), free = pwFreeGb(v.free);
+    seen[key] = true;
+    if (prev.level !== v.level) { due = true; return; }
+    var idle = typeof prev.at === 'number' ? nowS - prev.at : Infinity;
+    // a record from the future (the clock was set back) cannot be trusted to hold anything back: warn
+    if (idle < 0) { due = true; return; }
+    if (idle < cooldown) return;
+    if (isFinite(free) && typeof prev.free === 'number' && prev.free - free >= drop) due = true;
+    else if (floorS > 0 && idle >= floorS) due = true;
+  });
+  Object.keys(st.disk).forEach(function (k) { if (k.indexOf(prefix) === 0 && !seen[k]) { delete st.disk[k]; st.dirty = true; } });
+  if (!due) {
+    if (low.length === 0) return false; // nothing is low: only the recovery above ran
+    // the old rule (one warning per cooldown at an unchanged level) would have warned again here: a saved repeat
+    var seenAll = low.every(function (v) { var e = pwObj(st.disk[prefix + v.path]); return typeof e.at === 'number' && nowS - e.at >= cooldown; });
+    if (seenAll) ah.metric('waste_events_total', ['category', 'repeated_advisory', 'source', 'disk_unchanged']);
+    return false;
+  }
+  low.forEach(function (v) { st.disk[prefix + v.path] = { level: v.level, free: pwFreeGb(v.free), at: nowS }; });
+  st.dirty = true;
+  return true;
+}
+
+// Whether the low-space warning is due. With repeat-on-change the state logic runs on every report, also when no volume is low:
+// that is how a recovered volume is forgotten, so a relapse at the same level warns again.
+function diskDue(st, sid, low, critical, nowS, cooldown) {
+  if (ah.settings.bool('disk_watch.sw_repeat_on_change_only')) return pwDiskDue(st, sid, low, nowS, cooldown) && low.length > 0;
+  return low.length > 0 && pwFire(st, 'disk:' + sid + ':' + (critical ? 'critical' : 'warn'), nowS, cooldown);
+}
+
 function pwDiskLines(low) {
   return low.map(function (v) { return text.render(ah.cfg('disk_watch.msg_vol'), { path: v.path, free: v.free, pct: v.pct, level: v.level }); });
 }
@@ -157,7 +204,7 @@ function decide(p) {
           parts.push(pwMsg('warn', ah.cfg('disk_watch.msg_heavy') + ' ' + text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));
         }
       }
-    } else if (low.length > 0 && pwFire(st, 'disk:' + sid + ':' + (critical ? 'critical' : 'warn'), nowS, cooldown)) {
+    } else if (diskDue(st, sid, low, critical, nowS, cooldown)) {
       parts.push(pwMsg('warn', text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));
     }
   }

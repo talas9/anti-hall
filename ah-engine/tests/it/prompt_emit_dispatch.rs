@@ -343,3 +343,155 @@ fn twenty_consecutive_prompts_inject_the_recurring_blocks_once() {
     assert!(on[20] > 0, "a compaction (changed state) re-sends the blocks: {on:?}");
     assert!(on.iter().sum::<usize>() < off.iter().sum::<usize>(), "emit-on-change injects less than every turn");
 }
+
+/// The ISO form of a Unix time in ms (civil-from-days of the proleptic Gregorian calendar).
+fn iso_of(ms: u64) -> String {
+    let (days, sod) = ((ms / 86_400_000) as i64, (ms % 86_400_000) / 1000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", sod / 3600, sod % 3600 / 60, sod % 60, ms % 1000)
+}
+
+fn real_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// #709: a turn the host's scheduler delivered (a cron tick) does not count toward the keepalive that re-shows an unchanged block
+/// (`guards.keepaliveCountsScheduled`, default off). The block here is the idle-agents advisory (one finished agent, never changing),
+/// with the repeat interval set to 2 turns. Scheduled turns: no re-send however many pass inside the wall-clock floor; the user's own
+/// turns count as before; the floor (`guards.injectionRepeatMinS`) re-sends it once it has passed; the switch on restores the old rule
+/// (the third scheduled turn re-sends it). The dedupe store reads the real clock, so the user records carry real times; the sweep's
+/// own clock (the idle age of the agent) is the injected one.
+#[test]
+fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
+    let t0 = 1_790_000_000_000u64; // the sweep's injected clock
+    let iso = |ms: u64| {
+        let s = ms / 1000;
+        let (days, sod) = (s / 86400, s % 86400);
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+    };
+    // runs `scenario` with a `turn(origin)` that makes one turn of that origin and returns the advisory the hook sent ("" = none), and an
+    // `age(secs)` that makes the last emit that old
+    let run = |counts_scheduled: bool, scenario: &dyn Fn(&mut dyn FnMut(&str) -> String, &dyn Fn(u64))| {
+        let e = Env::new(if counts_scheduled { "ka-on" } else { "ka-off" });
+        let transcript = e.dir.join("t.jsonl");
+        let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
+        let lines = std::cell::RefCell::new(vec![
+            serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}).to_string(),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
+            serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}).to_string(),
+        ]);
+        let map = e.map("UserPromptSubmit", "idle-agent-sweep");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let state_file = e.home().join(".anti-hall/emit-dedupe/dedupe-ka.json");
+        let mut turn = |origin: &str| -> String {
+            std::thread::sleep(std::time::Duration::from_millis(30)); // strictly increasing real times
+            lines.borrow_mut().push(serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string());
+            std::fs::write(&transcript, lines.borrow().iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+            let now = t0.to_string();
+            let mut extra = vec![("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"), ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0")];
+            if counts_scheduled {
+                extra.push(("ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", "1"));
+            }
+            let (code, out, err) = e.run(&args, true, &ups("ka", "go on", Some(&transcript)), &extra);
+            assert_eq!((code, err.as_str()), (0, ""));
+            let c = ctx(&out);
+            let adv = c.split("\n\n").find(|s| s.contains("finished agent")).unwrap_or("").to_string();
+            // the delivery the transcript shows: what the hooks sent, or a filler attachment of another hook (there is one each turn)
+            let shown = if adv.is_empty() { "other hook text".to_string() } else { adv.clone() };
+            lines.borrow_mut().push(serde_json::json!({"type":"attachment","timestamp":iso_of(real_ms()),"attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[shown]}}).to_string());
+            adv
+        };
+        let age = |secs: u64| {
+            let mut st: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
+            let k = &mut st["idle-agent-sweep"]["lastEmittedAt"];
+            *k = (k.as_u64().unwrap() - secs * 1000).into();
+            std::fs::write(&state_file, st.to_string()).unwrap();
+        };
+        scenario(&mut turn, &age)
+    };
+    // switch OFF (the default)
+    run(false, &|turn, age| {
+        assert!(turn("human").contains("finished agent"), "the first turn sends the advisory");
+        for i in 1..=5 {
+            assert_eq!(turn("scheduled"), "", "scheduled tick {i} must not re-send an unchanged advisory");
+        }
+        // the user's own turns count: with an interval of 2, the third one re-sends it
+        assert_eq!(turn("human"), "");
+        assert_eq!(turn("human"), "");
+        assert!(turn("human").contains("finished agent"), "the user's third turn re-sends it");
+        // scheduled ticks past the wall-clock floor (2 h since the last emit) re-send it once
+        assert_eq!(turn("scheduled"), "");
+        age(3 * 3600);
+        assert!(turn("scheduled").contains("finished agent"), "the floor re-sends it");
+        assert_eq!(turn("scheduled"), "", "and then it is quiet again");
+    });
+    // switch ON: the old rule, every delivered turn counts: the third tick re-sends it
+    run(true, &|turn, _| {
+        assert!(turn("human").contains("finished agent"));
+        let sent: Vec<bool> = (1..=3).map(|_| turn("scheduled").contains("finished agent")).collect();
+        assert_eq!(sent, vec![false, false, true], "with the switch on a scheduled tick counts like any turn");
+    });
+}
+
+/// #709 (review of PR-A2): a scheduled-only session never moves the keepalive turn counter, so the savings counter must not hang on it:
+/// every evaluation that passed over a scheduled turn and suppressed the unchanged block counts once (`waste_events_total`,
+/// source `keepalive_scheduled`). The counter lives in the daemon, so this goes through it. Emit behaviour is the one the test above pins.
+#[test]
+fn each_suppressed_scheduled_evaluation_is_counted_once() {
+    let e = Env::new("ka-count");
+    let transcript = e.dir.join("t.jsonl");
+    let t0 = 1_790_000_000_000u64;
+    let iso = |ms: u64| {
+        let s = ms / 1000;
+        let (days, sod) = (s / 86400, s % 86400);
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+    };
+    let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
+    let mut lines = vec![
+        serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}).to_string(),
+        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
+        serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}).to_string(),
+    ];
+    let map = e.map("UserPromptSubmit", "idle-agent-sweep");
+    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+    let now = t0.to_string();
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"), ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0")];
+    let mut turn = |origin: &str, first: bool| -> String {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        lines.push(serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string());
+        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let payload = ups("kac", "go on", Some(&transcript));
+        // the first call starts the daemon: ask until the daemon, not the stand-in Node hook, answers
+        let (code, out, err) = if first { e.until_daemon_answers(&args, &payload, &extra) } else { e.run(&args, false, &payload, &extra) };
+        assert_eq!((code, err.as_str()), (0, ""));
+        let adv = ctx(&out).split("\n\n").find(|s| s.contains("finished agent")).unwrap_or("").to_string();
+        let shown = if adv.is_empty() { "other hook text".to_string() } else { adv.clone() };
+        lines.push(serde_json::json!({"type":"attachment","timestamp":iso_of(real_ms()),"attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[shown]}}).to_string());
+        adv
+    };
+    let count = |e: &Env| -> u64 {
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine")).args(["ctl", "metrics"]).env_clear().env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", e.home()).env("AH_ENGINE_DIR", e.state()).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["metrics"]["counters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "waste_events_total" && c["labels"]["source"] == "keepalive_scheduled")
+            .map(|c| c["value"].as_u64().unwrap())
+            .sum()
+    };
+    assert!(turn("human", true).contains("finished agent"), "the first turn sends the advisory");
+    assert_eq!(count(&e), 0, "nothing is saved yet");
+    for i in 1..=10u64 {
+        assert_eq!(turn("scheduled", false), "", "scheduled tick {i} stays quiet");
+        assert_eq!(count(&e), i, "tick {i}: one more saved repeat");
+    }
+}

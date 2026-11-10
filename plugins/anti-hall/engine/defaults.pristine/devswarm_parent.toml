@@ -738,3 +738,11 @@ value = 20
 [devswarm_parent.msg_cron_delete]
 doc = "The one order a Primary gets when no live child workspace remains and the mailbox cron may still be armed (devswarm.wakeCronOnlyWithChild)."
 value = "Mailbox cron: no live workspace remains, so each tick only costs a full model turn. Do now: `CronList`, then `CronDelete` every job whose prompt runs `inbox tick` (any schedule or id; none: say so in one line). Keep your Monitor wake-watch as it is. A NO MAILBOX TICK line asks for the cron back once a workspace is alive."
+
+[devswarm_parent.nudge_keepalive]
+doc = "Delivered turns after which the unchanged unread-mail nudge of a Primary is repeated (scheduled turns do not count while guards.keepaliveCountsScheduled is off)."
+value = 2
+
+[devswarm_parent.urgent_keepalive]
+doc = "Delivered turns after which the unchanged urgent-mail segment of a Primary is repeated (scheduled turns do not count while guards.keepaliveCountsScheduled is off)."
+value = 10

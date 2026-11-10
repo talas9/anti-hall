@@ -1308,8 +1308,8 @@ doc = "The context_window fields that carry the used tokens."
 value = ["used_tokens", "tokens"]
 
 [statusline.max_keys]
-doc = "The context_window fields that carry the window size."
-value = ["max_tokens", "total_tokens", "context_size"]
+doc = "The context_window fields that carry the window size, first match wins (context_window_size is the field Claude Code documents; the others are older guesses kept as fallbacks)."
+value = ["context_window_size", "max_tokens", "total_tokens", "context_size"]
 
 [statusline.phase_template]
 doc = "The phase bar line. Placeholders: bar yellow pct reset dim bold magenta code white desc cyan done total extra."
