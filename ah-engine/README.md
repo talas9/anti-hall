@@ -1,7 +1,7 @@
 # ah-engine
 
 A small resident Rust program that anti-hall's hooks can ask instead of starting a Node process per tool call.
-Unix only (macOS and Linux, including WSL); Windows is not supported.
+Supported on macOS Apple silicon; Linux (including WSL), Apple Intel and native Windows are coming soon (the code is Unix-only; Windows is not supported).
 
 **Used when installed, Node otherwise.** The plugin's hooks are one thin trigger per event. If this binary is installed at
 `~/.anti-hall/ah-engine/bin/ah-engine` (the plugin's bootstrap downloads it, sha256-checked against `ah-engine.lock`), the trigger asks it;
@@ -109,7 +109,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | The daemon never answers from its own environment (git cache, config); a damaged exact reply, a signal-killed fallback and a timed-out fallback's helpers are handled | `tests/it/process_env_reads.rs`, `tests/it/gitcache_parity.rs`, `tests/it/fallback_read.rs`, `client::tests` |
 | Storage: WAL and configured durability, versioned idempotent migrations, a newer schema refused, acknowledged only after commit, queued writes committed on close; both `Store` backends behave the same | `db::tests`, `storage::tests` |
 
-Known limits: CI runs the whole suite on ubuntu and macOS (`.github/workflows/ah-engine.yml`); the Linux CI run found a real
+Known limits: CI runs the suite on macOS Apple silicon (`.github/workflows/ah-engine.yml`; the Linux legs are paused until release, #708); an earlier Linux CI run found a real
 bug the macOS runs could not show: Linux counts thread stacks against `RLIMIT_DATA`, so the old 64 MB ceiling left no room
 for the git check's 64 MB-stack thread and every git command was deferred to Node. The ceiling (`daemon.mem_mb`) is now
 512 MB, a test keeps it above workers x stack, and a failed check thread logs a `check_spawn_fail` event. macOS accepts

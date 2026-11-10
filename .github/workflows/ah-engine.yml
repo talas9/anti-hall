@@ -24,8 +24,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
-    - cron: '17 3 * * *' # nightly: the full suite on both OSes
-    - cron: '47 4 * * 1' # weekly: the full doc-check on both OSes
+    - cron: '17 3 * * *' # nightly: the full suite (macOS Apple silicon)
+    - cron: '47 4 * * 1' # weekly: the full doc-check (macOS Apple silicon)
   workflow_dispatch:
 
 permissions:
@@ -179,7 +179,7 @@ jobs:
 
   # ---- the full pack ----
 
-  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the full pack builds it on both OSes.
+  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the full pack builds it on macOS Apple silicon (Linux: dispatch or tag only).
   launcher:
     name: ah-hook (${{ matrix.os }})
     needs: changes
@@ -258,22 +258,18 @@ jobs:
         working-directory: ah-launcher
         run: cargo build --release --locked
       # The missing-ah-hook path (first install, binary removed) is owned by hooks/install.sh: rc 0, empty stdout, one notice per
-      # session (#183). Pure shell against a scratch HOME and a file:// release; runs on both OSes in every tier.
+      # session (#183). Pure shell against a scratch HOME and a file:// release; runs in every tier.
       - name: install.sh tests
         run: sh "$GITHUB_WORKSPACE/tests/install/install-sh.sh"
-      # The gate on ubuntu (paused until release: owner decision 2026-11-10 / #708; runs on a dispatch or a tag only): test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
-      # daemon-survivor check). Clippy runs only here, once.
+      # The gate on macOS Apple silicon (Linux is paused until release: owner decision 2026-11-10 / #708): test.sh (release clippy -D warnings,
+      # the `ci` nextest profile, doctests, the release mem_reload guard, the wrapper and bootstrap shell tests, the daemon-survivor check).
+      # Clippy runs only here, once. The bulk builds on the `ci-test` Cargo profile (LTO-linking ~36 release test binaries took 106-111 min
+      # on the macOS runner, see test.sh). Measure the wall time on a full-ci run against this job's timeout.
       - name: test.sh (gate)
-        if: matrix.os == 'ubuntu-latest' && env.AH_FULL != 'true'
-        run: ./test.sh
-      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions), the
-      # archive-cap retention fixture, and the wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
-      - name: build + smoke (macOS gate)
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
-        run: |
-          cargo nextest run --cargo-profile ci-test --profile ci --no-run
-          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
-          sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
+        run: ./test.sh
+        env:
+          AH_TEST_CARGO_PROFILE: ci-test
       - name: test.sh (full)
         if: env.AH_FULL == 'true'
         run: ./test.sh
@@ -291,7 +287,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       - run: cargo doc --no-deps
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'macos-latest'
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -370,11 +366,11 @@ jobs:
 
   # Runs the shell commands in docs/DEVELOPMENT.md in a fresh clone (D83), so the guide cannot drift from the repo. A push
   # or pull request runs it with --fast on macOS (Apple silicon) (the blocks marked `long`, the full test suites, are skipped: the rust job
-  # already runs them); the weekly schedule and a manual dispatch run every block on both OSes.
+  # already runs them); the weekly schedule and a manual dispatch run every block (a dispatch or tag adds the Linux leg).
   doc-check:
     name: doc-check (${{ matrix.os }})
     needs: changes
-    # the full pack, or a change to the guide / the script itself; the weekly cron and a dispatch run every block on both OSes
+    # the full pack, or a change to the guide / the script itself; the weekly cron and a dispatch run every block (a dispatch or tag adds the Linux leg)
     if: (needs.changes.outputs.full == 'true' || needs.changes.outputs.devdocs == 'true') && (github.event_name != 'schedule' || github.event.schedule == '47 4 * * 1')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90

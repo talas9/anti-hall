@@ -13,7 +13,7 @@ thin client is the only entry point, for hooks of both hosts and for every comma
 No Node and no shell script runs on an entry path; when the engine is absent or unreachable, the call passes through with one
 notice per session (a daemon that answers with an error or no verdict is resolved by `dispatch.failure_mode`, see the Client bullet) (the manual `ah-engine fallback node` switch can hand calls to the Node backup in `plugins/anti-hall-node/`). The binaries are installed by the plugin's one shell file, `hooks/install.sh`, and checked against a sha256
 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
-Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
+Supported platforms: macOS on Apple silicon. Linux (including WSL), Apple Intel and native Windows are coming soon (not supported or tested yet).
 
 ## Why it exists
 
@@ -467,7 +467,7 @@ on Node then (each was a deferral, so Node's answer was the one the host saw):
 | SessionStart context over the 10,000 character host cap, and cases with a stale cache or a date, JSON or regex construct the engine cannot read exactly like JavaScript | the whole hook defers before anything is written, so Node sees the state it would have seen |
 | `task-tracker`, the doctor's DevSwarm migrations, the statusline render, supervisor and OMC/Codex detection | see "What works today" for the planned items (D81) |
 
-Platforms: macOS and Linux (including WSL). Windows is not supported yet, and neither the bootstrap nor the engine runs there.
+Platforms: macOS on Apple silicon. Linux (including WSL), Apple Intel and native Windows are coming soon; the bootstrap and the engine are not supported or tested there yet.
 
 ## Measured results (pre-release)
 

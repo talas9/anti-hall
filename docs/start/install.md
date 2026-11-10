@@ -8,8 +8,7 @@ description: Install anti-hall for Claude Code or Codex, and check that it works
 ## Before you start
 
 - **No Node.js.** Every hook runs the `ah-hook` client and the `ah-engine` binary.
-- **macOS or Linux.** WSL on Windows works (it runs the Linux build). Native Windows is
-  not supported yet.
+- **macOS on Apple silicon.** Linux (including WSL), Apple Intel and native Windows are coming soon; they are not supported or tested yet.
 
 The plugin fetches the Rust engine binary itself, checked against a pinned sha256, and needs `curl` or `wget` plus `tar` for that. If the download fails, run `hooks/install.sh --download` again once the network is back. There are no npm packages to install.
 

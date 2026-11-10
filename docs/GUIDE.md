@@ -37,7 +37,7 @@
 anti-hall is a Claude Code **marketplace + plugin**, plus a separate Codex-native port,
 that keeps coding assistants from acting before they verify. It ships always-on Node
 hooks (mechanical guards no prompt can talk around), a set of evidence-driven workflow
-skills, with legacy statusline cleanup retained for older installs. A small Rust engine answers the hooks (no Node.js needed), no npm dependencies, **macOS · Linux**
+skills, with legacy statusline cleanup retained for older installs. A small Rust engine answers the hooks (no Node.js needed), no npm dependencies, **macOS (Apple silicon)**
 (Node ≥ 22 on `PATH` is the only prerequisite; Windows is not supported).
 
 It targets four predictable failure modes: **eagerness** (acting before investigating),
@@ -134,7 +134,7 @@ through). The binaries are installed from the GitHub Release by `sh hooks/instal
 their sha256 equals the one pinned in the plugin's `ah-engine.lock`; the automatic download on SessionStart is opt-in (the setting
 `engine.bootstrap` = true, or `AH_ENGINE_BOOTSTRAP=1`; default false). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
 time with hot reload and fallbacks (edited, then last-known-good, then pristine), and `ah-engine config heal` restores a
-missing key. macOS and Linux only; Windows is not supported yet.
+missing key. macOS on Apple silicon only; Linux (including WSL), Apple Intel and native Windows are coming soon, not supported yet.
 
 Full description (install, go-live, rollback, failover, telemetry, what runs on Node, pre-release measurements): [AH-ENGINE.md](AH-ENGINE.md).
 
@@ -216,8 +216,7 @@ No working engine means the hooks let every call through with one notice per ses
 `~/.anti-hall/ah-engine/bin/ah-engine doctor`, or `~/.anti-hall/ah-engine/bin/ah-hook --selftest` when the engine itself
 cannot start. Node.js is not needed. No npm install, no other config.
 
-**Supported systems:** macOS and Linux (both CI-tested), including WSL on Windows,
-which runs the Linux build. Native Windows is not supported yet.
+**Supported systems:** macOS on Apple silicon. Linux (including WSL), Apple Intel and native Windows are coming soon: not currently supported or tested.
 
 **The `/config` rows (14 options) need Claude Code ≥ 2.1.269; older versions still work via the skill.**
 The plugin's `userConfig` never declares `options` (a public plugin can't require v2.1.271+
@@ -856,7 +855,7 @@ Moved from plugins/anti-hall/README.md "Contributing" (v0.107.0 doc sweep).
   authority (the marketplace entry carries no `version`); without a bump, installed
   users do not receive the update. Add a `CHANGELOG.md` entry.
 - **Keep hooks pure Node (built-ins only)** and fail-open, so they run unchanged on
-  macOS and Linux (CI-tested) and never wedge a turn. Windows is not
+  macOS on Apple silicon (the only CI-tested platform; Linux is coming soon) and never wedge a turn. Windows is not
   supported (v0.69.0 dropped it from the CI matrix); avoid POSIX-only calls
   regardless, since pure-Node code may still work there.
 

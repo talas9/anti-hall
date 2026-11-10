@@ -6,9 +6,12 @@ name: ah-engine-deps
 #
 # Note: the repository setting "Allow GitHub Actions to create and approve pull requests" must be on. A pull request
 # opened with GITHUB_TOKEN does not trigger other workflows, so this run is itself the gate.
+# paused until release: owner decision 2026-11-10 / #708. This job gates on test.sh and was written for Linux; on macOS Apple silicon its
+# release-profile build would exceed the job limit (see ah-engine/test.sh), so the weekly cron is off and it runs on a manual dispatch only.
+# Restore the cron below when Linux support returns or the gate is moved to the ci-test profile.
 on:
-  schedule:
-    - cron: '17 5 * * 1'
+  # schedule:
+  #   - cron: '17 5 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +23,7 @@ concurrency:
 
 jobs:
   update:
-    runs-on: macos-latest # Apple silicon; the Linux runner is paused (owner decision 2026-11-10 / #708)
+    runs-on: ubuntu-latest # paused until release: owner decision 2026-11-10 / #708 (dispatch only)
     timeout-minutes: 60
     permissions:
       contents: write

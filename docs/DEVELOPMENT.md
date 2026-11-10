@@ -1,6 +1,6 @@
 # Development guide
 
-How to build, test, run and release anti-hall from a fresh checkout on macOS or Linux (including WSL). Windows is not supported. It covers the plugin (skills, TOML defaults, engine rule logic) and the `ah-engine/` Rust engine. Anything not built yet is marked **planned (D-n)**, where `D-n` is an entry in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
+How to build, test, run and release anti-hall from a fresh checkout on macOS on Apple silicon (Linux, Apple Intel and native Windows are coming soon, not supported yet). It covers the plugin (skills, TOML defaults, engine rule logic) and the `ah-engine/` Rust engine. Anything not built yet is marked **planned (D-n)**, where `D-n` is an entry in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 
 Every shell command in this guide is run by `ah-engine/scripts/doc-check.sh` in a fresh clone (see [Keeping this guide true](#keeping-this-guide-true)). A command that needs credentials, installs something globally or writes outside the clone is marked as skipped there.
 
