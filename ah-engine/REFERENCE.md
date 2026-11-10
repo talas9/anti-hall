@@ -3321,7 +3321,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `162 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `164 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -4312,8 +4312,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ask_guard.block_instead` | `continue with the recommended reversible option.` |  |  | What to do instead, in the block message. |
 | `ask_guard.block_what` | `this question would pause authorized work.` |  |  | Headline of the block message. |
 | `ask_guard.block_why` | `Work should not wait on a question.` |  |  | Why line of the block message. |
+| `ask_guard.child_deny_instead` | `ask the Primary with `ah-engine mesh send --to-primary --question ...` and ke...` |  |  | What a denied child does instead. |
+| `ask_guard.child_deny_setting` | `6 entries` |  |  | Where the child-workspace deny switch is read from (guards.denyChildQuestions, default on): a DevSwarm child workspace never opens AskUserQuestion; the call is refused with a pointer to the mesh (GH #694). The DESTRUCTIVE:/CREDENTIAL: marker does not exempt a child. |
+| `ask_guard.child_deny_what` | `a workspace agent never asks the user.` |  |  | Headline of the child deny message. |
 | `ask_guard.child_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable whose non-blank value marks a child workspace. |
 | `ask_guard.child_text` | `\nChild workspace: send the question to your parent with `~/.anti-hall/ah-eng...` |  |  | Sentence appended in a child workspace, which asks its parent instead of the user. |
+| `ask_guard.deny_kind_child` | `child` |  |  | Label of the ask_guard_denied counter for a denied child workspace. |
+| `ask_guard.deny_kind_primary` | `primary` |  |  | Label of the ask_guard_denied counter for a denied Primary. |
 | `ask_guard.guard_name` | `ask-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `ask_guard.log_event` | `marker-allowed` |  |  | Event name of a logged marker. |
 | `ask_guard.log_file` | `.anti-hall/logs/ask-guard.ndjson` |  |  | NDJSON log of allowed question markers, relative to the home directory. |
@@ -4331,6 +4336,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ask_guard.note_setting` | `6 entries` |  |  | Where the in-flight agents note switch is read from (guards.questionAgentsNote, default on). |
 | `ask_guard.note_tail` | `). They may act on one of these options before the answer arrives: pause them...` |  |  | Text that ends the in-flight note. |
 | `ask_guard.note_unnamed` | `unnamed agent` |  |  | Name the in-flight note gives an agent with no description. |
+| `ask_guard.primary_deny_instead` | `ask the owner in plain text in your reply, note NEEDS OWNER: <question> in th...` |  |  | What a denied Primary does instead. |
+| `ask_guard.primary_deny_setting` | `6 entries` |  |  | Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the Primary session of a DevSwarm repo (ask_guard.primary_env set, ask_guard.child_env blank) never opens AskUserQuestion either; the owner is reached through the progress file (GH #694). |
+| `ask_guard.primary_deny_what` | `the Primary never blocks on a question.` |  |  | Headline of the Primary deny message. |
+| `ask_guard.primary_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable whose non-blank value marks a session running under DevSwarm; with ask_guard.child_env blank it is the Primary. |
 | `ask_guard.summary` | `Advises on or blocks a question put to the user, and notes background agents ...` |  |  | One-line description of the ask-guard check in the generated reference. |
 | `ask_guard.tool` | `AskUserQuestion` |  |  | The tool this check answers. |
 
@@ -8784,7 +8793,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `430 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `432 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -15203,6 +15212,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `agent_scan_kept` | counter | lookups | result | Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss. |
 | `agent_scan_kept_miss` | counter | lookups | reason | Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised). |
 | `answers_dropped` | counter | answers | event, kind, reason | Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started. |
+| `ask_guard_denied` | counter | calls | kind | AskUserQuestion calls the ask guard refused outright because the session kind never asks the user (GH #694), by kind (child, primary). |
 | `budget_soft` | counter | requests |  | Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer. |
 | `budget_trips` | counter | evaluations |  | Evaluations cut off by the per-request CPU budget. |
 | `burst_dumps_suppressed` | counter | dumps |  | Heap bursts that wanted a dump but got none: past diagnostics.burst_dump_max_per_hour, or the dump directory was not writable. |

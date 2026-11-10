@@ -212,7 +212,7 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `swarm-guard` | PreToolUse(Agent), PreToolUse(Task) | block, context | `safety.swarmGuard` | `swarm-guard` | no |
 | `phase-tracker` | PreToolUse(Agent), PreToolUse(Task) | record | none (not toggleable) | — | no |
 | `devswarm-comms-guard` | PreToolUse(SendMessage) | block, context | `devswarm.commsGuard` | `devswarm-comms-guard` | no |
-| `ask-guard` | PreToolUse(AskUserQuestion) | block, context | `guards.questionAgentsNote`, `guards.noBlockingQuestions` (opt-in) | `ask-guard` | no |
+| `ask-guard` | PreToolUse(AskUserQuestion) | block, context | `guards.questionAgentsNote`, `guards.noBlockingQuestions` (opt-in), `guards.denyChildQuestions`, `guards.denyPrimaryQuestions` | `ask-guard` | no |
 | `stale-agent-stop-note` | PreToolUse(TaskStop) | context | `guards.staleAgentStopNote` | — | no |
 | `output-verify-guard` | PostToolUse(Bash) | context | `guards.outputVerifyGuard` | `output-verify-guard` | no |
 | `devswarm-parent-reply-tracker` | PostToolUse(Bash) | context | `devswarm.parentReplyTracker` | — | yes |

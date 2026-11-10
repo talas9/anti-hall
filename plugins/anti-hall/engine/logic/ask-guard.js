@@ -43,14 +43,34 @@ function askAgentsNote(p) {
     ah.cfg('ask_guard.note_mid') + names.join(ah.cfg('ask_guard.note_join')) + more + ah.cfg('ask_guard.note_tail');
 }
 
+// 'child' (a DevSwarm workspace), 'primary' (under DevSwarm, not a workspace) or null (an ordinary session, which may ask). A read that throws is no kind: fail open.
+function askSessionKind() {
+  try {
+    var child = ah.env.get(ah.cfg('ask_guard.child_env'));
+    if (child !== null && child.trim() !== '') return 'child';
+    var dev = ah.env.get(ah.cfg('ask_guard.primary_env'));
+    return dev !== null && dev.trim() !== '' ? 'primary' : null;
+  } catch (e) { return null; }
+}
+
 function decide(p) {
   var home = spawn.osHome();
   var mode = ah.settings.enum('ask_guard.mode_setting');
   if (mode !== 'advise' && mode !== 'block') mode = 'off';
-  if (mode === 'off' && !ah.settings.bool('ask_guard.note_setting')) return 'allow';
   var guard = ah.cfg('ask_guard.guard_name');
-  if (ah.settings.skipped(guard)) return 'allow';
   if (!askIsObj(p) || p.tool_name !== ah.cfg('ask_guard.tool')) return 'allow';
+  if (ah.settings.skipped(guard)) return 'allow';
+  var kind = askSessionKind();
+  var isChild = kind === 'child';
+  if (kind !== null && (isChild ? ah.settings.bool('ask_guard.child_deny_setting') : ah.settings.bool('ask_guard.primary_deny_setting'))) {
+    try { ah.metric('ask_guard_denied', ['kind', isChild ? ah.cfg('ask_guard.deny_kind_child') : ah.cfg('ask_guard.deny_kind_primary')]); } catch (e) { /* counting never fails a hook */ }
+    var denial = text.message('block', guard, {
+      what: isChild ? ah.cfg('ask_guard.child_deny_what') : ah.cfg('ask_guard.primary_deny_what'), why: ah.cfg('ask_guard.block_why'),
+      instead: isChild ? ah.cfg('ask_guard.child_deny_instead') : ah.cfg('ask_guard.primary_deny_instead'),
+    });
+    return { exact: { code: 2, out: text.blockJson(denial), err: '' } };
+  }
+  if (mode === 'off' && !ah.settings.bool('ask_guard.note_setting')) return 'allow';
   var child = ah.env.get(ah.cfg('ask_guard.child_env'));
   var suffix = child !== null && child.trim() !== '' ? ah.cfg('ask_guard.child_text') : '';
   var marker = null;
