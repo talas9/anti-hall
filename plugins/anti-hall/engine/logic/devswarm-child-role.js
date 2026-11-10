@@ -116,6 +116,32 @@ function dwPrimarySeat(p, cli, real) {
   return { notices: dwSeatNotices(v, res.adopted === true, cli, sid), id: v.id || null };
 }
 
+// ---- the mailbox cron only while a child workspace is alive (devswarm.wakeCronOnlyWithChild, #709) ----
+// A cron tick is a full model turn that re-reads the whole context, whether or not there is mail. With no live child there is nothing to
+// hear, so a Primary arms the Monitor wake-watch alone, is ordered to delete a cron it armed earlier when the last child is gone, and is
+// asked for the cron back by the wake line at the next live child. The per-session record {deleted, at} says which side it is on.
+function dwCronOnlyWithChild() { return ah.settings.bool('devswarm_role.sw_wake_cron_child_only') === true; }
+function dwCronCtlRel(sid) {
+  return ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_parent.dir_cron_ctl') + '/' + String(sid).replace(/[^A-Za-z0-9_.-]/g, '_') + '.json';
+}
+// {deleted, at} or null (no record, or one that is not an object).
+function dwCronCtlRead(sid) {
+  var raw = ah.state.readText(dwCronCtlRel(sid));
+  if (raw === null) return null;
+  try { var o = JSON.parse(raw); return o && typeof o === 'object' && !Array.isArray(o) ? { deleted: o.deleted === true, at: typeof o.at === 'number' && isFinite(o.at) ? o.at : null } : null; } catch (e) { return null; }
+}
+function dwCronCtlWrite(sid, rec) {
+  try { ah.state.writeAtomic(dwCronCtlRel(sid), JSON.stringify(rec)); } catch (e) { /* best effort: the next turn decides again */ }
+}
+// A session that starts with no cron (a new or cleared one) is recorded as cron-less, so it is not ordered to delete a cron it never had.
+function dwCronCtlSeed(p) {
+  var sid = jx.isObj(p) && typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
+  var src = jx.isObj(p) && typeof p.source === 'string' ? p.source : null;
+  if (sid === null || src === null || ah.cfg('devswarm_role.cron_ctl_fresh_sources').indexOf(src) === -1 || dwCronCtlRead(sid) !== null) return;
+  ah.commit();
+  dwCronCtlWrite(sid, { deleted: true, at: ah.clock.now() });
+}
+
 function dwChildContext(cli, watcher, agent, id, cron, tickOnly) {
   return dwContext(true, cli, watcher, agent, id, cron, tickOnly);
 }
@@ -125,6 +151,8 @@ function dwContext(child, cli, watcher, agent, id, cron, tickOnly) {
   var out = text.render(ah.cfg(child ? 'devswarm_role.msg_base' : 'devswarm_role.msg_base_parent'), { cli: cli });
   if (agent === '') return out;
   if (agent === ah.cfg('devswarm_role.claude_agent')) {
+    // a Primary with the cron only while a child is alive arms the Monitor alone (the cron is ordered later, by the wake line)
+    if (!child && dwCronOnlyWithChild()) return out + text.render(ah.cfg('devswarm_role.msg_wake_claude_parent_nocron'), { watcher: watcher, expiry: ah.cfg('devswarm_role.msg_expiry_nocron') });
     var expiry = ah.cfg(tickOnly ? 'devswarm_role.msg_expiry_tick' : 'devswarm_role.msg_expiry_inline');
     return out + text.render(ah.cfg(child ? 'devswarm_role.msg_wake_claude' : 'devswarm_role.msg_wake_claude_parent'), { cli: cli, watcher: watcher, id: id, cron: cron, expiry: expiry });
   }
@@ -148,6 +176,7 @@ function decide(p, opts, event) {
   // a Primary names its registered `primary-<hash>` id in the wake commands (the one the store and the watcher key on)
   if (seat.id !== null && /^[A-Za-z0-9._-]+$/.test(seat.id)) id = seat.id;
   var ctx = dwContext(child, l.cli, l.watcher, agent, id, dwWakeCron(), ah.settings.bool('devswarm_role.sw_rearm'));
+  if (!child && agent === ah.cfg('devswarm_role.claude_agent') && dwCronOnlyWithChild()) dwCronCtlSeed(p);
   if (seat.notices.length) ctx = seat.notices.join(ah.cfg('devswarm_role.seat_notice_joiner')) + ah.cfg('devswarm_role.seat_notice_joiner') + ctx;
   return { exact: { code: 0, out: ah.cfg('devswarm_role.out_prefix') + JSON.stringify(ctx) + ah.cfg('devswarm_role.out_suffix') + '\n', err: '' } };
 }

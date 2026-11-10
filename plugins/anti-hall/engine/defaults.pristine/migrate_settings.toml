@@ -336,6 +336,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"sendReceiptRetentionDays\",\"type\":\"number\",\"default\":7,\"exclusiveMin\":0,\"env\":\"ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS\"}",
   "{\"section\":\"devswarm\",\"key\":\"summaryRetentionDays\",\"type\":\"number\",\"default\":30,\"min\":0,\"env\":\"ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS\"}",
   "{\"section\":\"devswarm\",\"key\":\"wakeCron\",\"type\":\"string\",\"default\":\"7,37 * * * *\",\"env\":\"ANTIHALL_DEVSWARM_WAKE_CRON\"}",
+  "{\"section\":\"devswarm\",\"key\":\"wakeCronOnlyWithChild\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_WAKE_CRON_ONLY_WITH_CHILD\"}",
   "{\"section\":\"devswarm\",\"key\":\"rearmOnTickOnly\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_REARM_ON_TICK_ONLY\",\"pluginOption\":\"devswarm_rearm_on_tick_only\"}",
   "{\"section\":\"devswarm\",\"key\":\"cronMissingWarnMin\",\"type\":\"number\",\"default\":60,\"exclusiveMin\":0,\"env\":\"ANTIHALL_DEVSWARM_CRON_MISSING_WARN_MIN\"}",
   "{\"section\":\"devswarm\",\"key\":\"wakeWatchPollMs\",\"type\":\"number\",\"default\":2000,\"min\":250,\"max\":60000,\"env\":\"ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS\"}",

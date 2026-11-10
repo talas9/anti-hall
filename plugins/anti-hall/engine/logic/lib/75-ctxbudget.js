@@ -64,7 +64,23 @@ var cb = {
       if (!u || typeof u !== 'object') continue;
       var input = typeof u.input_tokens === 'number' ? u.input_tokens : 0, cc = typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : 0, cr = typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : 0;
       if (input === 0 && cc === 0 && cr === 0) continue;
-      return { input: input, cacheCreate: cc, cacheRead: cr };
+      return cb.contextOf(u) || { input: input, cacheCreate: cc, cacheRead: cr };
+    }
+    return null;
+  },
+  // The real context size of one assistant usage object (#709). A message that holds a server-tool call (an advisor call) lists its model
+  // requests under `iterations` and reports the SUM of its main-model requests at the top level, which is what the host bills, not what
+  // the next request reads. The context is the LAST iteration whose kind is in `ctxbudget.usage_context_iteration_types`. null when the
+  // usage lists none (the caller reads the top-level fields, which are then the one request).
+  contextOf: function (u) {
+    var its = u[cb.c('ctxbudget.usage_iterations_key')], kinds = cb.c('ctxbudget.usage_context_iteration_types'), tk = cb.c('ctxbudget.usage_iteration_type_key');
+    if (!Array.isArray(its) || !Array.isArray(kinds)) return null;
+    var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : 0; };
+    for (var i = its.length - 1; i >= 0; i--) {
+      var it = its[i];
+      if (!it || typeof it !== 'object' || kinds.indexOf(it[tk]) === -1) continue;
+      var r = { input: num(it.input_tokens), cacheCreate: num(it.cache_creation_input_tokens), cacheRead: num(it.cache_read_input_tokens) };
+      if (r.input + r.cacheCreate + r.cacheRead > 0) return r;
     }
     return null;
   },
@@ -79,7 +95,8 @@ var cb = {
       if (!pl || pl.type !== 'token_count') continue;
       var info = pl.info;
       if (!info || typeof info !== 'object') continue;
-      var used = info.total_token_usage && typeof info.total_token_usage.total_tokens === 'number' ? info.total_token_usage.total_tokens : null;
+      var lastKey = cb.c('ctxbudget.codex_usage_key'), last = info[lastKey]; // the last request's usage is the context; total_token_usage is the session's cumulative billing total
+      var used = last && typeof last.total_tokens === 'number' ? last.total_tokens : info.total_token_usage && typeof info.total_token_usage.total_tokens === 'number' ? info.total_token_usage.total_tokens : null;
       var max = typeof info.model_context_window === 'number' ? info.model_context_window : null;
       if (used === null || max === null || max <= 0) continue;
       return { used: used, max: max };

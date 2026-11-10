@@ -86,6 +86,22 @@ value = "token_count"
 doc = "Substring that a Claude transcript line must hold to be parsed as an assistant usage reading."
 value = '"usage"'
 
+[ctxbudget.usage_iterations_key]
+doc = "The key of an assistant usage object that lists the model requests of one message (a message holding a server-tool call, such as an advisor call, reports the SUM of its main-model requests at the top level)."
+value = "iterations"
+
+[ctxbudget.usage_iteration_type_key]
+doc = "The key of one usage iteration that names its kind."
+value = "type"
+
+[ctxbudget.usage_context_iteration_types]
+doc = "The iteration kinds whose last member is the real context size of the session. The top-level usage stays the billing sum; an empty list reads the top-level fields only."
+value = ["message"]
+
+[ctxbudget.codex_usage_key]
+doc = "The key of a Codex token_count info object that holds the LAST request's usage (the context size). total_token_usage is the cumulative billing total over the whole session and passes the model's context window; it is read only when this key is absent."
+value = "last_token_usage"
+
 # ---- limit-conserve-inject -------------------------
 
 [ctxbudget.summary_limit_conserve]

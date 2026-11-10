@@ -416,7 +416,7 @@ a child mid-task that hit a decision point and still has other work it could be 
 1. **Keep a mailbox-wake running.** Poll `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick <id>`
    on a schedule (30 minutes by default as of v0.97.0/D13, was 5 minutes — Monitor,
    when armed, is the PRIMARY low-latency wake path; this cron is the fallback,
-   never disarmed) then `inbox read-primary <id>` only when the tick actually found
+   armed only while a child workspace is alive: see "Primary wake coverage" below) then `inbox read-primary <id>` only when the tick actually found
    something — and run the `ackCommand` it returns once the messages are handled (the per-turn mesh reminder in "v0.58 mesh-only messaging" below
    reinforces this) so child questions are actually SEEN while you're otherwise
    idle. An unanswered child question is a **PARENT failure**, not a child stall.
@@ -502,6 +502,16 @@ while the gap lasts), a `warnings` entry on `spawn`, and one Stop block (capped 
 `devswarm.parentGateCap`) when both are missing. Do what it says: `Monitor` on the watcher (with `timeout_ms` 1800000, else it expires after the 5-minute default), and
 `CronList` then `CronCreate` the tick if absent. The watcher's idle-skip line only reports the
 last tick age; it never claims a cron covers you. Thresholds reuse `devswarm.cronMissingWarnMin`.
+
+**The cron only while a child is alive (`devswarm.wakeCronOnlyWithChild`, default on).** Every cron
+tick is a full model turn that re-reads the whole context, so a tick with no child to hear is pure
+cost. The SessionStart directive of a Claude Primary therefore arms the Monitor alone. When no live
+child workspace remains, the Primary gets ONE order (`Mailbox cron: no live workspace remains...`) to
+`CronDelete` the `inbox tick` job; this reaches a session that armed it earlier too, because the
+order rides the next prompt, a cron tick's own turn included. At the next live child the wake line
+above asks for the cron back at once (a tick marker older than the delete order counts as absent).
+`false` restores the always-armed cron. Claude only: Codex has no scheduler tool, so its Primary
+text is unchanged.
 
 ## Operating the mesh: daemon + CLI reference
 

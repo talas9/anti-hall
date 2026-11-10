@@ -60,6 +60,19 @@ impl Env {
         std::fs::write(&p, format!("{line}\n")).unwrap();
         p.to_string_lossy().to_string()
     }
+
+    /// A transcript whose one assistant message holds server-tool iterations (an advisor call between two main-model iterations):
+    /// the top-level usage is the SUM the host reports (billing), each iteration is one real request. `iters` is (type, tokens).
+    fn transcript_iters(&self, top_level: u64, iters: &[(&str, u64)]) -> String {
+        let its: Vec<serde_json::Value> = iters
+            .iter()
+            .map(|(ty, n)| serde_json::json!({"input_tokens":2,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":n - 2,"type":ty}))
+            .collect();
+        let line = serde_json::json!({"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":top_level - 2,"iterations":its},"content":[{"type":"text","text":"x"}]}});
+        let p = self.dir.join("tr.jsonl");
+        std::fs::write(&p, format!("{line}\n")).unwrap();
+        p.to_string_lossy().to_string()
+    }
 }
 
 /// A quiet prompt turn says nothing: the context-budget checks print an empty context, which the host skips, so the
@@ -232,4 +245,48 @@ fn a_handover_over_the_read_cap_still_fires_the_stop_fire_natively() {
         code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("Do instead: follow the saved instructions."),
         "{out:?} {err:?}"
     );
+}
+
+/// #709 (context size is the last `message` iteration, not the summed top-level usage). One assistant message that holds an advisor
+/// call reports the SUM of its main-model iterations at the top level (769K here, real context 385K); with `autoHandover.maxTokens`
+/// at 500K the handover fired at about 386K. A real crossing (a single 510K iteration) must still fire, on a prompt and on a stop.
+const BIG_WINDOW: (&str, &str) = ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "1000000"); // 77% of it is under the 85% line: only the token ceiling can fire
+
+#[test]
+fn an_advisor_iteration_does_not_inflate_the_context_size_but_a_real_crossing_still_fires() {
+    let e = Env::new("iterations");
+    let stop_map = e.map("Stop", &["auto-handover-pause-nag"], "echo NODEBLOCK-{id} >&2; exit 2");
+    let ups_map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    // [message 384K, advisor_message 386K, message 385K]: the top-level sum is 769K, the context is 385K
+    let summed = e.transcript_iters(769_000, &[("message", 384_000), ("advisor_message", 386_000), ("message", 385_000)]);
+    let (code, out, err) = e.run("Stop", &stop_map, &stop(&summed), &[BIG_WINDOW]);
+    assert!(code == 0 && !format!("{out}{err}").contains("handover:"), "no fire at 385K of a 500K ceiling: {out:?} {err:?}");
+    // the prompt fire goes by percent: a 600K window puts 385K at 64% (no fire) and 769K at 128% (the old fire), 510K at 85%
+    let ups_window = ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "600000");
+    let (_, out, _) = e.run("UserPromptSubmit", &ups_map, &prompt(&summed), &[ups_window]);
+    assert!(!out.contains("handover:"), "no fire on a prompt either: {out:?}");
+    // a single 510K iteration crosses the ceiling for real
+    let real = e.transcript_iters(510_000, &[("message", 510_000)]);
+    let (_, out, err) = e.run("Stop", &stop_map, &stop(&real), &[BIG_WINDOW]);
+    assert!(format!("{out}{err}").contains("handover:"), "a real 510K crossing fires on a stop: {out:?} {err:?}");
+    let (_, out, _) = e.run("UserPromptSubmit", &ups_map, &prompt(&real), &[ups_window]);
+    assert!(out.contains("handover:"), "a real 510K crossing fires on a prompt: {out:?}");
+    // a transcript with no iterations array reads the top-level fields, as before (a new session: the pause nag latches per session)
+    let e = Env::new("iterations-flat");
+    let stop_map = e.map("Stop", &["auto-handover-pause-nag"], "echo NODEBLOCK-{id} >&2; exit 2");
+    let flat = e.transcript(510_000);
+    let (_, out, err) = e.run("Stop", &stop_map, &stop(&flat), &[BIG_WINDOW]);
+    assert!(format!("{out}{err}").contains("handover:"), "the flat shape still fires: {out:?} {err:?}");
+    // Codex: total_token_usage is the session's CUMULATIVE billing total (420M against a 237.5K window in a real rollout), last_token_usage
+    // is the last request. The context is the last one.
+    let codex = |last: u64| {
+        let line = serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":420_000_000u64},"last_token_usage":{"total_tokens":last},"model_context_window":237_500}}});
+        let p = e.dir.join("rollout.jsonl");
+        std::fs::write(&p, format!("{line}\n")).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let (code, out, err) = e.run("Stop", &stop_map, &stop(&codex(182_276)), &[]);
+    assert!(code == 0 && !format!("{out}{err}").contains("handover:"), "182K of 237.5K is 77%, under the 85% line: {out:?} {err:?}");
+    let (_, out, err) = e.run("Stop", &stop_map, &stop(&codex(210_000)), &[]);
+    assert!(format!("{out}{err}").contains("handover:"), "210K of 237.5K is 88%: {out:?} {err:?}");
 }
