@@ -79,15 +79,15 @@ var dedupe = {
   },
   // guards.keepaliveCountsScheduled: true restores the old rule (a scheduled turn counts toward the keepalive like any other).
   countsScheduled: function () { return ah.settings.bool('emit_dedupe.sw_counts_scheduled'); },
-  // The turns of the transcript newer than `afterTs` that count toward a keepalive: {n, maxTs}, or null when the tail holds no user turn
+  // The turns of the transcript newer than `afterTs` that count toward a keepalive: {n, sched, maxTs}, or null when the tail holds no user turn
   // that names its origin (or cannot be read), so the caller counts the old way. Scheduled turns (emit_dedupe.uncounted_origins) are
-  // passed over: they advance `maxTs` but not `n`.
+  // passed over: they advance `maxTs` and are counted in `sched`, but not in `n`.
   countedTurns: function (tp, afterTs) {
     if (!tp || typeof tp !== 'string') return null;
     var r = ah.transcript.grep(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'), ah.cfg('emit_dedupe.origin_needles'), '', '');
     if (!r || r.unsure || !Array.isArray(r.lines)) return null;
     var field = ah.cfg('emit_dedupe.origin_field'), skip = ah.cfg('emit_dedupe.uncounted_origins');
-    var n = 0, maxTs = afterTs, seen = false;
+    var n = 0, sched = 0, maxTs = afterTs, seen = false;
     r.lines.forEach(function (line) {
       var rec;
       try { rec = JSON.parse(line); } catch (e) { return; }
@@ -95,10 +95,10 @@ var dedupe = {
       seen = true;
       var ts = Date.parse(rec[ah.cfg('emit_dedupe.origin_ts_field')]);
       if (!isFinite(ts) || ts <= afterTs) return;
-      if (skip.indexOf(rec[field]) < 0) n += 1;
+      if (skip.indexOf(rec[field]) < 0) n += 1; else sched += 1;
       if (ts > maxTs) maxTs = ts;
     });
-    return seen ? { n: n, maxTs: maxTs } : null;
+    return seen ? { n: n, sched: sched, maxTs: maxTs } : null;
   },
   windowMs: function () {
     var mins = ah.settings.num('emit_dedupe.num_window_min');
@@ -158,8 +158,9 @@ var dedupe = {
         var floorHit = counted !== null && isFinite(floorS) && floorS > 0 && (now - prev.lastEmittedAt) >= floorS * ah.cfgNum('emit_dedupe.ms_per_second');
         if (t > keepalive || floorHit) emit = true; else {
           emit = false; nextTurns = t;
-          // the old rule (every delivered turn counts) would have re-sent it here: a repeat of an unchanged advisory that was saved
-          if (commit && counted !== null && turns + 1 > keepalive) ah.metric('waste_events_total', ['category', 'repeated_advisory', 'source', 'keepalive_scheduled']);
+          // each evaluation that passed over a scheduled turn and still suppressed the block is one repeat of an unchanged advisory that
+          // the old rule (every delivered turn counts) moved toward re-sending: counted once, whatever the keepalive length
+          if (commit && counted !== null && counted.sched > 0) ah.metric('waste_events_total', ['category', 'repeated_advisory', 'source', 'keepalive_scheduled']);
         }
       }
     }

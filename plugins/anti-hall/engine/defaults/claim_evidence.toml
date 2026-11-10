@@ -372,6 +372,10 @@ value = { section = "guards", key = "claimEvidenceMaskTableHeader", env = "ANTIH
 doc = "A line that is the separator row of a markdown table (cells of dashes with optional colons); the line above it is the header row. Rust regular expression."
 value = '^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$'
 
+[claim_evidence.table_label_cell_re]
+doc = "A table header cell that is a label: empty, or one to four words without a sentence ending (no period, exclamation mark or semicolon). A header row is masked only when every cell is a label, so a cell that asserts something (\"All tests pass.\") keeps the row scanned. Rust regular expression."
+value = '^\s*([^\s.!;]+(\s+[^\s.!;]+){0,3})?\s*$'
+
 [claim_evidence.table_pipe]
 doc = "The cell separator a table header row must contain."
 value = "|"

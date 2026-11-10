@@ -134,12 +134,15 @@ function pwDiskDue(st, sid, low, nowS, cooldown) {
     seen[key] = true;
     if (prev.level !== v.level) { due = true; return; }
     var idle = typeof prev.at === 'number' ? nowS - prev.at : Infinity;
+    // a record from the future (the clock was set back) cannot be trusted to hold anything back: warn
+    if (idle < 0) { due = true; return; }
     if (idle < cooldown) return;
     if (isFinite(free) && typeof prev.free === 'number' && prev.free - free >= drop) due = true;
     else if (floorS > 0 && idle >= floorS) due = true;
   });
   Object.keys(st.disk).forEach(function (k) { if (k.indexOf(prefix) === 0 && !seen[k]) { delete st.disk[k]; st.dirty = true; } });
   if (!due) {
+    if (low.length === 0) return false; // nothing is low: only the recovery above ran
     // the old rule (one warning per cooldown at an unchanged level) would have warned again here: a saved repeat
     var seenAll = low.every(function (v) { var e = pwObj(st.disk[prefix + v.path]); return typeof e.at === 'number' && nowS - e.at >= cooldown; });
     if (seenAll) ah.metric('waste_events_total', ['category', 'repeated_advisory', 'source', 'disk_unchanged']);
@@ -148,6 +151,13 @@ function pwDiskDue(st, sid, low, nowS, cooldown) {
   low.forEach(function (v) { st.disk[prefix + v.path] = { level: v.level, free: pwFreeGb(v.free), at: nowS }; });
   st.dirty = true;
   return true;
+}
+
+// Whether the low-space warning is due. With repeat-on-change the state logic runs on every report, also when no volume is low:
+// that is how a recovered volume is forgotten, so a relapse at the same level warns again.
+function diskDue(st, sid, low, critical, nowS, cooldown) {
+  if (ah.settings.bool('disk_watch.sw_repeat_on_change_only')) return pwDiskDue(st, sid, low, nowS, cooldown) && low.length > 0;
+  return low.length > 0 && pwFire(st, 'disk:' + sid + ':' + (critical ? 'critical' : 'warn'), nowS, cooldown);
 }
 
 function pwDiskLines(low) {
@@ -194,7 +204,7 @@ function decide(p) {
           parts.push(pwMsg('warn', ah.cfg('disk_watch.msg_heavy') + ' ' + text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));
         }
       }
-    } else if (low.length > 0 && (ah.settings.bool('disk_watch.sw_repeat_on_change_only') ? pwDiskDue(st, sid, low, nowS, cooldown) : pwFire(st, 'disk:' + sid + ':' + (critical ? 'critical' : 'warn'), nowS, cooldown))) {
+    } else if (diskDue(st, sid, low, critical, nowS, cooldown)) {
       parts.push(pwMsg('warn', text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));
     }
   }

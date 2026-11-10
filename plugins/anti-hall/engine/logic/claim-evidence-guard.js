@@ -295,17 +295,30 @@ function cePushedUnchecked(cmds) {
   return !ceAnyCmd(ah.cfg('claim_evidence.state_res'), cmds.slice(last + 1));
 }
 
-// claim_evidence.mask_table_header: the header row of a markdown table (the line above its `---` separator) and the separator are labels,
-// not statements, so a column named "Verified" or "Merged" is not a claim. The body rows are still scanned. The line breaks stay, so
-// nothing else moves.
+// The cells of one markdown table row (the outer pipes dropped).
+function ceCells(line, pipe) {
+  var t = line.trim();
+  if (t.indexOf(pipe) === 0) t = t.slice(pipe.length);
+  if (t.length >= pipe.length && t.slice(t.length - pipe.length) === pipe) t = t.slice(0, t.length - pipe.length);
+  return t.split(pipe);
+}
+
+// claim_evidence.mask_table_header: the header row of a markdown table and its separator are labels, not statements, so a column named
+// "Verified" or "Merged" is not a claim. Only a genuine header is masked: the first row of its table (the line above it holds no pipe),
+// with a separator of as many cells, every cell of which is a label (claim_evidence.table_label_cell_re: a few words, no sentence
+// punctuation). A body row, a row with an assertion in a cell, a lone pipe row and a rule line (`---`) are all still scanned. The line
+// breaks stay, so nothing else moves.
 function ceMaskTableHeader(text0) {
   if (!ah.settings.bool('claim_evidence.sw_mask_table_header')) return text0;
-  var sep = ah.cfg('claim_evidence.table_sep_re'), pipe = ah.cfg('claim_evidence.table_pipe'), lines = text0.split('\n');
+  var sep = ah.cfg('claim_evidence.table_sep_re'), pipe = ah.cfg('claim_evidence.table_pipe'), label = ah.cfg('claim_evidence.table_label_cell_re'), lines = text0.split('\n');
   for (var i = 1; i < lines.length; i++) {
-    if (ah.re.test(sep, '', lines[i]) && lines[i - 1].indexOf(pipe) >= 0) {
-      lines[i - 1] = lines[i - 1].replace(/[^\s]/g, ' ');
-      lines[i] = '';
-    }
+    if (!ah.re.test(sep, '', lines[i]) || lines[i - 1].indexOf(pipe) < 0) continue;
+    if (i >= 2 && lines[i - 2].indexOf(pipe) >= 0) continue; // the line above is a table row too: this one is a body row, not a header
+    var head = ceCells(lines[i - 1], pipe);
+    if (head.length !== ceCells(lines[i], pipe).length) continue;
+    if (!head.every(function (c) { return ah.re.test(label, '', c); })) continue;
+    lines[i - 1] = lines[i - 1].replace(/[^\s]/g, ' ');
+    lines[i] = '';
   }
   return lines.join('\n');
 }
