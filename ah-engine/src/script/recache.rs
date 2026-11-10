@@ -19,7 +19,10 @@
 //! unmeasured search (`diagnostics.check_mem` off, sampled out by `diagnostics.check_mem_sample_every`, or no counting allocator),
 //! reports at least `daemon.workers` times `script.regex_scratch_bytes` (a calibrated typical use per pattern and thread; the cap
 //! `script.regex_dfa_size_limit` is the worst case), so the regex limits keep bounding the scratch when the measurement is
-//! unavailable. Evicting a pattern drops the `Arc`, and its scratch goes with it.
+//! unavailable. Evicting a pattern drops the `Arc`, and its scratch goes with it. A memory shrink first TRIMS (`mem.regex_trim_scratch`): a
+//! pattern's entry is replaced by a clone of its `Regex` (same program, empty search caches) that reports the estimate again, so the scratch
+//! is freed without a recompile; programs are evicted only if that is not enough. While the process-wide hard latch refuses inserts the
+//! cache still keeps patterns up to `mem.regex_latched_bytes`, so a pattern is compiled once per excursion, not on every call.
 //!
 //! The cache is a [`crate::mem::BoundedCache`] registered as `regex`: soft and hard limits are `mem.regex_*`. The lock is held
 //! for the lookup and the bookkeeping only, never for a compile or a match; two threads that miss on the same pattern at once
@@ -29,7 +32,7 @@
 use super::host::err;
 use crate::checks::guardkit::jsre;
 use crate::defaults;
-use crate::mem::{BoundedCache, Spec};
+use crate::mem::{BoundedCache, Spec, Trim};
 use regex::{Regex, RegexBuilder};
 use std::sync::{Arc, OnceLock};
 
@@ -67,8 +70,6 @@ impl<T: Copy> Kept for Vec<T> {
 pub struct Entry {
     re: Regex,
     scratch: std::sync::atomic::AtomicU64,
-    /// [`scratch_estimate`] captured once at creation, so reading the weight never reads the settings.
-    estimate: u64,
     /// Set by the first search on this entry. With `unmeasured` clear, the entry reports its measurement. Plain resettable flags: a later trim sets both back.
     was_searched: std::sync::atomic::AtomicBool,
     /// Set by the first search that was not measured; the entry then reports at least the estimate for as long as it lives.
@@ -92,7 +93,7 @@ impl Entry {
     pub fn reported_bytes(&self) -> usize {
         use std::sync::atomic::Ordering::Relaxed;
         let measured = self.scratch.load(Relaxed);
-        if self.was_searched.load(Relaxed) && !self.unmeasured.load(Relaxed) { measured as usize } else { measured.max(self.estimate) as usize }
+        if self.was_searched.load(Relaxed) && !self.unmeasured.load(Relaxed) { measured as usize } else { measured.max(ESTIMATE.load(Relaxed)) as usize }
     }
 
     /// Run `f` (one search) and apply the heap the REGEX kept to this pattern's scratch (the result `f` returns is not scratch).
@@ -128,6 +129,46 @@ fn scratch_of(e: &Arc<Entry>) -> usize {
     e.reported_bytes()
 }
 
+/// [`scratch_estimate`] as last read from the settings: one value for the whole cache, refreshed on a config reload
+/// ([`refresh_estimate`]), so weighing an entry never reads the settings. 0 until the first refresh.
+static ESTIMATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Read the scratch estimate from the settings again (the daemon calls this with the other per-call memory knobs at start and on every config reload).
+pub fn refresh_estimate() {
+    ESTIMATE.store(scratch_estimate() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn trim_on() -> bool {
+    defaults::raw("mem.regex_trim_scratch").as_bool().unwrap_or(true)
+}
+
+/// The replacement for a cached pattern that drops the DFA scratch its searches grew: `Regex::clone` shares the compiled program and
+/// starts an empty search-cache pool, so the old copy's scratch is freed once every search still using it returns. The replacement
+/// starts unmeasured and reports the estimate, so a pattern is trimmed only when that does not weigh MORE than now: it reports above the
+/// estimate, or it is pinned at the estimate by an unmeasured search (its real scratch is unknown, and may be large). A pattern not
+/// searched since its last trim, or measured below the estimate, is left alone (trimming it would raise its weight and make the shrink evict).
+fn trim_entry(e: &Arc<Entry>) -> Option<Arc<Entry>> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (searched, unmeasured) = (e.was_searched.load(Relaxed), e.unmeasured.load(Relaxed));
+    let old = e.reported_bytes();
+    if !searched && !unmeasured && e.scratch.load(Relaxed) == 0 {
+        return None; // nothing was searched since the last trim: no scratch to drop
+    }
+    if searched && !unmeasured && old <= ESTIMATE.load(Relaxed) as usize {
+        return None;
+    }
+    let fresh = Entry {
+        re: e.re.clone(),
+        scratch: std::sync::atomic::AtomicU64::new(0),
+        was_searched: std::sync::atomic::AtomicBool::new(false),
+        unmeasured: std::sync::atomic::AtomicBool::new(false),
+    };
+    let freed = old.saturating_sub(fresh.reported_bytes());
+    crate::metrics::bump("regex_scratch_trims", &[]);
+    crate::metrics::bump_by("regex_scratch_trim_freed_bytes", &[], freed as u64);
+    Some(Arc::new(fresh))
+}
+
 static SEARCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MEASURED_SEARCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SCRATCH_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -143,10 +184,13 @@ type Cache = BoundedCache<(String, String), Arc<Entry>>;
 fn cache() -> &'static Cache {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     CACHE.get_or_init(|| {
-        BoundedCache::with_extra(
+        BoundedCache::with_trim(
             crate::mem::global(),
-            Spec::new("regex", "mem.regex_soft_bytes", "mem.regex_hard_bytes", "mem.regex_low_water_pct").with_entries("mem.regex_max_entries"),
+            Spec::new("regex", "mem.regex_soft_bytes", "mem.regex_hard_bytes", "mem.regex_low_water_pct")
+                .with_entries("mem.regex_max_entries")
+                .with_latch_cap("mem.regex_latched_bytes"),
             Some(scratch_of),
+            Some(Trim { replace: trim_entry, enabled: trim_on }),
         )
     })
 }
@@ -210,15 +254,25 @@ pub fn scratch_estimate() -> usize {
     (defaults::num("daemon.workers") as usize).saturating_mul(defaults::num("script.regex_scratch_bytes") as usize)
 }
 
+/// Fill [`ESTIMATE`] before the first entry exists (a process that never ran the daemon's reload hook, as in a test).
+fn refresh_estimate_once() {
+    if ESTIMATE.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        refresh_estimate();
+    }
+}
+
 /// The compiled pattern for `(src, flags)`, from the shared cache or compiled now.
 pub fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Entry>> {
     let key = (src.to_string(), flags.to_string());
     cache().get_or_compute(&key, || {
+        refresh_estimate_once();
+        if crate::mem::global().hard_latched() {
+            crate::metrics::bump("regex_compiles_latched", &[]);
+        }
         let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
         let entry = Entry {
             re,
             scratch: std::sync::atomic::AtomicU64::new(0),
-            estimate: scratch_estimate() as u64,
             was_searched: std::sync::atomic::AtomicBool::new(false),
             unmeasured: std::sync::atomic::AtomicBool::new(false),
         };

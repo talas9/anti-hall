@@ -9,7 +9,24 @@ use super::registry::{Admit, Budget, Owner, Registry, Spec};
 use crate::tier::Tiered;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// How a cache trims its values: `replace(value)` gives the replacement for a value that has something to drop (`None`: nothing worth
+/// dropping), `enabled()` is the settings switch (off: a shrink evicts and a recycle clears, as for a cache with no trim).
+pub struct Trim<V> {
+    /// The replacement for a value that holds droppable memory.
+    pub replace: fn(&V) -> Option<V>,
+    /// Whether trimming is switched on now.
+    pub enabled: fn() -> bool,
+}
+
+impl<V> Clone for Trim<V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<V> Copy for Trim<V> {}
 
 struct Core<K: Hash + Eq + Clone, V: Clone> {
     tier: Mutex<Tiered<K, V>>,
@@ -17,11 +34,32 @@ struct Core<K: Hash + Eq + Clone, V: Clone> {
     /// Bytes a value holds beyond its weight, measured as it is used (the regex search scratch); summed over the held values.
     extra: Option<fn(&V) -> usize>,
     extra_seen: AtomicUsize,
+    /// Gives a value that holds droppable memory a replacement without it (or `None` when there is nothing worth dropping): the soft
+    /// shrink applies it before evicting, and a recycle before clearing. The weight and the recency of the entry stay.
+    trim: Option<Trim<V>>,
+    budget: OnceLock<Budget>,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> Core<K, V> {
     fn lock(&self) -> std::sync::MutexGuard<'_, Tiered<K, V>> {
         self.tier.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Replace every value that has something to drop (see `trim`); the number replaced. The extra is summed again after, so the
+    /// figure the registry reads is never the one from before the trim.
+    fn trim_locked(&self, t: &mut Tiered<K, V>) -> usize {
+        let Some(trim) = self.trim.filter(|x| (x.enabled)()) else { return 0 };
+        let n = t.replace_values(trim.replace);
+        if n > 0
+            && let Some(f) = self.extra
+        {
+            self.extra_seen.store(t.values().iter().map(f).sum(), SeqCst);
+        }
+        n
+    }
+
+    fn reported_locked(&self, t: &Tiered<K, V>) -> usize {
+        t.retained_bytes().saturating_add(self.extra.map_or(0, |f| t.values().iter().map(f).sum::<usize>()))
     }
 }
 
@@ -37,6 +75,7 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> Owner for
     }
     fn shrink(&self, target: usize) {
         let mut t = self.lock();
+        self.trim_locked(&mut t);
         match self.extra {
             None => {
                 t.evict_retained_to(target);
@@ -53,7 +92,19 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> Owner for
     }
     fn recycle(&self) {
         let mut t = self.lock();
+        // drop what can be dropped without losing the entries; clear only if that leaves the holder over its own hard limit
+        let trimming = self.trim.is_some_and(|x| (x.enabled)());
+        self.trim_locked(&mut t);
+        if trimming
+            && let Some(hard) = self.budget.get().map(Budget::hard_bytes)
+            && hard > 0
+            && self.reported_locked(&t) <= hard
+        {
+            self.bytes.store(t.retained_bytes(), SeqCst);
+            return;
+        }
         t.clear();
+        self.extra_seen.store(0, SeqCst);
         self.bytes.store(t.retained_bytes(), SeqCst);
     }
 }
@@ -73,9 +124,24 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
     /// [`BoundedCache::new`] whose reported bytes also include `extra(value)` of every held value: memory a value grows after it
     /// was weighed, measured by its user (the weight stays the admission estimate; the report is the measurement).
     pub fn with_extra(reg: &Registry, spec: Spec, extra: Option<fn(&V) -> usize>) -> Self {
-        let core = Arc::new(Core { tier: Mutex::new(Tiered::new(usize::MAX)), bytes: AtomicUsize::new(0), extra, extra_seen: AtomicUsize::new(0) });
+        Self::with_trim(reg, spec, extra, None)
+    }
+
+    /// [`BoundedCache::with_extra`] whose values can also drop memory they hold without leaving the cache: `trim(value)` returns the
+    /// replacement for a value that has some (see [`Trim`]). A soft shrink trims first and evicts only if the cache is
+    /// still over its target; a hard recycle trims all and clears only if it is still over the holder's hard limit.
+    pub fn with_trim(reg: &Registry, spec: Spec, extra: Option<fn(&V) -> usize>, trim: Option<Trim<V>>) -> Self {
+        let core = Arc::new(Core {
+            tier: Mutex::new(Tiered::new(usize::MAX)),
+            bytes: AtomicUsize::new(0),
+            extra,
+            extra_seen: AtomicUsize::new(0),
+            trim,
+            budget: OnceLock::new(),
+        });
         let owner: Arc<dyn Owner> = core.clone();
         let budget = reg.register(spec, Arc::downgrade(&owner));
+        core.budget.get_or_init(|| budget.clone());
         BoundedCache { core, budget }
     }
 
