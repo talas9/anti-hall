@@ -798,7 +798,7 @@ function pgGate(p, root, l) {
     // a pass that only deferred unread mail keeps the loop state and skips the wake-coverage line; only a clean pass clears the state,
     // after the wake-coverage line (which needs a live child of this project) is known to be silent
     if (!busyAdvisoryHeld) {
-      if (own.id !== null && pgWakeBlock(home, cwd, own.id, now, l, stateFile, stateRel, fx, entries)) return fx;
+      if (own.id !== null && pgWakeBlock(home, cwd, own.id, now, l, stateFile, stateRel, fx, entries, typeof sidRaw === 'string' && sidRaw !== '' ? sidRaw : null)) return fx;
       fx.unlink = stateRel;
     }
     return fx;
@@ -883,7 +883,7 @@ function pgGate(p, root, l) {
 
   // the stale-build downgrade: a plain neglect block is dropped while the host registered a newer version
   if (blocking.length > 0 && !bypassCap && escalateTimes === null && qEscalateTimes === null && pgVersionStale(root)) { pgCountSuppressed('version_stale'); return fx; }
-  var wake = pgWakeLine(own.id, l);
+  var wake = pgWakeLine(own.id, l, home, cwd, now);
   var base = (blocking.length > 0 || unanswered.length > 0 || truncated)
     ? pgReason(blocking, own, escalateTimes, hasIntent,
       { unanswered: unanswered, informational: informational, truncated: truncated, qEscalate: qEscalateTimes, waiting: pgWaitingSeg(home, blocking) })
@@ -1036,7 +1036,7 @@ function pgRawName(home, id) {
 // The clean pass's mailbox-wake block (`wakeCoverage` + `noWakePathLine`): a Claude Primary with a live child of this project, no live
 // watcher and no recent cron tick is told to arm both, under its own loop-state signature and the same forced-acknowledgement cap,
 // then quiet. True when it decided (a block written to `fx`, or the spent cap's quiet pass); false when nothing is missing.
-function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries) {
+function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries, sid) {
   if (!pgSafeId(ownId)) return false; // wakeCoverage: an id it cannot use is "unknown"
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
   if ((raw === null ? '' : raw.trim().toLowerCase()) !== ah.cfg('devswarm_role.claude_agent')) return false;
@@ -1048,7 +1048,7 @@ function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries)
   var rows = (entries || []).filter(function (e) { return e.id !== ownId && !e.stateSkipped && !e.held; });
   if (rows.length > 0 && !rows.some(function (e) { return !e.done && !e.doneGate && !e.waiting && !e.idleKnown; })) return false;
   var tick = piJson(pgDir(home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ownId + '.json');
-  var ageMin = tick && piFinite(tick.ts) ? Math.max(0, Math.floor((now - tick.ts) / ah.cfgNum('devswarm_prompt.ms_per_minute'))) : null;
+  var ageMin = piTickAge(tick, now, sid);
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
   if (!(ageMin === null || ageMin > warn)) return false;
   if (ah.settings.bool('wake_watch.set_enabled') === false) return false;
@@ -1081,10 +1081,12 @@ function pgVersionStale(root) {
 // ---- texts -------------------------------------------------------------------------------------------------------------
 
 // `wakeReassertLine(env, false, ownId)`: the Primary's mailbox-wake re-verify line (Claude only).
-function pgWakeLine(ownId, l) {
+function pgWakeLine(ownId, l, home, cwd, now) {
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
   var agent = raw === null ? '' : raw.trim().toLowerCase();
   if (agent !== ah.cfg('devswarm_role.claude_agent')) return '';
+  // devswarm.wakeCronOnlyWithChild: with no live child the cron is deliberately absent, so it is not re-verified
+  if (dwCronOnlyWithChild()) { var lc = piLiveChildren({ home: home, now: now }, cwd); if (lc.known && !lc.alive) return ''; }
   var extra = ah.cfg('devswarm_role.id_extra_chars');
   var valid = function (v) { return typeof v === 'string' && v !== '' && v.split('').every(function (c) { return /[A-Za-z0-9]/.test(c) || extra.indexOf(c) >= 0; }); };
   var id;

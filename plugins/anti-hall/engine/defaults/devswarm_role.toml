@@ -71,6 +71,24 @@ value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM
 doc = "Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected."
 value = { section = "devswarm", key = "wakeCron", env = "ANTIHALL_DEVSWARM_WAKE_CRON", default = "7,37 * * * *" }
 
+[devswarm_role.sw_wake_cron_child_only]
+doc = "Switch devswarm.wakeCronOnlyWithChild (default on): a Primary arms the mailbox-wake cron only while at least one child workspace is alive. The SessionStart directive arms the Monitor wake-watch alone, one order deletes the cron when the last child is gone, and the NO MAILBOX TICK / NO MAILBOX WAKE PATH line asks for it back at the next live child. Off restores the always-armed cron."
+value = { section = "devswarm", key = "wakeCronOnlyWithChild", env = "ANTIHALL_DEVSWARM_WAKE_CRON_ONLY_WITH_CHILD", default = true }
+
+[devswarm_role.msg_wake_claude_parent_nocron]
+doc = "The mailbox-wake text of a claude Primary while devswarm.wakeCronOnlyWithChild is on (placeholders {watcher}, {expiry}): the Monitor wake-watch alone. The cron comes only with a live child, ordered by the wake line."
+value = '''
+ MAILBOX WAKE (do this NOW, on your FIRST turn): arm the `Monitor` tool as your wake path: first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `{watcher}` and a description like "devswarm mailbox wake watcher": use `persistent: true` if your Monitor tool supports it, else max `timeout_ms`{expiry}. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do. Do NOT create a mailbox cron (`CronCreate` running `inbox tick`) now: with no child workspace alive each tick is a full model turn that finds nothing. When a child workspace is alive, a NO MAILBOX TICK or NO MAILBOX WAKE PATH line tells you to create it; when none is alive any more, one line tells you to delete it.'''
+
+[devswarm_role.msg_expiry_nocron]
+doc = "The monitor-expiry clause while devswarm.wakeCronOnlyWithChild is on: no cron tick exists to re-arm it, and an inline re-arm would wake an empty session every 30 minutes."
+value = '''
+. Do NOT re-arm inline when it emits its final/expired event while no child workspace is alive — reply in one line and stop; the NO MAILBOX WAKE PATH line re-arms it once a child is alive'''
+
+[devswarm_role.cron_ctl_fresh_sources]
+doc = "The SessionStart `source` values of a session that starts with no mailbox cron (a new session; a resumed, cleared or compacted one lives in a process that may still hold a cron armed earlier, since cron jobs are session-process-only). Such a session is recorded as cron-less, so it is not ordered to delete a cron it never had."
+value = ["startup"]
+
 [devswarm_role.cron_charset]
 doc = "The only characters a cron field may contain (anything else would let the setting inject text into the directive)."
 value = "0123456789*/,-"

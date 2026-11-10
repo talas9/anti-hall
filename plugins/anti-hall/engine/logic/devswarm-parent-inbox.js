@@ -646,31 +646,34 @@ function piDescriptors(home) {
 }
 
 // The part of `rowEligibility(row, { liveness: true })` the live-child test reads: is the row put away, held, ignored or waiting on a human?
+// 'archived' (put away), 'quiet' (alive, but ignored or waiting on a human with a live session: it needs no wake path now) or 'live'.
 // `marker` and `app` are the archive verdicts the caller asks for; the liveness is read only when nothing else already skips the row.
-function piSkipped(ctx, id, wt, sid, marker, appKey) {
-  if (marker && JSON.parse(ahHost.piMarker(id, wt, sid)).archived === true) return true;
+function piChildState(ctx, id, wt, sid, marker, appKey) {
+  if (marker && JSON.parse(ahHost.piMarker(id, wt, sid)).archived === true) return 'archived';
   if (appKey !== undefined) {
     var a = JSON.parse(ahHost.piApp(id, wt, appKey, ctx.now));
     if (a.unsure) ah.unable('devswarm-parent-inbox:app_verdict');
-    else if (a.archived) return true;
+    else if (a.archived) return 'archived';
   }
   if (ah.settings.touched('devswarm_parent.set_held')) ah.unable('devswarm-parent-inbox:held_partitions'); // the owner's held partitions are not applied here
-  if (ahHost.piIgnored(id)) return true;
+  if (ahHost.piIgnored(id)) return 'quiet';
   var live = sid ? ah.mesh.sessionAlive(sid) : false;
   if (id !== '' && sid && wt) {
     var b = ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
-    if (b.none !== true && b.waiting && live) return true;
+    if (b.none !== true && b.waiting && live) return 'quiet';
   }
-  return false;
+  return 'live';
 }
 
-// `liveChildState(home, cwd, { excludeHeldIgnored: true, excludeWaitingOnUser: true })`: {known, live}.
+// `liveChildState(home, cwd, { excludeHeldIgnored: true, excludeWaitingOnUser: true })`: {known, live, alive}. `live` is the wake-path test
+// (a child that can still send mail); `alive` is every child that is not put away, an ignored or waiting one included. The mailbox cron
+// is asked for by `live` and deleted only when `alive` is false, so a child that is waiting on the human never loses its wake path.
 function piLiveChildren(ctx, cwd) {
-  var d = { live: false, known: true };
+  var d = { live: false, alive: false, known: true };
   var descriptors = piDescriptors(ctx.home);
   if (descriptors.length) {
     var selfKey = ah.mesh.repoKey(cwd);
-    if (selfKey === null) d = { live: false, known: false };
+    if (selfKey === null) d = { live: false, alive: false, known: false };
     else {
       var selfReal = ah.fs.realpath(cwd);
       if (selfReal === null) selfReal = cwd;
@@ -681,7 +684,9 @@ function piLiveChildren(ctx, cwd) {
         if ((real === null ? x.worktreePath : real) === selfReal) continue; // this Primary's own row
         var dKey = ah.mesh.repoKey(x.worktreePath);
         if (dKey !== selfKey) continue;
-        if (!piSkipped(ctx, x.id, x.worktreePath, x.sessionId, true, dKey)) { d = { live: true, known: true }; break; }
+        var st = piChildState(ctx, x.id, x.worktreePath, x.sessionId, true, dKey);
+        if (st !== 'archived') d.alive = true;
+        if (st === 'live') { d.live = true; break; }
       }
     }
   }
@@ -691,7 +696,9 @@ function piLiveChildren(ctx, cwd) {
   if (ac.unsure) { ah.unable('devswarm-parent-inbox:app_children'); ac = { children: [] }; }
   for (var j = 0; j < ac.children.length; j++) {
     var w = ac.children[j];
-    if (!piSkipped(ctx, w.id, w.worktreePath, w.sessionId, true, undefined)) return { live: true, known: true };
+    var ws = piChildState(ctx, w.id, w.worktreePath, w.sessionId, true, undefined);
+    if (ws !== 'archived') d.alive = true;
+    if (ws === 'live') { d.live = true; d.known = true; return d; }
   }
   return d;
 }
@@ -729,15 +736,29 @@ function piWatcherLive(home, id, now) {
   return false;
 }
 
-// The mailbox-wake line of this turn (`noWakePathLine(wakeCoverage(...))`), or null: only a Claude Primary with a live child and no recent tick is told.
-function piWakeLine(ctx, cwd, cli, opts) {
+// The age in minutes of the Primary's last inbox tick, or null (no marker). With devswarm.wakeCronOnlyWithChild a marker that predates the
+// order to delete the cron counts as absent: the cron it came from is gone, so the first live child must be asked for the cron at once,
+// not when the old marker has aged past cronMissingWarnMin.
+function piTickAge(tick, now, sid) {
+  var ageMin = tick && piFinite(tick.ts) ? Math.max(0, Math.floor((now - tick.ts) / ah.cfgNum('devswarm_prompt.ms_per_minute'))) : null;
+  if (ageMin !== null && sid && dwCronOnlyWithChild()) {
+    var st = dwCronCtlRead(sid);
+    if (st !== null && st.deleted && st.at !== null && tick.ts <= st.at) return null;
+  }
+  return ageMin;
+}
+
+function piClaudePrimary() {
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
-  var agent = raw === null ? '' : raw.trim().toLowerCase();
-  if (agent !== ah.cfg('devswarm_role.claude_agent')) return null;
-  var lc = piLiveChildren(ctx, cwd);
+  return (raw === null ? '' : raw.trim().toLowerCase()) === ah.cfg('devswarm_role.claude_agent');
+}
+
+// The mailbox-wake line of this turn (`noWakePathLine(wakeCoverage(...))`), or null: only a Claude Primary with a live child (`lc`, read
+// by the caller: {known, live}) and no recent tick is told. With no live child there is nothing to hear, so no wake path is asked for.
+function piWakeLine(ctx, cwd, cli, opts, lc) {
   if (!lc.known || !lc.live) return null;
   var tick = piJson(piDevswarmDir(ctx.home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ctx.primaryId + '.json');
-  var ageMin = tick && piFinite(tick.ts) ? Math.max(0, Math.floor((ctx.now - tick.ts) / ah.cfgNum('devswarm_prompt.ms_per_minute'))) : null;
+  var ageMin = piTickAge(tick, ctx.now, ctx.sid);
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
   if (!(ageMin === null || ageMin > warn)) return null;
   var wanted = ah.settings.bool('wake_watch.set_enabled') !== false;
@@ -749,6 +770,21 @@ function piWakeLine(ctx, cwd, cli, opts) {
     return text.render(ah.cfg('devswarm_parent.wake_both'), { mon: text.render(ah.cfg('devswarm_parent.wake_monitor'), { watcher: watcher }), cron: cron });
   }
   return text.render(ah.cfg('devswarm_parent.wake_tick'), { cron: cron });
+}
+
+// devswarm.wakeCronOnlyWithChild: the ONE order to delete the mailbox cron once no child workspace is alive (none that is not put away), and the bookkeeping that
+// makes it one. {text, rec}: `text` is the order (null: none this turn), `rec` the record to write (null: no change). null when the
+// switch is off, the session is unknown, or the live children cannot be told. It runs on every turn of the Primary, a cron tick's own
+// turn included, so a session that armed the cron before this setting existed is reached too.
+function piCronCtl(ctx, lc) {
+  if (!dwCronOnlyWithChild() || !ctx.sid || !lc.known) return null;
+  var st = dwCronCtlRead(ctx.sid);
+  var tick = piJson(piDevswarmDir(ctx.home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ctx.primaryId + '.json');
+  // an inbox tick that ran after the delete order: the cron is armed again, so the record is spent (the next empty moment orders again)
+  var spent = st !== null && st.deleted && st.at !== null && tick && piFinite(tick.ts) && tick.ts > st.at;
+  if (lc.alive) return spent ? { text: null, rec: { deleted: false, at: ctx.now } } : null; // a waiting or ignored child is still alive
+  if (st !== null && st.deleted && !spent) return null;
+  return { text: ah.cfg('devswarm_parent.msg_cron_delete'), rec: { deleted: true, at: ctx.now } };
 }
 
 // The mailbox watcher path the line names (`preferStableLauncher('wakeWatch', RAW_WATCHER)`).
@@ -1270,7 +1306,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1352,7 +1388,12 @@ function piDecide(p, opts) {
       }
     }
     if (roster !== null && roster.rows.length) banner = piIngest(health, key, now, sid, tp);
-    wakeLine = piWakeLine({ home: home, primaryId: primaryId, now: now }, cwd, cli, opts);
+    var wctx = { home: home, primaryId: primaryId, now: now, sid: sid };
+    var wlc = piClaudePrimary() ? piLiveChildren(wctx, cwd) : null; // one read of the live children for the wake line and the cron order
+    if (wlc !== null) {
+      wakeLine = piWakeLine(wctx, cwd, cli, opts, wlc);
+      cronCtl = piCronCtl(wctx, wlc);
+    }
     driftNotice = piDriftNotice(home, top, primaryId, sid, tp);
     parked = piParked(home, primaryId, cli);
   }
@@ -1373,6 +1414,7 @@ function piDecide(p, opts) {
   }
   pending.push({ kind: 'dedupe', rank: 0, o: overrideOpts, text: text0 });
   if (wakeLine !== null) pending.push({ kind: 'dedupe', rank: 20, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_wake'), content: wakeLine, transcriptPath: tp, keepaliveTurns: repeat }, text: wakeLine });
+  if (cronCtl !== null && cronCtl.text !== null) pending.push({ kind: 'plain', rank: ah.cfgNum('devswarm_parent.cron_ctl_rank'), text: cronCtl.text });
   if (driftNotice !== null) pending.push({ kind: 'dedupe', rank: 50, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_drift'), content: driftNotice, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_parent.drift_keepalive') }, text: driftNotice });
   var tableText = null, attention = [], archiveList = [], rows = [];
   if (roster !== null) {
@@ -1436,6 +1478,10 @@ function piDecide(p, opts) {
   if (syncNotes !== null) syncNotes.writes.forEach(function (w) { ah.state.writeAtomic(w.rel, JSON.stringify({ at: now, ids: w.ids })); });
   if (broadcastRows !== null && broadcastRows.seen !== null) ah.state.writeAtomic(piBroadcastSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ keys: broadcastRows.seen.slice(-ah.cfgNum('devswarm_parent.broadcast_seen_max')) }));
   if (derived !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_role.pg_dir_summaries') + '/' + key + '.json'), derived);
+  if (cronCtl !== null && cronCtl.rec !== null) {
+    dwCronCtlWrite(sid, cronCtl.rec);
+    if (cronCtl.text !== null) ah.metric('devswarm_cron_ctl', ['action', 'delete_ordered']);
+  }
   if (orphansSig !== null) ah.state.writeAtomic(piOrphansSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ sig: orphansSig, at: now })); // shown once per id set per session
   if (noticeSeg !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_notice_cursor') + '/' + key + '.json'), JSON.stringify({ lastSeenId: noticeSeg.lastId })); // shown once, marked seen
   var emitted = [];

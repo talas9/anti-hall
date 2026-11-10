@@ -3579,6 +3579,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ca_why_pct` | `context is {pct}% (auto-handover threshold {threshold}%)` |  |  | The reason when the context is known; {pct} rounded, {threshold} the auto-handover threshold. |
 | `ctxbudget.ca_why_unknown` | `context % is unknown` |  |  | The reason when the context is unknown. |
 | `ctxbudget.claude_json` | `.claude.json` |  |  | The host file whose top-level userID names the logged-in account, relative to the home directory (read only that field). |
+| `ctxbudget.codex_usage_key` | `last_token_usage` |  |  | The key of a Codex token_count info object that holds the LAST request's usage (the context size). total_token_usage is the cumulative billing total over the whole session and passes the model's context window; it is read only when this key is absent. |
 | `ctxbudget.context_window_env` | `ANTIHALL_CONTEXT_WINDOW_TOKENS` |  |  | Environment variable that overrides the context window size, in tokens (always wins over the other window sources). |
 | `ctxbudget.default_window` | `200000` |  | tokens | The context window assumed when no source states one, in tokens (the reading is then flagged as unknown). |
 | `ctxbudget.env_pct_off` | `ANTIHALL_AUTO_HANDOVER_PCT` |  |  | Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express). |
@@ -3653,6 +3654,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ups_empty` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext"...` |  |  | The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included. |
 | `ctxbudget.ups_line` | `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext"...` |  |  | The stdout line of a UserPromptSubmit hook that injects {text} (already JSON-quoted), newline included. |
 | `ctxbudget.usage_cache` | `.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |  |  | The OMC usage cache file, relative to the home directory. |
+| `ctxbudget.usage_context_iteration_types` | `message` |  |  | The iteration kinds whose last member is the real context size of the session. The top-level usage stays the billing sum; an empty list reads the top-level fields only. |
+| `ctxbudget.usage_iteration_type_key` | `type` |  |  | The key of one usage iteration that names its kind. |
+| `ctxbudget.usage_iterations_key` | `iterations` |  |  | The key of an assistant usage object that lists the model requests of one message (a message holding a server-tool call, such as an advisor call, reports the SUM of its main-model requests at the top level). |
 | `ctxbudget.usage_marker` | `"usage"` |  |  | Substring that a Claude transcript line must hold to be parsed as an assistant usage reading. |
 | `ctxbudget.usage_max_stale_ms` | `21600000` |  | ms | Snapshot age beyond which a bucket without a usable reset time counts as 0 percent. |
 
@@ -5532,6 +5536,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.child_summary` | `SessionStart: injects the DevSwarm mesh-only messaging directive and native e...` |  |  | One-line description of the devswarm-child-role check in the generated reference. |
 | `devswarm_role.claude_agent` | `claude` |  |  | The agent name that has the idle-wake cron and monitor tools. |
 | `devswarm_role.cron_charset` | `0123456789*/,-` |  |  | The only characters a cron field may contain (anything else would let the setting inject text into the directive). |
+| `devswarm_role.cron_ctl_fresh_sources` | `startup` |  |  | The SessionStart `source` values of a session that starts with no mailbox cron (a new session; a resumed, cleared or compacted one lives in a process that may still hold a cron armed earlier, since cron jobs are session-process-only). Such a session is recorded as cron-less, so it is not ordered to delete a cron it never had. |
 | `devswarm_role.cron_fields` | `5` |  |  | How many whitespace-separated fields a valid cron schedule has. |
 | `devswarm_role.engine_bin` | `{home}/.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). engine_cli = engine_bin + " " + engine_verb (a test asserts it). Placeholder: {home}. |
 | `devswarm_role.engine_cli` | `{home}/.anti-hall/ah-engine/bin/ah-engine mesh` |  |  | The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory. |
@@ -5547,9 +5552,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.msg_base` | `💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace...` |  |  | The mesh-only messaging directive of a child workspace (placeholder {cli}: the DevSwarm CLI path). |
 | `devswarm_role.msg_base_parent` | `💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace...` |  |  | The mesh-only messaging directive of a Primary (placeholder {cli}: the DevSwarm CLI path). |
 | `devswarm_role.msg_expiry_inline` | ` + re-arm on its final/expired event` |  |  | The monitor-expiry clause when the monitor is also re-armed inline on its own expiry. |
+| `devswarm_role.msg_expiry_nocron` | `. Do NOT re-arm inline when it emits its final/expired event while no child w...` |  |  | The monitor-expiry clause while devswarm.wakeCronOnlyWithChild is on: no cron tick exists to re-arm it, and an inline re-arm would wake an empty session every 30 minutes. |
 | `devswarm_role.msg_expiry_tick` | `. Do NOT re-arm inline when it emits its final/expired event — reply in one l...` |  |  | The monitor-expiry clause when re-arming happens only from the cron tick. |
 | `devswarm_role.msg_wake_claude` | ` MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY exis...` |  |  | The mailbox-wake text of a claude workspace (placeholders {cli}, {watcher}, {id}, {cron}, {expiry}). |
 | `devswarm_role.msg_wake_claude_parent` | ` MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY exis...` |  |  | The mailbox-wake text of a claude Primary (placeholders {cli}, {watcher}, {id}, {cron}, {expiry}). |
+| `devswarm_role.msg_wake_claude_parent_nocron` | ` MAILBOX WAKE (do this NOW, on your FIRST turn): arm the `Monitor` tool as yo...` |  |  | The mailbox-wake text of a claude Primary while devswarm.wakeCronOnlyWithChild is on (placeholders {watcher}, {expiry}): the Monitor wake-watch alone. The cron comes only with a live child, ordered by the wake line. |
 | `devswarm_role.msg_wake_other` | ` MAILBOX WAKE: this workspace runs `{agent}`, which has NO idle-wake primitiv...` |  |  | The mailbox-wake text of a workspace whose agent is not claude (placeholders {cli}, {id}, {agent}). |
 | `devswarm_role.msg_wake_other_parent` | ` MAILBOX WAKE: this workspace runs `{agent}`, which has NO idle-wake primitiv...` |  |  | The mailbox-wake text of a Primary whose agent is not claude (placeholders {cli}, {id}, {agent}). |
 | `devswarm_role.out_prefix` | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":` |  |  | The SessionStart hook output up to the directive text (host protocol; the text follows as a JSON string). |
@@ -5732,6 +5739,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.sw_rearm` | `5 entries` |  |  | Switch devswarm.rearmOnTickOnly (default on): re-arm a lapsed monitor only from the cron tick, never inline on the monitor's own expiry. |
 | `devswarm_role.sw_supervisor_mode` | `6 entries` |  |  | Setting devswarm.supervisorMode (auto, on or off): force the supervisor context on or off, or detect it from the environment. default is also the manifest default the plugin option is compared with. |
 | `devswarm_role.sw_wake_cron` | `4 entries` |  |  | Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected. |
+| `devswarm_role.sw_wake_cron_child_only` | `4 entries` |  |  | Switch devswarm.wakeCronOnlyWithChild (default on): a Primary arms the mailbox-wake cron only while at least one child workspace is alive. The SessionStart directive arms the Monitor wake-watch alone, one order deletes the cron when the last child is gone, and the NO MAILBOX TICK / NO MAILBOX WAKE PATH line asks for it back at the next live child. Off restores the always-armed cron. |
 | `devswarm_role.test_markers` | `ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the script counts the case as abandoned and allows rather than guess what Node does. |
 | `devswarm_role.watcher_verb` | `devswarm wake-watch --auto` |  |  | The verbs after the engine binary for the mailbox watcher (the {wverb} part; engine_watcher = engine_bin + " " + watcher_verb, a test asserts it). |
 
@@ -6336,7 +6344,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `423 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `424 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8793,7 +8801,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `432 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `433 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14138,9 +14146,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.broadcast_seen_max` | `200` |  |  | Most broadcast keys remembered per session (MAX_BROADCAST_SEEN_KEYS). |
 | `devswarm_parent.broadcast_urgent_tag` | `[URGENT] ` |  |  | The tag in front of an urgent broadcast row. |
 | `devswarm_parent.cache_rel` | `cache/anti-hall/anti-hall` |  |  | The plugin cache of installed versions, relative to the plugins root (the marketplace clone's grandparent). |
+| `devswarm_parent.cron_ctl_rank` | `20` |  |  | The place of the cron-delete order among the segments of a Primary's turn (the same as the wake line, which it never meets: that one needs a live child, this one none). |
 | `devswarm_parent.defer_log_kind` | `parent-inbox-defer` |  |  | The kind of the engine event-log line a deferral of the Primary prompt hook to its Node hook writes (the line's text names the cause, so every deferral is countable). |
 | `devswarm_parent.dir_archive_nudges` | `archive-nudges` |  |  | The per-workspace archive-recommendation records (archive-nudges/<id>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_broadcast_seen` | `parent-inbox-broadcast-seen` |  |  | The per-session broadcast seen-state (parent-inbox-broadcast-seen/<session>.json), under the DevSwarm directory. |
+| `devswarm_parent.dir_cron_ctl` | `cron-ctl` |  |  | The directory (under the devswarm state dir) of the per-session records of the mailbox cron's state (devswarm.wakeCronOnlyWithChild): {deleted, at} - the cron was ordered deleted (or the session started without one) at `at`, and no inbox tick has run since. |
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
@@ -14198,6 +14208,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.max_table_rows` | `12` |  |  | Most rows of the live workspace table (MAX_TABLE_ROWS; ANTIHALL_ROSTER_MAX_ROWS overrides); the rest are folded into a "+N more" line. |
 | `devswarm_parent.mesh_issue_keepalive` | `10` |  |  | Turns after which a mesh-issue segment is repeated. |
 | `devswarm_parent.ms_per_hour` | `3600000` |  |  | Milliseconds in an hour (the renag setting is in hours). |
+| `devswarm_parent.msg_cron_delete` | `Mailbox cron: no live workspace remains, so each tick only costs a full model...` |  |  | The one order a Primary gets when no live child workspace remains and the mailbox cron may still be armed (devswarm.wakeCronOnlyWithChild). |
 | `devswarm_parent.notice_max_shown` | `5` |  |  | Most unexpired maintainer notices considered (MAX_SHOWN). |
 | `devswarm_parent.notice_rank` | `15` |  |  | The place of the maintainer-notice segment among the turn's segments (lower comes first): right after the staleness banner, ahead of the roster. |
 | `devswarm_parent.notice_relay` | `(Relay this to your own children with `~/.anti-hall/ah-engine/bin/ah-engine m...` |  |  | The line that follows the maintainer notices. |
@@ -15243,6 +15254,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `delivery_funnel` | counter | answers | check, model, project, stage | The delivery funnel split by the session's model family and the project (B1; `telemetry funnel`): per check, model, project and stage (decided, delivered, acted_on, ignored, lost, shed, suppressed), how many answers reached it. A shadowed entry's answer is decided and suppressed, never delivered. Past the series cap only model and project fold into the overflow label (telemetry.overflow_keep_by_metric): no count is lost. acted_on and ignored follow the check's delivery.act (else delivery.react) condition. Lifetime. Off with delivery.funnel_enabled = 0. |
 | `delivery_lost` | counter | answers | check, reason | Per check and reason, answers that did not reach the agent: shed (CPU hard limit), hard_deadline, cpu_budget, client_gone, check_deferred (the reasons of answers_dropped) and undelivered (the reply was not written in time). Lifetime. |
 | `delivery_stage` | counter | answers | check, stage | Per check, how many of its answers reached each stage (#312): decided (it said something), delivered (the reply carrying it was written in time), complied (the agent made a reaction tool call within the window, `delivery.react`), ignored (the window ended without one). Lifetime; `status` delivery shows it with the lost and shed counts. |
+| `devswarm_cron_ctl` | counter | decisions | action | Mailbox-cron decisions of a Primary (devswarm.wakeCronOnlyWithChild), by action (delete_ordered: the one order to delete the cron was shown). |
 | `dispatch_checks` | counter | entries | event, check, answer | Built-in check entries the dispatcher sent to the daemon, by event, check and answer (decided, or defer = its Node hook ran instead) (D58). |
 | `dispatch_entries` | counter | entries | event, entry, outcome, cfg | What the dispatcher's plan did to each table entry of an event it asked the daemon about (D87): ran, skipped_predicate, skipped_max_rules, skipped_budget, shadowed or off, by event, entry, outcome and the hash of the non-default hook configuration the plan was made under (`default` when none). |
 | `dispatch_overhead_us` | histogram | us | event | Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon. |
