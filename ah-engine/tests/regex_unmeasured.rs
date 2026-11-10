@@ -46,3 +46,27 @@ fn the_estimate_stays_until_every_search_was_measured_and_returns_with_the_first
     assert!(r2.reported_bytes() >= est, "sampled out: at least the estimate, got {}", r2.reported_bytes());
     memstat::configure_measure(true, 1);
 }
+
+/// Slot 0 of the sample counter measures, so a throwaway `mem::measure` takes it and the pattern's FIRST search lands on a sampled-out slot:
+/// the entry has no measurement at all and must weigh the estimate, not 0.
+#[test]
+fn a_first_search_that_is_sampled_out_weighs_the_estimate() {
+    let est = recache::scratch_estimate();
+    memstat::configure_measure(true, 1_000_000);
+    let _ = ah_engine::mem::measure(|| ()); // sample slot 0
+    let r = recache::get("zzfirstunmeasured[a-z]{3}\\d+", "").expect("valid pattern");
+    let (_, m0, _) = recache::search_totals();
+    search(&r);
+    let (_, m1, _) = recache::search_totals();
+    assert_eq!(m1, m0, "the first search was not measured");
+    assert!(r.reported_bytes() >= est, "an unmeasured first search weighs at least the estimate, got {}", r.reported_bytes());
+}
+
+/// The estimate follows a settings reload: the daemon refreshes it with the other per-call memory knobs, and entries read the one value.
+#[test]
+fn the_estimate_is_refreshed_with_the_memory_knobs() {
+    let r = recache::get("zzrefreshed[a-z]{3}\\d+", "").expect("valid pattern");
+    assert_eq!(r.reported_bytes(), recache::scratch_estimate());
+    memstat::configure_measure_from_defaults(); // what a reload runs
+    assert_eq!(r.reported_bytes(), recache::scratch_estimate(), "still the estimate after the refresh");
+}

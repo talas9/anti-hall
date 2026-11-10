@@ -7,7 +7,7 @@ Status: living document. Owner decisions from 2026-10-04, recorded in the order 
 ## Why an engine
 
 - **D1. The problem is bloat, not start time.** Measured on 0.201.0: each Bash call spawns 9 Node hooks before the tool runs and 6 after. The 9 PreToolUse hooks peak at about 409 MB combined and use 187 ms of CPU. Node start costs about 16 ms of CPU and 44 MB per process, which is 65–100% of each hook's cost. Machine-wide that is about 196k hook processes and about 68 CPU-minutes a day (estimate), plus about 300 MB of resident ingest daemons.
-- **D2. Language: Rust.** Prototype measurements: the client uses 2.0 MB vs 44 MB for Node, a call takes 2.9 ms vs 19.7 ms, the daemon is 3.7 MB, and the binary is 1.1 MB. Shipping is unix-only: macOS and Linux, including WSL.
+- **D2. Language: Rust.** Prototype measurements: the client uses 2.0 MB vs 44 MB for Node, a call takes 2.9 ms vs 19.7 ms, the daemon is 3.7 MB, and the binary is 1.1 MB. Shipping is unix-only: macOS and Linux, including WSL. *(Platform scope superseded 2026-11-10, #708: Apple silicon only until release; Linux (including WSL), Apple Intel and native Windows are coming soon.)*
 - **D3. One system-wide engine per user (the gateway).** Every project and session registers with it, sending project path, role (Rick, Meeseek or plain), plugin version and host. It replaces the DevSwarm daemons, cron ticks, supervisor, reaper, wake-watch and Jev worker.
   - Any agent that starts also starts the engine, and keeps a Monitor task running for the whole session so it can receive messages from the engine. The engine likewise receives messages from every agent: Ricks, Meeseeks and plain sessions.
   - Source: "we make one system wide very thin ... all projects report to it including project path ... any agent that starts starts it and have monitor task running all time so it can receive messages from it, and vice versa the engine can receive messages from all agents, ricks and meeseks" (2026-10-04T17:19:12Z).
@@ -572,7 +572,7 @@ matching files asks for a rescan when its listing changes. A 10000-write storm p
 new files produced one rescan.
 
 **Not verified here.** Only the aarch64-apple-darwin target is installed on the build machine: the Linux inotify path,
-Intel macOS and WSL2 are covered by CI builds and by fixture tests of the mount-table parser (`tests/` of `fstype.rs`), not run.
+Intel macOS and WSL2 were covered by CI builds and by fixture tests of the mount-table parser (`tests/` of `fstype.rs`), not run. *(Superseded 2026-11-10, #708: those CI builds are paused; Linux and Apple Intel run on a manual dispatch or a tag only.)*
 FSEvents replays changes made a moment before a stream starts; they are hints, and a consumer reconciles at start anyway.
 
 ## Debug logging backend (lane B, 2026-10-15)

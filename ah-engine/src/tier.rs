@@ -183,6 +183,19 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         self.map.values().map(|s| s.value.clone()).collect()
     }
 
+    /// Replace values in place: `f` returns the new value for an item that should change, `None` to leave it. Weight, recency and
+    /// expiry stay; the number of values replaced.
+    pub fn replace_values(&mut self, mut f: impl FnMut(&V) -> Option<V>) -> usize {
+        let mut n = 0;
+        for slot in self.map.values_mut() {
+            if let Some(v) = f(&slot.value) {
+                slot.value = v;
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Drop `k` from memory (SQLite keeps it).
     pub fn remove(&mut self, k: &K) {
         if let Some(s) = self.map.remove(k) {

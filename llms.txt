@@ -249,6 +249,8 @@ Codex: no `/config`, use the skill.
 | guards.modelRouting | strict (strict/advisory/off) | `ANTIHALL_MODEL_ROUTING` |
 | guards.noBlockingQuestions | off (off/advise/block) | `ANTIHALL_NO_BLOCKING_QUESTIONS` |
 | guards.questionAgentsNote | true | `ANTIHALL_QUESTION_AGENTS_NOTE` |
+| guards.denyChildQuestions | true | `ANTIHALL_DENY_CHILD_QUESTIONS` | ask-guard: a DevSwarm child workspace never opens AskUserQuestion; the call is refused with the mesh route (GH #694). Claude only. |
+| guards.denyPrimaryQuestions | true | `ANTIHALL_DENY_PRIMARY_QUESTIONS` | ask-guard: the Primary of a DevSwarm repo never opens AskUserQuestion; it records a NEEDS OWNER line instead (GH #694). Claude only. |
 | guards.sharedTreeAgentNote | true | `ANTIHALL_SHARED_TREE_AGENT_NOTE` |
 | guards.mergeSidePickAdvisory | true | `ANTIHALL_MERGE_SIDE_PICK_ADVISORY` |
 | guards.idleAgentSweep / idleAgentSweepCount / idleAgentSweepMin | true / 3 / 15 | `ANTIHALL_IDLE_AGENT_SWEEP`, `ANTIHALL_IDLE_AGENT_SWEEP_COUNT`, `ANTIHALL_IDLE_AGENT_SWEEP_MIN` |
