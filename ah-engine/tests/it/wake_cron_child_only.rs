@@ -11,6 +11,7 @@ const CHILD: &str = "11111111-aaaa-4bbb-8ccc-222222222222";
 const NOW_MS: u64 = 1_900_000_000_000;
 const ORDER: &str = "Mailbox cron: no live workspace remains";
 const WAKE_LINE: &str = "NO MAILBOX WAKE PATH";
+const MONITOR_HINT: &str = "Monitor";
 
 struct Env {
     dir: PathBuf,
@@ -121,6 +122,45 @@ impl Env {
         let o = ch.wait_with_output().unwrap();
         assert_eq!(o.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&o.stderr));
         String::from_utf8_lossy(&o.stdout).to_string()
+    }
+
+    /// The child has an empty inbox and a cursor at 0: the mail duty is clean, so a Stop reaches the clean pass where the wake block lives.
+    fn quiet_mail(&self) {
+        let wt = self.dir.join("home/.devswarm/repos/3/8205fc11/child-wt").to_string_lossy().to_string();
+        let (inbox, cursor) = (self.dsdir().join("child-inbox.jsonl"), self.dsdir().join("child-cursor"));
+        std::fs::write(&inbox, "").unwrap();
+        std::fs::write(&cursor, "0").unwrap();
+        self.put(&format!("workspaces/{CHILD}.json"), &serde_json::json!({"id": CHILD, "worktreePath": wt, "sessionId": "sess-1", "inboxPath": inbox, "cursorPath": cursor}));
+    }
+
+    /// A live Monitor wake-watch of the Primary: a fresh lock held by this (running) test process.
+    fn watcher_live(&self) {
+        self.put(&format!("locks/wake-watch-{}.json", self.primary).replace(".json", ".lock"), &serde_json::json!({"ts": now_ms(), "pid": std::process::id()}));
+    }
+
+    /// The child's session transcript, last turn open on a question to the human: the child is waiting, its session alive.
+    fn child_waiting(&self) {
+        let wt = self.dir.join("home/.devswarm/repos/3/8205fc11/child-wt"); // as the descriptor names it, not canonicalised
+        let enc: String = wt.to_string_lossy().chars().map(|c| if "/\\:.".contains(c) { '-' } else { c }).collect();
+        let f = self.dir.join("home/.claude/projects").join(enc).join("sess-1.jsonl");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        // the live session: a record naming a running process (this test's own), which is what makes the waiting verdict count
+        let sessions = self.dir.join("home/.claude/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("child.json"), serde_json::json!({"sessionId": "sess-1", "pid": std::process::id()}).to_string()).unwrap();
+        let ts = |s: u32| format!("2026-11-10T10:00:{s:02}.000Z");
+        let lines = [
+            serde_json::json!({"type": "user", "timestamp": ts(0), "message": {"role": "user", "content": "go"}}),
+            serde_json::json!({"type": "assistant", "timestamp": ts(1), "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": {"question": "Which one?"}}]}}),
+        ];
+        std::fs::write(f, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    }
+
+    /// A Stop of the Primary's session, the clean-pass shape (no hook already active).
+    fn stop(&self, session: &str) -> String {
+        let t = self.dir.join(format!("transcript-{session}.jsonl"));
+        std::fs::write(&t, "").unwrap();
+        self.run("Stop", &serde_json::json!({"session_id": session, "hook_event_name": "Stop", "cwd": self.repo, "transcript_path": t, "stop_hook_active": false}), "claude")
     }
 
     fn turn(&self, session: &str, agent: &str) -> String {
@@ -252,4 +292,41 @@ fn an_ignored_child_is_alive_so_its_cron_is_kept_but_an_archived_one_is_not() {
     a.mtime(&format!("archived/{CHILD}.json"), 100);
     let out = a.turn("s1", "claude");
     assert!(out.contains(ORDER), "an archived child does not count, got: {out:?}");
+}
+
+#[test]
+fn stop_with_a_live_child_and_a_live_monitor_does_not_block() {
+    // after a mid-turn spawn the Monitor carries delivery (the cron is not armed): a live watcher is a wake path, so the Stop gate is quiet
+    let e = Env::new("stop-monitor");
+    e.live_child();
+    e.quiet_mail();
+    e.watcher_live();
+    let out = e.stop("s1");
+    assert!(!out.contains(WAKE_LINE) && !out.contains("\"block\""), "a live watcher covers delivery, got: {out:?}");
+    assert!(!out.contains(ORDER), "a live child keeps the cron: no delete order, got: {out:?}");
+}
+
+#[test]
+fn stop_with_a_live_child_and_a_dead_monitor_blocks_with_the_directive_to_rearm_both() {
+    let e = Env::new("stop-dead");
+    e.live_child();
+    e.quiet_mail();
+    let out = e.stop("s1");
+    assert!(out.contains("\"block\"") && out.contains(WAKE_LINE), "the dead watcher blocks the Stop with the wake line, got: {out:?}");
+    assert!(out.contains(MONITOR_HINT) && out.contains("CronCreate"), "the directive re-arms the Monitor and the cron, got: {out:?}");
+}
+
+#[test]
+fn a_waiting_child_with_a_live_session_keeps_the_cron() {
+    let e = Env::new("waiting");
+    e.live_child();
+    e.quiet_mail();
+    e.child_waiting();
+    let out = e.turn("s1", "claude");
+    assert!(!out.contains(ORDER), "a waiting child is still alive: its cron is kept, got: {out:?}");
+    assert!(e.cron_ctl("s1").is_none(), "no delete recorded");
+    // the Stop gate neither orders it deleted nor asks for a wake path: a waiting-on-human child sends no mail, and with the dead
+    // watcher of the sibling test the same fixture would otherwise block with the wake line (proves the child was read as waiting)
+    let stop = e.stop("s1");
+    assert!(!stop.contains(ORDER) && !stop.contains(WAKE_LINE), "got: {stop:?}");
 }

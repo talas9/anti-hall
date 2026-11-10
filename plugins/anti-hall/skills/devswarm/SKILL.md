@@ -510,6 +510,8 @@ child workspace remains, the Primary gets ONE order (`Mailbox cron: no live work
 `CronDelete` the `inbox tick` job; this reaches a session that armed it earlier too, because the
 order rides the next prompt, a cron tick's own turn included. At the next live child the wake line
 above asks for the cron back at once (a tick marker older than the delete order counts as absent).
+After a mid-turn spawn the Monitor carries delivery until it lapses; the Stop gate re-arms both the Monitor
+and the cron when the watcher is dead.
 `false` restores the always-armed cron. Claude only: Codex has no scheduler tool, so its Primary
 text is unchanged.
 
