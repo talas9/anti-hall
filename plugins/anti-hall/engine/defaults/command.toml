@@ -221,7 +221,7 @@ value = [
 
 [command.gcloud_inspect_verbs]
 doc = "gcloud command-path verbs that read only."
-value = ["describe", "list", "get", "view", "read"]
+value = ["describe", "list", "get", "get-value", "view", "read"]
 
 [command.gcloud_refused_path]
 doc = "gcloud command-path words that refuse the read-only grammar."

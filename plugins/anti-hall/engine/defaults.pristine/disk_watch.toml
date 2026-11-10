@@ -30,6 +30,18 @@ value = { section = "diskWatch", key = "criticalPercent", env = "ANTIHALL_DISK_W
 doc = "Least time before the same volume is warned about again at the same level (diskWatch.cooldownSeconds); a worse level is never held back."
 value = { section = "diskWatch", key = "cooldownSeconds", env = "ANTIHALL_DISK_WATCH_COOLDOWN", aliases = [], option = "", default = 1800, min = 0 }
 
+[disk_watch.sw_repeat_on_change_only]
+doc = "Switch diskWatch.repeatOnChangeOnly (default on): the low-space warning is shown again only when a volume's level changed, its free space fell by diskWatch.repeatDropGb since the last warning, or diskWatch.repeatSeconds passed. Off restores one warning per cooldown at an unchanged level."
+value = { section = "diskWatch", key = "repeatOnChangeOnly", env = "ANTIHALL_DISK_WATCH_REPEAT_ON_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[disk_watch.num_repeat_drop_gb]
+doc = "Free space (GB) a low volume must lose since its last warning for the same level to warn again (diskWatch.repeatDropGb; used while diskWatch.repeatOnChangeOnly is on)."
+value = { section = "diskWatch", key = "repeatDropGb", env = "ANTIHALL_DISK_WATCH_REPEAT_DROP_GB", aliases = [], option = "", default = 5, min = 0 }
+
+[disk_watch.num_repeat_s]
+doc = "Reminder floor (diskWatch.repeatSeconds): an unchanged low-space warning is shown again after this many seconds; 0 = never repeat an unchanged one (used while diskWatch.repeatOnChangeOnly is on)."
+value = { section = "diskWatch", key = "repeatSeconds", env = "ANTIHALL_DISK_WATCH_REPEAT_S", aliases = [], option = "", default = 21600, min = 0 }
+
 [disk_watch.block_at_critical]
 doc = "Opt-in (default off): at the critical level, block heavy commands instead of only warning (diskWatch.blockAtCritical)."
 value = { section = "diskWatch", key = "blockAtCritical", env = "ANTIHALL_DISK_WATCH_BLOCK", aliases = [], option = "", default = false }

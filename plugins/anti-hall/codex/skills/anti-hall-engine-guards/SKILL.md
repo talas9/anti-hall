@@ -61,6 +61,7 @@ What the automatic guards check and how to read a block.
 - `guards.failOpenNonSafety` = true: Non-safety guards pass when unanswered
 - `context.protocolFullAfterCompact` = true: Full rules on compaction
 - `context.protocolOnce` = true: Once-per-session protocol text switch
+- `guards.keepaliveCountsScheduled` = false: Switch guards.keepaliveCountsScheduled (default off): a turn the host's scheduler delivered (a...
 - `context.promptDigestLines` = 3: Max lines of the prompt digest
 - `context.promptDigestMin` = 3: Min advisories before the digest applies
 - `context.promptDigest` = true: Prompt digest switch

@@ -107,3 +107,12 @@ fn a_shell_wrapper_gets_the_verdict_of_its_script_body() {
     assert_eq!(guard(&main_bash("bash missing.sh", cwd), &[]), 0, "an unreadable script is judged as written");
     assert_eq!(guard(&main_bash("bash heavy.sh", cwd), &[("ANTIHALL_COMMAND_RESOLVE_WRAPPER_SCRIPTS", "0")]), 0, "guards.commandResolveWrapperScripts off");
 }
+
+#[test]
+fn gcloud_config_get_value_is_a_read_not_a_heavy_command() {
+    // #709: reading one configured value forced a helper agent and a task update per call; `get-value` is a read-only verb (command.gcloud_inspect_verbs)
+    let cwd = scratch("gcloud");
+    let cwd = cwd.to_str().unwrap();
+    assert_eq!(guard(&main_bash("gcloud config get-value project", cwd), &[]), 0, "gcloud config get-value");
+    assert_eq!(guard(&main_bash("gcloud compute instances list", cwd), &[]), 0, "an inspect verb stays a read");
+}

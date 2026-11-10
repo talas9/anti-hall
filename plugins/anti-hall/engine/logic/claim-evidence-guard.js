@@ -295,6 +295,21 @@ function cePushedUnchecked(cmds) {
   return !ceAnyCmd(ah.cfg('claim_evidence.state_res'), cmds.slice(last + 1));
 }
 
+// claim_evidence.mask_table_header: the header row of a markdown table (the line above its `---` separator) and the separator are labels,
+// not statements, so a column named "Verified" or "Merged" is not a claim. The body rows are still scanned. The line breaks stay, so
+// nothing else moves.
+function ceMaskTableHeader(text0) {
+  if (!ah.settings.bool('claim_evidence.sw_mask_table_header')) return text0;
+  var sep = ah.cfg('claim_evidence.table_sep_re'), pipe = ah.cfg('claim_evidence.table_pipe'), lines = text0.split('\n');
+  for (var i = 1; i < lines.length; i++) {
+    if (ah.re.test(sep, '', lines[i]) && lines[i - 1].indexOf(pipe) >= 0) {
+      lines[i - 1] = lines[i - 1].replace(/[^\s]/g, ' ');
+      lines[i] = '';
+    }
+  }
+  return lines.join('\n');
+}
+
 function ceState(path) {
   var none = { hash: '', blocks: 0 };
   var f = jx.read(path);
@@ -316,16 +331,17 @@ function decide(p) {
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (!reply.trim() || !tp) return 'allow';
 
-  // the cheap gate: the reply alone, with quoted text and code removed
-  var scan = ah.text.maskQuoted(reply), claim = null, done = false;
+  // the cheap gate: the reply alone, with quoted text and code removed (and the table headers, which only label columns)
+  var sreply = ceMaskTableHeader(reply);
+  var scan = ah.text.maskQuoted(sreply), claim = null, done = false;
   if (r1) {
     // rule 1 reads quoted text too (quote marks out, code, fences and blockquotes still masked): a quote is covered only by a
     // reporting verb that opens its clause, never by its quote marks alone
-    var seen = [], scan1 = ah.text.maskQuoted(ceUnquote(reply));
+    var seen = [], scan1 = ah.text.maskQuoted(ceUnquote(sreply));
     claim = ceFindClaim(scan1, seen);
     // a claim that exists only inside code, a fence or a blockquote is suppressed (the masked scan cannot see it)
-    if (claim === null && scan1 !== reply) {
-      var raw = [], rawClaim = ceFindClaim(reply, raw);
+    if (claim === null && scan1 !== sreply) {
+      var raw = [], rawClaim = ceFindClaim(sreply, raw);
       if (rawClaim !== null) seen.push([ah.cfg('claim_evidence.quoted_reason'), rawClaim.quote, rawClaim.row.id]);
     }
     ceLogSuppressed(seen);

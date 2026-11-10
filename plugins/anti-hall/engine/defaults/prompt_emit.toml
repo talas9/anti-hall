@@ -27,6 +27,38 @@ value = { section = "context", key = "dedupeWindowMin", env = "ANTIHALL_DEDUPE_W
 doc = "Milliseconds in a minute (converts the window setting and the sweep thresholds)."
 value = 60000
 
+[emit_dedupe.ms_per_second]
+doc = "Milliseconds in a second (converts the wall-clock floor of the keepalive, guards.injectionRepeatMinS)."
+value = 1000
+
+[emit_dedupe.sw_counts_scheduled]
+doc = "Switch guards.keepaliveCountsScheduled (default off): a turn the host's scheduler delivered (a cron tick) does not count toward the keepalive that re-shows an unchanged block, so an idle session is not re-told the same advisory every few ticks. On restores the old rule (every delivered turn counts)."
+value = { section = "guards", key = "keepaliveCountsScheduled", env = "ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", default = false }
+
+[emit_dedupe.num_repeat_min_s]
+doc = "Where the wall-clock floor of the keepalive is read from (guards.injectionRepeatMinS, seconds, default 7200): an unchanged block is also re-shown once this long after its last emit, so a session that only ever sees scheduled turns still gets it now and then; 0 turns the floor off. Used only while guards.keepaliveCountsScheduled is off."
+value = { section = "guards", key = "injectionRepeatMinS", env = "ANTIHALL_INJECTION_REPEAT_MIN_S", default = 7200, min = 0 }
+
+[emit_dedupe.origin_needles]
+doc = "The strings a transcript line must hold to be a user turn that names its origin (searched in the transcript tail to tell a scheduled turn from the user's own)."
+value = ['"type":"user"', '"turnOrigin":"']
+
+[emit_dedupe.origin_record_type]
+doc = "The type of a transcript record that is a user turn."
+value = "user"
+
+[emit_dedupe.origin_field]
+doc = "The field of a user turn that names who started it (human, scheduled, a background-task notification, a peer ...)."
+value = "turnOrigin"
+
+[emit_dedupe.origin_ts_field]
+doc = "The field of a transcript record that holds its ISO timestamp."
+value = "timestamp"
+
+[emit_dedupe.uncounted_origins]
+doc = "The turn origins that do not count toward a keepalive while guards.keepaliveCountsScheduled is off."
+value = ["scheduled"]
+
 [emit_dedupe.window_default_ms]
 doc = "The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable."
 value = 15000

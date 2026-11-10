@@ -912,3 +912,7 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.devswarm_cron_ctl]
 doc = "Mailbox-cron decisions of a Primary (devswarm.wakeCronOnlyWithChild), by action (delete_ordered: the one order to delete the cron was shown)."
 value = { kind = "counter", unit = "decisions", labels = ["action"] }
+
+[metric.waste_events_total]
+doc = "Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level). Counts only while the daemon holds the counter."
+value = { kind = "counter", unit = "events", labels = ["category", "source"] }
