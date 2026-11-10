@@ -133,7 +133,7 @@ function dwCronCtlRead(sid) {
 function dwCronCtlWrite(sid, rec) {
   try { ah.state.writeAtomic(dwCronCtlRel(sid), JSON.stringify(rec)); } catch (e) { /* best effort: the next turn decides again */ }
 }
-// A session that starts with no cron (a new or cleared one) is recorded as cron-less, so it is not ordered to delete a cron it never had.
+// A session that starts with no cron (a new one; a cleared or resumed one may keep a cron, jobs live as long as the process) is recorded as cron-less, so it is not ordered to delete a cron it never had.
 function dwCronCtlSeed(p) {
   var sid = jx.isObj(p) && typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
   var src = jx.isObj(p) && typeof p.source === 'string' ? p.source : null;

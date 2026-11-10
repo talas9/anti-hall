@@ -86,8 +86,8 @@ value = '''
 . Do NOT re-arm inline when it emits its final/expired event while no child workspace is alive — reply in one line and stop; the NO MAILBOX WAKE PATH line re-arms it once a child is alive'''
 
 [devswarm_role.cron_ctl_fresh_sources]
-doc = "The SessionStart `source` values of a session that starts with no mailbox cron (a new or cleared session; a resumed or compacted one may still hold a cron armed earlier). Such a session is recorded as cron-less, so it is not ordered to delete a cron it never had."
-value = ["startup", "clear"]
+doc = "The SessionStart `source` values of a session that starts with no mailbox cron (a new session; a resumed, cleared or compacted one lives in a process that may still hold a cron armed earlier, since cron jobs are session-process-only). Such a session is recorded as cron-less, so it is not ordered to delete a cron it never had."
+value = ["startup"]
 
 [devswarm_role.cron_charset]
 doc = "The only characters a cron field may contain (anything else would let the setting inject text into the directive)."

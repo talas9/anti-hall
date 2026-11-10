@@ -738,7 +738,3 @@ value = 20
 [devswarm_parent.msg_cron_delete]
 doc = "The one order a Primary gets when no live child workspace remains and the mailbox cron may still be armed (devswarm.wakeCronOnlyWithChild)."
 value = "Mailbox cron: no live workspace remains, so each tick only costs a full model turn. Do now: `CronList`, then `CronDelete` every job whose prompt runs `inbox tick` (any schedule or id; none: say so in one line). Keep your Monitor wake-watch as it is. A NO MAILBOX TICK line asks for the cron back once a workspace is alive."
-
-[metric.devswarm_cron_ctl]
-doc = "Mailbox-cron decisions of a Primary (devswarm.wakeCronOnlyWithChild), by action (delete_ordered: the one order to delete the cron was shown)."
-value = { kind = "counter", unit = "decisions", labels = ["action"] }

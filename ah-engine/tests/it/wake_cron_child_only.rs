@@ -76,6 +76,11 @@ impl Env {
         self.put(&format!("summaries/{}.json", self.key), &serde_json::from_str(&sum.stringify()).unwrap());
     }
 
+    fn mtime(&self, rel: &str, secs: u64) {
+        let f = std::fs::OpenOptions::new().write(true).open(self.dsdir().join(rel)).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs)).unwrap();
+    }
+
     fn no_child(&self) {
         let _ = std::fs::remove_file(self.dsdir().join(format!("workspaces/{CHILD}.json"))); // a scratch dir of this test, not user data
     }
@@ -228,4 +233,23 @@ fn a_new_session_starts_with_the_monitor_alone_and_is_not_ordered_to_delete_a_cr
     let old = e.start("s3", "startup", "claude");
     assert!(old.contains("CronCreate"), "switch off: the always-armed cron directive, got: {old:?}");
     assert!(e.cron_ctl("s3").is_none());
+}
+
+#[test]
+fn an_ignored_child_is_alive_so_its_cron_is_kept_but_an_archived_one_is_not() {
+    // ignored (archive-ignore mark): still tracked, so the Primary keeps the cron and is not told it is gone
+    let e = Env::new("ignored");
+    e.live_child();
+    e.put(&format!("archive-ignore/{CHILD}.json"), &serde_json::json!({}));
+    let out = e.turn("s1", "claude");
+    assert!(!out.contains(ORDER), "an ignored child is alive, got: {out:?}");
+    assert!(e.cron_ctl("s1").is_none());
+    // archived (marker written after the descriptor, same session): no child is alive
+    let a = Env::new("archived");
+    a.live_child();
+    a.put(&format!("archived/{CHILD}.json"), &serde_json::json!({"id": CHILD, "archivedAt": 100, "sessionId": "sess-1"}));
+    a.mtime(&format!("workspaces/{CHILD}.json"), 50);
+    a.mtime(&format!("archived/{CHILD}.json"), 100);
+    let out = a.turn("s1", "claude");
+    assert!(out.contains(ORDER), "an archived child does not count, got: {out:?}");
 }

@@ -908,3 +908,7 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.transcript_scan_turn_bypassed]
 doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
 value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.devswarm_cron_ctl]
+doc = "Mailbox-cron decisions of a Primary (devswarm.wakeCronOnlyWithChild), by action (delete_ordered: the one order to delete the cron was shown)."
+value = { kind = "counter", unit = "decisions", labels = ["action"] }

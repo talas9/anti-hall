@@ -1086,7 +1086,7 @@ function pgWakeLine(ownId, l, home, cwd, now) {
   var agent = raw === null ? '' : raw.trim().toLowerCase();
   if (agent !== ah.cfg('devswarm_role.claude_agent')) return '';
   // devswarm.wakeCronOnlyWithChild: with no live child the cron is deliberately absent, so it is not re-verified
-  if (dwCronOnlyWithChild()) { var lc = piLiveChildren({ home: home, now: now }, cwd); if (lc.known && !lc.live) return ''; }
+  if (dwCronOnlyWithChild()) { var lc = piLiveChildren({ home: home, now: now }, cwd); if (lc.known && !lc.alive) return ''; }
   var extra = ah.cfg('devswarm_role.id_extra_chars');
   var valid = function (v) { return typeof v === 'string' && v !== '' && v.split('').every(function (c) { return /[A-Za-z0-9]/.test(c) || extra.indexOf(c) >= 0; }); };
   var id;
