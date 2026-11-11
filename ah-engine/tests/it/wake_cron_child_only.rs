@@ -56,7 +56,12 @@ impl Env {
         // a real git worktree of the Primary's repository: the live-child test matches the child to the project by its repository
         let wt = self.dir.join("home/.devswarm/repos/3/8205fc11/child-wt");
         std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
-        let o = Command::new("git").args(["worktree", "add", "-q", "-b", "child", wt.to_str().unwrap()]).current_dir(&self.repo).env("GIT_CEILING_DIRECTORIES", &self.dir).output().unwrap();
+        let o = Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "child", wt.to_str().unwrap()])
+            .current_dir(&self.repo)
+            .env("GIT_CEILING_DIRECTORIES", &self.dir)
+            .output()
+            .unwrap();
         assert!(o.status.success(), "git worktree add: {}", String::from_utf8_lossy(&o.stderr));
         let wt = wt.to_string_lossy().to_string();
         let home = self.dir.join("home");
@@ -130,7 +135,10 @@ impl Env {
         let (inbox, cursor) = (self.dsdir().join("child-inbox.jsonl"), self.dsdir().join("child-cursor"));
         std::fs::write(&inbox, "").unwrap();
         std::fs::write(&cursor, "0").unwrap();
-        self.put(&format!("workspaces/{CHILD}.json"), &serde_json::json!({"id": CHILD, "worktreePath": wt, "sessionId": "sess-1", "inboxPath": inbox, "cursorPath": cursor}));
+        self.put(
+            &format!("workspaces/{CHILD}.json"),
+            &serde_json::json!({"id": CHILD, "worktreePath": wt, "sessionId": "sess-1", "inboxPath": inbox, "cursorPath": cursor}),
+        );
     }
 
     /// A live Monitor wake-watch of the Primary: a fresh lock held by this (running) test process.
@@ -160,11 +168,19 @@ impl Env {
     fn stop(&self, session: &str) -> String {
         let t = self.dir.join(format!("transcript-{session}.jsonl"));
         std::fs::write(&t, "").unwrap();
-        self.run("Stop", &serde_json::json!({"session_id": session, "hook_event_name": "Stop", "cwd": self.repo, "transcript_path": t, "stop_hook_active": false}), "claude")
+        self.run(
+            "Stop",
+            &serde_json::json!({"session_id": session, "hook_event_name": "Stop", "cwd": self.repo, "transcript_path": t, "stop_hook_active": false}),
+            "claude",
+        )
     }
 
     fn turn(&self, session: &str, agent: &str) -> String {
-        self.run("UserPromptSubmit", &serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": self.repo}), agent)
+        self.run(
+            "UserPromptSubmit",
+            &serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": self.repo}),
+            agent,
+        )
     }
 
     /// The SessionStart output, with the full text of anything the engine spilled to a file because it was over the injection cap.
@@ -172,7 +188,8 @@ impl Env {
         let spill = self.dir.join("state/context-spill");
         let names = |d: &Path| -> Vec<PathBuf> { std::fs::read_dir(d).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default() };
         let before = names(&spill);
-        let mut out = self.run("SessionStart", &serde_json::json!({"session_id": session, "hook_event_name": "SessionStart", "source": source, "cwd": self.repo}), agent);
+        let mut out =
+            self.run("SessionStart", &serde_json::json!({"session_id": session, "hook_event_name": "SessionStart", "source": source, "cwd": self.repo}), agent);
         for f in names(&spill).into_iter().filter(|f| !before.contains(f)) {
             out.push_str(&std::fs::read_to_string(f).unwrap_or_default());
         }
@@ -329,4 +346,246 @@ fn a_waiting_child_with_a_live_session_keeps_the_cron() {
     // watcher of the sibling test the same fixture would otherwise block with the wake line (proves the child was read as waiting)
     let stop = e.stop("s1");
     assert!(!stop.contains(ORDER) && !stop.contains(WAKE_LINE), "got: {stop:?}");
+}
+
+// A session heartbeat proves only the agent half; mailbox coverage needs the workspace lock.
+#[test]
+fn wake_watch_session_heartbeat_with_workspace_lock_suppresses_the_inbox_monitor_directive() {
+    let e = Env::new("session-watch");
+    e.live_child();
+    e.watcher_live();
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(armed, "").unwrap();
+    let out = e.turn("s1", "claude");
+    assert!(!out.contains(WAKE_LINE), "a live plugin watcher must not order a model Monitor: {out}");
+    assert!(out.contains("NO MAILBOX TICK"), "the independent cron fallback remains available: {out}");
+}
+
+#[test]
+fn wake_watch_missing_monitor_directive_is_state_change_only() {
+    let e = Env::new("watch-state");
+    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"guards":{"emitDedupe":false}}"#).unwrap();
+    e.live_child();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE));
+    for _ in 0..8 {
+        let out = e.turn("s1", "claude");
+        assert!(!out.contains(WAKE_LINE), "an unchanged missing watcher must not order re-arm on every prompt: {out}");
+    }
+}
+
+#[test]
+fn wake_watch_tracker_reminder_uses_only_the_configured_expiry_cooldown() {
+    let cd = ah_engine::defaults::raw("agent_tracker.cooldowns").get("monitor_unarmed").unwrap();
+    assert_ne!(cd.get("once").and_then(ah_engine::defaults::V::as_bool), Some(true));
+    assert!(cd.get("cooldown_ms").and_then(ah_engine::defaults::V::as_integer).unwrap() > 0);
+    assert_eq!(cd.get("max_per_day").and_then(ah_engine::defaults::V::as_integer), Some(0));
+}
+
+#[test]
+fn wake_watch_live_session_start_keeps_the_plugin_watcher() {
+    let e = Env::new("session-start-watch");
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(armed, "").unwrap();
+    let out = e.start("s1", "resume", "claude");
+    assert!(!out.contains("call `Monitor`"), "a live plugin watcher must not order a duplicate model Monitor: {out}");
+    assert!(out.contains("agent-wake half"), "session heartbeat must describe only agent coverage: {out}");
+    assert!(out.contains("workspace watcher lock"), "mailbox coverage still requires its own lock: {out}");
+    assert!(!out.contains("MAILBOX WAKE: a live session wake-watch already covers delivery"));
+}
+
+#[test]
+fn wake_watch_recovery_then_expiry_starts_one_new_episode_after_cooldown() {
+    let e = Env::new("watch-recovery");
+    e.live_child();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE));
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(&armed, "").unwrap();
+    e.watcher_live();
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+    let f = std::fs::OpenOptions::new().write(true).open(&armed).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH).unwrap();
+    e.put(&format!("locks/wake-watch-{}.lock", e.primary), &serde_json::json!({"ts": 0, "pid": std::process::id()}));
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE), "a flap inside the expiry cooldown stays quiet");
+    let ctl = e.dir.join("home/.anti-hall/devswarm/wake-ctl/s1.json");
+    let mut rec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctl).unwrap()).unwrap();
+    rec["lastPrompt"] = serde_json::json!(0);
+    std::fs::write(ctl, rec.to_string()).unwrap();
+    // Generic dedupe can suppress the same text: the episode gate itself is independent of it.
+    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"guards":{"emitDedupe":false}}"#).unwrap();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE), "expired heartbeat + elapsed cooldown allows one new order");
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+}
+
+#[test]
+fn wake_watch_recent_cron_tick_does_not_spend_a_missing_watcher_order() {
+    let e = Env::new("watch-tick");
+    e.switch(false);
+    e.live_child();
+    e.tick_marker(0);
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+    e.tick_marker(120 * 60_000);
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE));
+}
+
+#[test]
+fn wake_watch_live_session_heartbeat_with_workspace_lock_covers_the_stop_gate() {
+    let e = Env::new("session-stop-watch");
+    e.live_child();
+    e.watcher_live();
+    e.quiet_mail();
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(armed, "").unwrap();
+    let out = e.stop("s1");
+    assert!(!out.contains(WAKE_LINE) && !out.contains("\"block\""), "the plugin watcher covers stop delivery: {out}");
+}
+
+#[test]
+fn wake_watch_live_heartbeat_drops_only_obsolete_rearm_reminders() {
+    let e = Env::new("watch-reminders");
+    let dir = e.dir.join("home/.anti-hall/agent-tracker");
+    std::fs::create_dir_all(dir.join("reminders")).unwrap();
+    std::fs::create_dir_all(dir.join("wake")).unwrap();
+    std::fs::write(dir.join("wake/s1.armed"), "").unwrap();
+    let rows = [
+        serde_json::json!({"id":"old-rearm", "signal":"monitor_unarmed", "agent":"s1", "text":"OBSOLETE_REARM_ORDER"}),
+        serde_json::json!({"id":"real-event", "signal":"watched_exit", "agent":"child", "text":"REAL_AGENT_COMPLETION"}),
+    ];
+    std::fs::write(dir.join("reminders/s1.ndjson"), rows.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let mut out = e.turn("s1", "claude");
+    // The dispatcher can spill the combined context; inspect the actual delivered text, too.
+    if let Ok(files) = std::fs::read_dir(e.dir.join("state/context-spill")) {
+        for file in files.flatten() {
+            out.push_str(&std::fs::read_to_string(file.path()).unwrap_or_default());
+        }
+    }
+    assert!(!out.contains("OBSOLETE_REARM_ORDER"), "live plugin watcher suppresses an obsolete queued Monitor nag: {out}");
+    assert!(out.contains("REAL_AGENT_COMPLETION"), "real agent events must still reach the session: {out}");
+    assert_eq!(std::fs::read_to_string(dir.join("reminders/s1.ndjson.cursor")).unwrap(), "2");
+}
+
+#[test]
+fn wake_watch_childless_start_then_child_requires_a_mailbox_monitor() {
+    let e = Env::new("childless-agent-half");
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(&armed, "").unwrap();
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+    e.live_child();
+    e.quiet_mail();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE), "agent heartbeat alone cannot cover later child mail");
+}
+
+#[test]
+fn wake_watch_agent_heartbeat_alone_does_not_cover_the_stop_gate() {
+    let e = Env::new("stop-agent-half");
+    e.live_child();
+    e.quiet_mail();
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(&armed, "").unwrap();
+    assert!(e.stop("s1").contains(WAKE_LINE), "Stop must also require mailbox coverage");
+}
+
+#[test]
+fn wake_watch_future_session_heartbeat_is_not_live() {
+    let e = Env::new("future-agent-half");
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(&armed, "").unwrap();
+    let future = now_ms() + 86_400_000;
+    std::fs::OpenOptions::new().write(true).open(&armed).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(future)).unwrap();
+    let out = e.start("s1", "resume", "claude");
+    assert!(out.contains("call `Monitor`"), "future heartbeat must not suppress re-arm: {out}");
+}
+
+#[test]
+fn wake_watch_agent_recovery_then_expiry_reminds_again_after_cooldown() {
+    agent_recovery_then_expiry(true);
+}
+
+#[test]
+fn wake_watch_agent_recovery_between_ticks_then_expiry_reminds_again_after_cooldown() {
+    agent_recovery_then_expiry(false);
+}
+
+fn agent_recovery_then_expiry(sample_recovery: bool) {
+    use ah_engine::agents::{Env as AgentEnv, State, tick};
+    use ah_engine::checks::git::util::Settings;
+    use std::collections::HashMap;
+    let e = Env::new(if sample_recovery { "agent-recovery" } else { "agent-recovery-between-ticks" });
+    let home = e.dir.join("home");
+    let n = now_ms();
+    let minute = 60_000;
+    let transcript = home.join(".claude/projects/p/s1.jsonl");
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    let line = |id: &str, stop: Option<&str>| {
+        serde_json::json!({"type":"assistant", "timestamp": ah_engine::checks::agent_scan::iso_utc((n-minute) as f64), "message":{"id":id,"role":"assistant","stop_reason":stop,"content":[{"type":"text","text":"running"}],"usage":{"input_tokens":5,"output_tokens":5}}}).to_string()
+    };
+    std::fs::write(&transcript, format!("{}\n{}\n", serde_json::json!({"type":"user","timestamp":ah_engine::checks::agent_scan::iso_utc((n-5*minute) as f64),"cwd":"/w","message":{"role":"user","content":"go"}}),line("m1",Some("end_turn")))).unwrap();
+    let child = home.join(".claude/projects/p/s1/subagents/agent-bg1.jsonl");
+    std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+    std::fs::write(child, format!("{}\n", line("b1", None))).unwrap();
+    let sessions = home.join(".claude/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(
+        sessions.join("parent.json"),
+        serde_json::json!({"sessionId":"s1","pid":std::process::id(),"cwd":"/w","startedAt":n,"kind":"interactive","status":"busy"}).to_string(),
+    )
+    .unwrap();
+    let mut state = State::default();
+    let run = |state: &mut State, now| {
+        tick(
+            &AgentEnv {
+                home: home.clone(),
+                now_ms: now,
+                plugin_root: None,
+                use_cli: false,
+                settings: Settings { home: home.to_string_lossy().to_string(), env: HashMap::from([("ANTIHALL_AGENT_NUDGE".into(), "false".into())]) },
+                act: true,
+            },
+            state,
+        )
+    };
+    let queue = home.join(".anti-hall/agent-tracker/reminders/s1.ndjson");
+    let reminders = || {
+        std::fs::read_to_string(&queue)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["signal"] == "monitor_unarmed")
+            .count()
+    };
+    for at in [n, n + minute, n + 2 * minute, n + 3 * minute, n + 4 * minute] {
+        run(&mut state, at);
+    }
+    assert_eq!(reminders(), 1);
+    let armed = home.join(".anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(&armed, "").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&armed)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(n + 5 * minute))
+        .unwrap();
+    if sample_recovery {
+        run(&mut state, n + 5 * minute);
+    }
+    let cooldown = ah_engine::defaults::raw("agent_tracker.cooldowns").get("monitor_unarmed").unwrap().get("cooldown_ms").unwrap().as_integer().unwrap() as u64;
+    std::fs::OpenOptions::new().write(true).open(&armed).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+    run(&mut state, n + 6 * minute);
+    assert_eq!(reminders(), 1, "recovery flapping within cooldown stays quiet");
+    // Acknowledge all queued rows so pending-queue capacity cannot hide a new reminder.
+    std::fs::write(queue.with_file_name("s1.ndjson.cursor"), std::fs::read_to_string(&queue).unwrap().lines().count().to_string()).unwrap();
+    run(&mut state, n + cooldown + 5 * minute);
+    let rows = std::fs::read_to_string(&queue).unwrap_or_default();
+    assert!(
+        rows.lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .any(|r| r["signal"] == "monitor_unarmed" && r["ts"].as_u64() == Some(n + cooldown + 5 * minute)),
+        "a later expiry must be announced again after cooldown: {rows}"
+    );
 }

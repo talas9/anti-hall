@@ -32,12 +32,16 @@ function decide(p) {
   var taken = 0, cur = ah.fs.readText(ah.path.join(home, cursor));
   if (cur !== null && /^\s*[0-9]+\s*$/.test(cur)) taken = parseInt(cur, 10);
   if (taken >= lines.length) return 'allow';
+  var session = typeof p[f.session] === 'string' ? p[f.session] : '';
+  var liveWatcher = sess.wakeWatchLive(home, session, ah.clock.now());
   var limit = ah.cfg('agent_tracker.spam').max_per_delivery, items = [], rows = [];
   for (var i = taken; i < lines.length && items.length < limit; i++) {
     taken = i + 1;
     var r;
     try { r = JSON.parse(lines[i]); } catch (e) { continue; }
     if (r === null || typeof r !== 'object' || typeof r.text !== 'string') continue;
+    // A queued re-arm order can outlive the missing watcher. Consume only this obsolete nag; real events still deliver.
+    if (r.signal === ah.cfg('agent_reminders.monitor_signal') && liveWatcher) continue;
     items.push(r.text);
     rows.push(JSON.stringify({ id: r.id, key: name, signal: r.signal, agent: r.agent, ts: Date.now() }));
   }
