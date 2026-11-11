@@ -175,7 +175,11 @@ function decide(p, opts, event) {
   var id = rawId !== null && rawId !== '' && rawId.split('').every(function (c) { return /[A-Za-z0-9]/.test(c) || extra.indexOf(c) >= 0; }) ? rawId : ah.cfg('devswarm_role.id_placeholder');
   // a Primary names its registered `primary-<hash>` id in the wake commands (the one the store and the watcher key on)
   if (seat.id !== null && /^[A-Za-z0-9._-]+$/.test(seat.id)) id = seat.id;
-  var ctx = dwContext(child, l.cli, l.watcher, agent, id, dwWakeCron(), ah.settings.bool('devswarm_role.sw_rearm'));
+  var ctx;
+  if (agent === ah.cfg('devswarm_role.claude_agent') && sess.wakeWatchLive(l.home, jx.isObj(p) ? p.session_id : null, ah.clock.now())) {
+    var cronPart = !child && dwCronOnlyWithChild() ? ah.cfg('devswarm_role.msg_wake_live_nocron') : text.render(ah.cfg('devswarm_role.msg_wake_live_cron'), { cli: l.cli, id: id, cron: dwWakeCron(), child: child ? ah.cfg('devswarm_role.wake_child_flag') : '' });
+    ctx = text.render(ah.cfg(child ? 'devswarm_role.msg_base' : 'devswarm_role.msg_base_parent'), { cli: l.cli }) + text.render(ah.cfg('devswarm_role.msg_wake_live'), { cron_part: cronPart });
+  } else ctx = dwContext(child, l.cli, l.watcher, agent, id, dwWakeCron(), ah.settings.bool('devswarm_role.sw_rearm'));
   if (!child && agent === ah.cfg('devswarm_role.claude_agent') && dwCronOnlyWithChild()) dwCronCtlSeed(p);
   if (seat.notices.length) ctx = seat.notices.join(ah.cfg('devswarm_role.seat_notice_joiner')) + ah.cfg('devswarm_role.seat_notice_joiner') + ctx;
   return { exact: { code: 0, out: ah.cfg('devswarm_role.out_prefix') + JSON.stringify(ctx) + ah.cfg('devswarm_role.out_suffix') + '\n', err: '' } };

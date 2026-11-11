@@ -154,7 +154,7 @@ value = { commit = 10, step = 5, test = 2, file = 1, push = 3, build = 3, merge 
 
 [agent_tracker.cooldowns]
 doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent)."
-value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 }, monitor_off = { cooldown_ms = 86400000, max_per_day = 1, once = true, confirm_ticks = 1 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 }, stalled = { cooldown_ms = 1800000, max_per_day = 8 }, idle_no_agents = { cooldown_ms = 1800000, max_per_day = 8 }, false_claim = { cooldown_ms = 1800000, max_per_day = 8 }, underparallel = { cooldown_ms = 1800000, max_per_day = 8 } }
+value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 1800000, max_per_day = 12, once = true }, monitor_off = { cooldown_ms = 86400000, max_per_day = 1, once = true, confirm_ticks = 1 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 }, stalled = { cooldown_ms = 1800000, max_per_day = 8 }, idle_no_agents = { cooldown_ms = 1800000, max_per_day = 8 }, false_claim = { cooldown_ms = 1800000, max_per_day = 8 }, underparallel = { cooldown_ms = 1800000, max_per_day = 8 } }
 
 [agent_tracker.spam]
 doc = "Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder)."
@@ -277,8 +277,8 @@ doc = "Reminder: a heartbeat file went stale. Placeholders: {agent}, {age}, {ste
 value = "agent tracker: agent {agent} has not updated its heartbeat for {age} (its last step: {step}). It may be hung or finished without saying so."
 
 [msg.agent_monitor_unarmed]
-doc = "Reminder to re-arm the session wake-watch (generic sessions), one short line. Placeholders: {command}, {timeout}. The watcher is down: the harness starts it once, a Monitor expires after at most 30 minutes, and nothing restarts it."
-value = "agent tracker: no live wake-watch covers this session, so you are not woken when background work ends. Re-arm it now: call `Monitor` with command `{command}` and timeout_ms {timeout}; re-arm it each time it expires. `CronCreate` stays the fallback."
+doc = "Reminder to re-arm the session wake-watch (generic sessions), one short line. Placeholders: {command}, {timeout}. Once per unarmed episode, after the cooldown; a live plugin-owned or model-owned watcher suppresses the reminder."
+value = "agent tracker: no live wake-watch covers this session, so you are not woken when background work ends. Re-arm it now: call `Monitor` with command `{command}` and timeout_ms {timeout}. Keep a live plugin watcher; re-arm only while no watcher covers the session. `CronCreate` stays the fallback."
 
 [msg.agent_monitor_off]
 doc = "One-time notice that the wake watcher is switched off (agents.wakeWatch=false for a main session, devswarm.wakeWatch=false for a DevSwarm workspace), so the session is never told to re-arm it. Placeholders: setting."
@@ -286,7 +286,7 @@ value = "agent tracker: wake watcher switched off: {setting}=false. No wake-watc
 
 [msg.agent_monitor_unarmed_devswarm]
 doc = "Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}."
-value = "agent tracker: no Monitor wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
+value = "agent tracker: no live wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
 
 [msg.agent_idle_open_task]
 doc = "Wake advisory: an agent finished its turn with a task open and went quiet. Placeholders: {agent}, {kind}, {idle}, {task}."
@@ -541,3 +541,7 @@ value = "\u0001"
 [agent_tracker.wake_scope]
 doc = "Wake rows scoped to the session that owns them (switch agent_nudge.scope_setting). The telemetry class and event of a dropped row and its reason values: foreign_agent (a heartbeat whose writer is no session the tracker follows), empty_step (a stale heartbeat that names no step), foreign_pid (a lock holder that no followed session started). walk_max: most parent processes walked up from a lock holder to find its session."
 value = { class = "wake_scope", dropped = "dropped", foreign_agent = "foreign_agent", empty_step = "empty_step", foreign_pid = "foreign_pid", walk_max = 64 }
+
+[agent_reminders.monitor_signal]
+doc = "Queued signal suppressed at delivery when a live session heartbeat already covers wake-watch. Other agent events are delivered unchanged."
+value = "monitor_unarmed"

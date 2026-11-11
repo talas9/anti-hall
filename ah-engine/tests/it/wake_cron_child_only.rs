@@ -330,3 +330,114 @@ fn a_waiting_child_with_a_live_session_keeps_the_cron() {
     let stop = e.stop("s1");
     assert!(!stop.contains(ORDER) && !stop.contains(WAKE_LINE), "got: {stop:?}");
 }
+
+// #709 F5: the plugin-owned session watcher is the same merged wake path as a model-owned Monitor.
+#[test]
+fn wake_watch_session_heartbeat_suppresses_the_inbox_monitor_directive() {
+    let e = Env::new("session-watch");
+    e.live_child();
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(armed, "").unwrap();
+    let out = e.turn("s1", "claude");
+    assert!(!out.contains(WAKE_LINE), "a live plugin watcher must not order a model Monitor: {out}");
+    assert!(out.contains("NO MAILBOX TICK"), "the independent cron fallback remains available: {out}");
+}
+
+#[test]
+fn wake_watch_missing_monitor_directive_is_state_change_only() {
+    let e = Env::new("watch-state");
+    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"guards":{"emitDedupe":false}}"#).unwrap();
+    e.live_child();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE));
+    for _ in 0..8 {
+        let out = e.turn("s1", "claude");
+        assert!(!out.contains(WAKE_LINE), "an unchanged missing watcher must not order re-arm on every prompt: {out}");
+    }
+}
+
+#[test]
+fn wake_watch_tracker_reminder_is_once_per_unarmed_state_with_expiry_cooldown() {
+    let cd = ah_engine::defaults::raw("agent_tracker.cooldowns").get("monitor_unarmed").unwrap();
+    assert_eq!(cd.get("once").and_then(ah_engine::defaults::V::as_bool), Some(true));
+    assert!(cd.get("cooldown_ms").and_then(ah_engine::defaults::V::as_integer).unwrap() >= ah_engine::defaults::num("agent_tracker.wake_timeout_ms") as i64);
+}
+
+#[test]
+fn wake_watch_live_session_start_keeps_the_plugin_watcher() {
+    let e = Env::new("session-start-watch");
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(armed, "").unwrap();
+    let out = e.start("s1", "resume", "claude");
+    assert!(!out.contains("call `Monitor`"), "a live plugin watcher must not order a duplicate model Monitor: {out}");
+}
+
+#[test]
+fn wake_watch_recovery_then_expiry_starts_one_new_episode_after_cooldown() {
+    let e = Env::new("watch-recovery");
+    e.live_child();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE));
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(&armed, "").unwrap();
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+    let f = std::fs::OpenOptions::new().write(true).open(&armed).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH).unwrap();
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE), "a flap inside the expiry cooldown stays quiet");
+    let ctl = e.dir.join("home/.anti-hall/devswarm/wake-ctl/s1.json");
+    let mut rec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ctl).unwrap()).unwrap();
+    rec["lastPrompt"] = serde_json::json!(0);
+    std::fs::write(ctl, rec.to_string()).unwrap();
+    // Generic dedupe can suppress the same text: the episode gate itself is independent of it.
+    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"guards":{"emitDedupe":false}}"#).unwrap();
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE), "expired heartbeat + elapsed cooldown allows one new order");
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+}
+
+#[test]
+fn wake_watch_recent_cron_tick_does_not_spend_a_missing_watcher_order() {
+    let e = Env::new("watch-tick");
+    e.switch(false);
+    e.live_child();
+    e.tick_marker(0);
+    assert!(!e.turn("s1", "claude").contains(WAKE_LINE));
+    e.tick_marker(120 * 60_000);
+    assert!(e.turn("s1", "claude").contains(WAKE_LINE));
+}
+
+#[test]
+fn wake_watch_live_session_heartbeat_covers_the_stop_gate() {
+    let e = Env::new("session-stop-watch");
+    e.live_child();
+    e.quiet_mail();
+    let armed = e.dir.join("home/.anti-hall/agent-tracker/wake/s1.armed");
+    std::fs::create_dir_all(armed.parent().unwrap()).unwrap();
+    std::fs::write(armed, "").unwrap();
+    let out = e.stop("s1");
+    assert!(!out.contains(WAKE_LINE) && !out.contains("\"block\""), "the plugin watcher covers stop delivery: {out}");
+}
+
+#[test]
+fn wake_watch_live_heartbeat_drops_only_obsolete_rearm_reminders() {
+    let e = Env::new("watch-reminders");
+    let dir = e.dir.join("home/.anti-hall/agent-tracker");
+    std::fs::create_dir_all(dir.join("reminders")).unwrap();
+    std::fs::create_dir_all(dir.join("wake")).unwrap();
+    std::fs::write(dir.join("wake/s1.armed"), "").unwrap();
+    let rows = [
+        serde_json::json!({"id":"old-rearm", "signal":"monitor_unarmed", "agent":"s1", "text":"OBSOLETE_REARM_ORDER"}),
+        serde_json::json!({"id":"real-event", "signal":"watched_exit", "agent":"child", "text":"REAL_AGENT_COMPLETION"}),
+    ];
+    std::fs::write(dir.join("reminders/s1.ndjson"), rows.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let mut out = e.turn("s1", "claude");
+    // The dispatcher can spill the combined context; inspect the actual delivered text, too.
+    if let Ok(files) = std::fs::read_dir(e.dir.join("state/context-spill")) {
+        for file in files.flatten() {
+            out.push_str(&std::fs::read_to_string(file.path()).unwrap_or_default());
+        }
+    }
+    assert!(!out.contains("OBSOLETE_REARM_ORDER"), "live plugin watcher suppresses an obsolete queued Monitor nag: {out}");
+    assert!(out.contains("REAL_AGENT_COMPLETION"), "real agent events must still reach the session: {out}");
+    assert_eq!(std::fs::read_to_string(dir.join("reminders/s1.ndjson.cursor")).unwrap(), "2");
+}

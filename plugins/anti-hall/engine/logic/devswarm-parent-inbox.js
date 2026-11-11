@@ -793,20 +793,42 @@ function piClaudePrimary() {
 // The mailbox-wake line of this turn (`noWakePathLine(wakeCoverage(...))`), or null: only a Claude Primary with a live child (`lc`, read
 // by the caller: {known, live}) and no recent tick is told. With no live child there is nothing to hear, so no wake path is asked for.
 function piWakeLine(ctx, cwd, cli, opts, lc) {
-  if (!lc.known || !lc.live) return null;
+  if (!lc.known) return null;
+  var wanted = ah.settings.bool('wake_watch.set_enabled') !== false;
+  var live = sess.wakeWatchLive(ctx.home, ctx.sid, ctx.now) || piWatcherLive(ctx.home, ctx.primaryId, ctx.now);
+  var state = !wanted ? 'off' : live ? 'live' : lc.live ? 'missing' : 'idle';
+  if (!lc.live) { piWakeEpisode(ctx, state); return null; }
   var tick = piJson(piDevswarmDir(ctx.home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ctx.primaryId + '.json');
   var ageMin = piTickAge(tick, ctx.now, ctx.sid);
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
-  if (!(ageMin === null || ageMin > warn)) return null;
-  var wanted = ah.settings.bool('wake_watch.set_enabled') !== false;
-  var noWatcher = wanted && !piWatcherLive(ctx.home, ctx.primaryId, ctx.now);
+  if (!(ageMin === null || ageMin > warn)) { piWakeEpisode(ctx, live ? 'live' : 'tick'); return null; }
+  var ask = piWakeEpisode(ctx, state);
+  var noWatcher = wanted && !live;
   var cron = text.render(ah.cfg('devswarm_parent.wake_cron_part'), { cron: dwWakeCron(), cli: cli, id: ctx.primaryId });
   if (noWatcher) {
+    if (!ask) return null;
     var watcher = piWatcherPath(opts, ctx.home);
     if (watcher === null) { ah.unable('devswarm-parent-inbox:watcher_path'); return null; } // no watcher path to name: no wake line
+    ctx.wakeArm = true;
     return text.render(ah.cfg('devswarm_parent.wake_both'), { mon: text.render(ah.cfg('devswarm_parent.wake_monitor'), { watcher: watcher }), cron: cron });
   }
   return text.render(ah.cfg('devswarm_parent.wake_tick'), { cron: cron });
+}
+
+// State-change delivery is independent of the generic prompt keepalive (including when dedupe is off).
+// A recovery resets the episode, while the TOML-backed setting bounds rapid live/missing flaps.
+function piWakeEpisode(ctx, state) {
+  if (!ctx.sid) return false;
+  var rel = piRel(ah.cfg('devswarm_parent.dir_wake_ctl') + '/' + String(ctx.sid).replace(/[^A-Za-z0-9_.-]/g, '_') + '.json');
+  var raw = ah.state.readText(rel), prev = null;
+  try { prev = raw === null ? null : JSON.parse(raw); } catch (e) { /* absent episode */ }
+  if (!prev || typeof prev !== 'object' || Array.isArray(prev)) prev = {};
+  var last = typeof prev.lastPrompt === 'number' && isFinite(prev.lastPrompt) ? prev.lastPrompt : null;
+  var same = prev.state === state;
+  var ask = state === 'missing' && !(same && prev.prompted === true) && (last === null || ctx.now - last >= ah.settings.num('devswarm_parent.set_wake_rearm_cooldown'));
+  var rec = { state: state, prompted: ask || (same && prev.prompted === true), lastPrompt: ask ? ctx.now : last };
+  if (!same || ask) ctx.wakeCtl = { rel: rel, rec: rec };
+  return ask;
 }
 
 // devswarm.wakeCronOnlyWithChild: the ONE order to delete the mailbox cron once no child workspace is alive (none that is not put away), and the bookkeeping that
@@ -1465,7 +1487,7 @@ function piDecide(p, opts) {
     }
   }
   pending.push({ kind: 'dedupe', rank: 0, o: overrideOpts, text: text0 });
-  if (wakeLine !== null) pending.push({ kind: 'dedupe', rank: 20, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_wake'), content: wakeLine, transcriptPath: tp, keepaliveTurns: repeat }, text: wakeLine });
+  if (wakeLine !== null) pending.push({ kind: wctx.wakeArm ? 'plain' : 'dedupe', rank: 20, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_wake'), content: wakeLine, transcriptPath: tp, keepaliveTurns: repeat }, text: wakeLine });
   if (cronCtl !== null && cronCtl.text !== null) pending.push({ kind: 'plain', rank: ah.cfgNum('devswarm_parent.cron_ctl_rank'), text: cronCtl.text });
   if (driftNotice !== null) pending.push({ kind: 'dedupe', rank: 50, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_drift'), content: driftNotice, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_parent.drift_keepalive') }, text: driftNotice });
   var tableText = null, attention = [], archiveList = [], rows = [];
@@ -1527,6 +1549,7 @@ function piDecide(p, opts) {
     if (pending[i].kind === 'dedupe' && dedupeOn && !dedupe.canDecide(pending[i].o)) ah.unable('devswarm-parent-inbox:dedupe_undecidable'); // decided on what the engine reads
   }
   ah.commit();
+  if (typeof wctx !== 'undefined' && wctx.wakeCtl) ah.state.writeAtomic(wctx.wakeCtl.rel, JSON.stringify(wctx.wakeCtl.rec));
   if (syncNotes !== null) syncNotes.writes.forEach(function (w) { ah.state.writeAtomic(w.rel, JSON.stringify({ at: now, ids: w.ids })); });
   if (broadcastRows !== null && broadcastRows.seen !== null) ah.state.writeAtomic(piBroadcastSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ keys: broadcastRows.seen.slice(-ah.cfgNum('devswarm_parent.broadcast_seen_max')) }));
   if (derived !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_role.pg_dir_summaries') + '/' + key + '.json'), derived);

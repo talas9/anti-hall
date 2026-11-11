@@ -895,3 +895,19 @@ value = { kind = "counter", unit = "passes", labels = ["reason"] }
 [metric.devswarm_parent_gate_count_mismatch]
 doc = "Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384)."
 value = { kind = "counter", unit = "counts", labels = [] }
+
+[devswarm_role.msg_wake_live]
+doc = "SessionStart mailbox text when a live session watcher already owns delivery. Placeholders: {cron_part}. No duplicate model-owned Monitor is requested."
+value = " MAILBOX WAKE: a live session wake-watch already covers delivery. Keep it running. {cron_part}"
+
+[devswarm_role.msg_wake_live_nocron]
+doc = "Cron part of the live-watcher SessionStart text for a Primary whose mailbox cron is only needed while a child is alive."
+value = "Do NOT create a mailbox cron now; a NO MAILBOX TICK line asks for it when a live workspace needs it."
+
+[devswarm_role.msg_wake_live_cron]
+doc = "Cron fallback part of the live-watcher SessionStart text. Placeholders: {cron}, {cli}, {id}, {child}."
+value = "Use CronList; if no inbox tick job exists for this workspace, create schedule {cron} running `{cli} inbox tick {id}{child} --quiet`."
+
+[devswarm_role.wake_child_flag]
+doc = "The child-mode suffix of the inbox tick command in live-watcher SessionStart instructions."
+value = " --child"
