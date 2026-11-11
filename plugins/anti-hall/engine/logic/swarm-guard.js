@@ -341,6 +341,7 @@ function swgBudgetGates(p, home) {
   var note = '';
   if (usageOn && full) {
     if (full.pct >= ah.cfgNum('spawn_usage.block_pct')) {
+      dedupe.advisory(p, 'usage', null, ''); // observe the changed facts; the block text is never deduped
       ah.advisory('flagged', 'spawn_usage_block');
       return { block: text.message('block', ah.cfg('spawn_usage.guard_name'), {
         what: text.render(ah.cfg('spawn_usage.msg_block_what'), { limit: full.name, pct: Math.round(full.pct), cap: ah.cfgNum('spawn_usage.block_pct'), resets: swgResetText(full) }),
@@ -355,6 +356,7 @@ function swgBudgetGates(p, home) {
       });
     }
   }
+  var usageFacts = full ? [full.name, Math.floor(full.pct / ah.settings.num('tool_advisory.usage_bucket_pct')), swgResetText(full), !!note] : null;
   if (ceilOn) {
     var capBlock = swgCapGate(p, home);
     if (capBlock !== null) return { block: capBlock, note: '' };
@@ -367,7 +369,7 @@ function swgBudgetGates(p, home) {
       }), note: '' };
     }
   }
-  return { block: null, note: note };
+  return { block: null, note: note, usageFacts: usageFacts };
 }
 
 function swgBlock(reason) { return { exact: { code: 2, out: text.blockJson(reason), err: '' } }; }
@@ -402,7 +404,6 @@ function decide(p) {
 
   var note = swgSharedTreeNote(p);
   if (note === null) { ah.unable('swarm-guard:shared_tree_note_unsure'); note = ''; }
-  if (gates.note) note = note ? gates.note + '\n' + note : gates.note;
 
   var dir = ah.cfg('swarm_guard.state_dir');
   var logRel = dir + '/' + ah.cfg('swarm_guard.log_file');
@@ -438,6 +439,7 @@ function decide(p) {
   if (reason === null) {
     // an avoided warning is counted only on an allowed spawn that was recorded: a rate block or an unlocked allow shows no note either way
     if (swgBareAvoided) { ah.advisory('swarm_guard_fp', 'named_tree_bare'); ah.metric('named_tree_bare', []); }
+    if (dedupe.advisory(p, 'usage', gates.usageFacts, gates.note) && gates.note) note = note ? gates.note + '\n' + note : gates.note;
     return note ? { advisory: text.advisoryJson('PreToolUse', note) } : 'allow';
   }
   // telemetry only, after the lock: a trip is observable but never feeds the rate window

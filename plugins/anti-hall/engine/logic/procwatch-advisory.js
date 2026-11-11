@@ -200,9 +200,11 @@ function decide(p) {
           pwSave(st, nowS);
           return { block: text.message('block', ah.cfg('procwatch.guard_name'), { what: text.render(ah.cfg('disk_watch.msg_blocked'), { list: pwDiskLines(low).join('; ') }), instead: pwDiskInstead(disk) }) };
         }
-        if (pwFire(st, 'heavy:' + sid, nowS, cooldown)) {
+        if (ah.settings.bool('tool_advisory.sw_disk') ? dedupe.advisory(p, 'disk', low.map(function (v) { return [v.path, v.level]; }).sort(), ah.cfg('disk_watch.msg_heavy')) : pwFire(st, 'heavy:' + sid, nowS, cooldown)) {
           parts.push(pwMsg('warn', ah.cfg('disk_watch.msg_heavy') + ' ' + text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));
         }
+      } else if (!critical) {
+        dedupe.advisory(p, 'disk', low.map(function (v) { return [v.path, v.level]; }).sort(), '');
       }
     } else if (diskDue(st, sid, low, critical, nowS, cooldown)) {
       parts.push(pwMsg('warn', text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));

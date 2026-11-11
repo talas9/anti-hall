@@ -91,6 +91,15 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             }
         }
     }
+    // Tool advisory profiles name the settings the fingerprint helper reads dynamically.
+    let profiles = ah_engine::defaults::raw("tool_advisory.profiles");
+    for (_, profile) in profiles.as_table().expect("advisory profiles are a table") {
+        for field in ["setting", "repeat"] {
+            let key = profile.get(field).and_then(ah_engine::defaults::V::as_str).expect("profile setting reference");
+            assert!(shipped.contains(key), "profile names missing setting {key}");
+            literals.insert(key.to_string());
+        }
+    }
     // a latency gate in a test binary of its own reads the per-check allowances (`script.p95_budget_by_check`)
     let latency = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/script_latency.rs")).unwrap();
     literals.extend(re.captures_iter(&latency).map(|c| c[1].to_string()));
