@@ -209,7 +209,8 @@ function snRuntimeEvidence(p, home) {
       if (matches.length === 1) key = matches[0];
     }
     var n = nudges[key], agent = state.agents && state.agents[key];
-    if ((n && n.parent && n.parent !== p.session_id) || (agent && agent.parent && agent.parent !== p.session_id)) return;
+    var owner = n && n.parent || agent && agent.parent;
+    if (owner && owner !== p.session_id) return;
     if (!answersByChild[key] || a.ts >= answersByChild[key].ts) answersByChild[key] = a;
   });
   return { state: state, answers: answersByChild, now: ah.clock.now(), live: typeof p.session_id === 'string' ? ah.transcript.trackedAgents(p) : [] };

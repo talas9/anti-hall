@@ -349,6 +349,42 @@ fn runtime_owner_answers_hold_for_promised_windows_then_reblock() {
     }
 }
 #[test]
+fn ancestor_routed_runtime_answers_release_or_hold_then_reblock() {
+    for (answer, minutes, age, blocked) in [
+        ("stop", 0, 1000, false),
+        ("other", 0, 29 * 60000, false),
+        ("other", 0, 31 * 60000, true),
+        ("snooze", 45, 44 * 60000, false),
+        ("snooze", 45, 46 * 60000, true),
+        ("msg", 0, 1000, false),
+        ("msg", 0, 16 * 60000, true),
+    ] {
+        let w = World::new(&format!("ancestor-answer-{answer}-{age}"));
+        w.runtime(json!({"id":"child","kind":"teammate","parent":"unavailable-parent","running":true}));
+        w.write(
+            ".anti-hall/agent-tracker/state.json",
+            json!({"agents":{"child":{"id":"child","kind":"teammate","parent":"unavailable-parent","running":true}},
+                "nudges":{"child":{"parent":"parent","child_name":"worker"}}}),
+        );
+        w.answer(answer, minutes, age);
+        let out = w.stop();
+        assert_eq!(out.contains("decision\\\":\\\"block"), blocked, "{answer}/{minutes}/{age}: {out}");
+    }
+}
+#[test]
+fn runtime_routed_answer_cannot_release_an_unrelated_session() {
+    let w = World::new("routed-answer-isolation");
+    w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":true}));
+    w.write(
+        ".anti-hall/agent-tracker/state.json",
+        json!({"agents":{"child":{"id":"child","kind":"teammate","parent":"parent","running":true}},
+            "nudges":{"child":{"parent":"unrelated","child_name":"worker"}}}),
+    );
+    w.answer("stop", 0, 1000);
+    let out = w.stop();
+    assert!(out.contains("decision\\\":\\\"block"), "{out}");
+}
+#[test]
 fn concurrent_publication_during_repair_keeps_new_live_row() {
     let w = World::new("publish-race");
     w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","finished":true}));
