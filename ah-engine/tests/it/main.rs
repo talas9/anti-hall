@@ -107,3 +107,5 @@ mod w2_behaviour_matrix;
 mod w6_command_allow;
 mod w6_task_tracker;
 mod wake_cron_child_only;
+
+mod stop_reblock;

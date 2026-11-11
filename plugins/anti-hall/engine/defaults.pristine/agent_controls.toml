@@ -797,3 +797,51 @@ value = "child"
 [ask_guard.deny_kind_primary]
 doc = "Label of the ask_guard_denied counter for a denied Primary."
 value = "primary"
+
+[silent_nudge.rt_reconcile_setting]
+doc = "Reconcile runtime escalation snapshots against current agent completion and all recorded owner actions at Stop; keep verdicts in a separate session overlay without writing the publisher snapshot (guards.runtimeStopReconcile, default on). Both hosts share this logic."
+value = { section = "guards", key = "runtimeStopReconcile", env = "ANTIHALL_RUNTIME_STOP_RECONCILE", aliases = [], option = "", default = true }
+
+[silent_nudge.rt_repair]
+doc = "Logic-owned per-session runtime Stop overlay under paths.state_dir, written atomically without changing publisher rows. All audit rows are retained; verdicts expire after ttl_ms (milliseconds), live evidence overrides completion. Owner verbs/windows come from agent_nudge.answers/limits. Both Claude/OMC and Codex/OMX share the overlay logic."
+value = { marker = "retired", file_prefix = "runtime-stop-overlay-", file_ext = ".json", ttl_ms = 14400000 }
+
+[stop_reblock.setting]
+doc = "Bound unchanged coordination Stop repeats on both hosts (guards.stopReblock, default on). Safety and destructive-action checks are excluded; changed reasons or meaningful guard state reset the budget."
+value = { section = "guards", key = "stopReblock", env = "ANTIHALL_STOP_REBLOCK", aliases = [], option = "", default = true }
+
+[stop_reblock.max_setting]
+doc = "Maximum repeats after the first identical Stop block on unchanged state (guards.stopReblockMax, default 2); zero releases the first repeat. The budget is persisted immediately, independent of assistant replies."
+value = { section = "guards", key = "stopReblockMax", env = "ANTIHALL_STOP_REBLOCK_MAX", aliases = [], default = 2 }
+
+[stop_reblock.guards]
+doc = "Coordination Stop checks explicitly participating in the JS breaker. The idle-tasks branch alone opts in for task-guard; a new check is excluded until reviewed."
+value = ["devswarm-child-gate", "task-guard", "auto-handover-pause-nag", "silent-agent-nudge"]
+
+[stop_reblock.excluded]
+doc = "Safety/evidence and destructive-action checks never use the coordination Stop breaker, even if accidentally added to its participant list. PreToolUse paths do not call the breaker."
+value = ["git-guard", "edit-guard", "claim-evidence", "claim-evidence-guard", "command-guard", "api-guard", "broad-kill", "merge-gate", "ship-it-guard", "swarm-guard", "handover-commit-guard"]
+
+[stop_reblock.normalise]
+doc = "Elapsed runtime fragments ignored when identifying the same Stop reason. Subject IDs, task counts and action text remain significant."
+value = ['\b\d+(?:\.\d+)?\s*(?:hours?|hrs?|h|minutes?|mins?|min|seconds?|secs?|sec|ms)\b']
+
+[stop_reblock.path]
+doc = "Per-session immediate breaker record under the anti-hall directory, keyed by a hash of the session ID."
+value = { dir = "stop-reblock", ext = ".json" }
+
+[stop_reblock.category]
+doc = "Category of waste_events_total counted for each unchanged Stop block released by the breaker; the counter registry remains in telemetry.toml."
+value = "reblock_loop"
+
+[stop_reblock.released]
+doc = "One short line when an unchanged coordination Stop block first exhausts its repeat budget; later identical releases stay quiet."
+value = "Unchanged Stop block released: {guard}.\n"
+
+[stop_reblock.pause_guard]
+doc = "Stop check ID of the handover pause reminder; its message and skip name are shared with auto-handover, but its repeat budget is independent."
+value = "auto-handover-pause-nag"
+
+[stop_reblock.lock]
+doc = "Retained per-session flock file and bounded wait for the immediate repeat-budget read/modify/write; group supplies the existing lock timings. Lock failure preserves the original block."
+value = { suffix = ".flock", group = "advisor", wait_ms = 250 }
