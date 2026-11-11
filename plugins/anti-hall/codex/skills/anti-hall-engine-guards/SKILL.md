@@ -62,6 +62,9 @@ What the automatic guards check and how to read a block.
 - `context.protocolFullAfterCompact` = true: Full rules on compaction
 - `context.protocolOnce` = true: Once-per-session protocol text switch
 - `guards.keepaliveCountsScheduled` = false: Switch guards.keepaliveCountsScheduled (default off): a turn the host's scheduler delivered (a...
+- `guards.wasteWarnTokens` = 1000: The tokens saved in one window at which the first waste level is reached...
+- `guards.wasteWarnWindowMin` = 60: The rolling window (minutes) of the waste warning (guards.wasteWarnWindowMin)
+- `guards.wasteWarn` = true: Switch guards.wasteWarn (default on): when the tokens saved by the smarter rules (repeats of an...
 - `context.promptDigestLines` = 3: Max lines of the prompt digest
 - `context.promptDigestMin` = 3: Min advisories before the digest applies
 - `context.promptDigest` = true: Prompt digest switch

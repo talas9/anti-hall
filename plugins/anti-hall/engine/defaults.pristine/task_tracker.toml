@@ -481,3 +481,11 @@ value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIH
 [metric.task_tracker_emitted]
 doc = "Task tracker messages, by form (full_emitted: the full directive was sent; short_emitted: the short reminder was sent; short_suppressed_same_state: the short reminder was withheld because the agent was already told this state)."
 value = { kind = "counter", unit = "messages", labels = ["form"] }
+
+[task_tracker.sw_skip_scheduled]
+doc = "Switch context.taskTrackerSkipScheduled (default on): on a turn the host scheduler delivered (a cron tick: the newest user turn of the transcript is a scheduled one with the prompt now submitted) the tracker says nothing while the open-task list is unchanged since its last note, and does not ask Jev to label the prompt. A changed list, or any prompt a person typed, still gets the note. Off restores the note on every scheduled turn."
+value = { section = "context", key = "taskTrackerSkipScheduled", env = "ANTIHALL_TASK_TRACKER_SKIP_SCHEDULED", aliases = [], option = "", default = true }
+
+[task_tracker.skip_scheduled_source]
+doc = "The `source` label of the waste counters when the tracker is skipped on an unchanged scheduled turn."
+value = "tracker_scheduled"

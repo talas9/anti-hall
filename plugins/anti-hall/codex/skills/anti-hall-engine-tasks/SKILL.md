@@ -36,6 +36,7 @@ Task-list, task-lifecycle and dispatch guards.
 - `guards.dispatchSkipHeld` = true: Skips held tasks in DISPATCH NOW
 - `context.taskTracker` = true: Where the check's on/off switch is read from (context.taskTracker, default on)
 - `guards.dispatchQuietSpawnStop` = true: Quiets DISPATCH NOW during the spawn stop
+- `context.taskTrackerSkipScheduled` = true: Switch context.taskTrackerSkipScheduled (default on): on a turn the host scheduler delivered (a...
 - `context.taskTrackerTerse` = true: Where the switch is read from that gives the tracker its factual wording...
 - `context.taskTrackerUntrackedPrompts` = 8: Prompts before the short reminder repeats
 

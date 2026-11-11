@@ -374,3 +374,35 @@ value = ".anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md"
 [devswarm_gates.cg_short_instead]
 doc = "Compact guard message text."
 value = "complete the pending workspace duty."
+
+[devswarm_gates.sw_cron_from_payload]
+doc = "Switch devswarm.cronFromPayload (default on): the child Stop gate decides whether the mailbox tick cron exists from the Stop payload's session_crons list; a payload without the list keeps the age-based check. Off always uses the age-based check."
+value = { section = "devswarm", key = "cronFromPayload", env = "ANTIHALL_DEVSWARM_CRON_FROM_PAYLOAD", option = "", default = true }
+
+[devswarm_gates.cg_payload_crons_field]
+doc = "The Stop / SubagentStop payload field (Claude Code 2.1.145+) that lists the session's scheduled cron jobs: an array of {id, schedule, recurring, prompt}; empty when none is scheduled."
+value = "session_crons"
+
+[devswarm_gates.cg_payload_cron_prompt_field]
+doc = "The field of a session_crons entry that holds the prompt the job submits when it fires (capped by the host at 1000 characters)."
+value = "prompt"
+
+[devswarm_gates.cg_cron_prompt_re]
+doc = "The regular expression a session_crons prompt must match to be the mailbox tick of this workspace: the prompt BEGINS (after an optional `Mailbox tick:` lead-in, `run`, and quotes or backticks) with the command that runs it - `node <path> inbox tick <id>` or `<cli> mesh inbox tick <id>` - so a prompt that only mentions the words (`Do not run inbox tick`, `never run <cli> mesh inbox tick`) is not the tick job."
+value = '''^\s*(?:Mailbox tick:?\s*)?(?:run\s+)?[`'"]*(?:node\s+[`'"]?[^\s`'"]+[`'"]?\s+|[`'"]?[^\s`'"]+[`'"]?\s+mesh\s+)inbox\s+tick\s+[^\s`'"]+'''
+
+[devswarm_gates.cg_payload_cron_recurring_field]
+doc = "The field of a session_crons entry that says the job repeats (true); a one-shot job is not a mailbox cron."
+value = "recurring"
+
+[devswarm_gates.cg_payload_cron_schedule_field]
+doc = "The field of a session_crons entry that holds its schedule; an entry with no schedule is not a live job."
+value = "schedule"
+
+[devswarm_gates.cg_cron_missing_payload]
+doc = "The mailbox-cron-missing text when the Stop payload's cron list is present and holds no mailbox tick job: {m} (age in whole minutes of the last tick marker or heartbeat); the wake re-verify line follows. No CronList step: the list is already known."
+value = "Mailbox cron missing: this session has no `inbox tick` cron (none of its scheduled jobs runs it; last sign of life {m}m ago) — `CronCreate` it with the tick prompt (see SessionStart directive); no `CronList` needed."
+
+[devswarm_gates.cg_cron_present_metric]
+doc = "The `source` label of waste_events_total (category forced_turn) for a Stop whose payload cron list holds the mailbox tick job although the tick marker is stale: the age-based check would have warned and sent the model to CronList."
+value = "cron_listed"
