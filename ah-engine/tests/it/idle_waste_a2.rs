@@ -22,7 +22,7 @@ impl Home {
         self.dir.join("home")
     }
 
-    fn check(&self, check: &str, payload: &serde_json::Value, extra: &[(&str, &str)]) -> String {
+    fn run(&self, check: &str, payload: &serde_json::Value, extra: &[(&str, &str)]) -> std::process::Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["check", check])
             .env_clear()
@@ -35,7 +35,11 @@ impl Home {
         c.envs(extra.iter().copied());
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
-        let o = ch.wait_with_output().unwrap();
+        ch.wait_with_output().unwrap()
+    }
+
+    fn check(&self, check: &str, payload: &serde_json::Value, extra: &[(&str, &str)]) -> String {
+        let o = self.run(check, payload, extra);
         let out = String::from_utf8_lossy(&o.stdout).to_string();
         serde_json::from_str::<serde_json::Value>(out.trim_end())
             .ok()
@@ -243,7 +247,10 @@ fn a_table_header_cell_is_not_a_claim_but_a_body_cell_still_is() {
     assert!(!blocked(&h, header_only, &[]), "a header cell is a label");
     // the switch off scans the header like any other line (the claim words in it are then judged)
     let h = Home::new("claim-hdr-off");
-    assert!(blocked(&h, header_only, &[("ANTIHALL_CLAIM_EVIDENCE_MASK_TABLE_HEADER", "0")]), "switch off: the header is scanned (shows the test can see a block)");
+    assert!(
+        blocked(&h, header_only, &[("ANTIHALL_CLAIM_EVIDENCE_MASK_TABLE_HEADER", "0")]),
+        "switch off: the header is scanned (shows the test can see a block)"
+    );
     // the true positive survives: a body cell that asserts a check ran
     let h = Home::new("claim-body");
     let body = "Status of the lanes:\n\n| Lane | Result |\n|---|---|\n| a | All tests pass and the PR is merged. |\n";
@@ -262,8 +269,14 @@ fn only_a_genuine_table_header_is_masked_not_a_row_that_asserts() {
     assert!(blocked("ce-rule", &format!("Status:\n\n| a | {claim} |\n---\n")), "a pipe row followed by a rule line is not a header");
     assert!(blocked("ce-hdr-assert", &format!("Status:\n\n| Lane | {claim} |\n| --- | --- |\n")), "a header cell that asserts is still scanned");
     assert!(blocked("ce-one-line", &format!("Status:\n\n| a | {claim} |\n")), "a lone pipe row is scanned");
-    assert!(blocked("ce-body-then-rule", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n---\n")), "a body row before a rule line is scanned");
-    assert!(blocked("ce-body-then-sep", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n|---|---|\n")), "a second separator does not turn the body row into a header");
+    assert!(
+        blocked("ce-body-then-rule", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n---\n")),
+        "a body row before a rule line is scanned"
+    );
+    assert!(
+        blocked("ce-body-then-sep", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n|---|---|\n")),
+        "a second separator does not turn the body row into a header"
+    );
     let label = "Status of the lanes:\n\n| Lane | Verified? | Merged? |\n| --- | --- | --- |\n| a | pending | pending |\n";
     assert!(!blocked("ce-label", label), "an ordinary label header is still masked");
 }
@@ -294,4 +307,55 @@ fn the_statusline_window_size_prefers_the_documented_key_and_falls_back_to_the_o
     assert!(old.contains("100k/200k tokens"), "the older key is the fallback: {old}");
     let junk = line(serde_json::json!({"used_percentage": 50, "used_tokens": 100000, "context_window_size": "big", "total_tokens": 400000}));
     assert!(junk.contains("100k/400k tokens"), "a non-numeric documented key is skipped: {junk}");
+}
+
+#[test]
+fn pretool_disk_advisory_is_state_based_and_critical_blocks_repeat() {
+    let h = Home::new("pretool-disk");
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"cargo build"}});
+    let env = [("ANTIHALL_DISK_WATCH_COOLDOWN", "0")];
+    disk_report(&h, "30.0 GB", "warn");
+    assert_eq!(h.check("procwatch-advisory", &p, &env), "");
+    disk_report(&h, "4.0 GB", "critical");
+    let mut light = p.clone();
+    light["tool_input"]["command"] = "pwd".into();
+    assert_eq!(h.check("procwatch-advisory", &light, &env), "");
+    for i in 0..10 {
+        assert_eq!(h.check("procwatch-advisory", &p, &env).contains("4.0 GB"), i == 0, "call {i}");
+    }
+    disk_report(&h, "30.0 GB", "ok");
+    assert_eq!(h.check("procwatch-advisory", &p, &env), "");
+    disk_report(&h, "4.0 GB", "critical");
+    assert!(h.check("procwatch-advisory", &p, &env).contains("critical"), "level changed after recovery");
+    for _ in 0..3 {
+        let out = h.run("procwatch-advisory", &p, &[("ANTIHALL_DISK_WATCH_BLOCK", "1")]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("critical"));
+    }
+}
+
+#[test]
+fn repeated_subagent_start_is_once_per_child_but_new_children_receive_protocol() {
+    let h = Home::new("subagent-dedupe");
+    let mut p = serde_json::json!({"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"child-one"});
+    let env = [("ANTIHALL_PROTOCOL_LEVEL", "full")];
+    for i in 0..10 {
+        let out = h.check("verify-first-subagent", &p, &env);
+        assert_eq!(!out.is_empty(), i == 0, "call {i}: {out}");
+    }
+    p["agent_id"] = "child-two".into();
+    assert!(!h.check("verify-first-subagent", &p, &env).is_empty(), "a new child needs its own protocol");
+}
+
+#[test]
+fn orchestration_full_spawn_block_is_once_per_session_across_epochs() {
+    let h = Home::new("orch-dedupe");
+    let dir = h.home().join(".anti-hall/orch-full");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent"});
+    for epoch in ["first", "second"] {
+        std::fs::write(dir.join("orch-full-s1.json"), serde_json::json!({"decision":"pending","epochId":epoch,"sentAt":now_s()*1000}).to_string()).unwrap();
+        let out = h.check("orch-on-spawn", &p, &[]);
+        assert_eq!(out.contains("ORCHESTRATION DISCIPLINE"), epoch == "first", "epoch {epoch}: {out}");
+    }
 }

@@ -94,6 +94,8 @@ function decide(p) {
 
   var event = typeof p.hook_event_name === 'string' && p.hook_event_name ? p.hook_event_name : ah.cfg('orch_on_spawn.default_event');
   var codex = new RegExp(ah.cfg('orch_on_spawn.codex_tool_suffix')).test(String(p.tool_name)) || vf.codexPayload(p);
-  var body = vfoFull(codex) + '\n' + text.render(ah.cfg('orch_on_spawn.token_format'), { epoch: m.epochId });
+  var rules = vfoFull(codex);
+  if (!dedupe.advisory(p, 'orchestration', rules, rules)) return 'allow';
+  var body = rules + '\n' + text.render(ah.cfg('orch_on_spawn.token_format'), { epoch: m.epochId });
   return { advisory: text.advisoryJson(event, body) };
 }

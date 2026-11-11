@@ -1,5 +1,5 @@
-// Shared helpers of the emit-dedupe store (mirror hooks/lib/emit-dedupe.js): the per-session state file the UserPromptSubmit hooks
-// share and the context-loss marker. Files, limits and switches: prompt_emit.toml (emit_dedupe.*).
+// Shared emit-dedupe store: UserPromptSubmit delivery state, tool-hook advisory fingerprints and the context-loss marker.
+// The prompt-delivery helpers mirror hooks/lib/emit-dedupe.js. Files, limits and switches: prompt_emit.toml (emit_dedupe.*).
 'use strict';
 var dedupe = {
   // `disabled()`: guards.emitDedupe is off, or context.dedupeWindowMin is 0.
@@ -20,12 +20,35 @@ var dedupe = {
     state[key] = entry;
     Object.keys(state).forEach(function (k) {
       var e = state[k], seen = e && typeof e.lastSeenAt === 'number' && isFinite(e.lastSeenAt) ? e.lastSeenAt : 0;
-      if (now - seen > ah.cfgNum('emit_dedupe.key_ttl_ms')) delete state[k];
+      if (!(e && e.sessionOnly) && now - seen > ah.cfgNum('emit_dedupe.key_ttl_ms')) delete state[k];
     });
     var ok = false;
     try { ok = ah.state.writeAtomic(rel, JSON.stringify(state), { leaveTemp: true }); } catch (e) { return false; }
     if (ok) gk.pruneStale(rel.slice(0, rel.lastIndexOf('/')), ah.cfg('emit_dedupe.file_prefix'));
     return ok;
+  },
+  // Tool-event attachments are not UserPromptSubmit attachments: transcript delivery scans cannot prove them.
+  // Store the LAST normalized facts, including silent recovery, not a set of facts ever seen. The caller
+  // supplies advisory text only; block text never passes through this method. Persistence failures always speak.
+  advisory: function (p, source, facts, content, subject) {
+    try {
+      var sid = p && p.session_id, profiles = ah.cfg('tool_advisory.profiles'), profile = profiles[source];
+      if (!profile || dedupe.disabled() || !ah.settings.bool(profile.setting) || typeof sid !== 'string' || !sid) return !!content;
+      var now = ah.clock.now(), key = ah.cfg('tool_advisory.key_prefix') + source + ':' + (subject || '');
+      var state = dedupe.readState(dedupe.stateRel(sid)), prev = state[key], hash = ah.sha1(JSON.stringify(facts === undefined ? null : facts));
+      var reset = state[ah.cfg('emit_dedupe.reset_key')], resetAt = reset && reset.resetAt || 0;
+      var sessionOnly = profile.session_only === true;
+      var valid = prev && typeof prev.lastEmittedAt === 'number' && isFinite(prev.lastEmittedAt) && prev.lastEmittedAt <= now && (sessionOnly || prev.lastEmittedAt >= resetAt);
+      var seconds = ah.settings.num(profile.repeat), elapsed = valid ? now - prev.lastEmittedAt : 0;
+      var emit = !!content && (!valid || prev.hash !== hash || (seconds > 0 && elapsed >= seconds * ah.cfgNum('emit_dedupe.ms_per_second')));
+      var entry = { hash: hash, lastSeenAt: now, lastEmittedAt: emit || !valid ? now : prev.lastEmittedAt, sessionOnly: sessionOnly };
+      if (!dedupe.writeEntry(sid, key, entry, now)) return !!content;
+      if (content && !emit) {
+        dedupe.bumpSuppressed(sid, now);
+        waste.note(sid, 'repeated_advisory', source, content.length);
+      }
+      return emit;
+    } catch (e) { return !!content; } // absent/unreadable home or a failed state operation must not lose context
   },
   // `resetSession`: mark a context loss, so every record emitted before now counts as absent.
   reset: function (sessionId) {

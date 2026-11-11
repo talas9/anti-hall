@@ -6386,7 +6386,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `438 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `450 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8845,7 +8845,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `447 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `459 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14722,6 +14722,25 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `upfront.setting` | `6 entries` |  |  | Switch for the switch-change notice. Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call. |
 | `upfront.summary` | `Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only disp...` |  |  | One-line description of the switch-notice check in the generated reference. |
 
+### tool_advisory.toml / tool_advisory
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `tool_advisory.key_prefix` | `tool-advisory:` |  |  | Namespace of tool-hook fingerprints in the existing per-session emit-dedupe store. |
+| `tool_advisory.pair_authoritative_store` | `4 entries` |  |  | Switch guards.pairPostAuthoritativeTasks: PostToolUse owner checks read the named task list first, as spawn-by-task-id does; avoids warning from a stale transcript after its owner was set. |
+| `tool_advisory.profiles` | `5 entries` |  |  | Per-source fingerprint switches and reminder settings. Each source stores its last observed state, including silent recovery; an A to B to A transition emits again. Subagent protocol is scoped to the receiving child, orchestration to the session. |
+| `tool_advisory.repeat_disk` | `5 entries` |  |  | Reminder cooldown in seconds for unchanged disk advisory text (guards.diskToolAdvisoryOnChangeRepeatS); zero means no periodic reminder. |
+| `tool_advisory.repeat_orchestration` | `5 entries` |  |  | Reminder cooldown in seconds for unchanged orchestration advisory text (guards.orchestrationOncePerSessionRepeatS); zero means no periodic reminder. |
+| `tool_advisory.repeat_pair` | `5 entries` |  |  | Reminder cooldown in seconds for unchanged pair advisory text (guards.pairAdvisoryOnChangeRepeatS); zero means no periodic reminder. |
+| `tool_advisory.repeat_subagent` | `5 entries` |  |  | Reminder cooldown in seconds for unchanged subagent advisory text (guards.subagentProtocolOnChangeRepeatS); zero means no periodic reminder. |
+| `tool_advisory.repeat_usage` | `5 entries` |  |  | Reminder cooldown in seconds for unchanged usage advisory text (guards.usageAdvisoryOnChangeRepeatS); zero means no periodic reminder. |
+| `tool_advisory.sw_disk` | `4 entries` |  |  | Switch guards.diskToolAdvisoryOnChange: suppress unchanged disk advisory text; off restores the source behavior. Changes always speak; blocks are unaffected. |
+| `tool_advisory.sw_orchestration` | `4 entries` |  |  | Switch guards.orchestrationOncePerSession: suppress unchanged orchestration advisory text; off restores the source behavior. Changes always speak; blocks are unaffected. |
+| `tool_advisory.sw_pair` | `4 entries` |  |  | Switch guards.pairAdvisoryOnChange: suppress unchanged pair advisory text; off restores the source behavior. Changes always speak; blocks are unaffected. |
+| `tool_advisory.sw_subagent` | `4 entries` |  |  | Switch guards.subagentProtocolOnChange: suppress unchanged subagent advisory text; off restores the source behavior. Changes always speak; blocks are unaffected. |
+| `tool_advisory.sw_usage` | `4 entries` |  |  | Switch guards.usageAdvisoryOnChange: suppress unchanged usage advisory text; off restores the source behavior. Changes always speak; blocks are unaffected. |
+| `tool_advisory.usage_bucket_pct` | `5 entries` |  |  | Usage percentage bucket width (guards.usageAdvisoryBucketPct); changing the fullest limit, bucket or reset time speaks immediately. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -15402,7 +15421,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `unit_kickstart` | counter | asks | code | Asks of a hook client with no daemon to the service manager to start the engine unit, by outcome code (asked, ok, miss, failed); counted by the daemon that starts next, from the event log. |
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `verdicts_saved_by_cpu_budget` | counter | answers | event | Per event, check answers given after the request passed daemon.request_wall_warn_ms of wall time (the wall deadline before #684), inside the wall ceiling daemon.request_hard_ms: verdicts a loaded host would have dropped when the wall clock was the deadline. Lifetime. |
-| `waste_events_total` | counter | events | category, source | Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level). Counts only while the daemon holds the counter. |
+| `waste_events_total` | counter | events | category, source | Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level; usage, pair, disk, subagent, orchestration: unchanged tool-hook advisory fingerprints). Counts only while the daemon holds the counter. |
 | `waste_tokens_total` | counter | tokens | category, source | Estimated tokens of the text the smarter rules did not send (#709), by category and source: the bytes of the left-out advisory divided by waste.bytes_per_token. An estimate of the advisory text only, not of the model turn it would have joined (that needs the transcript usage the engine does not expose to scripts). Counts only while the daemon holds the counter. |
 | `waste_warnings_total` | counter | advisories | category | Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
