@@ -189,25 +189,71 @@ function snStuckAdvisory(p) {
 
 // ---- Stop: a child whose runtime nudges keep repeating (agent_nudge.runtime_escalation, published by the nudge loop) blocks the
 // coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
+// Reconcile the published snapshot at read time: status/answers and snapshot publication have separate lifecycles.
+// Preserve stale rows with an audit marker instead of deleting data. A later tracker publication replaces the snapshot.
+function snRuntimeEvidence(p, home) {
+  var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
+  var parsed = jx.parse(ah.fs.readText(base + paths.state) || '');
+  var state = !parsed.invalid && !parsed.unsure && parsed.v || {};
+  var stopped = {}, answers = ah.fs.readText(base + ah.cfg('agent_nudge.paths').answers);
+  if (answers !== null) answers.split('\n').forEach(function (line) {
+    var a; try { a = JSON.parse(line); } catch (e) { return; }
+    if (a && a.answer === ah.cfg('agent_nudge.answers').stop && typeof a.ts === 'number') stopped[a.child] = Math.max(stopped[a.child] || 0, a.ts);
+  });
+  return { state: state, stopped: stopped, live: typeof p.session_id === 'string' ? ah.transcript.trackedAgents(p) : [] };
+}
+
+function snRetired(child, name, session, evidence) {
+  var a = evidence.state.agents && evidence.state.agents[child];
+  var live = ah.transcript.trackedLiveness(child, evidence.live), terminal = live === false;
+  if (live === null && a && (a.parent === session || a.id === child)) {
+    var kinds = ah.cfg('agent_tracker.kinds');
+    terminal = terminal || a.dead === true || a.gone === true || a.finished === true ||
+      (a.running === false && (a.kind === kinds.teammate || a.kind === kinds.subagent));
+  }
+  var n = evidence.state.nudges && evidence.state.nudges[child];
+  var since = Math.max(a && typeof a.first_seen === 'number' ? a.first_seen : 0, n && typeof n.sent_at === 'number' ? n.sent_at : 0);
+  var stopped = evidence.stopped;
+  var stoppedAt = Math.max(stopped[child] || 0, stopped[name] || 0, n && stopped[n.ref_id] || 0);
+  if (terminal || (stoppedAt > 0 && stoppedAt >= since)) return true;
+  return live !== null || (a && a.running === true) ? false : null;
+}
+
+function snRuntimeRows(p, home, session, doc, rel) {
+  var rows = doc && Array.isArray(doc.rows) ? doc.rows : [];
+  if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows.filter(function (r) { return r && r.session === session; });
+  var evidence = snRuntimeEvidence(p, home), changed = false, kept = [], marker = ah.cfg('silent_nudge.rt_repair').marker;
+  rows.forEach(function (r) {
+    if (!r || r.session !== session) return;
+    var verdict = snRetired(r.child, r.name, session, evidence);
+    var retired = verdict === true || (verdict === null && r[marker] === true);
+    if ((retired || r[marker] !== undefined) && r[marker] !== retired) { r[marker] = retired; changed = true; }
+    if (!retired) kept.push(r);
+  });
+  if (changed) { try { ah.state.writeAtomic(rel, JSON.stringify(doc)); } catch (e) { /* read-time filtering still releases stale blocks */ } }
+  return kept;
+}
+
 function snRuntimeEscalation(p, home, session) {
   if (!session) return null;
   var file = ah.cfg('agent_nudge.runtime_escalation').file;
-  var raw = ah.fs.readText(home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('agent_tracker.paths').dir + '/' + file);
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('agent_tracker.paths').dir + '/' + file;
+  var raw = ah.fs.readText(home + '/' + rel);
   if (raw === null) return null;
   var doc; try { doc = JSON.parse(raw); } catch (e) { return null; }
-  var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
+  var rows = snRuntimeRows(p, home, session, doc, rel);
   // The block-tier rows (the engine marks them) and the repeated-reminder rows (GH #484) count against their own caps, so one cannot use up the other.
   var blockRows = rows.filter(function (r) { return r.block === true; });
   var otherRows = rows.filter(function (r) { return r.block !== true; });
   if (blockRows.length > 0) {
-    var b = snRtStop(home, session, blockRows, ah.cfgNum('silent_nudge.rt_block_cap'), ah.cfg('silent_nudge.rt_block_state_file'), ah.cfg('silent_nudge.msg_rt_block_what'), ah.cfg('silent_nudge.msg_rt_block_instead'));
+    var b = snRtStop(p, home, session, blockRows, ah.cfgNum('silent_nudge.rt_block_cap'), ah.cfg('silent_nudge.rt_block_state_file'), ah.cfg('silent_nudge.msg_rt_block_what'), ah.cfg('silent_nudge.msg_rt_block_instead'));
     if (b !== null) return b;
   }
-  if (otherRows.length > 0) return snRtStop(home, session, otherRows, ah.cfgNum('silent_nudge.rt_stop_cap'), ah.cfg('silent_nudge.rt_state_file'), ah.cfg('silent_nudge.msg_rt_what'), ah.cfg('silent_nudge.msg_rt_instead'));
+  if (otherRows.length > 0) return snRtStop(p, home, session, otherRows, ah.cfgNum('silent_nudge.rt_stop_cap'), ah.cfg('silent_nudge.rt_state_file'), ah.cfg('silent_nudge.msg_rt_what'), ah.cfg('silent_nudge.msg_rt_instead'));
   return null;
 }
 
-function snRtStop(home, session, rows, cap, stateFile, whatTpl, insteadTpl) {
+function snRtStop(p, home, session, rows, cap, stateFile, whatTpl, insteadTpl) {
   if (cap < 1) return null;
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + stateFile;
   var given = {}, sraw = ah.fs.readText(home + '/' + rel);
@@ -232,7 +278,7 @@ function snRtStop(home, session, rows, cap, stateFile, whatTpl, insteadTpl) {
   // house format: fact, then "Do now:"; no why line (an order is not "advisory")
   var reason = text.message('block', ah.cfg('silent_nudge.guard_name'), {
     what: text.render(whatTpl, { names: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more }), instead: insteadTpl });
-  return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } };
+  return stopReblock.finish(ah.cfg('silent_nudge.guard_name'), p, { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } }, rows.map(function (r) { return [r.child, r.name, r.block, r.reminders]; }).sort());
 }
 
 function decide(p, opts) { return snDecide(p, opts); }
@@ -256,6 +302,10 @@ function snDecide(p, opts) {
   if (!isFinite(minutes) || minutes < 1) minutes = ah.cfgNum('silent_nudge.min_default');
   var threshold = minutes * 60000, now = ah.clock.now();
   var candidates = snCandidates(p, home, now, threshold, session, true);
+  if (candidates && candidates.length && ah.settings.bool('silent_nudge.rt_reconcile_setting')) {
+    var evidence = snRuntimeEvidence(p, home);
+    candidates = candidates.filter(function (c) { return snRetired(c.id, c.label, session, evidence) !== true; });
+  }
   if (candidates === null || candidates.length === 0) return 'allow';
   var stateRel = ah.cfg('silent_nudge.state_file');
   var state = snState(home + '/' + stateRel);
@@ -323,5 +373,5 @@ function snDecide(p, opts) {
   var hint = session ? text.render(ah.cfg('silent_nudge.ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: snAckPath(home, session) }) : '';
   var reason = text.message('block', guard, { what: what, why: ah.cfg('silent_nudge.msg_why'), instead: instead, allowed: ah.cfg('silent_nudge.msg_allowed'), extra: [hint] });
   ah.metric('silent_agent_nudge_fired', []); // #519: every Stop nudge said is counted
-  return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } };
+  return stopReblock.finish(guard, p, { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } }, shown.map(function (c) { return [c.id, c.snapshot]; }).sort());
 }

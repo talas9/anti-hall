@@ -99,7 +99,9 @@ function cgFrame(body, ctx) {
     why: ah.cfg('devswarm_gates.cg_why'), override: skip,
     extra: [body], details: true,
   }, ctx.sid);
-  return text.blockJson(reason);
+  var reply = stopReblock.finish(guard, ctx.p, { exact: { code: 0, out: text.blockJson(reason), err: '' } }, { body: body, workspace: cgBuilder(), durable: ctx.durable, native: ctx.native });
+  ctx.err += reply.exact.err;
+  return reply.exact.out;
 }
 
 // ---- the planned writes (applied at the end) --------------------------------------------------------------

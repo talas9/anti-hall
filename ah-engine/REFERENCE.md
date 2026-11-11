@@ -4446,6 +4446,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.rt_block_state_file` | `runtime-block-stops.json` |  |  | Per-session count of the block-tier runtime Stop blocks given, under the engine state directory. |
 | `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
 | `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
+| `silent_nudge.rt_reconcile_setting` | `6 entries` |  |  | Reconcile runtime escalation snapshots against current agent completion and recorded stop answers at Stop; retain stale rows with an audit marker (guards.runtimeStopReconcile, default on). Both hosts share this logic. |
+| `silent_nudge.rt_repair` | `1 entries` |  |  | Audit marker added to runtime escalation rows by the idempotent no-delete Stop repair; false means the row remains live. |
 | `silent_nudge.rt_state_file` | `runtime-escalation-stops.json` |  |  | Per-session count of the runtime-escalation Stop blocks given, under the engine state directory. |
 | `silent_nudge.rt_stop_cap` | `1` |  |  | How many times per session an open runtime escalation (agent_nudge.runtime_escalation) may block the coordinator's Stop (0 = never block); it never loops. |
 | `silent_nudge.rt_unrecorded_log` | `2 entries` |  |  | The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494). |
@@ -4485,6 +4487,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `stale_note.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.staleAgentStopNote, default on). |
 | `stale_note.summary` | `Advisory: a TaskStop on an agent that was sent a message or resumed after its...` |  |  | One-line description of the stale-agent-stop-note check in the generated reference. |
 | `stale_note.tool` | `TaskStop` |  |  | The tool this check answers. |
+
+### agent_controls.toml / stop_reblock
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `stop_reblock.category` | `reblock_loop` |  |  | Category of waste_events_total counted for each unchanged Stop block released by the breaker; the counter registry remains in telemetry.toml. |
+| `stop_reblock.excluded` | `11 items` |  |  | Safety/evidence and destructive-action checks never use the coordination Stop breaker, even if accidentally added to its participant list. PreToolUse paths do not call the breaker. |
+| `stop_reblock.guards` | `devswarm-child-gate, task-guard, auto-handover-pause-nag, silent-agent-nudge` |  |  | Coordination Stop checks explicitly participating in the JS breaker. The idle-tasks branch alone opts in for task-guard; a new check is excluded until reviewed. |
+| `stop_reblock.lock` | `3 entries` |  |  | Retained per-session flock file and bounded wait for the immediate repeat-budget read/modify/write; group supplies the existing lock timings. Lock failure preserves the original block. |
+| `stop_reblock.max_setting` | `5 entries` |  |  | Maximum repeats after the first identical Stop block on unchanged state (guards.stopReblockMax, default 2); zero releases the first repeat. The budget is persisted immediately, independent of assistant replies. |
+| `stop_reblock.normalise` | `\b\d+(?:\.\d+)?\s*(?:hours?\\|hrs?\\|h\\|minutes?\\|mins?\\|min\\|seconds?\\|secs?\\|...` |  |  | Elapsed runtime fragments ignored when identifying the same Stop reason. Subject IDs, task counts and action text remain significant. |
+| `stop_reblock.path` | `2 entries` |  |  | Per-session immediate breaker record under the anti-hall directory, keyed by a hash of the session ID. |
+| `stop_reblock.pause_guard` | `auto-handover-pause-nag` |  |  | Stop check ID of the handover pause reminder; its message and skip name are shared with auto-handover, but its repeat budget is independent. |
+| `stop_reblock.released` | `Unchanged Stop block released: {guard}.\n` |  |  | One short line when an unchanged coordination Stop block first exhausts its repeat budget; later identical releases stay quiet. |
+| `stop_reblock.setting` | `6 entries` |  |  | Bound unchanged coordination Stop repeats on both hosts (guards.stopReblock, default on). Safety and destructive-action checks are excluded; changed reasons or meaningful guard state reset the budget. |
 
 ### spawn_guards.toml / devswarm_comms
 

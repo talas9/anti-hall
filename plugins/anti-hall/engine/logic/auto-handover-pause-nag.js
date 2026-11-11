@@ -79,5 +79,7 @@ function decide(p) {
   }
   if (w.inferred) cb.writeInferred(w.inferred);
   if (w.latch) cb.writeLatch(tag, w.latch);
-  return reason === null ? 'allow' : pnBlock(reason);
+  if (reason === null) return 'allow';
+  var handover = cb.sessionHandover(p);
+  return stopReblock.finish(ah.cfg('stop_reblock.pause_guard'), p, pnBlock(reason), { pct: result && Math.round(result.pct), max: result && result.max, handover: handover });
 }

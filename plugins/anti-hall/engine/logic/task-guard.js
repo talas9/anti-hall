@@ -521,7 +521,8 @@ function tgDecideCore(p) {
   if (rule) tgIdleRuleCount(idle, idle ? demand.dispatch : nudge, skips, now);
   var note = plan.write();
   if (note) reason += '\n' + note;
-  return tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
+  var blocked = tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
+  return idle ? stopReblock.finish(ah.cfg('task_guard.guard_name'), p, blocked, tasks.map(function (t) { return [t.id, t.status, t.owner, t.content, t.description, t.blockedBy]; }).sort()) : blocked;
 }
 
 // R-idle counters, written only for a block that is delivered: fired by kind, the tasks it listed, the tasks the filter kept out by reason,
