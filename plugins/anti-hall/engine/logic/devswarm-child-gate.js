@@ -402,17 +402,13 @@ function cgCronRecognised(c) {
 }
 
 // Whether a recognised entry is the live mailbox tick job: it repeats, has a schedule, its prompt RUNS the tick command (devswarm_gates.
-// cg_cron_prompt_re, not a prompt that merely mentions it) and it has not lapsed. An expiry that cannot be read counts as lapsed, so the
-// gate errs toward the warning.
+// cg_cron_prompt_re, not a prompt that merely mentions it) (the payload carries no expiry).
 function cgCronIsTick(ctx, c) {
   if (c[ah.cfg('devswarm_gates.cg_payload_cron_recurring_field')] !== true) return false;
   var sched = c[ah.cfg('devswarm_gates.cg_payload_cron_schedule_field')];
   if (typeof sched !== 'string' || sched.trim() === '') return false;
   if (!new RegExp(ah.cfg('devswarm_gates.cg_cron_prompt_re')).test(c[ah.cfg('devswarm_gates.cg_payload_cron_prompt_field')])) return false;
-  var exp = c[ah.cfg('devswarm_gates.cg_payload_cron_expiry_field')];
-  if (exp === undefined || exp === null) return true;
-  var at = typeof exp === 'number' ? exp : typeof exp === 'string' ? Date.parse(exp) : NaN;
-  return cgFinite(at) && at > ctx.now;
+  return true;
 }
 
 // The Stop payload's cron list (Claude Code 2.1.145+, devswarm.cronFromPayload): null when the switch is off, the payload carries no list

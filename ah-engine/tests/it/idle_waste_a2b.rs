@@ -231,22 +231,28 @@ fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
         }
         e
     };
-    let past = now_ms() - 3600 * 1000;
-    let future = now_ms() + 24 * 3600 * 1000;
     let cases: Vec<(&str, serde_json::Value)> = vec![
         ("mention", serde_json::json!([{"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": "Do not run inbox tick"}])),
         ("mention-with-cli", serde_json::json!([with(serde_json::json!({"prompt": "never run /x/ah-engine mesh inbox tick b-1 --child"}))])),
         ("one-shot", serde_json::json!([with(serde_json::json!({"recurring": false}))])),
         ("no-schedule", serde_json::json!([with(serde_json::json!({"schedule": ""}))])),
-        ("expired", serde_json::json!([with(serde_json::json!({"expiresAt": past}))])),
-        ("expiry-unreadable", serde_json::json!([with(serde_json::json!({"expiresAt": "soon"}))])),
+        ("mention-lead-in", serde_json::json!([with(serde_json::json!({"prompt": "Mailbox tick: do not run inbox tick"}))])),
+        ("mention-node", serde_json::json!([with(serde_json::json!({"prompt": "never run node /x/devswarm.js inbox tick b-1"}))])),
     ];
     for (name, list) in cases {
         let h = stale_child(&format!("cron-{name}"));
         missing(&gate(&h, Some(list), &CHILD_ENV), name);
     }
     // the true positives still end the warning: the real job, with or without a (future) expiry
-    for (name, e) in [("real", real.clone()), ("future-expiry", with(serde_json::json!({"expiresAt": future})))] {
+    // the shapes the directives and a real scheduled record carry: the child directive, the Primary text, the host's "Mailbox tick:" record
+    let shapes = [
+        ("real", real.clone()),
+        ("child-directive", with(serde_json::json!({"prompt": "node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet"}))),
+        ("primary-text", with(serde_json::json!({"prompt": "node \"$CLI\" inbox tick prim --quiet"}))),
+        ("mailbox-tick-lead", with(serde_json::json!({"prompt": "Mailbox tick: run `node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet`"}))),
+        ("quoted-engine", with(serde_json::json!({"prompt": "\"/Users/u/.anti-hall/ah-engine/bin/ah-engine\" mesh inbox tick b-1 --quiet"}))),
+    ];
+    for (name, e) in shapes {
         let h = stale_child(&format!("cron-ok-{name}"));
         let out = gate(&h, Some(serde_json::json!([e])), &CHILD_ENV);
         assert!(!out.contains("Mailbox cron missing"), "{name}: a genuine tick job is not missing: {out}");
