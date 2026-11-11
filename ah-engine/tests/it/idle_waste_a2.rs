@@ -348,7 +348,7 @@ fn repeated_subagent_start_is_once_per_child_but_new_children_receive_protocol()
 }
 
 #[test]
-fn orchestration_full_spawn_block_is_once_per_session_across_epochs() {
+fn orchestration_full_spawn_block_is_delivered_once_per_context_epoch() {
     let h = Home::new("orch-dedupe");
     let dir = h.home().join(".anti-hall/orch-full");
     std::fs::create_dir_all(&dir).unwrap();
@@ -356,6 +356,78 @@ fn orchestration_full_spawn_block_is_once_per_session_across_epochs() {
     for epoch in ["first", "second"] {
         std::fs::write(dir.join("orch-full-s1.json"), serde_json::json!({"decision":"pending","epochId":epoch,"sentAt":now_s()*1000}).to_string()).unwrap();
         let out = h.check("orch-on-spawn", &p, &[]);
-        assert_eq!(out.contains("ORCHESTRATION DISCIPLINE"), epoch == "first", "epoch {epoch}: {out}");
+        assert!(out.contains("ORCHESTRATION DISCIPLINE"), "epoch {epoch}: {out}");
+        assert_eq!(h.check("orch-on-spawn", &p, &[]), "", "same epoch stays quiet");
+    }
+}
+
+fn orch_marker(h: &Home, session: &str, epoch: &str) {
+    let dir = h.home().join(".anti-hall/orch-full");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("orch-full-{session}.json")), serde_json::json!({"decision":"pending","epochId":epoch,"sentAt":1}).to_string()).unwrap();
+}
+
+#[test]
+fn orchestration_delivery_is_isolated_by_explicit_session_id() {
+    let h = Home::new("orch-sessions");
+    for session in ["s1", "s2"] {
+        orch_marker(&h, session, "same-epoch");
+        let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":session,"tool_name":"Agent"});
+        assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"), "{session} receives its own block");
+        assert_eq!(h.check("orch-on-spawn", &p, &[]), "");
+    }
+}
+
+#[test]
+fn malformed_persisted_advisory_json_fails_open() {
+    let h = Home::new("advisory-corrupt");
+    let p = serde_json::json!({"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"child-one"});
+    let env = [("ANTIHALL_PROTOCOL_LEVEL", "full")];
+    assert!(!h.check("verify-first-subagent", &p, &env).is_empty());
+    assert_eq!(h.check("verify-first-subagent", &p, &env), "");
+    std::fs::write(h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json"), "{not json").unwrap();
+    assert!(!h.check("verify-first-subagent", &p, &env).is_empty(), "damaged persisted state speaks");
+}
+
+#[test]
+fn session_only_advisory_is_delivered_again_after_context_reset() {
+    let h = Home::new("advisory-context-reset");
+    let p = serde_json::json!({"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"child-one"});
+    let env = [("ANTIHALL_PROTOCOL_LEVEL", "full")];
+    for source in ["startup", "compact", "clear", "resume"] {
+        let reset = serde_json::json!({"hook_event_name":"SessionStart","session_id":"s1","source":source});
+        assert_eq!(h.check("emit-dedupe-reset", &reset, &[]), "");
+        assert!(!h.check("verify-first-subagent", &p, &env).is_empty(), "{source}: lost context receives protocol again");
+        assert_eq!(h.check("verify-first-subagent", &p, &env), "", "{source}: one copy in the new context");
+    }
+}
+
+#[test]
+fn undelivered_orchestration_injection_uses_retry_without_claiming_delivery() {
+    let h = Home::new("orch-retry");
+    orch_marker(&h, "s1", "retry");
+    let tp = h.dir.join("undelivered.jsonl");
+    std::fs::write(&tp, "{\"type\":\"user\",\"timestamp\":\"2026-01-01T00:00:00.000Z\"}\n").unwrap();
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent","transcript_path":tp});
+    assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"));
+    let dedupe_path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+    let attempted = std::fs::read_to_string(&dedupe_path).unwrap();
+    // No attachment was delivered. Expire the first claim's lease without waiting on wall time.
+    std::fs::write(h.home().join(".anti-hall/orch-full/orch-full-s1-retry-claim.json"), "{\"at\":1}").unwrap();
+    assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"), "an attempted emit is not proof of delivery: retry speaks");
+    assert_eq!(std::fs::read_to_string(dedupe_path).unwrap(), attempted, "a retry does not turn an attempted advisory into a delivery record");
+    assert_eq!(h.check("orch-on-spawn", &p, &[]), "", "only the existing bounded retry slot is used");
+}
+
+#[test]
+fn orchestration_delivery_returns_after_compaction_clear_and_resume() {
+    let h = Home::new("orch-context-loss");
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent"});
+    for source in ["startup", "compact", "clear", "resume"] {
+        let reset = serde_json::json!({"hook_event_name":"SessionStart","session_id":"s1","source":source});
+        assert_eq!(h.check("emit-dedupe-reset", &reset, &[]), "");
+        orch_marker(&h, "s1", source);
+        assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"), "{source}: context receives rules");
+        assert_eq!(h.check("orch-on-spawn", &p, &[]), "", "{source}: only once in this context");
     }
 }

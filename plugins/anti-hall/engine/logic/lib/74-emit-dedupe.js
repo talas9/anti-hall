@@ -38,10 +38,11 @@ var dedupe = {
       var state = dedupe.readState(dedupe.stateRel(sid)), prev = state[key], hash = ah.sha1(JSON.stringify(facts === undefined ? null : facts));
       var reset = state[ah.cfg('emit_dedupe.reset_key')], resetAt = reset && reset.resetAt || 0;
       var sessionOnly = profile.session_only === true;
-      var valid = prev && typeof prev.lastEmittedAt === 'number' && isFinite(prev.lastEmittedAt) && prev.lastEmittedAt <= now && (sessionOnly || prev.lastEmittedAt >= resetAt);
+      // The saved reset marker distinguishes a new context even when its reset and the previous emit share a timestamp.
+      var valid = prev && typeof prev.lastEmittedAt === 'number' && isFinite(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.resetAt || 0) === resetAt;
       var seconds = ah.settings.num(profile.repeat), elapsed = valid ? now - prev.lastEmittedAt : 0;
       var emit = !!content && (!valid || prev.hash !== hash || (seconds > 0 && elapsed >= seconds * ah.cfgNum('emit_dedupe.ms_per_second')));
-      var entry = { hash: hash, lastSeenAt: now, lastEmittedAt: emit || !valid ? now : prev.lastEmittedAt, sessionOnly: sessionOnly };
+      var entry = { hash: hash, lastSeenAt: now, lastEmittedAt: emit || !valid ? now : prev.lastEmittedAt, sessionOnly: sessionOnly, resetAt: resetAt };
       if (!dedupe.writeEntry(sid, key, entry, now)) return !!content;
       if (content && !emit) {
         dedupe.bumpSuppressed(sid, now);

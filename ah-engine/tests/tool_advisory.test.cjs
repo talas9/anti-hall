@@ -7,11 +7,11 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const source = fs.readFileSync(path.join(__dirname, '../../plugins/anti-hall/engine/logic/lib/74-emit-dedupe.js'), 'utf8');
-function fixture() {
+function fixture(sessionOnly = false) {
   let now = 10000, writable = true, enabled = true, unreadable = false;
   const files = new Map(), metrics = [];
   const cfg = {
-    'tool_advisory.profiles': { usage: { setting: 'usage.enabled', repeat: 'usage.repeat' } },
+    'tool_advisory.profiles': { usage: { setting: 'usage.enabled', repeat: 'usage.repeat', session_only: sessionOnly } },
     'tool_advisory.key_prefix': 'tool:', 'emit_dedupe.state_dir': 'store', 'emit_dedupe.file_prefix': 'session',
     'emit_dedupe.reset_key': 'reset', 'emit_dedupe.stats_key': 'stats', 'emit_dedupe.session_safe_max': 64,
     'emit_dedupe.key_ttl_ms': 86400000, 'emit_dedupe.ms_per_second': 1000, 'waste.bytes_per_token': 4,
@@ -29,7 +29,7 @@ function fixture() {
   vm.runInContext(source, context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../plugins/anti-hall/engine/logic/lib/83-waste.js'), 'utf8'), context);
   return { emit: (facts, content = 'notice') => context.dedupe.advisory({ session_id: 's' }, 'usage', facts, content),
-    advance: ms => now += ms, disable: () => enabled = false, failWrites: () => writable = false, failReads: () => unreadable = true, metrics };
+    reset: () => context.dedupe.reset('s'), advance: ms => now += ms, disable: () => enabled = false, failWrites: () => writable = false, failReads: () => unreadable = true, metrics };
 }
 test('ten identical tool advisories emit once and count nine saved events with the source', () => {
   const f = fixture();
@@ -56,4 +56,16 @@ test('disabled behavior and failed persistence both speak', () => {
 test('an unavailable state home fails open instead of losing protocol context', () => {
   const f = fixture(); f.failReads();
   assert.equal(f.emit('A'), true); assert.equal(f.emit('A'), true);
+});
+
+test('session-only records honor a context reset even in the same millisecond', () => {
+  const f = fixture(true);
+  assert.equal(f.emit('A'), true);
+  assert.equal(f.emit('A'), false);
+  f.reset();
+  assert.equal(f.emit('A'), true);
+  assert.equal(f.emit('A'), false);
+  f.advance(1); f.reset();
+  assert.equal(f.emit('A'), true);
+  assert.equal(f.emit('A'), false);
 });
