@@ -14275,10 +14275,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.own_reply_clause` | ` READING IS NOT SUFFICIENT: {text} from {askers}{extra} — you must DECIDE fro...` |  |  | The question clause of the own-inbox segment. Placeholders: {text}, {askers}, {extra}, {cli}. |
 | `devswarm_parent.own_unread` | `{prefix}you have {count} unread parent/peer message(s) addressed to YOU (the ...` |  |  | The Primary's own-inbox segment when unread mail is waiting. Placeholders: {prefix}, {count}, {cli}, {id}. |
 | `devswarm_parent.parked_hide_signals` | `stall` |  |  | Straying signals hidden on parked rows. Burn remains visible until windowed activity can prove it stale. |
+| `devswarm_parent.parked_max_wait_min` | `60` |  | min | Maximum human-wait age in minutes since transcript activity before stale-status and not-draining signals return. Done and held facts remain authoritative; missing or invalid transcript state never proves a wait. Shared by Claude/OMC and Codex/OMX. |
 | `devswarm_parent.parked_metric_source` | `parked_roster` |  |  | Source label of the stale_flag_on_parked waste event. No token saving is estimated. |
-| `devswarm_parent.parked_sources` | `app_closed, held, done, waiting` |  |  | Explicit facts that park a roster row. Waiting requires a live session and the transcript reader's waiting verdict. A stop verb without a persisted fact is not inferred. |
-| `devswarm_parent.parked_unread_body` | `Unread mail remains available; review it and route any decision needed from t...` |  |  | Unread notice for a group containing parked rows: mail remains visible without accusing a deliberately waiting child of neglect. |
-| `devswarm_parent.parked_urgent_head` | `⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIG...` |  |  | Urgent notice for a group containing parked rows. Genuine high-priority mail remains visible without a stale NOT DRAINING accusation. Placeholders: count, shown, extra, cli. |
+| `devswarm_parent.parked_segment_joiner` | `\n\n` |  |  | Separates the independent parked and live notices when both kinds share an unread or urgent group. |
+| `devswarm_parent.parked_sources` | `app_closed, held, done, waiting` |  |  | Explicit facts that park a roster row. Done and held are authoritative. App closure requires no unread backlog and no proven mid-turn session; unread or unknown transcript state stays actionable. Human waits require a live session and expire after parked_max_wait_min without transcript activity. |
+| `devswarm_parent.parked_unread_body` | `Unread mail remains available; review it and route any decision needed from t...` |  |  | Unread notice for parked rows: mail remains visible without accusing a deliberately waiting child of neglect. |
+| `devswarm_parent.parked_urgent_head` | `⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIG...` |  |  | Urgent notice for parked rows. Genuine high-priority mail remains visible without a stale NOT DRAINING accusation. Placeholders: count, shown, extra, cli. |
 | `devswarm_parent.part_joiner` | `, ` |  |  | Between the parts of a listed workspace. |
 | `devswarm_parent.part_not_draining` | `NOT DRAINING >20m` |  |  | A workspace part: its backlog has not drained. |
 | `devswarm_parent.part_oldest` | `oldest {age}` |  |  | A workspace part: the age of its oldest unread. Placeholder: {age}. |
@@ -14286,7 +14288,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.plan_extras` | ` · +{n} extra{s}` |  |  | What follows a plan label when the child tagged extras. Placeholders: {n}, {s} (the plural s). |
 | `devswarm_parent.plan_straying` | ` · STRAYING: {signals}` |  |  | What follows a plan label while a straying warning is active. Placeholder: {signals}. |
 | `devswarm_parent.plan_tokens` | ` · {tokens} tok` |  |  | What follows a plan label when the child's token burn is known. Placeholder: {tokens}. |
-| `devswarm_parent.plan_tokens_unknown` | ` · tok ?` |  |  | Roster plan token display when the source or sample is missing, unreadable, stale or not fully consumed. |
+| `devswarm_parent.plan_tokens_unknown` | ` · tok ?` |  |  | Roster plan token display when the source or sample is missing, unreadable, stale, truncated or farther behind than token_offset_tolerance_bytes. |
 | `devswarm_parent.plugin_json_rel` | `plugins/anti-hall/.claude-plugin/plugin.json` |  |  | The plugin manifest of the marketplace clone, relative to the clone. |
 | `devswarm_parent.plugin_registry_key` | `anti-hall@anti-hall` |  |  | The key of this plugin in the harness registry. |
 | `devswarm_parent.preview_max` | `80` |  |  | Longest question preview shown (characters). |
@@ -14320,13 +14322,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.sw_orphans_once` | `6 entries` |  |  | Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per session per set of orphaned partition ids, not again on every keepalive or unread-count change (GH #419). Off restores the keepalive repeat. |
 | `devswarm_parent.sw_parked` | `4 entries` |  |  | Switch devswarm.parkedDisplay (default on): explicitly closed, done, held or waiting-on-human rows show parked and do not generate stale-status or not-draining nudges; genuine unread mail still surfaces. Burn and other non-stall signals remain visible because their current rate is not known. |
 | `devswarm_parent.sw_skip_archived` | `6 entries` |  |  | Skip archived rows. |
-| `devswarm_parent.sw_token_unknown` | `4 entries` |  |  | Switch devswarm.tokenUnknown (default on): a plan's roster token total is displayed only when its source exists, is fully sampled and has a recent usage record; otherwise show tok ?. This is a display stopgap, not a transcript resolver. |
+| `devswarm_parent.sw_token_unknown` | `4 entries` |  |  | Switch devswarm.tokenUnknown (default on): a plan's roster token total is displayed only when its source exists, is sampled within token_offset_tolerance_bytes and has a recent usage record; otherwise show tok ?. This is a display stopgap, not a transcript resolver. |
 | `devswarm_parent.table_activity_token` | `live` |  |  | What the activity-only status labels are replaced with before the table is hashed. |
 | `devswarm_parent.table_head` | `💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\...` |  |  | The head of the live workspace table: the title line and the column header. |
 | `devswarm_parent.table_row` | `\| {workspace} \| {label} \| {finish} \| {unread} \| {last} \|` |  |  | One table row. Placeholders: {workspace}, {label}, {finish}, {unread}, {last}. |
 | `devswarm_parent.title_instruction` | `When mentioning a workspace to the human, use its TITLE from the table above ...` |  |  | The reminder that follows a newly sent table: name a workspace by its title. |
 | `devswarm_parent.title_max` | `48` |  |  | Longest workspace title the nudge segments show before it is cut with an ellipsis (truncateTitle). |
 | `devswarm_parent.token_file_kind` | `file` |  |  | The filesystem kind accepted as a resolved token source. Symlinks and directories are not proof of a sampled transcript. |
+| `devswarm_parent.token_offset_tolerance_bytes` | `4096` |  | bytes | Maximum unsampled transcript growth in bytes while a recent roster token sample remains known. Partial trailing lines and small appends are tolerated; truncated sources and larger gaps show tok ?. Shared by Claude and Codex. |
 | `devswarm_parent.tokens_million` | `{v}M` |  |  | The token figure at a million or more. Placeholder: {v}. |
 | `devswarm_parent.tokens_million_at` | `1000000` |  |  | The token count from which the figure is written in millions. |
 | `devswarm_parent.tokens_thousand` | `{v}k` |  |  | The token figure at a thousand or more. Placeholder: {v}. |

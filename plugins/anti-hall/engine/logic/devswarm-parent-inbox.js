@@ -154,18 +154,25 @@ function piSetDefault(key) { return typeof ah.cfg(key).default === 'boolean' ? a
 
 function piLabel(name) { return ah.cfg('devswarm_parent.labels')[name]; }
 
-// Explicit parked facts only. Unknown app/transcript state keeps the live behavior.
-function piRowParked(ctx, id, wt, sid, entry, app) {
+// Explicit completion/hold facts take precedence; app closure alone never excuses an unread backlog.
+function piRowParked(ctx, id, wt, sid, entry, app, unread) {
   if (!ah.settings.bool('devswarm_parent.sw_parked')) return false;
   var sources = ah.cfg('devswarm_parent.parked_sources');
-  if (sources.indexOf('app_closed') >= 0 && app && app.active === false && app.archived === false) return true;
   if (sources.indexOf('done') >= 0 && entry && (entry.archive_ready === true || (entry.gates && entry.gates.done === true))) return true;
   if (sources.indexOf('held') >= 0 && ah.settings.str('devswarm_parent.set_held').split(',').map(function (v) { return v.trim(); }).indexOf(id) >= 0) return true;
-  if (sources.indexOf('waiting') >= 0 && wt && sid && ah.mesh.sessionAlive(sid)) {
-    var b = ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
-    if (b && b.waiting === true) return true;
+  var alive = !!(sid && ah.mesh.sessionAlive(sid));
+  var b = wt && sid ? ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min')) : null;
+  if (b && b.waiting === true) {
+    if (sources.indexOf('waiting') < 0 || !alive) return false;
+    // Use the same source path as childBusy. A wait expires when its transcript has not moved within the configured window.
+    var encoded = wt.split('').map(function (c) { return ah.cfg('devswarm_sup.lv_encode_chars').indexOf(c) >= 0 ? ah.cfg('devswarm_sup.lv_encode_to') : c; }).join('');
+    var file = (ctx.home || spawn.osHome()) + '/' + ah.cfg('mesh_write.claude_dir') + '/' + ah.cfg('devswarm_sup.lv_projects_dir') + '/' + encoded + '/' + sid + ah.cfg('devswarm_sup.lv_transcript_ext');
+    var ts = ah.fs.mtimeMs(file);
+    return piFinite(ts) && ts > 0 && ts <= ctx.now && ctx.now - ts < ah.cfgNum('devswarm_parent.parked_max_wait_min') * ah.cfgNum('devswarm_role.pg_ms_per_min');
   }
-  return false;
+  if (!piFinite(unread)) unread = entry && (piFinite(entry.directUnread) ? entry.directUnread : entry.unread);
+  return sources.indexOf('app_closed') >= 0 && !!(app && app.active === false && app.archived === false)
+    && !(unread > 0) && (!sid || (b && b.seen === true && b.busy === false && !b.unsure));
 }
 
 // `displayStatus(archiveReady, status, activityTs, now, dormant, notDraining, idleAlive)`.
@@ -298,6 +305,9 @@ function piTier(w) {
 
 // `buildUnreadSegment(list, home)`.
 function piUnreadSegment(list, home, cli, now) {
+  var parkedRows = list.filter(function (w) { return w.parked; });
+  var liveRows = list.filter(function (w) { return !w.parked; });
+  if (parkedRows.length && liveRows.length) return piUnreadSegment(parkedRows, home, cli, now) + ah.cfg('devswarm_parent.parked_segment_joiner') + piUnreadSegment(liveRows, home, cli, now);
   var max = ah.cfgNum('devswarm_parent.max_listed');
   var shown = list.slice(0, max).map(function (w) {
     var title = piTruncate(piDisplayName(w.id, w.wsName));
@@ -324,6 +334,9 @@ function piUnreadSegment(list, home, cli, now) {
 
 // `buildUrgentUnreadSegment(list, home)`.
 function piUrgentSegment(list, home, cli) {
+  var parkedRows = list.filter(function (w) { return w.parked; });
+  var liveRows = list.filter(function (w) { return !w.parked; });
+  if (parkedRows.length && liveRows.length) return piUrgentSegment(parkedRows, home, cli) + ah.cfg('devswarm_parent.parked_segment_joiner') + piUrgentSegment(liveRows, home, cli);
   var max = ah.cfgNum('devswarm_parent.max_listed');
   var shown = list.slice(0, max).map(function (w) {
     var parts = [text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread })];
@@ -565,13 +578,12 @@ function piRoster(ctx, summary) {
     var archivedRow = st.marker;
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
-    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs);
+    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unread);
     if (rowParked) {
       if (stuck || notDraining) waste.note(ctx.sid, 'stale_flag_on_parked', ah.cfg('devswarm_parent.parked_metric_source'), 0);
       stuck = false;
       notDraining = false;
       notDrainingForLabel = false;
-      staleBuild = null;
     }
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
     // GH #508 (devswarm.skipArchivedChildren): piRow decides natively whether an explicitly ARCHIVED child is closed (st.closed); off or unsure: as before.
@@ -610,7 +622,7 @@ function piRoster(ctx, summary) {
       idleAlive = act.idleAlive;
     }
     var staleLabel = { label: text.render(ah.cfg('devswarm_parent.stale_build_label'), { version: staleBuild ? staleBuild.version : '' }), rank: piLabel('not_draining').rank };
-    var ds = rowParked && !archivedRow ? piLabel('parked') : (staleBuild && !appArchivedRow) ? staleLabel
+    var ds = (staleBuild && !appArchivedRow) ? staleLabel : rowParked && !archivedRow ? piLabel('parked')
       : archivedRow ? (appArchivedRow ? piLabel('archived') : (notDrainingForLabel ? piLabel('not_draining') : piLabel('archived')))
         : archivedSuperseded ? (notDrainingForLabel ? piLabel('not_draining') : piLabel('superseded'))
           : piDisplayStatus(archiveReady, status, activityTs, now, dormant, notDrainingForLabel, idleAlive, idleMs);
@@ -1005,9 +1017,10 @@ function piPlanCell(home, pf, dormant, plain, parked, sid) {
     var known = tok && typeof tok === 'object' && piFinite(tok.total) && tok.total >= 0;
     if (ah.settings.bool('devswarm_parent.sw_token_unknown')) {
       var source = known && typeof tok.file === 'string' ? ah.fs.lstat(tok.file) : null;
-      known = !!(source && source.kind === ah.cfg('devswarm_parent.token_file_kind') && piFinite(tok.offset) && source.size === tok.offset
+      known = !!(source && source.kind === ah.cfg('devswarm_parent.token_file_kind') && piFinite(tok.offset) && tok.offset >= 0 && source.size >= tok.offset
+        && source.size - tok.offset <= ah.cfgNum('devswarm_parent.token_offset_tolerance_bytes')
         && piFinite(tok.updated_at) && tok.updated_at <= ah.clock.now() && ah.clock.now() - tok.updated_at <= ah.settings.num('devswarm_parent.num_token_fresh_ms')
-        && source.mtimeMs <= tok.updated_at);
+        && (source.size > tok.offset || source.mtimeMs <= tok.updated_at));
       if (!known) { label += ah.cfg('devswarm_parent.plan_tokens_unknown'); ah.metric('token_usage_unresolved'); }
     } else known = known && tok.total > 0;
     if (known) label += text.render(ah.cfg('devswarm_parent.plan_tokens'), { tokens: piTokens(tok.total) });

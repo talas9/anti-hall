@@ -76,7 +76,18 @@ fn missing_tokens_are_unknown_and_current_tokens_remain_visible() {
     h.put(".anti-hall/devswarm/token-usage/p1.json", &serde_json::json!({"total":12000,"file":file,"offset":6,"updated_at":now}).to_string());
     assert!(probe(&h, &cell(false), &[]).contains("12k tok"));
     std::fs::write(&file, "usage\nnew\n").unwrap();
-    assert!(probe(&h, &cell(false), &[]).contains("tok ?"), "{}", probe(&h, &cell(false), &[]));
+    assert!(probe(&h, &cell(false), &[]).contains("12k tok"), "small transcript growth stays known");
+    std::fs::write(&file, "x".repeat(4102)).unwrap();
+    assert!(probe(&h, &cell(false), &[]).contains("12k tok"), "tolerance boundary remains known");
+    std::fs::write(&file, "x".repeat(4103)).unwrap();
+    assert!(probe(&h, &cell(false), &[]).contains("tok ?"), "one byte past tolerance is unknown");
+    std::fs::write(&file, "x").unwrap();
+    assert!(probe(&h, &cell(false), &[]).contains("tok ?"), "truncated transcript is unknown");
+    h.put(".anti-hall/devswarm/token-usage/p1.json", "{broken");
+    assert!(probe(&h, &cell(false), &[]).contains("tok ?"), "corrupt sample is unknown");
+    h.put(".anti-hall/devswarm/token-usage/p1.json", &serde_json::json!({"total":12000,"file":file,"offset":6,"updated_at":now}).to_string());
+    std::fs::write(&file, "x".repeat(8192)).unwrap();
+    assert!(probe(&h, &cell(false), &[]).contains("tok ?"), "large lag stays unknown");
     assert!(probe(&h, &cell(false), &[("ANTIHALL_DEVSWARM_TOKEN_UNKNOWN", "0")]).contains("12k tok"));
 }
 #[test]
@@ -141,4 +152,81 @@ fn parked_normal_mail_remains_visible_without_a_stale_flag_accusation() {
     let out = probe(&h, expr, &[]);
     assert!(out.contains("1 unread"), "{out}");
     assert!(!out.contains("CHILD NOT DRAINING") && !out.contains("wedged"), "{out}");
+}
+
+#[test]
+fn closed_crashed_or_paused_unread_children_keep_flags_and_deliberate_stop_parks() {
+    let h = Home::new("closed-crash");
+    let expr = "(function(){ ah.mesh.sessionAlive=function(){return false;}; ah.mesh.childBusy=function(){return {none:true};}; return JSON.stringify(['stale','paused'].map(function(status){return piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1','/repo','dead',{status:status,unread:1},{active:false,archived:false});}).concat([piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1','/repo','dead',{unread:1,gates:{done:true}},{active:false,archived:false}),piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1','/repo','dead',{unread:1},{active:false,archived:false})]));})()";
+    assert_eq!(probe(&h, expr, &[("ANTIHALL_DEVSWARM_HELD_PARTITIONS", "other")]), "[false,false,true,false]");
+    assert!(
+        probe(
+            &h,
+            "String(piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1',null,null,{unread:1},{active:false,archived:false}))",
+            &[("ANTIHALL_DEVSWARM_HELD_PARTITIONS", "c1")]
+        )
+        .contains("true")
+    );
+}
+
+#[test]
+fn mixed_parked_and_live_mail_keeps_each_rows_instruction() {
+    let h = Home::new("mixed");
+    for segment in ["piUnreadSegment(rows,spawn.osHome(),'/test-cli',ah.clock.now())", "piUrgentSegment(rows,spawn.osHome(),'/test-cli')"] {
+        let expr = format!(
+            "(function(){{var rows=[{{id:'parked-child',parked:true,unread:1}},{{id:'live-child',parked:false,unread:2,status:'stale',notDraining:true}}];return {segment};}})()"
+        );
+        let out = probe(&h, &expr, &[]);
+        assert!(out.contains("CHILD NOT DRAINING") && out.contains("/test-cli send") && out.to_lowercase().contains("parked rows"), "{out}");
+        let live_at = out.find("live-child").unwrap();
+        assert!(out[live_at..].contains("CHILD NOT DRAINING"), "live row needs its own drain instruction: {out}");
+    }
+}
+
+#[test]
+fn parked_rows_keep_stale_build_and_reactivation_restores_status_flags() {
+    let h = Home::new("stale-build");
+    h.put(".anti-hall/devswarm/heartbeats/c1.json", r#"{"version":"0.1.0"}"#);
+    h.put(".anti-hall/devswarm/liveness/c1.json", r#"{"notDraining":true,"status":"stale"}"#);
+    let expr = |done: bool| {
+        "JSON.stringify(piRoster({home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{known:true,value:{version:'9.0.0'}}},{workspaces:{c1:{status:'stale',unread:1,gates:{done:DONE}}}}))".replace("DONE", if done { "true" } else { "false" })
+    };
+    let parked = probe(&h, &expr(true), &[]);
+    assert!(parked.contains("stale anti-hall 0.1.0") && parked.contains("staleAntiHallMessage\":\""), "{parked}");
+    assert!(parked.contains("\"status\":null") && parked.contains("\"notDraining\":false"), "{parked}");
+    let live = probe(&h, &expr(false), &[]);
+    assert!(live.contains("\"status\":\"stale\""), "{live}");
+    h.put(".anti-hall/devswarm/heartbeats/c1.json", "{broken");
+    let parked = probe(&h, &expr(true), &[]);
+    assert!(parked.contains("\"label\":\"parked\"") && parked.contains("\"notDraining\":false"), "{parked}");
+    let resumed = probe(&h, &expr(false), &[]);
+    assert!(resumed.contains("\"status\":\"stale\"") && resumed.contains("\"notDraining\":true"), "{resumed}");
+}
+
+#[test]
+fn waiting_timeout_and_missing_corrupt_state_are_not_parked() {
+    let h = Home::new("wait-timeout");
+    let expr = "(function(){ah.mesh.sessionAlive=function(){return true;};return String(piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1','/repo','s1',{unread:1},{active:false,archived:false}));})()";
+    assert_eq!(probe(&h, expr, &[]), "false", "missing transcript is not a deliberate stop");
+    h.put(".claude/projects/-repo/s1.jsonl", "{\"type\":\"user\",\"timestamp\":\"2026-11-10T10:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n{\"type\":\"assistant\",\"timestamp\":\"2026-11-10T10:00:01.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"q1\",\"name\":\"AskUserQuestion\",\"input\":{\"question\":\"Choose?\"}}]}}\n");
+    let waiting = "(function(){ah.mesh.sessionAlive=function(){return true;};return String(piRowParked({home:spawn.osHome(),now:ah.clock.now()+7200000},'c1','/repo','s1',{unread:1},null));})()";
+    assert_eq!(probe(&h, waiting, &[]), "false", "long wait must escalate");
+    let recent = waiting.replace("ah.clock.now()+7200000", "ah.clock.now()");
+    assert_eq!(probe(&h, &recent, &[]), "true", "recent human wait parks");
+    h.put(".claude/projects/-repo/s1.jsonl", "{broken\n");
+    assert_eq!(probe(&h, &recent, &[]), "false", "parked -> unknown returns flags");
+    assert_eq!(probe(&h, expr, &[]), "false", "corrupt transcript is not a deliberate stop");
+}
+
+#[test]
+fn effective_folded_unread_cannot_park_and_paused_roster_keeps_flags() {
+    let h = Home::new("folded-unread");
+    let folded = "String(piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1',null,null,{directUnread:0},{active:false,archived:false},1))";
+    assert_eq!(probe(&h, folded, &[]), "false", "folded unread must block app closure parking");
+    h.put(".anti-hall/devswarm/liveness/c1.json", r#"{"notDraining":true,"status":"stale"}"#);
+    let roster = "(function(){ahHost.piSnap=function(){return JSON.stringify({readable:true,file:true,focused:null});};ahHost.piWs=function(){return JSON.stringify({id:'c1',active:false,archived:false});};return JSON.stringify(piRoster({home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{known:true,value:null}},{workspaces:{c1:{sessionId:'dead',status:'paused',unread:1}}}));})()";
+    let out = probe(&h, roster, &[]);
+    assert!(out.contains("\"parked\":false") && out.contains("\"notDraining\":true") && out.contains("\"status\":\"paused\""), "{out}");
+    let mid_turn = "(function(){ah.mesh.sessionAlive=function(){return true;};ah.mesh.childBusy=function(){return {busy:true,waiting:false,seen:true};};return String(piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1','/repo','live',{unread:0},{active:false,archived:false}));})()";
+    assert_eq!(probe(&h, mid_turn, &[]), "false", "closed UI does not excuse a mid-turn live session");
 }
