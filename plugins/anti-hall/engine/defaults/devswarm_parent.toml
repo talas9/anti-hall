@@ -804,7 +804,7 @@ value = "\n\n"
 
 # #709 F5: wake coverage has its own state, independent of reminder keepalives.
 [devswarm_parent.dir_wake_ctl]
-doc = "Per-session wake-path episode records under the DevSwarm state directory. An unchanged missing watcher is announced once; a live heartbeat clears the episode."
+doc = "Per-session wake-path episode records under the DevSwarm state directory. An unchanged missing watcher is announced once; a live workspace watcher lock clears the episode."
 value = "wake-ctl"
 
 [devswarm_parent.set_wake_rearm_cooldown]

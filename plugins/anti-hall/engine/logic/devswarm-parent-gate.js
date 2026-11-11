@@ -1052,7 +1052,7 @@ function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries,
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
   if (!(ageMin === null || ageMin > warn)) return false;
   if (ah.settings.bool('wake_watch.set_enabled') === false) return false;
-  if (sess.wakeWatchLive(home, sid, now) || piWatcherLive(home, ownId, now)) return false;
+  if (piWatcherLive(home, ownId, now)) return false;
   var cron = text.render(ah.cfg('devswarm_parent.wake_cron_part'), { cron: dwWakeCron(), cli: l.cli, id: ownId });
   var wakeText = text.render(ah.cfg('devswarm_parent.wake_both'), { mon: text.render(ah.cfg('devswarm_parent.wake_monitor'), { watcher: l.watcher }), cron: cron });
   var wsig = ah.sha1(ah.cfg('devswarm_role.pg_sig_prefix') + ah.cfg('devswarm_role.pg_kind_wakepath'));

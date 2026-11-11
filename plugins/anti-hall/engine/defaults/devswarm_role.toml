@@ -897,8 +897,8 @@ doc = "Parent-gate own-mailbox counts where the old projection (messageCount - o
 value = { kind = "counter", unit = "counts", labels = [] }
 
 [devswarm_role.msg_wake_live]
-doc = "SessionStart mailbox text when a live session watcher already owns delivery. Placeholders: {cron_part}. No duplicate model-owned Monitor is requested."
-value = " MAILBOX WAKE: a live session wake-watch already covers delivery. Keep it running. {cron_part}"
+doc = "SessionStart text when the session heartbeat proves the agent-wake half is live. It does not prove mailbox coverage, which requires a live workspace watcher lock. Placeholders: {cron_part}. No duplicate agent-wake Monitor is requested."
+value = " AGENT WAKE: this session's agent-wake half is live. Keep it running. This heartbeat alone does not prove mailbox coverage; that requires a live workspace watcher lock. {cron_part}"
 
 [devswarm_role.msg_wake_live_nocron]
 doc = "Cron part of the live-watcher SessionStart text for a Primary whose mailbox cron is only needed while a child is alive."

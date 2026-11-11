@@ -795,7 +795,8 @@ function piClaudePrimary() {
 function piWakeLine(ctx, cwd, cli, opts, lc) {
   if (!lc.known) return null;
   var wanted = ah.settings.bool('wake_watch.set_enabled') !== false;
-  var live = sess.wakeWatchLive(ctx.home, ctx.sid, ctx.now) || piWatcherLive(ctx.home, ctx.primaryId, ctx.now);
+  // The session heartbeat covers agent wake only; childless startup can leave the mailbox half stopped.
+  var live = piWatcherLive(ctx.home, ctx.primaryId, ctx.now);
   var state = !wanted ? 'off' : live ? 'live' : lc.live ? 'missing' : 'idle';
   if (!lc.live) { piWakeEpisode(ctx, state); return null; }
   var tick = piJson(piDevswarmDir(ctx.home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ctx.primaryId + '.json');
