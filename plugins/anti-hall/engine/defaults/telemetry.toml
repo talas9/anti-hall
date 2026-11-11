@@ -916,3 +916,11 @@ value = { kind = "counter", unit = "decisions", labels = ["action"] }
 [metric.waste_events_total]
 doc = "Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level). Counts only while the daemon holds the counter."
 value = { kind = "counter", unit = "events", labels = ["category", "source"] }
+
+[metric.waste_tokens_total]
+doc = "Estimated tokens of the text the smarter rules did not send (#709), by category and source: the bytes of the left-out advisory divided by waste.bytes_per_token. An estimate of the advisory text only, not of the model turn it would have joined (that needs the transcript usage the engine does not expose to scripts). Counts only while the daemon holds the counter."
+value = { kind = "counter", unit = "tokens", labels = ["category", "source"] }
+
+[metric.waste_warnings_total]
+doc = "Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose."
+value = { kind = "counter", unit = "advisories", labels = ["category"] }

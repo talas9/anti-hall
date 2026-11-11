@@ -145,7 +145,7 @@ function pwDiskDue(st, sid, low, nowS, cooldown) {
     if (low.length === 0) return false; // nothing is low: only the recovery above ran
     // the old rule (one warning per cooldown at an unchanged level) would have warned again here: a saved repeat
     var seenAll = low.every(function (v) { var e = pwObj(st.disk[prefix + v.path]); return typeof e.at === 'number' && nowS - e.at >= cooldown; });
-    if (seenAll) ah.metric('waste_events_total', ['category', 'repeated_advisory', 'source', 'disk_unchanged']);
+    if (seenAll) waste.note(sid, 'repeated_advisory', 'disk_unchanged', pwDiskLines(low).join('\n').length);
     return false;
   }
   low.forEach(function (v) { st.disk[prefix + v.path] = { level: v.level, free: pwFreeGb(v.free), at: nowS }; });

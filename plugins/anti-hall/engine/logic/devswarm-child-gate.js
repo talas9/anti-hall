@@ -394,7 +394,29 @@ function cgTickFresh(ctx) {
   return m.known === true;
 }
 
-// `cronMissingWarning`: the warning text, or null (not Claude, no usable id, a recent tick, or too new to judge).
+// The Stop payload's cron list (Claude Code 2.1.145+, devswarm.cronFromPayload): null when the switch is off or the payload carries no list
+// (the age-based check then decides), else whether one of the session's scheduled jobs runs the mailbox tick. A list entry of another shape
+// is not a tick job.
+function cgPayloadCron(ctx) {
+  if (!ah.settings.bool('devswarm_gates.sw_cron_from_payload')) return null;
+  var list = ctx.p[ah.cfg('devswarm_gates.cg_payload_crons_field')];
+  if (!Array.isArray(list)) return null;
+  var marker = ah.cfg('devswarm_gates.cg_cron_prompt_marker'), field = ah.cfg('devswarm_gates.cg_payload_cron_prompt_field');
+  return list.some(function (c) { return jx.isObj(c) && typeof c[field] === 'string' && c[field].indexOf(marker) >= 0; });
+}
+
+// The warning for a stale sign of life of `ageMs`, with the key of the age-based text: null when the payload lists the tick job (nothing
+// is missing; the stale marker alone is not evidence), the payload text when the list shows it missing, else the age-based text.
+function cgCronText(ctx, textKey, ageMs, perMin) {
+  var m = String(Math.round(ageMs / perMin)), listed = cgPayloadCron(ctx);
+  if (listed === true) {
+    waste.note(ctx.sid, 'forced_turn', ah.cfg('devswarm_gates.cg_cron_present_metric'), 0);
+    return null;
+  }
+  return text.render(ah.cfg(listed === false ? 'devswarm_gates.cg_cron_missing_payload' : textKey), { m: m }) + cgWakeLine(ctx.l);
+}
+
+// `cronMissingWarning`: the warning text, or null (not Claude, no usable id, a recent tick, too new to judge, or the payload lists the tick job).
 function cgCronWarn(ctx) {
   if (!cgClaude()) return null;
   var id = cgBuilder();
@@ -405,12 +427,12 @@ function cgCronWarn(ctx) {
   var ageMs = marker && cgFinite(marker.ts) ? ctx.now - marker.ts : null;
   if (ageMs !== null) {
     if (ageMs <= warnMs) return null;
-    return text.render(ah.cfg('devswarm_gates.cg_cron_missing_tick'), { m: String(Math.round(ageMs / perMin)) }) + cgWakeLine(ctx.l);
+    return cgCronText(ctx, 'devswarm_gates.cg_cron_missing_tick', ageMs, perMin);
   }
   var hb = cgJson(dir + ah.cfg('devswarm_gates.cg_heartbeats_dir') + '/' + id + '.json');
   var hbAge = hb && cgFinite(hb.ts) ? ctx.now - hb.ts : null;
   if (hbAge === null || hbAge <= warnMs) return null;
-  return text.render(ah.cfg('devswarm_gates.cg_cron_missing_hb'), { m: String(Math.round(hbAge / perMin)) }) + cgWakeLine(ctx.l);
+  return cgCronText(ctx, 'devswarm_gates.cg_cron_missing_hb', hbAge, perMin);
 }
 
 // `recordCronMissingWarn`: one `{ts}` line appended, the file capped to its newest lines ({rel, body}, read before the budget write).

@@ -521,3 +521,61 @@ value = { section = "jev", key = "dispatchTierNoWorkspaceRepos", env = "ANTIHALL
 [verify_first.sw_no_ws_detect]
 doc = "Where the switch of the CLAUDE.md / AGENTS.md no-workspaces detection is read from (jev.dispatchTierDetectNoWorkspaces, default on)."
 value = { section = "jev", key = "dispatchTierDetectNoWorkspaces", env = "ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", default = true }
+
+[waste.sw_warn]
+doc = "Switch guards.wasteWarn (default on): when the tokens saved by the smarter rules (repeats of an advisory that were not sent) in the last guards.wasteWarnWindowMin minutes reach a higher level than before, one advisory tells the agent so. The rate must RISE to a new level to warn again; a constant rate warns once. Off keeps the counters and sends no advisory."
+value = { section = "guards", key = "wasteWarn", env = "ANTIHALL_WASTE_WARN", option = "", default = true }
+
+[waste.num_window_min]
+doc = "The rolling window (minutes) of the waste warning (guards.wasteWarnWindowMin)."
+value = { section = "guards", key = "wasteWarnWindowMin", env = "ANTIHALL_WASTE_WARN_WINDOW_MIN", option = "", default = 60, min = 1 }
+
+[waste.num_level_tokens]
+doc = "The tokens saved in one window at which the first waste level is reached (guards.wasteWarnTokens); the later levels are waste.level_multipliers times it."
+value = { section = "guards", key = "wasteWarnTokens", env = "ANTIHALL_WASTE_WARN_TOKENS", option = "", default = 1000, min = 1 }
+
+[waste.level_multipliers]
+doc = "The waste levels as multiples of guards.wasteWarnTokens: level n is reached when the window holds at least the n-th multiple of tokens."
+value = [1, 4, 16]
+
+[waste.bytes_per_token]
+doc = "How many bytes of advisory text are counted as one token when the tokens of a left-out text are estimated (a rough rule; the counter is an estimate, not the host's bill)."
+value = 4
+min = 1
+unit = "bytes"
+
+[waste.max_events]
+doc = "Most events kept per category in the session's waste record (older ones are dropped first)."
+value = 200
+min = 10
+
+[waste.state_dir]
+doc = "The directory under the anti-hall base directory that holds the per-session waste records."
+value = "waste"
+
+[waste.state_ext]
+doc = "The file extension of a per-session waste record."
+value = ".json"
+
+[waste.session_key_max]
+doc = "Most characters of a session id used in the waste record's file name."
+value = 80
+min = 8
+
+[waste.ms_per_minute]
+doc = "Milliseconds in a minute (the window is set in minutes)."
+value = 60000
+min = 1000
+unit = "ms"
+
+[waste.guard_name]
+doc = "The name the waste advisory carries."
+value = "token-waste"
+
+[waste.msg_what]
+doc = "The waste advisory when a category's level rose: {tokens} (estimated tokens saved in the window), {cat}, {m} (window minutes), {level} and {levels}."
+value = "idle waste: ~{tokens} tokens saved in {m} min by {cat} rules (level {level}/{levels})."
+
+[waste.msg_instead]
+doc = "The order that follows the waste advisory."
+value = "end turns that have no new state; delete crons with nothing to watch."

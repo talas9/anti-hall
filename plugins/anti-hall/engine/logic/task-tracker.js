@@ -545,6 +545,14 @@ function decide(p) {
       if (!ch.hold) ch.quiet = 0;
     }
   }
+  // #709: a cron-delivered turn with an unchanged open-task list gets no note and no Jev ask. The list hash is the one the change gate keeps.
+  if (fresh !== null && ch.track && ah.settings.bool('task_tracker.sw_skip_scheduled') && typeof p.prompt === 'string' && dedupe.scheduledTurn(tp, p.prompt)) {
+    if (ttChangeState(home, stateRel).hash === ch.hash) {
+      waste.note(session, 'repeated_advisory', ah.cfg('task_tracker.skip_scheduled_source'), (short + fresh.openLine + fresh.demand).length);
+      var wSkip = waste.warning(session);
+      return wSkip !== '' ? { advisory: text.advisoryJson(ttT('event'), wSkip) } : 'allow';
+    }
+  }
   var unknown = null;
   if (fresh !== null) unknown = tk.unknownNote(fresh.tasks, home, sessionRaw, ttT('unknown_tag'));
   var demand = ttResolvePending(home, sessionRaw, tp, !!p.transcript_path, now);
@@ -646,5 +654,7 @@ function decide(p) {
   });
   var shownDemand = gDemand !== null && gDemand.emit && delivered && plan !== null ? plan.demandShown : 0;
   if ((emit || primaryBlock !== '') && shownDemand > 0) ttRecordDemand(home, sessionRaw, shownDemand);
+  var wNow = waste.warning(session);
+  if (wNow !== '') finalText = finalText === '' ? wNow : finalText + ttT('segment_joiner') + wNow;
   return finalText !== '' ? { advisory: text.advisoryJson(ttT('event'), finalText) } : 'allow';
 }

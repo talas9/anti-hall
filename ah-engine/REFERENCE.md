@@ -3483,6 +3483,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.sw_supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode is read from (devswarm.supervisorMode: auto, on or off, default auto): the first condition of the Primary gate. |
 | `verify_first.sw_turn` | `4 entries` |  |  | Where the on/off switch is read from (context.verifyFirstTurn, default on). |
 
+### prompt_emit.toml / waste
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `waste.bytes_per_token` | `4` |  | bytes | How many bytes of advisory text are counted as one token when the tokens of a left-out text are estimated (a rough rule; the counter is an estimate, not the host's bill). |
+| `waste.guard_name` | `token-waste` |  |  | The name the waste advisory carries. |
+| `waste.level_multipliers` | `1, 4, 16` |  |  | The waste levels as multiples of guards.wasteWarnTokens: level n is reached when the window holds at least the n-th multiple of tokens. |
+| `waste.max_events` | `200` |  |  | Most events kept per category in the session's waste record (older ones are dropped first). |
+| `waste.ms_per_minute` | `60000` |  | ms | Milliseconds in a minute (the window is set in minutes). |
+| `waste.msg_instead` | `end turns that have no new state; delete crons with nothing to watch.` |  |  | The order that follows the waste advisory. |
+| `waste.msg_what` | `idle waste: ~{tokens} tokens saved in {m} min by {cat} rules (level {level}/{...` |  |  | The waste advisory when a category's level rose: {tokens} (estimated tokens saved in the window), {cat}, {m} (window minutes), {level} and {levels}. |
+| `waste.num_level_tokens` | `6 entries` |  |  | The tokens saved in one window at which the first waste level is reached (guards.wasteWarnTokens); the later levels are waste.level_multipliers times it. |
+| `waste.num_window_min` | `6 entries` |  |  | The rolling window (minutes) of the waste warning (guards.wasteWarnWindowMin). |
+| `waste.session_key_max` | `80` |  |  | Most characters of a session id used in the waste record's file name. |
+| `waste.state_dir` | `waste` |  |  | The directory under the anti-hall base directory that holds the per-session waste records. |
+| `waste.state_ext` | `.json` |  |  | The file extension of a per-session waste record. |
+| `waste.sw_warn` | `5 entries` |  |  | Switch guards.wasteWarn (default on): when the tokens saved by the smarter rules (repeats of an advisory that were not sent) in the last guards.wasteWarnWindowMin minutes reach a higher level than before, one advisory tells the agent so. The rate must RISE to a new level to warn again; a constant rate warns once. Off keeps the counters and sends no advisory. |
+
 ### ctxbudget.toml / ctxbudget
 
 | Key | Default | Env override | Unit | What it is |
@@ -4120,6 +4138,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.sw_pushed` | `6 entries` |  |  | Pushed work is not done switch. Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look at CI or the merge state. |
 | `claim_evidence.sw_strict` | `6 entries` |  |  | Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading. |
 | `claim_evidence.sw_telemetry` | `6 entries` |  |  | Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change. |
+| `claim_evidence.table_label_cell_re` | `^\s*([^\s.!;]+(\s+[^\s.!;]+){0,3})?\s*$` |  |  | A table header cell that is a label: empty, or one to four words without a sentence ending (no period, exclamation mark or semicolon). A header row is masked only when every cell is a label, so a cell that asserts something ("All tests pass.") keeps the row scanned. Rust regular expression. |
 | `claim_evidence.table_pipe` | `\|` |  |  | The cell separator a table header row must contain. |
 | `claim_evidence.table_sep_re` | `^\s*\\|?\s*:?-{3,}:?\s*(\\|\s*:?-{3,}:?\s*)*\\|?\s*$` |  |  | A line that is the separator row of a markdown table (cells of dashes with optional colons); the line above it is the header row. Rust regular expression. |
 | `claim_evidence.trailing_label_re` | `[;:(—–]\s*(?:unverified\|untested\|unchecked\|not\s+(?:yet\s+)?(?:verified\|check...` |  |  | An honest label that closes the claim's sentence as its own clause ('Tests pass in my head but I did not run them; unverified.'): it covers every claim before it in that sentence. A leading 'Unverified claims aside, ...' is not one. Rust regular expression, case-insensitive, matched against the sentence. |
@@ -6149,7 +6168,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_cron_metric_cap` | `500` |  |  | Newest lines the cron-missing counter keeps. |
 | `devswarm_gates.cg_cron_metric_file` | `cron-missing-warned.jsonl` |  |  | The report-only counter of shown mailbox-cron-missing warnings, under the DevSwarm state directory (one `{ts}` line each). |
 | `devswarm_gates.cg_cron_missing_hb` | `Mailbox cron missing: no inbox tick this session (heartbeat is {m}m old) — ru...` |  |  | The mailbox-cron-missing text when no tick marker exists and the heartbeat is old: {m} (heartbeat age in whole minutes); the wake re-verify line follows. |
+| `devswarm_gates.cg_cron_missing_payload` | `Mailbox cron missing: this session has no `inbox tick` cron (none of its sche...` |  |  | The mailbox-cron-missing text when the Stop payload's cron list is present and holds no mailbox tick job: {m} (age in whole minutes of the last tick marker or heartbeat); the wake re-verify line follows. No CronList step: the list is already known. |
 | `devswarm_gates.cg_cron_missing_tick` | `Mailbox cron missing: no inbox tick for {m}m — run `CronList`; if no tick cro...` |  |  | The mailbox-cron-missing text when the last tick marker is too old: {m} (its age in whole minutes); the wake re-verify line follows. |
+| `devswarm_gates.cg_cron_present_metric` | `cron_listed` |  |  | The `source` label of waste_events_total (category forced_turn) for a Stop whose payload cron list holds the mailbox tick job although the tick marker is stale: the age-based check would have warned and sent the model to CronList. |
+| `devswarm_gates.cg_cron_prompt_marker` | `inbox tick` |  |  | The text a cron job's prompt holds when it is the mailbox tick of this workspace (the prompt runs the `inbox tick` command). |
 | `devswarm_gates.cg_drop_known` | `your last heartbeat summary was DROPPED — {label}. {remedy}` |  |  | The drop description of a known reason: {label}, {remedy}. |
 | `devswarm_gates.cg_drop_labels` | `3 entries` |  |  | Whitelisted label of each known drop reason of a refused heartbeat summary (any other reason is never echoed). |
 | `devswarm_gates.cg_drop_remedies` | `3 entries` |  |  | Remedy of each known drop reason; the id placeholder (devswarm_role.id_placeholder) is replaced by the workspace id. |
@@ -6173,6 +6195,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_max_blocks` | `2` |  |  | Intentional per-stable-kind, per-session budget before the child gate yields (MAX_BLOCKS), rather than an owner-turn cap: a kind re-opens only when its condition is observed cleared. New owner turns alone must not re-arm an unresolved mailbox or heartbeat condition. |
 | `devswarm_gates.cg_nonce_prefix_len` | `12` |  |  | Characters of a reader nonce shown in the attempt-mismatch notice. |
 | `devswarm_gates.cg_path_env` | `PATH` |  |  | The environment variable the native probe program is looked up in. |
+| `devswarm_gates.cg_payload_cron_prompt_field` | `prompt` |  |  | The field of a session_crons entry that holds the prompt the job submits when it fires (capped by the host at 1000 characters). |
+| `devswarm_gates.cg_payload_crons_field` | `session_crons` |  |  | The Stop / SubagentStop payload field (Claude Code 2.1.145+) that lists the session's scheduled cron jobs: an array of {id, schedule, recurring, prompt}; empty when none is scheduled. |
 | `devswarm_gates.cg_policy_dir` | `stop-policy` |  |  | Directory of the shared stop-policy budget files, under the DevSwarm state directory. |
 | `devswarm_gates.cg_probe_args` | `workspace, message-count` |  |  | Arguments of the non-destructive native message-count probe. |
 | `devswarm_gates.cg_probe_count_re` | `-?\d+` |  |  | JavaScript regex source of the count in the probe output (the first match is parsed as a base-10 integer). |
@@ -6224,6 +6248,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.send_words` | `devswarm, send` |  |  | Words that must both appear (ASCII case-insensitive, at word boundaries, in any order) in a Bash command for it to plausibly be a devswarm send; `devswarm` also matches before `.js`. |
 | `devswarm_gates.source_branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable DevSwarm sets only on a child workspace; non-empty means this session is a child. |
 | `devswarm_gates.supervisor_mode` | `6 entries` |  |  | Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode; headline plugin option). |
+| `devswarm_gates.sw_cron_from_payload` | `5 entries` |  |  | Switch devswarm.cronFromPayload (default on): the child Stop gate decides whether the mailbox tick cron exists from the Stop payload's session_crons list; a payload without the list keeps the age-based check. Off always uses the age-based check. |
 
 ### migrate.toml / migrate
 
@@ -6355,7 +6380,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `430 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `435 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8759,6 +8784,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.session_hash_len` | `16` |  |  | How many hexadecimal digits of the working directory's hash name a session that has no id. |
 | `task_tracker.session_key_max` | `80` |  |  | How many characters of a session id name its metrics entry. |
 | `task_tracker.setting` | `6 entries` |  |  | Where the check's on/off switch is read from (context.taskTracker, default on). |
+| `task_tracker.skip_scheduled_source` | `tracker_scheduled` |  |  | The `source` label of the waste counters when the tracker is skipped on an unchanged scheduled turn. |
 | `task_tracker.spawn_marker` | `"tool_use"` |  |  | The text a transcript line must hold to be looked at as a possible spawn. |
 | `task_tracker.spawn_name_re` | `"name":\s*"(Agent\|Task\|Workflow)"` |  |  | JavaScript regex source (case-sensitive) of the tool name field of a spawn line. |
 | `task_tracker.spawn_names` | `Agent, Task, Workflow` |  |  | The tools that spawn an agent. |
@@ -8770,6 +8796,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
 | `task_tracker.summary` | `UserPromptSubmit task-list discipline: the full directive or the short remind...` |  |  | One-line description of the task-tracker check in the generated reference. |
+| `task_tracker.sw_skip_scheduled` | `6 entries` |  |  | Switch context.taskTrackerSkipScheduled (default on): on a turn the host scheduler delivered (a cron tick: the newest user turn of the transcript is a scheduled one with the prompt now submitted) the tracker says nothing while the open-task list is unchanged since its last note, and does not ask Jev to label the prompt. A changed list, or any prompt a person typed, still gets the note. Off restores the note on every scheduled turn. |
 | `task_tracker.terse_setting` | `6 entries` |  |  | Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off. |
 | `task_tracker.terse_texts` | `6 entries` |  |  | The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key. |
 | `task_tracker.tier_arrow` | `→ ` |  |  | What starts a tier annotation. |
@@ -8812,7 +8839,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `439 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `444 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -15356,6 +15383,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `uptime_s` | gauge | s |  | Seconds since the daemon started. |
 | `verdicts_saved_by_cpu_budget` | counter | answers | event | Per event, check answers given after the request passed daemon.request_wall_warn_ms of wall time (the wall deadline before #684), inside the wall ceiling daemon.request_hard_ms: verdicts a loaded host would have dropped when the wall clock was the deadline. Lifetime. |
 | `waste_events_total` | counter | events | category, source | Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level). Counts only while the daemon holds the counter. |
+| `waste_tokens_total` | counter | tokens | category, source | Estimated tokens of the text the smarter rules did not send (#709), by category and source: the bytes of the left-out advisory divided by waste.bytes_per_token. An estimate of the advisory text only, not of the model turn it would have joined (that needs the transcript usage the engine does not expose to scripts). Counts only while the daemon holds the counter. |
+| `waste_warnings_total` | counter | advisories | category | Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose. |
 | `wire_events` | counter | events | kind | Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned. |
 | `wouldblock_retries` | counter | replies | outcome | Replies written after the client's fail-fast wait (client.deadline_ms), by outcome (daemon.wouldblock_outcome_*): the client's read timed out (EAGAIN, os error 35 on macOS; logged once as client_late) and it kept waiting up to client.slow_fallback_max_ms less client.slow_wait_margin_ms. delivered = the client took the late verdict; lost = it had stopped waiting. Lifetime. |
 | `sqlite_alloc_routing` | counter | starts | result | SQLite allocator routing attempts at daemon start (storage.sqlite_use_global_allocator on), by result: routed (SQLite now allocates through the engine's allocator) or failed (SQLite had already started; it stays on the C library's). |

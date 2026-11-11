@@ -100,6 +100,24 @@ var dedupe = {
     });
     return seen ? { n: n, sched: sched, maxTs: maxTs } : null;
   },
+  // Whether the prompt now submitted is a turn the host scheduler delivered: the newest user turn of the transcript names a scheduled origin
+  // (emit_dedupe.uncounted_origins) and its text is this prompt. A person's prompt differs from the cron's text, so it never reads as scheduled;
+  // a transcript that cannot be read, shows no origin, or does not yet hold this turn reads as not scheduled (the caller then acts as before).
+  scheduledTurn: function (tp, prompt) {
+    if (!tp || typeof tp !== 'string' || typeof prompt !== 'string' || prompt.trim() === '') return false;
+    var r = ah.transcript.grep(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'), ah.cfg('emit_dedupe.origin_needles'), '', '');
+    if (!r || r.unsure || !Array.isArray(r.lines)) return false;
+    var field = ah.cfg('emit_dedupe.origin_field'), last = null;
+    r.lines.forEach(function (line) {
+      var rec;
+      try { rec = JSON.parse(line); } catch (e) { return; }
+      if (rec && rec.type === ah.cfg('emit_dedupe.origin_record_type') && typeof rec[field] === 'string') last = rec;
+    });
+    if (last === null || ah.cfg('emit_dedupe.uncounted_origins').indexOf(last[field]) < 0) return false;
+    var c = last.message ? last.message.content : null;
+    var body = typeof c === 'string' ? c : Array.isArray(c) ? c.map(function (b) { return b && typeof b.text === 'string' ? b.text : ''; }).join('') : '';
+    return body.trim() === prompt.trim();
+  },
   windowMs: function () {
     var mins = ah.settings.num('emit_dedupe.num_window_min');
     return isFinite(mins) && mins > 0 ? mins * ah.cfgNum('emit_dedupe.ms_per_minute') : ah.cfgNum('emit_dedupe.window_default_ms');
@@ -160,7 +178,7 @@ var dedupe = {
           emit = false; nextTurns = t;
           // each evaluation that passed over a scheduled turn and still suppressed the block is one repeat of an unchanged advisory that
           // the old rule (every delivered turn counts) moved toward re-sending: counted once, whatever the keepalive length
-          if (commit && counted !== null && counted.sched > 0) ah.metric('waste_events_total', ['category', 'repeated_advisory', 'source', 'keepalive_scheduled']);
+          if (commit && counted !== null && counted.sched > 0) waste.note(o.sessionId, 'repeated_advisory', 'keepalive_scheduled', content.length);
         }
       }
     }
