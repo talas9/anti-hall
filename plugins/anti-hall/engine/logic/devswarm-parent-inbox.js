@@ -154,6 +154,27 @@ function piSetDefault(key) { return typeof ah.cfg(key).default === 'boolean' ? a
 
 function piLabel(name) { return ah.cfg('devswarm_parent.labels')[name]; }
 
+// Explicit completion/hold facts take precedence; app closure alone never excuses an unread backlog.
+function piRowParked(ctx, id, wt, sid, entry, app, unread) {
+  if (!ah.settings.bool('devswarm_parent.sw_parked')) return false;
+  var sources = ah.cfg('devswarm_parent.parked_sources');
+  if (sources.indexOf('done') >= 0 && entry && (entry.archive_ready === true || (entry.gates && entry.gates.done === true))) return true;
+  if (sources.indexOf('held') >= 0 && ah.settings.str('devswarm_parent.set_held').split(',').map(function (v) { return v.trim(); }).indexOf(id) >= 0) return true;
+  var alive = !!(sid && ah.mesh.sessionAlive(sid));
+  var b = wt && sid ? ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min')) : null;
+  if (b && b.waiting === true) {
+    if (sources.indexOf('waiting') < 0 || !alive) return false;
+    // Use the same source path as childBusy. A wait expires when its transcript has not moved within the configured window.
+    var encoded = wt.split('').map(function (c) { return ah.cfg('devswarm_sup.lv_encode_chars').indexOf(c) >= 0 ? ah.cfg('devswarm_sup.lv_encode_to') : c; }).join('');
+    var file = (ctx.home || spawn.osHome()) + '/' + ah.cfg('mesh_write.claude_dir') + '/' + ah.cfg('devswarm_sup.lv_projects_dir') + '/' + encoded + '/' + sid + ah.cfg('devswarm_sup.lv_transcript_ext');
+    var ts = ah.fs.mtimeMs(file);
+    return piFinite(ts) && ts > 0 && ts <= ctx.now && ctx.now - ts < ah.cfgNum('devswarm_parent.parked_max_wait_min') * ah.cfgNum('devswarm_role.pg_ms_per_min');
+  }
+  if (!piFinite(unread)) unread = entry && (piFinite(entry.directUnread) ? entry.directUnread : entry.unread);
+  return sources.indexOf('app_closed') >= 0 && !!(app && app.active === false && app.archived === false)
+    && !(unread > 0) && (!sid || (b && b.seen === true && b.busy === false && !b.unsure));
+}
+
 // `displayStatus(archiveReady, status, activityTs, now, dormant, notDraining, idleAlive)`.
 function piDisplayStatus(archiveReady, status, activityTs, now, dormant, notDraining, idleAlive, idleMs) {
   if (status === 'escalated' && !idleAlive) return piLabel('escalated');
@@ -284,6 +305,9 @@ function piTier(w) {
 
 // `buildUnreadSegment(list, home)`.
 function piUnreadSegment(list, home, cli, now) {
+  var parkedRows = list.filter(function (w) { return w.parked; });
+  var liveRows = list.filter(function (w) { return !w.parked; });
+  if (parkedRows.length && liveRows.length) return piUnreadSegment(parkedRows, home, cli, now) + ah.cfg('devswarm_parent.parked_segment_joiner') + piUnreadSegment(liveRows, home, cli, now);
   var max = ah.cfgNum('devswarm_parent.max_listed');
   var shown = list.slice(0, max).map(function (w) {
     var title = piTruncate(piDisplayName(w.id, w.wsName));
@@ -300,13 +324,19 @@ function piUnreadSegment(list, home, cli, now) {
   var extra = list.length > max ? text.render(ah.cfg('devswarm_parent.unread_extra'), { n: list.length - max }) : '';
   var anyUnread = list.some(function (w) { return w.unread > 0; });
   var body = text.render(ah.cfg('devswarm_parent.unread_head'), { count: list.length, shown: shown.join(ah.cfg('devswarm_parent.shown_joiner')), extra: extra });
-  body += anyUnread ? text.render(ah.cfg('devswarm_parent.unread_body_drain'), { cli: cli }) : ah.cfg('devswarm_parent.unread_body_read');
-  body += ah.cfg('devswarm_parent.unread_tail');
+  if (list.some(function (w) { return w.parked; })) body += ah.cfg('devswarm_parent.parked_unread_body');
+  else {
+    body += anyUnread ? text.render(ah.cfg('devswarm_parent.unread_body_drain'), { cli: cli }) : ah.cfg('devswarm_parent.unread_body_read');
+    body += ah.cfg('devswarm_parent.unread_tail');
+  }
   return body;
 }
 
 // `buildUrgentUnreadSegment(list, home)`.
 function piUrgentSegment(list, home, cli) {
+  var parkedRows = list.filter(function (w) { return w.parked; });
+  var liveRows = list.filter(function (w) { return !w.parked; });
+  if (parkedRows.length && liveRows.length) return piUrgentSegment(parkedRows, home, cli) + ah.cfg('devswarm_parent.parked_segment_joiner') + piUrgentSegment(liveRows, home, cli);
   var max = ah.cfgNum('devswarm_parent.max_listed');
   var shown = list.slice(0, max).map(function (w) {
     var parts = [text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread })];
@@ -318,7 +348,7 @@ function piUrgentSegment(list, home, cli) {
     return text.render(ah.cfg('devswarm_parent.urgent_part'), { id: w.id, parts: parts.join(ah.cfg('devswarm_parent.part_joiner')) });
   });
   var extra = list.length > max ? text.render(ah.cfg('devswarm_parent.unread_extra'), { n: list.length - max }) : '';
-  return text.render(ah.cfg('devswarm_parent.urgent_head'), { count: list.length, shown: shown.join(ah.cfg('devswarm_parent.shown_joiner')), extra: extra, cli: cli });
+  return text.render(ah.cfg(list.some(function (w) { return w.parked; }) ? 'devswarm_parent.parked_urgent_head' : 'devswarm_parent.urgent_head'), { count: list.length, shown: shown.join(ah.cfg('devswarm_parent.shown_joiner')), extra: extra, cli: cli });
 }
 
 // `buildArchiveSegment(ids)`.
@@ -548,6 +578,13 @@ function piRoster(ctx, summary) {
     var archivedRow = st.marker;
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
+    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unread);
+    if (rowParked) {
+      if (stuck || notDraining) waste.note(ctx.sid, 'stale_flag_on_parked', ah.cfg('devswarm_parent.parked_metric_source'), 0);
+      stuck = false;
+      notDraining = false;
+      notDrainingForLabel = false;
+    }
     var ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
     // GH #508 (devswarm.skipArchivedChildren): piRow decides natively whether an explicitly ARCHIVED child is closed (st.closed); off or unsure: as before.
     var closedRow = st.closed === true;
@@ -558,7 +595,7 @@ function piRoster(ctx, summary) {
       var wsName = (rowWs && rowWs.label) || piReadName(home, id);
       var reportUnread = graced ? 0 : unread;
       out.attention.push({
-        id: id, unread: reportUnread, cursor: cursor, total: total, status: status, urgencyMax: graced ? null : urgencyMax, wsName: wsName,
+        id: id, parked: rowParked, unread: reportUnread, cursor: cursor, total: total, status: rowParked ? null : status, urgencyMax: graced ? null : urgencyMax, wsName: wsName,
         oldestUnreadTs: graced ? null : oldestForGate, notDraining: notDrainingForLabel, staleAntiHallMessage: staleBuild ? staleBuild.message : null,
       });
     }
@@ -585,7 +622,7 @@ function piRoster(ctx, summary) {
       idleAlive = act.idleAlive;
     }
     var staleLabel = { label: text.render(ah.cfg('devswarm_parent.stale_build_label'), { version: staleBuild ? staleBuild.version : '' }), rank: piLabel('not_draining').rank };
-    var ds = (staleBuild && !appArchivedRow) ? staleLabel
+    var ds = (staleBuild && !appArchivedRow) ? staleLabel : rowParked && !archivedRow ? piLabel('parked')
       : archivedRow ? (appArchivedRow ? piLabel('archived') : (notDrainingForLabel ? piLabel('not_draining') : piLabel('archived')))
         : archivedSuperseded ? (notDrainingForLabel ? piLabel('not_draining') : piLabel('superseded'))
           : piDisplayStatus(archiveReady, status, activityTs, now, dormant, notDrainingForLabel, idleAlive, idleMs);
@@ -596,7 +633,7 @@ function piRoster(ctx, summary) {
     if (/^working\b/.test(finishCell) && gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) !== false) {
       var pf = JSON.parse(ahHost.piFinish(id, wtPath, now));
       if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; }
-      if (pf.label !== null) finishCell = piPlanCell(home, pf, dormant, finishCell);
+      if (pf.label !== null) finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid);
     }
     var appMarks = '';
     if (rowWs) {
@@ -973,15 +1010,30 @@ function piTokens(n) {
 
 // The finish cell of a working row whose workspace has a step plan: the label with the token burn, the tagged extras and a straying warning.
 // An error in the add-ons leaves the plain cell, as Node's try/catch does.
-function piPlanCell(home, pf, dormant, plain) {
+function piPlanCell(home, pf, dormant, plain, parked, sid) {
   var label = pf.label;
   if (piSafeId(pf.key)) {
     var tok = piJson(piDevswarmDir(home) + '/' + ah.cfg('devswarm_parent.dir_token_usage') + '/' + pf.key + '.json');
-    if (tok && typeof tok === 'object' && piFinite(tok.total) && tok.total > 0) label += text.render(ah.cfg('devswarm_parent.plan_tokens'), { tokens: piTokens(tok.total) });
+    var known = tok && typeof tok === 'object' && piFinite(tok.total) && tok.total >= 0;
+    if (ah.settings.bool('devswarm_parent.sw_token_unknown')) {
+      var source = known && typeof tok.file === 'string' ? ah.fs.lstat(tok.file) : null;
+      known = !!(source && source.kind === ah.cfg('devswarm_parent.token_file_kind') && piFinite(tok.offset) && tok.offset >= 0 && source.size >= tok.offset
+        && source.size - tok.offset <= ah.cfgNum('devswarm_parent.token_offset_tolerance_bytes')
+        && piFinite(tok.updated_at) && tok.updated_at <= ah.clock.now() && ah.clock.now() - tok.updated_at <= ah.settings.num('devswarm_parent.num_token_fresh_ms')
+        && (source.size > tok.offset || source.mtimeMs <= tok.updated_at));
+      if (!known) { label += ah.cfg('devswarm_parent.plan_tokens_unknown'); ah.metric('token_usage_unresolved'); }
+    } else known = known && tok.total > 0;
+    if (known) label += text.render(ah.cfg('devswarm_parent.plan_tokens'), { tokens: piTokens(tok.total) });
   }
   if (pf.extras) label += text.render(ah.cfg('devswarm_parent.plan_extras'), { n: pf.extras, s: pf.extras === 1 ? '' : 's' });
   var stray = piJson(piDevswarmDir(home) + '/' + ah.cfg('devswarm_parent.dir_stray') + '/' + pf.key + '.json');
   var active = stray && Array.isArray(stray.active) ? stray.active : [];
+  if (parked) {
+    var hidden = ah.cfg('devswarm_parent.parked_hide_signals');
+    var kept = active.filter(function (a) { return !a || hidden.indexOf(a.signal) < 0; });
+    if (kept.length < active.length) waste.note(sid, 'stale_flag_on_parked', ah.cfg('devswarm_parent.parked_metric_source'), 0);
+    active = kept;
+  }
   if (active.length && !dormant) {
     try { label += text.render(ah.cfg('devswarm_parent.plan_straying'), { signals: Array.from(new Set(active.map(function (a) { return a.signal; }))).join('+') }); } catch (e) { return plain; }
   }

@@ -109,7 +109,7 @@ value = "ui-sync-asks"
 
 [devswarm_parent.labels]
 doc = "Row labels of the live workspace table with their sort rank in tenths (displayStatus and the label assignment of the roster loop: the Node ranks 0, 1, 1.5, 2, 3, 4, 5, 5.5 and 6, times ten, because a defaults file holds integers only)."
-value = { escalated = { label = "escalated", rank = 0 }, stale = { label = "stale", rank = 10 }, not_draining = { label = "not-draining", rank = 15 }, archive_ready = { label = "archive-ready", rank = 20 }, idle_alive = { label = "idle (alive)", rank = 30 }, idle = { label = "idle", rank = 30 }, active = { label = "active", rank = 40 }, dormant = { label = "dormant", rank = 50 }, superseded = { label = "archived-superseded (live child)", rank = 55 }, archived = { label = "archived", rank = 60 } }
+value = { parked = { label = "parked", rank = 45 }, escalated = { label = "escalated", rank = 0 }, stale = { label = "stale", rank = 10 }, not_draining = { label = "not-draining", rank = 15 }, archive_ready = { label = "archive-ready", rank = 20 }, idle_alive = { label = "idle (alive)", rank = 30 }, idle = { label = "idle", rank = 30 }, active = { label = "active", rank = 40 }, dormant = { label = "dormant", rank = 50 }, superseded = { label = "archived-superseded (live child)", rank = 55 }, archived = { label = "archived", rank = 60 } }
 
 [devswarm_parent.stale_build_label]
 doc = "The label of a row whose child runs an older anti-hall build than the machine's newest; {version} is the recorded version. Its rank is the not-draining rank."
@@ -746,3 +746,58 @@ value = 2
 [devswarm_parent.urgent_keepalive]
 doc = "Delivered turns after which the unchanged urgent-mail segment of a Primary is repeated (scheduled turns do not count while guards.keepaliveCountsScheduled is off)."
 value = 10
+
+[devswarm_parent.sw_parked]
+doc = "Switch devswarm.parkedDisplay (default on): explicitly closed, done, held or waiting-on-human rows show parked and do not generate stale-status or not-draining nudges; genuine unread mail still surfaces. Burn and other non-stall signals remain visible because their current rate is not known."
+value = { section = "devswarm", key = "parkedDisplay", env = "ANTIHALL_DEVSWARM_PARKED_DISPLAY", default = true }
+
+[devswarm_parent.parked_sources]
+doc = "Explicit facts that park a roster row. Done and held are authoritative. App closure requires no unread backlog and no proven mid-turn session; unread or unknown transcript state stays actionable. Human waits require a live session and expire after parked_max_wait_min without transcript activity."
+value = ["app_closed", "held", "done", "waiting"]
+
+[devswarm_parent.parked_hide_signals]
+doc = "Straying signals hidden on parked rows. Burn remains visible until windowed activity can prove it stale."
+value = ["stall"]
+
+[devswarm_parent.parked_metric_source]
+doc = "Source label of the stale_flag_on_parked waste event. No token saving is estimated."
+value = "parked_roster"
+
+[devswarm_parent.sw_token_unknown]
+doc = "Switch devswarm.tokenUnknown (default on): a plan's roster token total is displayed only when its source exists, is sampled within token_offset_tolerance_bytes and has a recent usage record; otherwise show tok ?. This is a display stopgap, not a transcript resolver."
+value = { section = "devswarm", key = "tokenUnknown", env = "ANTIHALL_DEVSWARM_TOKEN_UNKNOWN", default = true }
+
+[devswarm_parent.num_token_fresh_ms]
+doc = "Maximum age of a token-usage sample displayed as known (devswarm.tokenFreshMs)."
+value = { section = "devswarm", key = "tokenFreshMs", env = "ANTIHALL_DEVSWARM_TOKEN_FRESH_MS", default = 1800000, min = 0 }
+unit = "ms"
+
+[devswarm_parent.plan_tokens_unknown]
+doc = "Roster plan token display when the source or sample is missing, unreadable, stale, truncated or farther behind than token_offset_tolerance_bytes."
+value = " · tok ?"
+
+[devswarm_parent.token_file_kind]
+doc = "The filesystem kind accepted as a resolved token source. Symlinks and directories are not proof of a sampled transcript."
+value = "file"
+
+[devswarm_parent.parked_unread_body]
+doc = "Unread notice for parked rows: mail remains visible without accusing a deliberately waiting child of neglect."
+value = "Unread mail remains available; review it and route any decision needed from the human. Parked rows are deliberately waiting."
+
+[devswarm_parent.parked_urgent_head]
+doc = "Urgent notice for parked rows. Genuine high-priority mail remains visible without a stale NOT DRAINING accusation. Placeholders: count, shown, extra, cli."
+value = "⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIGH-priority direct message waiting, unread — {shown}{extra}. Review the mail and route any decision needed from the human; parked rows are deliberately waiting."
+
+[devswarm_parent.parked_max_wait_min]
+doc = "Maximum human-wait age in minutes since transcript activity before stale-status and not-draining signals return. Done and held facts remain authoritative; missing or invalid transcript state never proves a wait. Shared by Claude/OMC and Codex/OMX."
+value = 60
+unit = "min"
+
+[devswarm_parent.token_offset_tolerance_bytes]
+doc = "Maximum unsampled transcript growth in bytes while a recent roster token sample remains known. Partial trailing lines and small appends are tolerated; truncated sources and larger gaps show tok ?. Shared by Claude and Codex."
+value = 4096
+unit = "bytes"
+
+[devswarm_parent.parked_segment_joiner]
+doc = "Separates the independent parked and live notices when both kinds share an unread or urgent group."
+value = "\n\n"
