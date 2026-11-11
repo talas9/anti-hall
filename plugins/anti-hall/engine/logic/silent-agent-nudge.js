@@ -190,21 +190,34 @@ function snStuckAdvisory(p) {
 // ---- Stop: a child whose runtime nudges keep repeating (agent_nudge.runtime_escalation, published by the nudge loop) blocks the
 // coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
 // Reconcile the published snapshot at read time: status/answers and snapshot publication have separate lifecycles.
-// Preserve stale rows with an audit marker instead of deleting data. A later tracker publication replaces the snapshot.
+// Retain audit verdicts separately from the publisher snapshot, which is never modified here.
 function snRuntimeEvidence(p, home) {
   var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
   var parsed = jx.parse(ah.fs.readText(base + paths.state) || '');
   var state = !parsed.invalid && !parsed.unsure && parsed.v || {};
-  var stopped = {}, answers = ah.fs.readText(base + ah.cfg('agent_nudge.paths').answers);
+  var answersByChild = {}, answers = ah.fs.readText(base + ah.cfg('agent_nudge.paths').answers);
+  var words = ah.cfgLive('agent_nudge.answers'), nudges = state.nudges || {};
   if (answers !== null) answers.split('\n').forEach(function (line) {
     var a; try { a = JSON.parse(line); } catch (e) { return; }
-    if (a && a.answer === ah.cfg('agent_nudge.answers').stop && typeof a.ts === 'number') stopped[a.child] = Math.max(stopped[a.child] || 0, a.ts);
+    if (!a || typeof a.child !== 'string' || !snNum(a.ts) || [words.stop, words.acted, words.msg, words.snooze, words.other].indexOf(a.answer) < 0) return;
+    var key = a.child;
+    if (!nudges[key] && !(state.agents && state.agents[key])) {
+      var refs = Object.keys(nudges).filter(function (id) { var n = nudges[id]; return n && typeof n.ref_id === 'string' && n.ref_id && n.ref_id.toLowerCase() === a.child.toLowerCase(); });
+      var matches = refs.length ? refs : Object.keys(nudges).filter(function (id) { return nudges[id] && nudges[id].child_name === a.child; });
+      // Names are not session identities. Ambiguous aliases cannot release either parent's Stop.
+      if (matches.length > 1) return;
+      if (matches.length === 1) key = matches[0];
+    }
+    var n = nudges[key], agent = state.agents && state.agents[key];
+    if ((n && n.parent && n.parent !== p.session_id) || (agent && agent.parent && agent.parent !== p.session_id)) return;
+    if (!answersByChild[key] || a.ts >= answersByChild[key].ts) answersByChild[key] = a;
   });
-  return { state: state, stopped: stopped, live: typeof p.session_id === 'string' ? ah.transcript.trackedAgents(p) : [] };
+  return { state: state, answers: answersByChild, now: ah.clock.now(), live: typeof p.session_id === 'string' ? ah.transcript.trackedAgents(p) : [] };
 }
 
-function snRetired(child, name, session, evidence) {
+function snRuntimeVerdict(child, name, session, evidence) {
   var a = evidence.state.agents && evidence.state.agents[child];
+  if (a && a.parent && a.parent !== session) a = null;
   var live = ah.transcript.trackedLiveness(child, evidence.live), terminal = live === false;
   if (live === null && a && (a.parent === session || a.id === child)) {
     var kinds = ah.cfg('agent_tracker.kinds');
@@ -212,25 +225,61 @@ function snRetired(child, name, session, evidence) {
       (a.running === false && (a.kind === kinds.teammate || a.kind === kinds.subagent));
   }
   var n = evidence.state.nudges && evidence.state.nudges[child];
+  if (n && n.parent && n.parent !== session) n = null;
   var since = Math.max(a && typeof a.first_seen === 'number' ? a.first_seen : 0, n && typeof n.sent_at === 'number' ? n.sent_at : 0);
-  var stopped = evidence.stopped;
-  var stoppedAt = Math.max(stopped[child] || 0, stopped[name] || 0, n && stopped[n.ref_id] || 0);
-  if (terminal || (stoppedAt > 0 && stoppedAt >= since)) return true;
-  return live !== null || (a && a.running === true) ? false : null;
+  var words = ah.cfgLive('agent_nudge.answers'), limits = ah.cfgLive('agent_nudge.limits');
+  var answer = evidence.answers[child];
+  var ttl = ah.cfgLive('silent_nudge.rt_repair').ttl_ms;
+  if (answer && answer.ts > 0 && answer.ts >= since && answer.ts <= evidence.now) {
+    var until = answer.ts;
+    if (answer.answer === words.stop || answer.answer === words.acted) until = evidence.now + ttl;
+    if (answer.answer === words.msg) until = answer.ts + limits.window_ms;
+    if (answer.answer === words.other || answer.answer === words.snooze) {
+      var minutes = answer.answer === words.snooze && snNum(answer.min) && answer.min > 0 ? answer.min : limits.snooze_default_min;
+      minutes = Math.max(limits.snooze_min_min, Math.min(minutes, limits.snooze_max_min));
+      until = answer.ts + minutes * ah.cfg('agent_tracker.fmt').unit_ms[1];
+    }
+    if (until > evidence.now) return { retired: true, until: until, since: since, answer_at: answer.ts };
+  }
+  if (terminal) return { retired: true, until: evidence.now + ttl, since: since, answer_at: 0 };
+  return { retired: live !== null || (a && a.running === true) ? false : null, since: since };
 }
 
-function snRuntimeRows(p, home, session, doc, rel) {
-  var rows = doc && Array.isArray(doc.rows) ? doc.rows : [];
-  if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows.filter(function (r) { return r && r.session === session; });
-  var evidence = snRuntimeEvidence(p, home), changed = false, kept = [], marker = ah.cfg('silent_nudge.rt_repair').marker;
+function snRetired(child, name, session, evidence) {
+  return snRuntimeVerdict(child, name, session, evidence).retired;
+}
+
+// The publisher snapshot is read-only. Only this session's atomic, expiring audit overlay is repaired.
+// Preserve every audit row; expired verdicts are ignored, and current live evidence supersedes old completion.
+function snRuntimeRows(p, home, session, doc) {
+  var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
+  if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
+  var cfg = ah.cfgLive('silent_nudge.rt_repair');
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + cfg.file_prefix + encodeURIComponent(session) + cfg.file_ext;
+  var parsed = jx.parse(ah.fs.readText(home + '/' + rel) || '');
+  var overlay = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) && parsed.v.session === session && jx.isObj(parsed.v.rows) ? parsed.v : { session: session, rows: {} };
+  var evidence = snRuntimeEvidence(p, home), changed = false, kept = [];
   rows.forEach(function (r) {
-    if (!r || r.session !== session) return;
-    var verdict = snRetired(r.child, r.name, session, evidence);
-    var retired = verdict === true || (verdict === null && r[marker] === true);
-    if ((retired || r[marker] !== undefined) && r[marker] !== retired) { r[marker] = retired; changed = true; }
-    if (!retired) kept.push(r);
+    var key = JSON.stringify([r.child, r.name]), old = jx.isObj(overlay.rows[key]) ? overlay.rows[key] : null;
+    var verdict = snRuntimeVerdict(r.child, r.name, session, evidence);
+    var active = old && old[cfg.marker] === true && snNum(old.until) && old.until > evidence.now && old.since === verdict.since;
+    if (verdict.retired === true) {
+      if (!active || old.answer_at !== verdict.answer_at || old.until > verdict.until) {
+        var entry = { since: verdict.since, until: Math.min(verdict.until, evidence.now + cfg.ttl_ms), answer_at: verdict.answer_at };
+        entry[cfg.marker] = true;
+        overlay.rows[key] = entry;
+        changed = true;
+      }
+    } else if (verdict.retired === false) {
+      if (old && old[cfg.marker] !== false) { old[cfg.marker] = false; changed = true; }
+    } else if (!active) { kept.push(r); return; }
+    if (verdict.retired === false) kept.push(r);
   });
-  if (changed) { try { ah.state.writeAtomic(rel, JSON.stringify(doc)); } catch (e) { /* read-time filtering still releases stale blocks */ } }
+  if (changed) {
+    var ok = false;
+    try { ok = ah.state.writeAtomic(rel, JSON.stringify(overlay)) === true; } catch (e) { ok = false; }
+    if (!ok) return rows; // an unrecorded repair must never silently release the publisher's block
+  }
   return kept;
 }
 
@@ -241,7 +290,7 @@ function snRuntimeEscalation(p, home, session) {
   var raw = ah.fs.readText(home + '/' + rel);
   if (raw === null) return null;
   var doc; try { doc = JSON.parse(raw); } catch (e) { return null; }
-  var rows = snRuntimeRows(p, home, session, doc, rel);
+  var rows = snRuntimeRows(p, home, session, doc);
   // The block-tier rows (the engine marks them) and the repeated-reminder rows (GH #484) count against their own caps, so one cannot use up the other.
   var blockRows = rows.filter(function (r) { return r.block === true; });
   var otherRows = rows.filter(function (r) { return r.block !== true; });

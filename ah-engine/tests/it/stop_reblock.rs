@@ -36,17 +36,18 @@ impl World {
     }
 }
 #[test]
-fn done_runtime_agent_does_not_block_and_repairs_snapshot_idempotently() {
+fn done_runtime_agent_does_not_block_and_repairs_overlay_idempotently() {
     let w = World::new("done");
     w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":false,"finished":true}));
     assert!(!w.stop().contains("decision\\\":\\\"block"));
     let p = w.home.join(".anti-hall/agent-tracker/runtime-escalations.json");
     let once = std::fs::read_to_string(&p).unwrap();
-    let rows: Value = serde_json::from_str(&once).unwrap();
-    assert_eq!(rows["rows"].as_array().unwrap().len(), 1, "repair preserves row");
-    assert_eq!(rows["rows"][0]["retired"], true);
+    let overlay = w.home.join(".anti-hall/ah-engine/runtime-stop-overlay-parent.json");
+    let audit = std::fs::read_to_string(&overlay).expect("logic-owned overlay");
+    assert!(audit.contains("retired"));
     w.stop();
-    assert_eq!(std::fs::read_to_string(p).unwrap(), once);
+    assert_eq!(std::fs::read_to_string(p).unwrap(), once, "publisher file is read-only");
+    assert_eq!(std::fs::read_to_string(overlay).unwrap(), audit);
 }
 #[test]
 fn nudge_stop_runtime_agent_does_not_block() {
@@ -308,4 +309,198 @@ fn child_gate_frozen_golden_corpus_still_matches() {
         count += 1;
     }
     assert_eq!(count, 411);
+}
+
+impl World {
+    fn fixture(&self, js: &str) {
+        let lib = self.home.join(".anti-hall/logic/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("99-runtime-fixture.js"), js).unwrap();
+    }
+    fn answer(&self, answer: &str, minutes: u64, age: u64) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        std::fs::write(
+            self.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"),
+            format!("{}\n", json!({"ts":now-age,"child":"child","answer":answer,"min":minutes,"text":"owner reason"})),
+        )
+        .unwrap();
+    }
+}
+#[test]
+fn runtime_owner_answers_hold_for_promised_windows_then_reblock() {
+    for (answer, minutes, age, blocked) in [
+        ("other", 0, 29 * 60000, false),
+        ("other", 0, 31 * 60000, true),
+        ("snooze", 45, 44 * 60000, false),
+        ("snooze", 45, 46 * 60000, true),
+        ("snooze", 999, 239 * 60000, false),
+        ("snooze", 999, 241 * 60000, true),
+        ("msg", 0, 1000, false),
+        ("msg", 0, 16 * 60000, true),
+        ("stop", 0, 1000, false),
+        ("acted", 0, 1000, false),
+        ("wrong", 0, 1000, true),
+    ] {
+        let w = World::new(&format!("answer-{answer}-{minutes}-{age}"));
+        w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":true}));
+        w.answer(answer, minutes, age);
+        let out = w.stop();
+        assert_eq!(out.contains("decision\\\":\\\"block"), blocked, "{answer}/{minutes}/{age}: {out}");
+    }
+}
+#[test]
+fn concurrent_publication_during_repair_keeps_new_live_row() {
+    let w = World::new("publish-race");
+    w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","finished":true}));
+    w.fixture("var oldRead=ah.fs.readText; ah.fs.readText=function(p){var v=oldRead(p); if(p.slice(-10)==='state.json'){ah.state.writeAtomic('.anti-hall/agent-tracker/runtime-escalations.json',JSON.stringify({rows:[{session:'parent',child:'child',name:'worker',block:true},{session:'parent',child:'new-live',name:'new worker',block:true}]}));} return v;};");
+    w.stop();
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(w.home.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap()).unwrap();
+    assert_eq!(doc["rows"].as_array().unwrap().len(), 2, "concurrent publisher row survives");
+    assert!(w.stop().contains("decision\\\":\\\"block"), "new live row still blocks on the next read");
+}
+#[test]
+fn runtime_overlay_is_session_isolated_and_corruption_does_not_release_live_agent() {
+    let w = World::new("overlay-isolation");
+    w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","finished":true}));
+    w.stop();
+    let overlay = w.home.join(".anti-hall/ah-engine/runtime-stop-overlay-parent.json");
+    assert!(overlay.is_file());
+    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{}}));
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"other","child":"child","name":"worker","block":true}]}));
+    let p = json!({"hook_event_name":"Stop","session_id":"other","cwd":w.home});
+    assert!(w.check("silent-agent-nudge", p, &[]).contains("decision\\\":\\\"block"));
+    std::fs::write(overlay, "{corrupt").unwrap();
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","running":true}));
+    assert!(w.stop().contains("decision\\\":\\\"block"));
+}
+#[test]
+fn runtime_overlay_write_failure_keeps_publisher_block() {
+    let w = World::new("overlay-write-failure");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    w.fixture(
+        "var oldWrite=ah.state.writeAtomic; ah.state.writeAtomic=function(p,t){if(p.indexOf('runtime-stop-overlay-')>=0)return false;return oldWrite(p,t);};",
+    );
+    assert!(w.stop().contains("decision\\\":\\\"block"));
+}
+#[test]
+fn runtime_overlay_expiry_restores_publisher_decision() {
+    let w = World::new("overlay-expiry");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    w.stop();
+    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{}}));
+    // Expire the persisted verdict directly: adding a clock library after the first Stop is
+    // hidden until script.fingerprint_ttl_ms elapses, making that fixture order-dependent.
+    let path = w.home.join(".anti-hall/ah-engine/runtime-stop-overlay-parent.json");
+    let mut overlay: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for row in overlay["rows"].as_object_mut().unwrap().values_mut() {
+        row["until"] = json!(0);
+    }
+    std::fs::write(path, overlay.to_string()).unwrap();
+    let out = w.stop();
+    assert!(out.contains("decision\\\":\\\"block"), "{out}");
+}
+
+impl World {
+    fn cli_stop(&self) -> String {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["check", "silent-agent-nudge"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &self.home)
+            .env("AH_ENGINE_DIR", self.home.join(".anti-hall/ah-engine"))
+            .env("AH_ENGINE_CONFIG", self.home.join("config.toml"))
+            .env("AH_ENGINE_PLUGIN_ROOT", PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(json!({"hook_event_name":"Stop","session_id":"parent","cwd":self.home}).to_string().as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+    fn custom_toml(&self) {
+        let mut limits = ah_engine::defaults::raw("agent_nudge.limits").to_json();
+        limits["snooze_default_min"] = json!(3);
+        limits["snooze_min_min"] = json!(1);
+        limits["snooze_max_min"] = json!(5);
+        limits["window_ms"] = json!(60000);
+        let limits = limits.as_object().unwrap().iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join(", ");
+        std::fs::write(
+            self.home.join("config.toml"),
+            format!(
+                r#"
+[agent_nudge]
+answers = {{ wrong="wrong", stop="halt", msg="send", snooze="later", other="extend", prose="prose", acted="replaced" }}
+limits = {{ {limits} }}
+[silent_nudge]
+rt_repair = {{ marker="retired", file_prefix="custom-overlay-", file_ext=".json", ttl_ms=1000 }}
+"#
+            ),
+        )
+        .unwrap();
+    }
+}
+#[test]
+fn runtime_reconciliation_uses_toml_verbs_windows_cap_and_overlay_expiry() {
+    for (answer, min, age, blocked) in [
+        ("extend", 0, 120000, false),
+        ("extend", 0, 240000, true),
+        ("later", 999, 240000, false),
+        ("later", 999, 360000, true),
+        ("send", 0, 30000, false),
+        ("send", 0, 90000, true),
+        ("halt", 0, 1000, false),
+    ] {
+        let w = World::new(&format!("toml-{answer}-{age}"));
+        w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","running":true}));
+        w.custom_toml();
+        w.answer(answer, min, age);
+        assert_eq!(w.cli_stop().contains("\"decision\":\"block\""), blocked, "{answer}/{age}");
+    }
+    let w = World::new("toml-expiry");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    w.custom_toml();
+    assert!(!w.cli_stop().contains("\"decision\":\"block\""));
+    assert!(w.home.join(".anti-hall/ah-engine/custom-overlay-parent.json").is_file());
+    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{}}));
+    w.fixture("var before=ah.clock.now; ah.clock.now=function(){return before()+2000;};");
+    assert!(w.cli_stop().contains("\"decision\":\"block\""));
+}
+
+#[test]
+fn runtime_owner_answer_aliases_cannot_release_another_session() {
+    for alias in ["worker", "ref-a", "child-a"] {
+        let w = World::new(&format!("answer-isolation-{alias}"));
+        w.write(
+            ".anti-hall/agent-tracker/state.json",
+            json!({"agents":{
+            "child-a":{"id":"child-a","parent":"other","kind":"teammate","running":true},
+            "child":{"id":"child","parent":"parent","kind":"teammate","running":true}},"nudges":{
+            "child-a":{"parent":"other","child_name":"worker","ref_id":"ref-a"},
+            "child":{"parent":"parent","child_name":"worker","ref_id":"ref-b"}}}),
+        );
+        w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"parent","child":"child","name":"worker","block":true}]}));
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":1,"child":alias,"answer":"stop"}))).unwrap();
+        assert!(w.stop().contains("decision\\\":\\\"block"), "alias {alias}");
+    }
+}
+
+#[test]
+fn runtime_structurally_corrupt_overlay_entry_does_not_release_live_agent() {
+    let w = World::new("bad-overlay-entry");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","running":true}));
+    w.write(".anti-hall/ah-engine/runtime-stop-overlay-parent.json", json!({"session":"parent","rows":{"[\"child\",\"worker\"]":1}}));
+    assert!(w.stop().contains("decision\\\":\\\"block"));
+}
+#[test]
+fn runtime_overlay_throw_preserves_the_publisher_block() {
+    let w = World::new("overlay-throw");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    w.fixture("var oldWrite=ah.state.writeAtomic; ah.state.writeAtomic=function(p,t){if(p.indexOf('runtime-stop-overlay-')>=0)throw Error('write failed');return oldWrite(p,t);};");
+    assert!(w.stop().contains("decision\\\":\\\"block"));
 }
