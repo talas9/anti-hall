@@ -100,3 +100,6 @@ MIT © Mohammed Talas. See [LICENSE](https://github.com/talas9/anti-hall/blob/ma
 Quiet scheduled maintenance ticks use `idle_gate.toml` and the existing parent-inbox logic on Claude/OMC and Codex/OMX.
 `guards.idleGateMode` defaults to `one_line`; block mode is opt-in and its host call suppression is unproven.
 See [Quiet scheduled ticks](../../docs/AH-ENGINE.md#quiet-scheduled-ticks-709-pr-c) for eligibility and the no-Rust limitations.
+
+Actionable open tasks, unhandled transcript notifications/attachments, corrupt baselines, unknown sibling freshness,
+and tick output reporting unread mail keep these turns running normally on both hosts.

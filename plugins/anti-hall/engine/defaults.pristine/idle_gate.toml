@@ -83,3 +83,11 @@ value = 16
 [idle_gate.sqlite_header_hex]
 doc = "SQLite database header as hexadecimal; availability proof only, not a guarantee that every telemetry SQL read succeeds."
 value = "53514c69746520666f726d6174203300"
+
+[idle_gate.reject_actionable_tasks]
+doc = "Disqualify quiet ticks while any open task has no unresolved blocker or live working owner. Live agents independently disqualify this gate."
+value = true
+
+[idle_gate.tick_output_pattern]
+doc = "Complete authoritative quiet-tick output of a transcript tool result, captured as mailbox id, unread count, known and mesh gap. Only a bound tick command with zero, true, false can remain eligible."
+value = '^tick ([A-Za-z0-9_.-]+): unread ([0-9]+), known (true|false), meshGap (true|false), watcherArmed (?:true|false|[^\s]+)\s*$'

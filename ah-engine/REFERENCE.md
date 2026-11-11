@@ -14371,6 +14371,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_gate.msg_one_line` | `No change since last tick: reply "idle" and stop immediately, no tool calls.` |  |  | Directive for a proven unchanged scheduled maintenance turn. Other dispatcher checks retain their normal authority. |
 | `idle_gate.owner_cron_opt_in` | `6 entries` |  |  | Owner-authored roster cron prompts are excluded unless this setting is enabled; known mailbox maintenance remains eligible. |
 | `idle_gate.read_bytes` | `1048576` |  |  | Maximum bytes of one state document. |
+| `idle_gate.reject_actionable_tasks` | `true` |  |  | Disqualify quiet ticks while any open task has no unresolved blocker or live working owner. Live agents independently disqualify this gate. |
 | `idle_gate.roster_only_patterns` | `^\s*(?:run\s+)?(?:`?(?:"[^"\n]+"\\|[^\s`]+)\s+mesh\s+)?inbox\s+tick\s+([A-Za-z...` |  |  | Known maintenance prompt patterns. Unmatched prompts fail open; no model classification is performed. |
 | `idle_gate.scheduled_task_key` | `scheduledTaskId` |  |  | Scheduled job identity field in the matched transcript record. |
 | `idle_gate.source` | `idle_gate` |  |  | Waste counter source label. |
@@ -14379,6 +14380,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_gate.state_dir` | `.anti-hall/idle-gate` |  |  | Per-session and per-job quiet baseline directory relative to home. |
 | `idle_gate.summary_fields` | `7 items` |  |  | Project-level facts included alongside workspace fields. |
 | `idle_gate.sw` | `6 entries` |  |  | Enable the conservative scheduled-turn gate through guards.idleGate. It runs as part of the existing registered parent-inbox check on both hosts. |
+| `idle_gate.tick_output_pattern` | `^tick ([A-Za-z0-9_.-]+): unread ([0-9]+), known (true\|false), meshGap (true\|f...` |  |  | Complete authoritative quiet-tick output of a transcript tool result, captured as mailbox id, unread count, known and mesh gap. Only a bound tick command with zero, true, false can remain eligible. |
 | `idle_gate.unsafe_pattern` | `--child\b\|\b(?:deploy\|merge\|delete\|remove\|build\|test)\b` |  |  | Native imports and explicit work must run normally; --child imports a native queue not exposed to check scripts. |
 
 ### nodeback.toml / files

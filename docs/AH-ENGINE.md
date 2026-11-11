@@ -2116,14 +2116,21 @@ this adds no Codex scheduler. A typed prompt is never sufficient proof, even whe
 
 The included `engine/logic/idle-gate.js` uses the shared `dedupe.scheduledTurn` detector. The first tick of each session/job,
 a changed selected workspace/project fact, a changed task list or recorded session-block count, pending/unknown unread mail,
-a mesh gap, running agents, background work or unavailable required state runs normally. Unchanged eligible ticks receive
+a mesh gap, running agents, background work or unavailable required state runs normally.
+`idle_gate.reject_actionable_tasks` defaults to true: an unchanged pending/in-progress task without an unresolved
+blocker still runs normally. Every live agent already disqualifies gating, including an agent owning an open task.
+The transcript must expose a last assistant text turn; newer completion notifications, queued attachments and
+unrecognized tool results run normally. Assistant tool calls do not acknowledge these events. A result bound to the
+mailbox command is eligible only when its complete output proves zero unread, known mail and no mesh gap; positive
+or unknown command output takes precedence over cached zero counts. Malformed baselines and transcript records run normally. Unchanged eligible ticks receive
 `No change since last tick: reply "idle" and stop immediately, no tool calls.` The ceiling forces periodic normal ticks.
 The gate refreshes existing no-mail wake-tick and heartbeat records before returning that directive; failed writes speak
 normally. The `waste_events_total` counter uses category `idle_scheduled_turn` and source `idle_gate`; no full-context
 saving estimate is claimed.
 
 Limits under the no-Rust scope: this gate does **not** silence other dispatcher checks or their blockers. Their output can
-still reach the model. Live-child ticks and `--child` ticks run normally because watcher rearming/native queue imports are
+still reach the model. Any sibling workspace in the cached summary runs normally because the script has no per-sibling mailbox freshness proof.
+Live-child ticks and `--child` ticks run normally because watcher rearming/native queue imports are
 not exposed to scripts. It does not delete/recreate crons or ask Jev to classify unknown owner prompts; unmatched prompts
 fail open. PR/CI/disk facts affect the fingerprint only when the summary supplies configured fields, rather than by new
 external polling. `ah.sessionBlocks` counts recorded blocks and exposes no telemetry-read error; unrecorded blocks and a

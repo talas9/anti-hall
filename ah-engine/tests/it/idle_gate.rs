@@ -43,10 +43,21 @@ impl Lab {
         let tp = self.home.join("transcript.jsonl");
         let mut record =
             json!({"type":"user","turnOrigin":if scheduled {"scheduled"} else {"user"},"scheduledTaskId":"mail-cron","message":{"content":prompt}});
-        let mut prefix = String::new();
+        let mut prefix = if extra.iter().any(|(k, _)| *k == "QUIETTICK_NO_ASSISTANT") {
+            String::new()
+        } else {
+            format!("{}\n", json!({"type":"assistant","message":{"content":"Previous turn handled"}}))
+        };
+        if let Some((_, value)) = extra.iter().find(|(k, _)| *k == "QUIETTICK_TRANSCRIPT_PREFIX") {
+            prefix.push_str(value);
+            prefix.push('\n');
+        }
         if extra.iter().any(|(k, _)| *k == "QUIETTICK_NO_JOB_ID") {
             prefix = format!("{}\n", record);
             record.as_object_mut().unwrap().remove("scheduledTaskId");
+        }
+        if extra.iter().any(|(k, _)| *k == "QUIETTICK_ATTACHED_PROMPT") {
+            record["message"]["content"] = json!([{"type":"text","text":prompt},{"type":"attachment","attachment":{"type":"queued_command"}}]);
         }
         std::fs::write(&tp, format!("{prefix}{record}\n")).unwrap();
         let p = json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":self.repo,"prompt":prompt,"transcript_path":tp,"background_tasks":[]});
@@ -178,4 +189,112 @@ fn mixed_work_prompts_missing_job_identity_and_mail_clearing_do_not_reuse_a_clea
     l.summary(0, "working");
     assert!(!l.run(true, &[]).contains("No change since last tick"), "clearing unread is itself a state change");
     assert!(l.run(true, &[]).contains("No change since last tick"));
+}
+
+#[test]
+fn actionable_tasks_never_become_quiet_on_repeated_ticks() {
+    for status in ["pending", "in_progress"] {
+        let l = Lab::new(status);
+        l.put(".claude/tasks/s1/1.json", &json!({"id":"1","subject":"actionable","status":status,"owner":"finished-agent"}));
+        for _ in 0..3 {
+            assert!(!l.run(true, &[]).contains("No change since last tick"), "{status} task remains actionable");
+        }
+    }
+}
+#[test]
+fn unhandled_notifications_attachments_and_unknown_transcripts_stay_normal() {
+    for (tag, entry) in [
+        (
+            "completion",
+            json!({"type":"user","message":{"content":"<task-notification><task-id>finished</task-id><status>completed</status></task-notification>"}}),
+        ),
+        ("queued", json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"handle queued work"}})),
+        ("status", json!({"type":"attachment","attachment":{"type":"task_status","taskId":"finished","status":"completed"}})),
+    ] {
+        let l = Lab::new(tag);
+        l.run(true, &[]);
+        let prefix = entry.to_string();
+        for _ in 0..2 {
+            assert!(!l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]).contains("No change since last tick"), "{tag} must run normally");
+        }
+    }
+    let l = Lab::new("malformed-transcript");
+    l.run(true, &[]);
+    assert!(!l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", "{broken")]).contains("No change since last tick"));
+}
+#[test]
+fn corrupt_baseline_and_stale_sibling_summaries_stay_normal() {
+    let l = Lab::new("baseline");
+    l.run(true, &[]);
+    for f in std::fs::read_dir(l.home.join(".anti-hall/idle-gate")).unwrap().flatten() {
+        std::fs::write(f.path(), "{broken").unwrap();
+    }
+    assert!(!l.run(true, &[]).contains("No change since last tick"));
+    let l = Lab::new("stale-sibling");
+    l.put(".anti-hall/devswarm/workspaces/sibling.json", &json!({"id":"sibling","inboxPath":l.home.join("inbox"),"cursorPath":l.home.join("cursor")}));
+    l.put(
+        &format!(".anti-hall/devswarm/summaries/{}.json", l.key),
+        &json!({"workspaces":{"primary":{"unread":0,"status":"working"},"sibling":{"unread":0,"status":"done","ts":1}}}),
+    );
+    l.run(true, &[]);
+    assert!(!l.run(true, &[]).contains("No change since last tick"));
+}
+#[test]
+fn tick_command_unread_output_overrides_cached_zero_counts() {
+    let l = Lab::new("tick-output");
+    let entry = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tick","content":"inbox tick primary: unread=2 known=true meshGap=false watcherArmed=true"}]}}).to_string();
+    l.run(true, &[]);
+    assert!(!l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &entry)]).contains("No change since last tick"));
+}
+
+#[test]
+fn bound_tick_output_is_authoritative_and_zero_stays_gateable() {
+    let l = Lab::new("bound-tick-output");
+    let call =
+        json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tick","name":"Bash","input":{"command":"inbox tick primary --quiet"}}]}});
+    for unread in [0, 2] {
+        let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tick","content":format!("tick primary: unread {unread}, known true, meshGap false, watcherArmed true")}]}});
+        let prefix = format!("{call}\n{result}");
+        l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]);
+        let quiet = l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]).contains("No change since last tick");
+        assert_eq!(quiet, unread == 0, "tick output unread {unread} is authoritative");
+    }
+}
+#[test]
+fn missing_assistant_boundary_and_notification_before_tool_call_stay_normal() {
+    let l = Lab::new("boundary");
+    l.run(true, &[]);
+    assert!(!l.run(true, &[("QUIETTICK_NO_ASSISTANT", "1")]).contains("No change since last tick"));
+    let notification = json!({"type":"user","message":{"content":"<task-notification>completed</task-notification>"}});
+    let call =
+        json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tick","name":"Bash","input":{"command":"inbox tick primary --quiet"}}]}});
+    let prefix = format!("{notification}\n{call}");
+    assert!(!l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]).contains("No change since last tick"));
+    let handled = json!({"type":"assistant","message":{"content":"Handled the completed task"}});
+    let prefix = format!("{notification}\n{handled}");
+    l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]);
+    assert!(l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]).contains("No change since last tick"));
+}
+
+#[test]
+fn sidechain_assistant_and_mixed_queued_attachments_do_not_prove_idle() {
+    let l = Lab::new("sidechain");
+    l.run(true, &[]);
+    let notification = json!({"type":"user","message":{"content":"<task-notification>completed</task-notification>"}});
+    let sidechain = json!({"type":"assistant","isSidechain":true,"message":{"content":"Child finished"}});
+    let prefix = format!("{notification}\n{sidechain}");
+    assert!(!l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]).contains("No change since last tick"));
+    let l = Lab::new("mixed-queued");
+    l.run(true, &[]);
+    assert!(!l.run(true, &[("QUIETTICK_ATTACHED_PROMPT", "1")]).contains("No change since last tick"));
+}
+
+#[test]
+fn mixed_assistant_attachment_and_tick_call_stays_normal() {
+    let l = Lab::new("assistant-queued");
+    let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tick","name":"Bash","input":{"command":"inbox tick primary --quiet"}},{"type":"attachment","attachment":{"type":"queued_command"}}]}});
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tick","content":"tick primary: unread 0, known true, meshGap false, watcherArmed true"}]}});
+    let prefix = format!("{call}\n{result}");
+    l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]);
+    assert!(!l.run(true, &[("QUIETTICK_TRANSCRIPT_PREFIX", &prefix)]).contains("No change since last tick"));
 }
