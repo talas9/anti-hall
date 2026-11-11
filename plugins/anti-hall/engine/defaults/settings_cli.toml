@@ -31,6 +31,9 @@ value = [
 [settings_cli.items]
 doc = "Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description."
 value = [
+  "{\"section\":\"devswarm\",\"key\":\"parkedDisplay\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Compact parked roster display and suppression of stale status/not-draining nudges; actual unread mail remains visible.\"}",
+  "{\"section\":\"devswarm\",\"key\":\"tokenUnknown\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Show tok ? when a roster token source cannot be verified.\"}",
+  "{\"section\":\"devswarm\",\"key\":\"tokenFreshMs\",\"type\":\"number\",\"default\":1800000,\"advanced\":true,\"description\":\"Maximum age in milliseconds of a known roster token sample.\",\"min\":0}",
   "{\"section\":\"autoHandover\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"description\":\"Write an automatic handover before context runs out.\"}",
   "{\"section\":\"autoHandover\",\"key\":\"pct\",\"type\":\"number\",\"default\":93,\"description\":\"Context-usage percent that triggers an automatic handover.\"}",
   "{\"section\":\"autoHandover\",\"key\":\"maxTokens\",\"type\":\"number\",\"default\":500000,\"description\":\"Absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens fires first; 500000 (the default) only bites on 1M-window sessions, so 200k models are governed by pct alone; 0 = no ceiling.\"}",

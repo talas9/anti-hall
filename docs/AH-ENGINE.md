@@ -2096,3 +2096,11 @@ in `advisory.metric_names`, per-type and latency names from `advisor.metric_*_tp
 
 The same tallies are kept per agent in the retry state file (`~/.anti-hall/advisor-retry-<session>[.<agent>].json`, `stats`).
 
+
+### Parked roster and unknown token totals (#709, PR-B)
+
+The shared Claude/OMC and Codex/OMX parent-inbox roster now labels a child `parked` when the app explicitly shows it closed, the done gate is true, its id is owner-held, or a live session is waiting on a human. `devswarm.parkedDisplay` (default true) hides stale/escalated status, NOT DRAINING and stall-derived warnings for those rows. Actual unread mail, including urgent mail, still surfaces. Unknown app/transcript state retains live behavior. Cumulative burn and other signals remain visible: this change cannot prove their current rate. No parent-stop state is inferred.
+
+`devswarm.tokenUnknown` (default true) shows `tok ?` in a roster plan cell when the token source is missing, unreadable, changed since sampling, not fully consumed, or the sample exceeds `devswarm.tokenFreshMs` (default 1800000 ms). A fully sampled recent source still shows its total; this is a display stopgap, not a resolver or token-saving measurement. Metric `token_usage_unresolved` counts unknown displays; waste category `stale_flag_on_parked` counts hidden stale flags without estimating token savings.
+
+Deferred under the Rust freeze: the global quiet-tick one-line gate (the independent hook results are combined in Rust; the existing digest enforces at least two lines and has no scheduled-state gate), the actual statusline missing-context branch, transcript resolution, and windowed parked burn. The statusline already prefers `context_window_size` from PR-A2; adding missing-data handling requires changing its Rust renderer. No quiet-tick block mode is enabled. No live deploy or idle-token reduction is claimed by these display changes.

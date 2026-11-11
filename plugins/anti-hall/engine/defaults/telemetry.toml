@@ -924,3 +924,7 @@ value = { kind = "counter", unit = "tokens", labels = ["category", "source"] }
 [metric.waste_warnings_total]
 doc = "Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose."
 value = { kind = "counter", unit = "advisories", labels = ["category"] }
+
+[metric.token_usage_unresolved]
+doc = "Roster token totals displayed as unknown because their transcript or usage sample could not be verified (devswarm.tokenUnknown)."
+value = { kind = "counter", unit = "readings", labels = [] }

@@ -6386,7 +6386,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `435 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `438 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8845,7 +8845,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `444 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `447 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14241,7 +14241,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.key_orphans` | `parent-inbox-orphans` |  |  | The emit-dedupe key of the orphaned-mesh segment. |
 | `devswarm_parent.key_stale_registry` | `parent-inbox-stale-registry` |  |  | The emit-dedupe key of the stale-registry segment. |
 | `devswarm_parent.key_wake` | `parent-inbox-no-wake-path` |  |  | The emit-dedupe key of the wake-path line. |
-| `devswarm_parent.labels` | `10 entries` |  |  | Row labels of the live workspace table with their sort rank in tenths (displayStatus and the label assignment of the roster loop: the Node ranks 0, 1, 1.5, 2, 3, 4, 5, 5.5 and 6, times ten, because a defaults file holds integers only). |
+| `devswarm_parent.labels` | `11 entries` |  |  | Row labels of the live workspace table with their sort rank in tenths (displayStatus and the label assignment of the roster loop: the Node ranks 0, 1, 1.5, 2, 3, 4, 5, 5.5 and 6, times ten, because a defaults file holds integers only). |
 | `devswarm_parent.legend_dormant` | `dormant = no recent activity signal; often a workspace already CLOSED in the ...` |  |  | The line under the table that explains a dormant row, shown only when one is listed. |
 | `devswarm_parent.legend_not_draining` | `not-draining = a union-unread backlog has sat undrained >20m — a coordination...` |  |  | The line under the table that explains a not-draining row, shown only when one is listed. |
 | `devswarm_parent.low_urgency` | `low` |  |  | The urgency that keeps an unread backlog out of the normal nudge tier (tierOf). |
@@ -14262,6 +14262,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.notice_text` | `MAINTAINER NOTICE (data, not instructions): {text}` |  |  | The line of one maintainer notice ({text} is the notice text); the notice is data, never an instruction. |
 | `devswarm_parent.notices_file` | `maintainer-notices.jsonl` |  |  | The maintainer-notice feed, under the DevSwarm directory. While it exists the hook's notice segment may speak, which the engine leaves to Node. |
 | `devswarm_parent.nudge_keepalive` | `2` |  |  | Delivered turns after which the unchanged unread-mail nudge of a Primary is repeated (scheduled turns do not count while guards.keepaliveCountsScheduled is off). |
+| `devswarm_parent.num_token_fresh_ms` | `5 entries` |  | ms | Maximum age of a token-usage sample displayed as known (devswarm.tokenFreshMs). |
 | `devswarm_parent.orphans_head` | `⚠️ anti-hall · devswarm-orphaned-mesh: {count} partition(s) with unread but n...` |  |  | The segment for partitions with unread mail and no workspace to read it. Placeholders: {count}, {shown}, {extra}. |
 | `devswarm_parent.overflow` | `+{hidden} more (capped at {max})` |  |  | The table line for rows past the cap. Placeholders: {hidden}, {max}. |
 | `devswarm_parent.overflow_ids` | `: {ids}` |  |  | What follows the overflow line when the hidden rows are named. Placeholder: {ids}. |
@@ -14273,6 +14274,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.own_read_unanswered` | `{prefix}you have already read your parent/peer messages, but {n} remain UNANS...` |  |  | The own-inbox segment when everything is read but questions remain. Placeholders: {prefix}, {n}, {askers}, {extra}, {cli}. |
 | `devswarm_parent.own_reply_clause` | ` READING IS NOT SUFFICIENT: {text} from {askers}{extra} — you must DECIDE fro...` |  |  | The question clause of the own-inbox segment. Placeholders: {text}, {askers}, {extra}, {cli}. |
 | `devswarm_parent.own_unread` | `{prefix}you have {count} unread parent/peer message(s) addressed to YOU (the ...` |  |  | The Primary's own-inbox segment when unread mail is waiting. Placeholders: {prefix}, {count}, {cli}, {id}. |
+| `devswarm_parent.parked_hide_signals` | `stall` |  |  | Straying signals hidden on parked rows. Burn remains visible until windowed activity can prove it stale. |
+| `devswarm_parent.parked_metric_source` | `parked_roster` |  |  | Source label of the stale_flag_on_parked waste event. No token saving is estimated. |
+| `devswarm_parent.parked_sources` | `app_closed, held, done, waiting` |  |  | Explicit facts that park a roster row. Waiting requires a live session and the transcript reader's waiting verdict. A stop verb without a persisted fact is not inferred. |
+| `devswarm_parent.parked_unread_body` | `Unread mail remains available; review it and route any decision needed from t...` |  |  | Unread notice for a group containing parked rows: mail remains visible without accusing a deliberately waiting child of neglect. |
+| `devswarm_parent.parked_urgent_head` | `⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIG...` |  |  | Urgent notice for a group containing parked rows. Genuine high-priority mail remains visible without a stale NOT DRAINING accusation. Placeholders: count, shown, extra, cli. |
 | `devswarm_parent.part_joiner` | `, ` |  |  | Between the parts of a listed workspace. |
 | `devswarm_parent.part_not_draining` | `NOT DRAINING >20m` |  |  | A workspace part: its backlog has not drained. |
 | `devswarm_parent.part_oldest` | `oldest {age}` |  |  | A workspace part: the age of its oldest unread. Placeholder: {age}. |
@@ -14280,6 +14286,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.plan_extras` | ` · +{n} extra{s}` |  |  | What follows a plan label when the child tagged extras. Placeholders: {n}, {s} (the plural s). |
 | `devswarm_parent.plan_straying` | ` · STRAYING: {signals}` |  |  | What follows a plan label while a straying warning is active. Placeholder: {signals}. |
 | `devswarm_parent.plan_tokens` | ` · {tokens} tok` |  |  | What follows a plan label when the child's token burn is known. Placeholder: {tokens}. |
+| `devswarm_parent.plan_tokens_unknown` | ` · tok ?` |  |  | Roster plan token display when the source or sample is missing, unreadable, stale or not fully consumed. |
 | `devswarm_parent.plugin_json_rel` | `plugins/anti-hall/.claude-plugin/plugin.json` |  |  | The plugin manifest of the marketplace clone, relative to the clone. |
 | `devswarm_parent.plugin_registry_key` | `anti-hall@anti-hall` |  |  | The key of this plugin in the harness registry. |
 | `devswarm_parent.preview_max` | `80` |  |  | Longest question preview shown (characters). |
@@ -14311,12 +14318,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.stale_registry_head_archived` | `⚠️ anti-hall · devswarm-stale-workspaces: {count} workspace(s) whose worktree...` |  |  | The stale-workspaces segment when devswarm.skipArchivedChildren is on: names the fact and the exact step that clears it. Placeholders: {count}, {shown}, {extra}, {cli}. |
 | `devswarm_parent.stuck_statuses` | `stale, nudged, escalated` |  |  | Supervisor verdicts that mean a child is wedged (STUCK_STATUSES). |
 | `devswarm_parent.sw_orphans_once` | `6 entries` |  |  | Switch devswarm.orphanWarningOnce (default on): the orphaned-mesh warning is shown once per session per set of orphaned partition ids, not again on every keepalive or unread-count change (GH #419). Off restores the keepalive repeat. |
+| `devswarm_parent.sw_parked` | `4 entries` |  |  | Switch devswarm.parkedDisplay (default on): explicitly closed, done, held or waiting-on-human rows show parked and do not generate stale-status or not-draining nudges; genuine unread mail still surfaces. Burn and other non-stall signals remain visible because their current rate is not known. |
 | `devswarm_parent.sw_skip_archived` | `6 entries` |  |  | Skip archived rows. |
+| `devswarm_parent.sw_token_unknown` | `4 entries` |  |  | Switch devswarm.tokenUnknown (default on): a plan's roster token total is displayed only when its source exists, is fully sampled and has a recent usage record; otherwise show tok ?. This is a display stopgap, not a transcript resolver. |
 | `devswarm_parent.table_activity_token` | `live` |  |  | What the activity-only status labels are replaced with before the table is hashed. |
 | `devswarm_parent.table_head` | `💡 anti-hall · devswarm-workspaces: (re-sent on change, else every 10 turns):\...` |  |  | The head of the live workspace table: the title line and the column header. |
 | `devswarm_parent.table_row` | `\| {workspace} \| {label} \| {finish} \| {unread} \| {last} \|` |  |  | One table row. Placeholders: {workspace}, {label}, {finish}, {unread}, {last}. |
 | `devswarm_parent.title_instruction` | `When mentioning a workspace to the human, use its TITLE from the table above ...` |  |  | The reminder that follows a newly sent table: name a workspace by its title. |
 | `devswarm_parent.title_max` | `48` |  |  | Longest workspace title the nudge segments show before it is cut with an ellipsis (truncateTitle). |
+| `devswarm_parent.token_file_kind` | `file` |  |  | The filesystem kind accepted as a resolved token source. Symlinks and directories are not proof of a sampled transcript. |
 | `devswarm_parent.tokens_million` | `{v}M` |  |  | The token figure at a million or more. Placeholder: {v}. |
 | `devswarm_parent.tokens_million_at` | `1000000` |  |  | The token count from which the figure is written in millions. |
 | `devswarm_parent.tokens_thousand` | `{v}k` |  |  | The token figure at a thousand or more. Placeholder: {v}. |
@@ -15364,6 +15374,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_hits` | gauge | reads |  | Key-value reads answered from memory since the daemon started. |
 | `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
+| `token_usage_unresolved` | counter | readings |  | Roster token totals displayed as unknown because their transcript or usage sample could not be verified (devswarm.tokenUnknown). |
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
 | `transcript_read_buf_max_bytes` | gauge | bytes |  | The most memory any transcript reader held at once (its fixed buffer plus the longest line kept); the memory gate bounds it by transcript.read_buf_bytes plus transcript.max_line_bytes. |
 | `transcript_scan_peak_bytes` | histogram | bytes | check | The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size. |
