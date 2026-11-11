@@ -169,4 +169,11 @@ Everything else starts at the
 [documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
 or the [docs site](https://talas9.github.io/anti-hall/).
 
+Quiet scheduled maintenance ticks use the shared `idle_gate.toml` / parent-inbox logic and the `idle-gate` dispatcher alias,
+with `guards.idleGateMode=one_line` by default. Codex/OMX only gates turns whose transcript proves the scheduled origin;
+typed prompts are never gated. This introduces no scheduler. Eligibility, unchanged-state checks, the opt-in block mode and
+no-Rust limitations are documented in [Quiet scheduled ticks](../../../docs/AH-ENGINE.md#quiet-scheduled-ticks-709-pr-c).
+
+Actionable open tasks, unhandled transcript notifications/attachments, corrupt baselines, unknown sibling freshness,
+and tick output reporting unread mail keep these turns running normally on both hosts.
 Tool-hook advisory state (#709): the shared engine fingerprints advisory text with `tool_advisory.toml`, shipped in both defaults copies. For Codex/OMX, the existing `orch-on-spawn` registration sends orchestration rules once per session, and PreToolUse Bash disk warnings speak on a level change or their configured reminder. Usage-aware dispatch and task-owner pairing retain their Claude/OMC applicability; this change adds no Codex task-owner field or lifecycle registration. `SubagentStart` remains unregistered on Codex, so its per-child protocol dedupe is tested on the Claude path only. The switches and cooldowns are listed in `anti-hall-engine-guards` and the engine reference; blocks are never suppressed.

@@ -1557,5 +1557,6 @@ function piDecide(p, opts) {
 }
 
 function decide(p, opts) {
-  return piDecide(p, opts);
+  var quiet = typeof idleGate === 'function' ? idleGate(p) : null;
+  return quiet || piDecide(p, opts);
 }

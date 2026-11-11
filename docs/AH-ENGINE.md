@@ -2105,6 +2105,39 @@ The shared Claude/OMC and Codex/OMX parent-inbox roster now labels a child `park
 
 Deferred under the Rust freeze: the global quiet-tick one-line gate (the independent hook results are combined in Rust; the existing digest enforces at least two lines and has no scheduled-state gate), the actual statusline missing-context branch, transcript resolution, and windowed parked burn. The statusline already prefers `context_window_size` from PR-A2; adding missing-data handling requires changing its Rust renderer. No quiet-tick block mode is enabled. No live deploy or idle-token reduction is claimed by these display changes.
 
+### Quiet scheduled ticks (#709 PR-C)
+
+`idle_gate.toml` configures `guards.idleGate` (on), `guards.idleGateMode` (`one_line`, with `block` opt-in),
+`guards.idleGateOwnerCronOptIn` (off), maintenance patterns, fingerprint fields, wording and the normal-tick ceiling.
+The `idle-gate` dispatch entry aliases the existing registered `devswarm-parent-inbox` check on both Claude/OMC and
+Codex/OMX; its conditions are mutually exclusive with the original entry. Eligibility remains limited to that check's
+supervisor/parent-inbox contexts. Codex is silent unless its transcript actually supplies the same scheduled-turn proof;
+this adds no Codex scheduler. A typed prompt is never sufficient proof, even when its text matches a cron.
+
+The included `engine/logic/idle-gate.js` uses the shared `dedupe.scheduledTurn` detector. The first tick of each session/job,
+a changed selected workspace/project fact, a changed task list or recorded session-block count, pending/unknown unread mail,
+a mesh gap, running agents, background work or unavailable required state runs normally.
+`idle_gate.reject_actionable_tasks` defaults to true: an unchanged pending/in-progress task without an unresolved
+blocker still runs normally. Every live agent already disqualifies gating, including an agent owning an open task.
+The transcript must expose a last assistant text turn; newer completion notifications, queued attachments and
+unrecognized tool results run normally. Assistant tool calls do not acknowledge these events. A result bound to the
+mailbox command is eligible only when its complete output proves zero unread, known mail and no mesh gap; positive
+or unknown command output takes precedence over cached zero counts. Malformed baselines and transcript records run normally. Unchanged eligible ticks receive
+`No change since last tick: reply "idle" and stop immediately, no tool calls.` The ceiling forces periodic normal ticks.
+The gate refreshes existing no-mail wake-tick and heartbeat records before returning that directive; failed writes speak
+normally. The `waste_events_total` counter uses category `idle_scheduled_turn` and source `idle_gate`; no full-context
+saving estimate is claimed.
+
+Limits under the no-Rust scope: this gate does **not** silence other dispatcher checks or their blockers. Their output can
+still reach the model. Any sibling workspace in the cached summary runs normally because the script has no per-sibling mailbox freshness proof.
+Live-child ticks and `--child` ticks run normally because watcher rearming/native queue imports are
+not exposed to scripts. It does not delete/recreate crons or ask Jev to classify unknown owner prompts; unmatched prompts
+fail open. PR/CI/disk facts affect the fingerprint only when the summary supplies configured fields, rather than by new
+external polling. `ah.sessionBlocks` counts recorded blocks and exposes no telemetry-read error; unrecorded blocks and a
+telemetry SQL read failure cannot be distinguished through this primitive. A missing or unreadable SQLite header does fail open;
+benign telemetry writes do not enter the fingerprint. `block` emits the existing UPS decision shape but
+whether a host avoids its model call is **not verified**; the live spike was not performed and the mode stays off by default.
+The pristine `script.toml` checksum fixture is untouched; a fallback without the helper preserves normal parent-inbox behavior.
 Tool-hook advisory fingerprints (#709) live in `tool_advisory.toml` (mirrored in defaults.pristine). PreToolUse usage warnings normalize the fullest limit, percentage bucket and reset; PostToolUse pairing reads the authoritative named task list before the transcript. Unchanged advisory text stays silent until its configurable cooldown; recovery followed by relapse speaks again. Blocks bypass suppression. Orchestration rules on spawn are once per session; SubagentStart protocol is once per receiving child identity, and missing identity fails open. Each behavior has a guards switch and a reminder setting, listed in the generated reference. Suppressed text increments `waste_events_total` with category `repeated_advisory` and the source. The shared engine logic serves Claude/OMC and Codex/OMX where each host exposes the event; usage and task-owner checks retain their existing Claude-only applicability.
 
 The Advisor-first dispatch notice already fires only at the first thinking dispatch of a user turn; its second dispatch block and later allowed calls retain the existing state machine. This change does not alter that guard.

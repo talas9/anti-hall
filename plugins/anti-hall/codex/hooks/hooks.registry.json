@@ -483,6 +483,12 @@
             "type": "command",
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
+            "id": "idle-gate"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
             "id": "devswarm-rt-advisory"
           },
           {

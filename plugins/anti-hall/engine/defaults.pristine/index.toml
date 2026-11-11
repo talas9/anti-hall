@@ -115,6 +115,7 @@ files = [
     "mem.toml",
     "wire.toml",
     "devswarm_parent.toml",
+    "idle_gate.toml",
     "nodeback.toml",
     "web.toml",
     "io.toml",

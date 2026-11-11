@@ -57,6 +57,7 @@ mod hooks_files;
 mod idle_waste_a2;
 mod idle_waste_a2b;
 mod idle_waste_b;
+mod idle_gate;
 mod idle_rule_codex_e2e;
 mod jev_review_scan_mem;
 mod jev_scrub_reload;
