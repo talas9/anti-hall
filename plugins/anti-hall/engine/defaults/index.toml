@@ -120,5 +120,6 @@ files = [
     "web.toml",
     "io.toml",
     "session_switches.toml",
+    "tool_advisory.toml",
 ]
 extra_dir = "hooks.d"
