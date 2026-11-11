@@ -394,15 +394,37 @@ function cgTickFresh(ctx) {
   return m.known === true;
 }
 
-// The Stop payload's cron list (Claude Code 2.1.145+, devswarm.cronFromPayload): null when the switch is off or the payload carries no list
-// (the age-based check then decides), else whether one of the session's scheduled jobs runs the mailbox tick. A list entry of another shape
-// is not a tick job.
+// A session_crons entry of the shape the host documents ({id, schedule, recurring, prompt}): an object with a string prompt and a boolean
+// recurring flag. A list holding none of those (old shape, malformed entries) says nothing about the tick job.
+function cgCronRecognised(c) {
+  return jx.isObj(c) && typeof c[ah.cfg('devswarm_gates.cg_payload_cron_prompt_field')] === 'string'
+    && typeof c[ah.cfg('devswarm_gates.cg_payload_cron_recurring_field')] === 'boolean';
+}
+
+// Whether a recognised entry is the live mailbox tick job: it repeats, has a schedule, its prompt RUNS the tick command (devswarm_gates.
+// cg_cron_prompt_re, not a prompt that merely mentions it) and it has not lapsed. An expiry that cannot be read counts as lapsed, so the
+// gate errs toward the warning.
+function cgCronIsTick(ctx, c) {
+  if (c[ah.cfg('devswarm_gates.cg_payload_cron_recurring_field')] !== true) return false;
+  var sched = c[ah.cfg('devswarm_gates.cg_payload_cron_schedule_field')];
+  if (typeof sched !== 'string' || sched.trim() === '') return false;
+  if (!new RegExp(ah.cfg('devswarm_gates.cg_cron_prompt_re')).test(c[ah.cfg('devswarm_gates.cg_payload_cron_prompt_field')])) return false;
+  var exp = c[ah.cfg('devswarm_gates.cg_payload_cron_expiry_field')];
+  if (exp === undefined || exp === null) return true;
+  var at = typeof exp === 'number' ? exp : typeof exp === 'string' ? Date.parse(exp) : NaN;
+  return cgFinite(at) && at > ctx.now;
+}
+
+// The Stop payload's cron list (Claude Code 2.1.145+, devswarm.cronFromPayload): null when the switch is off, the payload carries no list
+// or the list is of a shape not recognised (the age-based check then decides), else whether one of the session's scheduled jobs is the live
+// recurring mailbox tick job. An empty list is recognised: nothing is scheduled.
 function cgPayloadCron(ctx) {
   if (!ah.settings.bool('devswarm_gates.sw_cron_from_payload')) return null;
   var list = ctx.p[ah.cfg('devswarm_gates.cg_payload_crons_field')];
   if (!Array.isArray(list)) return null;
-  var marker = ah.cfg('devswarm_gates.cg_cron_prompt_marker'), field = ah.cfg('devswarm_gates.cg_payload_cron_prompt_field');
-  return list.some(function (c) { return jx.isObj(c) && typeof c[field] === 'string' && c[field].indexOf(marker) >= 0; });
+  var known = list.filter(cgCronRecognised);
+  if (list.length > 0 && known.length === 0) return null;
+  return known.some(function (c) { return cgCronIsTick(ctx, c); });
 }
 
 // The warning for a stale sign of life of `ageMs`, with the key of the age-based text: null when the payload lists the tick job (nothing

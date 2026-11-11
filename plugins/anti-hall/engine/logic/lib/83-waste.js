@@ -2,7 +2,7 @@
 // of the text left out) and keeps a small per-session record of it; `waste.warning` turns that record into ONE advisory per level change:
 // the tokens saved in the last waste.num_window_min minutes per category against the levels waste.level_multipliers x guards.wasteWarnTokens.
 // A constant rate warns once, when it first reaches a level, and again only when the level rises; a fall is recorded silently, so a
-// relapse warns again. Everything is best effort: a failure reads as no warning and never changes a decision. Keys, texts and limits:
+// relapse warns again (a dip within waste.hysteresis_pct of a threshold is not a fall). A record the disk will not take means no warning. Everything is best effort: a failure reads as no warning and never changes a decision. Keys, texts and limits:
 // prompt_emit.toml (waste.*), telemetry.toml (waste_events_total, waste_tokens_total, waste_warnings_total).
 'use strict';
 
@@ -45,6 +45,7 @@ var waste = {
     try {
       var st = waste.load(sid), now = ah.clock.now(), win = ah.settings.num('waste.num_window_min') * ah.cfgNum('waste.ms_per_minute');
       var base = ah.settings.num('waste.num_level_tokens'), mult = ah.cfg('waste.level_multipliers'), rose = [], dirty = false;
+      var keep = 1 - ah.cfgNum('waste.hysteresis_pct') / 100; // a level is left only once the sum is under this share of its threshold
       Object.keys(st.cats).forEach(function (cat) {
         var c = st.cats[cat];
         if (!c || typeof c !== 'object' || !Array.isArray(c.ev)) { delete st.cats[cat]; dirty = true; return; }
@@ -53,11 +54,14 @@ var waste = {
         var sum = kept.reduce(function (a, e) { return a + e[1]; }, 0), level = 0;
         mult.forEach(function (m, i) { if (sum >= m * base) level = i + 1; });
         var was = typeof c.level === 'number' ? c.level : 0;
+        // hysteresis: a dip that stays within the margin of the level held keeps it, so a rate flapping around a threshold warns once
+        if (level < was && was <= mult.length && sum >= mult[was - 1] * base * keep) level = was;
         if (level > was) rose.push({ cat: cat, sum: sum, level: level, n: kept.length });
         if (level !== was) { c.level = level; dirty = true; }
         if (kept.length === 0 && level === 0) { delete st.cats[cat]; dirty = true; }
       });
-      if (dirty) ah.state.writeAtomic(waste.rel(sid), JSON.stringify(st));
+      // the record is what stops a repeat: a write the disk refuses would warn every turn, so it says nothing (fail quiet)
+      if (dirty && ah.state.writeAtomic(waste.rel(sid), JSON.stringify(st)) === false) return '';
       if (rose.length === 0) return '';
       rose.sort(function (a, b) { return b.sum - a.sum; });
       var top = rose[0];

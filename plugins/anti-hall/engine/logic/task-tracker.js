@@ -129,9 +129,13 @@ function ttActionable(open, tasks) {
   return out;
 }
 
-// A fingerprint of the open-task list (id, status, owner, blockedOn), so the short reminder can tell a changed list from an unchanged one.
+// A fingerprint of the open-task list (id, subject, status, owner, blockedOn, blockedBy), so the short reminder can tell a changed list from an
+// unchanged one. blockedBy (what the actionability test reads) is order-normalised, so a reorder alone is no change.
 function ttListHash(tasks) {
-  return ah.sha1(tasks.filter(tk.isOpen).map(function (t) { return [t.id, tk.statusLc(t), t.owner || '', tk.blockedOnText(t)].join('|'); }).sort().join(';')).slice(0, 16);
+  return ah.sha1(tasks.filter(tk.isOpen).map(function (t) {
+    var by = (t.blockedBy || []).map(String).sort().join(',');
+    return [t.id, String(t.content || ''), tk.statusLc(t), t.owner || '', tk.blockedOnText(t), by].join('|');
+  }).sort().join(';')).slice(0, 16);
 }
 
 // What the previous prompt left in the state file: {hash, quiet}.

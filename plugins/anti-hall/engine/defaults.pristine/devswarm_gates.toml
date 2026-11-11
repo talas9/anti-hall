@@ -387,9 +387,21 @@ value = "session_crons"
 doc = "The field of a session_crons entry that holds the prompt the job submits when it fires (capped by the host at 1000 characters)."
 value = "prompt"
 
-[devswarm_gates.cg_cron_prompt_marker]
-doc = "The text a cron job's prompt holds when it is the mailbox tick of this workspace (the prompt runs the `inbox tick` command)."
-value = "inbox tick"
+[devswarm_gates.cg_cron_prompt_re]
+doc = "The regular expression a session_crons prompt must match to be the mailbox tick of this workspace: the prompt BEGINS with the command that runs it (`<cli> mesh inbox tick <id> ...`), so a prompt that only mentions the words (`Do not run inbox tick`) is not the tick job."
+value = '^\s*\S+\s+mesh\s+inbox\s+tick\s+\S+'
+
+[devswarm_gates.cg_payload_cron_recurring_field]
+doc = "The field of a session_crons entry that says the job repeats (true); a one-shot job is not a mailbox cron."
+value = "recurring"
+
+[devswarm_gates.cg_payload_cron_schedule_field]
+doc = "The field of a session_crons entry that holds its schedule; an entry with no schedule is not a live job."
+value = "schedule"
+
+[devswarm_gates.cg_payload_cron_expiry_field]
+doc = "The optional field of a session_crons entry that holds when the job lapses (epoch milliseconds, or an ISO date); an entry whose expiry has passed, or cannot be read, is not a live job. An entry without the field has no expiry."
+value = "expiresAt"
 
 [devswarm_gates.cg_cron_missing_payload]
 doc = "The mailbox-cron-missing text when the Stop payload's cron list is present and holds no mailbox tick job: {m} (age in whole minutes of the last tick marker or heartbeat); the wake re-verify line follows. No CronList step: the list is already known."

@@ -3349,6 +3349,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `emit_dedupe.assistant_record_type` | `assistant` |  |  | The type of a transcript record that is an assistant turn. |
 | `emit_dedupe.attachment_type` | `hook_additional_context` |  |  | The transcript attachment type the host writes for a delivered hook context. |
 | `emit_dedupe.file_prefix` | `dedupe` |  |  | Prefix of a session's state file name (dedupe-<session>.json) and of the sweep stamp. |
 | `emit_dedupe.hook_event` | `UserPromptSubmit` |  |  | The hook event whose delivered context counts as a block's delivery. |
@@ -3365,6 +3366,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `emit_dedupe.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that throttles the sweep of idle session files. |
 | `emit_dedupe.prune_throttle_ms` | `21600000` |  | ms | The sweep of idle session files runs at most this often. |
 | `emit_dedupe.prune_ttl_ms` | `604800000` |  | ms | A session file not modified for this long is removed by the sweep (never the file of the session being written). |
+| `emit_dedupe.record_needles` | `"type":"` |  |  | The strings a transcript line must hold to be read when the engine decides whether the prompt now submitted is a scheduled turn (every user and assistant record, so a prompt's record can be told from what follows it). |
 | `emit_dedupe.reset_key` | `__reset` |  |  | The state key that records the last context loss. |
 | `emit_dedupe.segment_sep` | `\n\n` |  |  | How the hooks join their blocks into one additionalContext; a delivery may hold the emitted block as a run of whole segments. |
 | `emit_dedupe.session_safe_max` | `128` |  |  | Longest session part of a state file name, in UTF-16 units, after characters outside letters, digits, dot, underscore and hyphen become underscores. |
@@ -3375,6 +3377,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `emit_dedupe.sw_enabled` | `5 entries` |  |  | Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing. |
 | `emit_dedupe.tail_bytes` | `262144` |  | bytes | The first transcript window searched for a block's delivery. |
 | `emit_dedupe.tail_bytes_wide` | `4194304` |  | bytes | The wider transcript window searched once when the first has no delivery and the file is larger than it. |
+| `emit_dedupe.tool_result_block_type` | `tool_result` |  |  | The type of a content block that carries a tool's result; a user record made only of these is not a prompt. |
 | `emit_dedupe.ts_tolerance_ms` | `1000` |  | ms | How far before a block's own timestamp a transcript attachment may be stamped and still count as its delivery. |
 | `emit_dedupe.uncounted_origins` | `scheduled` |  |  | The turn origins that do not count toward a keepalive while guards.keepaliveCountsScheduled is off. |
 | `emit_dedupe.window_default_ms` | `15000` |  | ms | The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable. |
@@ -3489,6 +3492,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `waste.bytes_per_token` | `4` |  | bytes | How many bytes of advisory text are counted as one token when the tokens of a left-out text are estimated (a rough rule; the counter is an estimate, not the host's bill). |
 | `waste.guard_name` | `token-waste` |  |  | The name the waste advisory carries. |
+| `waste.hysteresis_pct` | `10` |  | percent | How far (percent of a level's threshold) the window's tokens may fall below the level held before the level is lowered: a rate flapping around a threshold then warns once, not every time it crosses. 0 lowers a level as soon as the sum is under it. |
 | `waste.level_multipliers` | `1, 4, 16` |  |  | The waste levels as multiples of guards.wasteWarnTokens: level n is reached when the window holds at least the n-th multiple of tokens. |
 | `waste.max_events` | `200` |  |  | Most events kept per category in the session's waste record (older ones are dropped first). |
 | `waste.ms_per_minute` | `60000` |  | ms | Milliseconds in a minute (the window is set in minutes). |
@@ -6171,7 +6175,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_cron_missing_payload` | `Mailbox cron missing: this session has no `inbox tick` cron (none of its sche...` |  |  | The mailbox-cron-missing text when the Stop payload's cron list is present and holds no mailbox tick job: {m} (age in whole minutes of the last tick marker or heartbeat); the wake re-verify line follows. No CronList step: the list is already known. |
 | `devswarm_gates.cg_cron_missing_tick` | `Mailbox cron missing: no inbox tick for {m}m — run `CronList`; if no tick cro...` |  |  | The mailbox-cron-missing text when the last tick marker is too old: {m} (its age in whole minutes); the wake re-verify line follows. |
 | `devswarm_gates.cg_cron_present_metric` | `cron_listed` |  |  | The `source` label of waste_events_total (category forced_turn) for a Stop whose payload cron list holds the mailbox tick job although the tick marker is stale: the age-based check would have warned and sent the model to CronList. |
-| `devswarm_gates.cg_cron_prompt_marker` | `inbox tick` |  |  | The text a cron job's prompt holds when it is the mailbox tick of this workspace (the prompt runs the `inbox tick` command). |
+| `devswarm_gates.cg_cron_prompt_re` | `^\s*\S+\s+mesh\s+inbox\s+tick\s+\S+` |  |  | The regular expression a session_crons prompt must match to be the mailbox tick of this workspace: the prompt BEGINS with the command that runs it (`<cli> mesh inbox tick <id> ...`), so a prompt that only mentions the words (`Do not run inbox tick`) is not the tick job. |
 | `devswarm_gates.cg_drop_known` | `your last heartbeat summary was DROPPED — {label}. {remedy}` |  |  | The drop description of a known reason: {label}, {remedy}. |
 | `devswarm_gates.cg_drop_labels` | `3 entries` |  |  | Whitelisted label of each known drop reason of a refused heartbeat summary (any other reason is never echoed). |
 | `devswarm_gates.cg_drop_remedies` | `3 entries` |  |  | Remedy of each known drop reason; the id placeholder (devswarm_role.id_placeholder) is replaced by the workspace id. |
@@ -6195,7 +6199,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_max_blocks` | `2` |  |  | Intentional per-stable-kind, per-session budget before the child gate yields (MAX_BLOCKS), rather than an owner-turn cap: a kind re-opens only when its condition is observed cleared. New owner turns alone must not re-arm an unresolved mailbox or heartbeat condition. |
 | `devswarm_gates.cg_nonce_prefix_len` | `12` |  |  | Characters of a reader nonce shown in the attempt-mismatch notice. |
 | `devswarm_gates.cg_path_env` | `PATH` |  |  | The environment variable the native probe program is looked up in. |
+| `devswarm_gates.cg_payload_cron_expiry_field` | `expiresAt` |  |  | The optional field of a session_crons entry that holds when the job lapses (epoch milliseconds, or an ISO date); an entry whose expiry has passed, or cannot be read, is not a live job. An entry without the field has no expiry. |
 | `devswarm_gates.cg_payload_cron_prompt_field` | `prompt` |  |  | The field of a session_crons entry that holds the prompt the job submits when it fires (capped by the host at 1000 characters). |
+| `devswarm_gates.cg_payload_cron_recurring_field` | `recurring` |  |  | The field of a session_crons entry that says the job repeats (true); a one-shot job is not a mailbox cron. |
+| `devswarm_gates.cg_payload_cron_schedule_field` | `schedule` |  |  | The field of a session_crons entry that holds its schedule; an entry with no schedule is not a live job. |
 | `devswarm_gates.cg_payload_crons_field` | `session_crons` |  |  | The Stop / SubagentStop payload field (Claude Code 2.1.145+) that lists the session's scheduled cron jobs: an array of {id, schedule, recurring, prompt}; empty when none is scheduled. |
 | `devswarm_gates.cg_policy_dir` | `stop-policy` |  |  | Directory of the shared stop-policy budget files, under the DevSwarm state directory. |
 | `devswarm_gates.cg_probe_args` | `workspace, message-count` |  |  | Arguments of the non-destructive native message-count probe. |

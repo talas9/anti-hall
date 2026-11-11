@@ -215,3 +215,214 @@ fn a_constant_waste_rate_across_ten_ticks_warns_once_and_a_higher_level_warns_ag
         assert!(!track(&h2, &tick, CRON_PROMPT, &[("ANTIHALL_WASTE_WARN_TOKENS", "100"), ("ANTIHALL_WASTE_WARN", "0")]).contains("idle waste"));
     }
 }
+
+// ---- review fixes (PR #713 HOLD): P1-a cron shape, P1-b scheduled-turn proof, P1-c fingerprint, P2 waste write failure ---------------
+
+/// P1-a: only a genuine recurring job that RUNS the mailbox tick ends the missing-cron warning. A prompt that merely mentions the words, a
+/// one-shot job, a job with no schedule and an expired one are not the tick job; an unrecognised list falls back to the age-based text.
+#[test]
+fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
+    let missing = |out: &str, name: &str| assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: should warn from the list: {out}");
+    let real = serde_json::json!({"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": TICK_PROMPT});
+    let with = |patch: serde_json::Value| {
+        let mut e = real.clone();
+        for (k, v) in patch.as_object().unwrap() {
+            e[k] = v.clone();
+        }
+        e
+    };
+    let past = now_ms() - 3600 * 1000;
+    let future = now_ms() + 24 * 3600 * 1000;
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("mention", serde_json::json!([{"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": "Do not run inbox tick"}])),
+        ("mention-with-cli", serde_json::json!([with(serde_json::json!({"prompt": "never run /x/ah-engine mesh inbox tick b-1 --child"}))])),
+        ("one-shot", serde_json::json!([with(serde_json::json!({"recurring": false}))])),
+        ("no-schedule", serde_json::json!([with(serde_json::json!({"schedule": ""}))])),
+        ("expired", serde_json::json!([with(serde_json::json!({"expiresAt": past}))])),
+        ("expiry-unreadable", serde_json::json!([with(serde_json::json!({"expiresAt": "soon"}))])),
+    ];
+    for (name, list) in cases {
+        let h = stale_child(&format!("cron-{name}"));
+        missing(&gate(&h, Some(list), &CHILD_ENV), name);
+    }
+    // the true positives still end the warning: the real job, with or without a (future) expiry
+    for (name, e) in [("real", real.clone()), ("future-expiry", with(serde_json::json!({"expiresAt": future})))] {
+        let h = stale_child(&format!("cron-ok-{name}"));
+        let out = gate(&h, Some(serde_json::json!([e])), &CHILD_ENV);
+        assert!(!out.contains("Mailbox cron missing"), "{name}: a genuine tick job is not missing: {out}");
+    }
+    // a genuine job beside a misleading one still counts
+    let h = stale_child("cron-mixed");
+    let out = gate(&h, Some(serde_json::json!([{"id": "x", "schedule": "* * * * *", "recurring": true, "prompt": "Do not run inbox tick"}, real.clone()])), &CHILD_ENV);
+    assert!(!out.contains("Mailbox cron missing"), "mixed: {out}");
+    // a list of an unrecognised shape (old shape, malformed entries) is no evidence either way: the age-based text, which sends to CronList
+    for (name, list) in [
+        ("old-shape", serde_json::json!([{"cron": "7,37 * * * *", "command": TICK_PROMPT}])),
+        ("malformed", serde_json::json!(["inbox tick", 5, null])),
+    ] {
+        let h = stale_child(&format!("cron-{name}"));
+        let out = gate(&h, Some(list), &CHILD_ENV);
+        assert!(out.contains("Mailbox cron missing: no inbox tick for") && out.contains("CronList"), "{name}: falls back to the age-based text: {out}");
+    }
+    // a stale marker, no Monitor and no cron still warns (the lapsed-wake case)
+    let h = stale_child("cron-lapsed");
+    missing(&gate(&h, Some(serde_json::json!([])), &CHILD_ENV), "lapsed");
+}
+
+fn rec(kind: &str, origin: Option<&str>, ts: &str, text: &str) -> String {
+    let mut v = serde_json::json!({"type": kind, "timestamp": ts, "message": {"role": kind, "content": text}});
+    if let Some(o) = origin {
+        v["turnOrigin"] = o.into();
+    }
+    format!("{v}\n")
+}
+
+fn raw_transcript(h: &Home, name: &str, body: &str) -> PathBuf {
+    let p = h.dir.join(name);
+    std::fs::write(&p, body).unwrap();
+    p
+}
+
+/// P1-b: a turn is scheduled only when the matching record is provably the current turn's. A stale scheduled record of the same text with
+/// the current record absent, or a newer record that names no origin, must not silence the tracker; a true scheduled turn still does.
+#[test]
+fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
+    let human = |h: &Home| {
+        let tp = transcript(h, 1, "human", "please start");
+        assert!(track(h, &tp, "please start", &[]).contains(PRIMARY_TIP));
+    };
+    // true scheduled: the newest user record is the tick (nothing after it): skipped
+    let h = Home::new("p1b-true");
+    human(&h);
+    let tp = raw_transcript(&h, "t1.jsonl", &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT)));
+    assert_eq!(track(&h, &tp, CRON_PROMPT, &[]), "", "a true scheduled turn is skipped");
+    // stale: an earlier scheduled tick of the same text, an assistant turn after it, and the current record absent: speaks
+    let tp = raw_transcript(
+        &h,
+        "t2.jsonl",
+        &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT) + &rec("assistant", None, "2026-11-10T18:41:20.000Z", "ok")),
+    );
+    assert!(track(&h, &tp, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "a stale scheduled record with the current one absent speaks");
+    // the current record names no origin, an earlier scheduled one has the same text: speaks
+    let tp = raw_transcript(
+        &h,
+        "t3.jsonl",
+        &(transcript_body(1)
+            + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT)
+            + &rec("assistant", None, "2026-11-10T18:41:20.000Z", "ok")
+            + &rec("user", None, "2026-11-10T19:41:09.261Z", CRON_PROMPT)),
+    );
+    assert!(track(&h, &tp, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "an originless current record speaks");
+    // a tool result after the scheduled prompt (the same turn still running) does not make it stale
+    let h2 = Home::new("p1b-toolresult");
+    human(&h2);
+    let tr = format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "z", "content": "x"}]}}));
+    let tp = raw_transcript(&h2, "t4.jsonl", &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT) + &tr));
+    assert_eq!(track(&h2, &tp, CRON_PROMPT, &[]), "", "tool results are not a newer turn");
+}
+
+/// The creates of `n` tasks (assistant + tool result), the body `transcript()` puts before its final user turn.
+fn transcript_body(n: u32) -> String {
+    let mut t = String::new();
+    for k in 1..=n {
+        t += &format!("{}\n", serde_json::json!({"type": "assistant", "message": {"id": format!("c{k}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{k}"), "name": "TaskCreate", "input": {"subject": format!("t{k}")}}]}}));
+        t += &format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{k}"), "content": format!("Task #{k} created successfully: t{k}")}]}}));
+    }
+    t
+}
+
+fn store_task(h: &Home, id: u32, subject: &str, status: &str, blocked_by: &[&str]) {
+    h.put(
+        &format!(".claude/tasks/s1/{id}.json"),
+        &serde_json::json!({"id": id.to_string(), "subject": subject, "status": status, "blockedBy": blocked_by}).to_string(),
+    );
+}
+
+/// P1-c: the change fingerprint covers what the actionability test reads (blockedBy) and the subject. Removing a blocker or renaming a task
+/// is a state change on a scheduled tick (speaks); an identical list in another order is not (silent).
+#[test]
+fn the_list_fingerprint_sees_blockers_and_subjects_but_not_order() {
+    let h = Home::new("p1c");
+    let human = transcript(&h, 2, "human", "please start");
+    store_task(&h, 1, "alpha", "pending", &[]);
+    store_task(&h, 2, "beta", "pending", &["1"]);
+    assert!(track(&h, &human, "please start", &[]).contains(PRIMARY_TIP));
+    let tick = transcript(&h, 2, "scheduled", CRON_PROMPT);
+    assert_eq!(track(&h, &tick, CRON_PROMPT, &[]), "", "an unchanged list on a tick is skipped (the Jev ask with it)");
+    // reorder only: the same blockers listed in another order, and the files rewritten in another order: still silent
+    store_task(&h, 2, "beta", "pending", &["1"]);
+    store_task(&h, 1, "alpha", "pending", &[]);
+    assert_eq!(track(&h, &tick, CRON_PROMPT, &[]), "", "a reorder is not a change");
+    // the blocker removed: task 2 is now actionable, a change: speaks (and the ask goes out with it)
+    store_task(&h, 2, "beta", "pending", &[]);
+    assert!(track(&h, &tick, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "a removed blocker is a change");
+    assert_eq!(track(&h, &tick, CRON_PROMPT, &[]), "", "and the new state is then remembered");
+    // renamed: a change
+    store_task(&h, 1, "alpha renamed", "pending", &[]);
+    assert!(track(&h, &tick, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "a new subject is a change");
+    assert_eq!(track(&h, &tick, CRON_PROMPT, &[]), "");
+    // status change
+    store_task(&h, 1, "alpha renamed", "in_progress", &[]);
+    assert!(track(&h, &tick, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "a status change is a change");
+}
+
+fn seed_waste(h: &Home, tokens: u64, level: u64) {
+    let ev = serde_json::json!([[now_ms() - 1000, tokens]]);
+    h.put(".anti-hall/waste/s1.json", &serde_json::json!({"cats": {"repeated_advisory": {"ev": ev, "level": level}}}).to_string());
+}
+
+fn waste_level(h: &Home) -> Option<u64> {
+    let t = std::fs::read_to_string(h.home().join(".anti-hall/waste/s1.json")).ok()?;
+    serde_json::from_str::<serde_json::Value>(&t).ok()?["cats"]["repeated_advisory"]["level"].as_u64()
+}
+
+fn human_turn(h: &Home) -> String {
+    let tp = transcript(h, 1, "human", "go on");
+    track(h, &tp, "go on", &[])
+}
+
+/// P2: exact boundaries, a state file that cannot be written (no warning, no repeat), flapping around a threshold, a clock that ran back,
+/// and a damaged record.
+#[test]
+fn the_waste_warning_is_exact_quiet_on_write_failure_and_steady_at_a_threshold() {
+    // exact boundaries (levels 1000, 4000, 16000): one below is quiet, the level itself warns
+    for (tokens, want) in [(999u64, None), (1000, Some("level 1/3")), (3999, Some("level 1/3")), (4000, Some("level 2/3")), (16000, Some("level 3/3"))] {
+        let h = Home::new(&format!("w-edge-{tokens}"));
+        seed_waste(&h, tokens, 0);
+        let out = human_turn(&h);
+        match want {
+            None => assert!(!out.contains("idle waste"), "{tokens}: {out}"),
+            Some(l) => assert!(out.contains("idle waste") && out.contains(l), "{tokens}: {out}"),
+        }
+    }
+    // a state file that cannot be written: no warning, turn after turn; once writable it warns once
+    let h = Home::new("w-ro");
+    seed_waste(&h, 1000, 0);
+    let dir = h.home().join(".anti-hall/waste");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    for n in 0..3 {
+        assert!(!human_turn(&h).contains("idle waste"), "write failure, turn {n}: no warning");
+    }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(human_turn(&h).contains("idle waste"), "once the record is writable the rise warns");
+    assert!(!human_turn(&h).contains("idle waste"), "and only once");
+    // flapping around the first threshold: a dip inside the margin keeps the level, so the return does not warn again; a dip below it does
+    let h = Home::new("w-flap");
+    seed_waste(&h, 950, 1);
+    assert!(!human_turn(&h).contains("idle waste") && waste_level(&h) == Some(1), "inside the margin the level stays");
+    seed_waste(&h, 1000, waste_level(&h).unwrap());
+    assert!(!human_turn(&h).contains("idle waste"), "back at the threshold: no second warning");
+    seed_waste(&h, 850, 1);
+    assert!(!human_turn(&h).contains("idle waste") && waste_level(&h) == Some(0), "below the margin the level falls");
+    seed_waste(&h, 1000, 0);
+    assert!(human_turn(&h).contains("idle waste"), "a real relapse warns again");
+    // a clock that ran back: events dated after now are not counted
+    let h = Home::new("w-clock");
+    h.put(".anti-hall/waste/s1.json", &serde_json::json!({"cats": {"repeated_advisory": {"ev": [[now_ms() + 3_600_000, 50000]], "level": 0}}}).to_string());
+    assert!(!human_turn(&h).contains("idle waste"), "future events are not counted");
+    // a damaged record: no warning, no crash
+    let h = Home::new("w-corrupt");
+    h.put(".anti-hall/waste/s1.json", "{not json");
+    assert!(!human_turn(&h).contains("idle waste"));
+}

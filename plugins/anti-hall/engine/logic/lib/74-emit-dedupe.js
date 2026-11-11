@@ -100,20 +100,30 @@ var dedupe = {
     });
     return seen ? { n: n, sched: sched, maxTs: maxTs } : null;
   },
-  // Whether the prompt now submitted is a turn the host scheduler delivered: the newest user turn of the transcript names a scheduled origin
-  // (emit_dedupe.uncounted_origins) and its text is this prompt. A person's prompt differs from the cron's text, so it never reads as scheduled;
-  // a transcript that cannot be read, shows no origin, or does not yet hold this turn reads as not scheduled (the caller then acts as before).
+  // Whether the prompt now submitted is a turn the host scheduler delivered, PROVABLY: the newest user PROMPT record of the transcript (tool
+  // results are not prompts) names a scheduled origin (emit_dedupe.uncounted_origins), its text is this prompt, and no assistant record
+  // follows it (one would mean this prompt's own record is not written yet and the match is an earlier tick). A person's prompt differs from
+  // the cron's text, so it never reads as scheduled. Everything else - an unreadable transcript, a newer record naming no origin, an earlier
+  // tick with the same text - reads as not scheduled, so the caller speaks.
   scheduledTurn: function (tp, prompt) {
     if (!tp || typeof tp !== 'string' || typeof prompt !== 'string' || prompt.trim() === '') return false;
-    var r = ah.transcript.grep(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'), ah.cfg('emit_dedupe.origin_needles'), '', '');
+    var r = ah.transcript.grep(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'), ah.cfg('emit_dedupe.record_needles'), '', '');
     if (!r || r.unsure || !Array.isArray(r.lines)) return false;
-    var field = ah.cfg('emit_dedupe.origin_field'), last = null;
+    var field = ah.cfg('emit_dedupe.origin_field'), userType = ah.cfg('emit_dedupe.origin_record_type'), asstType = ah.cfg('emit_dedupe.assistant_record_type');
+    var resultType = ah.cfg('emit_dedupe.tool_result_block_type'), last = null, answered = false;
     r.lines.forEach(function (line) {
       var rec;
       try { rec = JSON.parse(line); } catch (e) { return; }
-      if (rec && rec.type === ah.cfg('emit_dedupe.origin_record_type') && typeof rec[field] === 'string') last = rec;
+      if (!rec || typeof rec !== 'object') return;
+      if (rec.type === asstType) { answered = true; return; }
+      if (rec.type !== userType) return;
+      var c = rec.message ? rec.message.content : null;
+      var isResult = Array.isArray(c) && c.length > 0 && c.every(function (b) { return b && b.type === resultType; });
+      if (isResult) return;
+      last = rec;
+      answered = false;
     });
-    if (last === null || ah.cfg('emit_dedupe.uncounted_origins').indexOf(last[field]) < 0) return false;
+    if (last === null || answered || typeof last[field] !== 'string' || ah.cfg('emit_dedupe.uncounted_origins').indexOf(last[field]) < 0) return false;
     var c = last.message ? last.message.content : null;
     var body = typeof c === 'string' ? c : Array.isArray(c) ? c.map(function (b) { return b && typeof b.text === 'string' ? b.text : ''; }).join('') : '';
     return body.trim() === prompt.trim();

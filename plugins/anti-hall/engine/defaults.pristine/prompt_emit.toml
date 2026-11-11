@@ -579,3 +579,22 @@ value = "idle waste: ~{tokens} tokens saved in {m} min by {cat} rules (level {le
 [waste.msg_instead]
 doc = "The order that follows the waste advisory."
 value = "end turns that have no new state; delete crons with nothing to watch."
+
+[emit_dedupe.record_needles]
+doc = "The strings a transcript line must hold to be read when the engine decides whether the prompt now submitted is a scheduled turn (every user and assistant record, so a prompt's record can be told from what follows it)."
+value = ['"type":"']
+
+[emit_dedupe.assistant_record_type]
+doc = "The type of a transcript record that is an assistant turn."
+value = "assistant"
+
+[emit_dedupe.tool_result_block_type]
+doc = "The type of a content block that carries a tool's result; a user record made only of these is not a prompt."
+value = "tool_result"
+
+[waste.hysteresis_pct]
+doc = "How far (percent of a level's threshold) the window's tokens may fall below the level held before the level is lowered: a rate flapping around a threshold then warns once, not every time it crosses. 0 lowers a level as soon as the sum is under it."
+value = 10
+min = 0
+max = 50
+unit = "percent"
