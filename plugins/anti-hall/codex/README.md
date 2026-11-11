@@ -168,3 +168,8 @@ The ordered plan is in [`docs/ROADMAP.md`](https://github.com/talas9/anti-hall/b
 Everything else starts at the
 [documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
 or the [docs site](https://talas9.github.io/anti-hall/).
+
+Quiet scheduled maintenance ticks use the shared `idle_gate.toml` / parent-inbox logic and the `idle-gate` dispatcher alias,
+with `guards.idleGateMode=one_line` by default. Codex/OMX only gates turns whose transcript proves the scheduled origin;
+typed prompts are never gated. This introduces no scheduler. Eligibility, unchanged-state checks, the opt-in block mode and
+no-Rust limitations are documented in [Quiet scheduled ticks](../../../docs/AH-ENGINE.md#quiet-scheduled-ticks-709-pr-c).

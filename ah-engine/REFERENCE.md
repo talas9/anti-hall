@@ -3044,14 +3044,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_SubagentStop` | `4 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `4 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `4 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `14 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `15 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `4 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreToolUse` | `19 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `21 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `13 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `4 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `14 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `15 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
 | `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
@@ -8845,7 +8845,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `447 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `450 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -14354,6 +14354,32 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.watch_lock_suffix` | `.lock` |  |  | The file name suffix of a mailbox watcher lock. |
 | `devswarm_parent.working` | `working` |  |  | Finish cell: no done report yet. |
 | `devswarm_parent.working_pct` | `working ({pct}%)` |  |  | Finish cell: no done report yet, with the heartbeat progress. Placeholder: {pct}. |
+
+### idle_gate.toml / idle_gate
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `idle_gate.block_line` | `{"decision":"block","reason":{reason}}\n` |  |  | Existing UPS decision block format; enabling it does not establish whether a host avoids its model call. |
+| `idle_gate.category` | `idle_scheduled_turn` |  |  | Waste event category, never an estimate of full-context tokens saved. |
+| `idle_gate.closed_statuses` | `done, closed, archived, dormant, stopped, parked` |  |  | Workspace statuses that do not represent live children. |
+| `idle_gate.event` | `UserPromptSubmit` |  |  | Hook event shared by Claude and Codex. |
+| `idle_gate.fingerprint_fields` | `13 items` |  |  | Summary fields projected from each workspace; exclude polling timestamps so a quiet poll stays equal. |
+| `idle_gate.mailbox_pattern` | `^\s*(?:run\s+)?(?:`?(?:"[^"\n]+"\|[^\s`]+)\s+mesh\s+)?inbox\s+tick\s+([A-Za-z0...` |  |  | Mailbox command and partition capture; arbitrary owner cron prompts need owner opt-in and a roster_only_patterns match. |
+| `idle_gate.max_quiet_s` | `7200` |  |  | Maximum seconds without a normal scheduled tick; the normal-tick timestamp is not advanced by quiet ticks. |
+| `idle_gate.mode` | `8 entries` |  |  | Quiet response mode. one_line is the default; block is opt-in and its host scheduled-call suppression is unproven. |
+| `idle_gate.ms_per_s` | `1000` |  |  | Milliseconds per second for the normal-tick ceiling. |
+| `idle_gate.msg_one_line` | `No change since last tick: reply "idle" and stop immediately, no tool calls.` |  |  | Directive for a proven unchanged scheduled maintenance turn. Other dispatcher checks retain their normal authority. |
+| `idle_gate.owner_cron_opt_in` | `6 entries` |  |  | Owner-authored roster cron prompts are excluded unless this setting is enabled; known mailbox maintenance remains eligible. |
+| `idle_gate.read_bytes` | `1048576` |  |  | Maximum bytes of one state document. |
+| `idle_gate.roster_only_patterns` | `^\s*(?:run\s+)?(?:`?(?:"[^"\n]+"\\|[^\s`]+)\s+mesh\s+)?inbox\s+tick\s+([A-Za-z...` |  |  | Known maintenance prompt patterns. Unmatched prompts fail open; no model classification is performed. |
+| `idle_gate.scheduled_task_key` | `scheduledTaskId` |  |  | Scheduled job identity field in the matched transcript record. |
+| `idle_gate.source` | `idle_gate` |  |  | Waste counter source label. |
+| `idle_gate.sqlite_header_bytes` | `16` |  |  | Readable SQLite format header required before asking sessionBlocks; a missing/unreadable store runs normally. |
+| `idle_gate.sqlite_header_hex` | `53514c69746520666f726d6174203300` |  |  | SQLite database header as hexadecimal; availability proof only, not a guarantee that every telemetry SQL read succeeds. |
+| `idle_gate.state_dir` | `.anti-hall/idle-gate` |  |  | Per-session and per-job quiet baseline directory relative to home. |
+| `idle_gate.summary_fields` | `7 items` |  |  | Project-level facts included alongside workspace fields. |
+| `idle_gate.sw` | `6 entries` |  |  | Enable the conservative scheduled-turn gate through guards.idleGate. It runs as part of the existing registered parent-inbox check on both hosts. |
+| `idle_gate.unsafe_pattern` | `--child\b\|\b(?:deploy\|merge\|delete\|remove\|build\|test)\b` |  |  | Native imports and explicit work must run normally; --child imports a native queue not exposed to check scripts. |
 
 ### nodeback.toml / files
 

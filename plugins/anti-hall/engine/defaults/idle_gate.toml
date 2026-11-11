@@ -1,0 +1,85 @@
+# Quiet scheduled maintenance turns (#709 PR-C). Shared logic for Claude/OMC and Codex/OMX; no synthetic Codex scheduling.
+
+[idle_gate.sw]
+doc = "Enable the conservative scheduled-turn gate through guards.idleGate. It runs as part of the existing registered parent-inbox check on both hosts."
+value = { section = "guards", key = "idleGate", env = "ANTIHALL_IDLE_GATE", aliases = [], option = "", default = true }
+
+[idle_gate.mode]
+doc = "Quiet response mode. one_line is the default; block is opt-in and its host scheduled-call suppression is unproven."
+value = { section = "guards", key = "idleGateMode", kind = "enum", values = ["one_line", "block"], env = "ANTIHALL_IDLE_GATE_MODE", aliases = [], option = "", default = "one_line" }
+
+[idle_gate.max_quiet_s]
+doc = "Maximum seconds without a normal scheduled tick; the normal-tick timestamp is not advanced by quiet ticks."
+value = 7200
+
+[idle_gate.fingerprint_fields]
+doc = "Summary fields projected from each workspace; exclude polling timestamps so a quiet poll stays equal."
+value = ["status", "unread", "directUnread", "pendingQuestions", "gates", "plan", "step", "tokenTotal", "resourceLevel", "burnBucket", "sessionId", "notDraining", "stray"]
+
+[idle_gate.summary_fields]
+doc = "Project-level facts included alongside workspace fields."
+value = ["meshGapWithheld", "meshGap", "orphans", "staleRegistryPartitions", "recent", "resourceLevel", "burnBucket"]
+
+[idle_gate.roster_only_patterns]
+doc = "Known maintenance prompt patterns. Unmatched prompts fail open; no model classification is performed."
+value = ["^\\s*(?:run\\s+)?(?:`?(?:\"[^\"\\n]+\"|[^\\s`]+)\\s+mesh\\s+)?inbox\\s+tick\\s+([A-Za-z0-9_.-]+)\\s+--quiet`?\\s*[.]?\\s*$"]
+
+[idle_gate.mailbox_pattern]
+doc = "Mailbox command and partition capture; arbitrary owner cron prompts need owner opt-in and a roster_only_patterns match."
+value = "^\\s*(?:run\\s+)?(?:`?(?:\"[^\"\\n]+\"|[^\\s`]+)\\s+mesh\\s+)?inbox\\s+tick\\s+([A-Za-z0-9_.-]+)\\s+--quiet`?\\s*[.]?\\s*$"
+
+[idle_gate.unsafe_pattern]
+doc = "Native imports and explicit work must run normally; --child imports a native queue not exposed to check scripts."
+value = "--child\\b|\\b(?:deploy|merge|delete|remove|build|test)\\b"
+
+[idle_gate.owner_cron_opt_in]
+doc = "Owner-authored roster cron prompts are excluded unless this setting is enabled; known mailbox maintenance remains eligible."
+value = { section = "guards", key = "idleGateOwnerCronOptIn", env = "ANTIHALL_IDLE_GATE_OWNER_CRON", aliases = [], option = "", default = false }
+
+[idle_gate.msg_one_line]
+doc = "Directive for a proven unchanged scheduled maintenance turn. Other dispatcher checks retain their normal authority."
+value = "No change since last tick: reply \"idle\" and stop immediately, no tool calls."
+
+[idle_gate.event]
+doc = "Hook event shared by Claude and Codex."
+value = "UserPromptSubmit"
+
+[idle_gate.scheduled_task_key]
+doc = "Scheduled job identity field in the matched transcript record."
+value = "scheduledTaskId"
+
+[idle_gate.state_dir]
+doc = "Per-session and per-job quiet baseline directory relative to home."
+value = ".anti-hall/idle-gate"
+
+[idle_gate.category]
+doc = "Waste event category, never an estimate of full-context tokens saved."
+value = "idle_scheduled_turn"
+
+[idle_gate.source]
+doc = "Waste counter source label."
+value = "idle_gate"
+
+[idle_gate.ms_per_s]
+doc = "Milliseconds per second for the normal-tick ceiling."
+value = 1000
+
+[idle_gate.read_bytes]
+doc = "Maximum bytes of one state document."
+value = 1048576
+
+[idle_gate.closed_statuses]
+doc = "Workspace statuses that do not represent live children."
+value = ["done", "closed", "archived", "dormant", "stopped", "parked"]
+
+[idle_gate.block_line]
+doc = "Existing UPS decision block format; enabling it does not establish whether a host avoids its model call."
+value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
+
+[idle_gate.sqlite_header_bytes]
+doc = "Readable SQLite format header required before asking sessionBlocks; a missing/unreadable store runs normally."
+value = 16
+
+[idle_gate.sqlite_header_hex]
+doc = "SQLite database header as hexadecimal; availability proof only, not a guarantee that every telemetry SQL read succeeds."
+value = "53514c69746520666f726d6174203300"
