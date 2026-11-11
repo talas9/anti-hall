@@ -285,11 +285,15 @@ function prgPost(p, on, home) {
   if (name === '' || prgErrorResponse(p.tool_response)) return 'allow'; // an unnamed spawn is the Pre fact; a failed spawn started nothing
   // a name below pair_rule.name_min_chars is no name (the Pre fact too): with the by-id switch on there is no name to look for
   if (name.length < ah.cfgNum('pair_rule.name_min_chars') && ah.settings.bool('pair_rule.sw_by_id')) return 'allow';
-  var open = prgOpenTasks(p, home);
+  var all = ah.settings.bool('tool_advisory.pair_authoritative_store') ? prgByIdTasks(p, home) : prgOpenTasks(p, home);
+  var open = all === null ? null : all.filter(tk.isOpen);
   if (open === null) { prgSuppressed('no_rows'); return 'allow'; }
   var lc = prgLc(name), paired = open.some(function (t) { return prgLc(t.owner) === lc; });
   prgObserved(event, paired ? 'paired' : 'unpaired');
-  if (paired || !on) return 'allow';
+  if (paired || !on) {
+    if (paired) dedupe.advisory(p, 'pair', true, '', lc);
+    return 'allow';
+  }
   prgFired(event, 'unpaired');
   // The visible line may show the name shortened or without its marks (prgInexact): that text only tells what is off. The step that clears it
   // always carries the FULL name, or, when the visible line cannot carry it exactly, points at the saved details that do.
@@ -299,7 +303,7 @@ function prgPost(p, on, home) {
     what: text.render(ah.cfg('pair_rule.msg_post_what'), { name: shown }), why: ah.cfg('pair_rule.msg_post_why'),
     instead: inexact ? ah.cfg('pair_rule.msg_post_instead_full') : step, extra: inexact ? [step] : [], details: inexact,
   });
-  return { advisory: text.advisoryJson(event, note) };
+  return dedupe.advisory(p, 'pair', false, note, lc) ? { advisory: text.advisoryJson(event, note) } : 'allow';
 }
 
 // ---- Stop ----

@@ -22,7 +22,7 @@ impl Home {
         self.dir.join("home")
     }
 
-    fn check(&self, check: &str, payload: &serde_json::Value, extra: &[(&str, &str)]) -> String {
+    fn run(&self, check: &str, payload: &serde_json::Value, extra: &[(&str, &str)]) -> std::process::Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["check", check])
             .env_clear()
@@ -35,7 +35,11 @@ impl Home {
         c.envs(extra.iter().copied());
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
-        let o = ch.wait_with_output().unwrap();
+        ch.wait_with_output().unwrap()
+    }
+
+    fn check(&self, check: &str, payload: &serde_json::Value, extra: &[(&str, &str)]) -> String {
+        let o = self.run(check, payload, extra);
         let out = String::from_utf8_lossy(&o.stdout).to_string();
         serde_json::from_str::<serde_json::Value>(out.trim_end())
             .ok()
@@ -243,7 +247,10 @@ fn a_table_header_cell_is_not_a_claim_but_a_body_cell_still_is() {
     assert!(!blocked(&h, header_only, &[]), "a header cell is a label");
     // the switch off scans the header like any other line (the claim words in it are then judged)
     let h = Home::new("claim-hdr-off");
-    assert!(blocked(&h, header_only, &[("ANTIHALL_CLAIM_EVIDENCE_MASK_TABLE_HEADER", "0")]), "switch off: the header is scanned (shows the test can see a block)");
+    assert!(
+        blocked(&h, header_only, &[("ANTIHALL_CLAIM_EVIDENCE_MASK_TABLE_HEADER", "0")]),
+        "switch off: the header is scanned (shows the test can see a block)"
+    );
     // the true positive survives: a body cell that asserts a check ran
     let h = Home::new("claim-body");
     let body = "Status of the lanes:\n\n| Lane | Result |\n|---|---|\n| a | All tests pass and the PR is merged. |\n";
@@ -262,8 +269,14 @@ fn only_a_genuine_table_header_is_masked_not_a_row_that_asserts() {
     assert!(blocked("ce-rule", &format!("Status:\n\n| a | {claim} |\n---\n")), "a pipe row followed by a rule line is not a header");
     assert!(blocked("ce-hdr-assert", &format!("Status:\n\n| Lane | {claim} |\n| --- | --- |\n")), "a header cell that asserts is still scanned");
     assert!(blocked("ce-one-line", &format!("Status:\n\n| a | {claim} |\n")), "a lone pipe row is scanned");
-    assert!(blocked("ce-body-then-rule", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n---\n")), "a body row before a rule line is scanned");
-    assert!(blocked("ce-body-then-sep", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n|---|---|\n")), "a second separator does not turn the body row into a header");
+    assert!(
+        blocked("ce-body-then-rule", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n---\n")),
+        "a body row before a rule line is scanned"
+    );
+    assert!(
+        blocked("ce-body-then-sep", &format!("Status:\n\n| Lane | Result |\n|---|---|\n| a | {claim} |\n|---|---|\n")),
+        "a second separator does not turn the body row into a header"
+    );
     let label = "Status of the lanes:\n\n| Lane | Verified? | Merged? |\n| --- | --- | --- |\n| a | pending | pending |\n";
     assert!(!blocked("ce-label", label), "an ordinary label header is still masked");
 }
@@ -294,4 +307,127 @@ fn the_statusline_window_size_prefers_the_documented_key_and_falls_back_to_the_o
     assert!(old.contains("100k/200k tokens"), "the older key is the fallback: {old}");
     let junk = line(serde_json::json!({"used_percentage": 50, "used_tokens": 100000, "context_window_size": "big", "total_tokens": 400000}));
     assert!(junk.contains("100k/400k tokens"), "a non-numeric documented key is skipped: {junk}");
+}
+
+#[test]
+fn pretool_disk_advisory_is_state_based_and_critical_blocks_repeat() {
+    let h = Home::new("pretool-disk");
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"cargo build"}});
+    let env = [("ANTIHALL_DISK_WATCH_COOLDOWN", "0")];
+    disk_report(&h, "30.0 GB", "warn");
+    assert_eq!(h.check("procwatch-advisory", &p, &env), "");
+    disk_report(&h, "4.0 GB", "critical");
+    let mut light = p.clone();
+    light["tool_input"]["command"] = "pwd".into();
+    assert_eq!(h.check("procwatch-advisory", &light, &env), "");
+    for i in 0..10 {
+        assert_eq!(h.check("procwatch-advisory", &p, &env).contains("4.0 GB"), i == 0, "call {i}");
+    }
+    disk_report(&h, "30.0 GB", "ok");
+    assert_eq!(h.check("procwatch-advisory", &p, &env), "");
+    disk_report(&h, "4.0 GB", "critical");
+    assert!(h.check("procwatch-advisory", &p, &env).contains("critical"), "level changed after recovery");
+    for _ in 0..3 {
+        let out = h.run("procwatch-advisory", &p, &[("ANTIHALL_DISK_WATCH_BLOCK", "1")]);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("critical"));
+    }
+}
+
+#[test]
+fn repeated_subagent_start_is_once_per_child_but_new_children_receive_protocol() {
+    let h = Home::new("subagent-dedupe");
+    let mut p = serde_json::json!({"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"child-one"});
+    let env = [("ANTIHALL_PROTOCOL_LEVEL", "full")];
+    for i in 0..10 {
+        let out = h.check("verify-first-subagent", &p, &env);
+        assert_eq!(!out.is_empty(), i == 0, "call {i}: {out}");
+    }
+    p["agent_id"] = "child-two".into();
+    assert!(!h.check("verify-first-subagent", &p, &env).is_empty(), "a new child needs its own protocol");
+}
+
+#[test]
+fn orchestration_full_spawn_block_is_delivered_once_per_context_epoch() {
+    let h = Home::new("orch-dedupe");
+    let dir = h.home().join(".anti-hall/orch-full");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent"});
+    for epoch in ["first", "second"] {
+        std::fs::write(dir.join("orch-full-s1.json"), serde_json::json!({"decision":"pending","epochId":epoch,"sentAt":now_s()*1000}).to_string()).unwrap();
+        let out = h.check("orch-on-spawn", &p, &[]);
+        assert!(out.contains("ORCHESTRATION DISCIPLINE"), "epoch {epoch}: {out}");
+        assert_eq!(h.check("orch-on-spawn", &p, &[]), "", "same epoch stays quiet");
+    }
+}
+
+fn orch_marker(h: &Home, session: &str, epoch: &str) {
+    let dir = h.home().join(".anti-hall/orch-full");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("orch-full-{session}.json")), serde_json::json!({"decision":"pending","epochId":epoch,"sentAt":1}).to_string()).unwrap();
+}
+
+#[test]
+fn orchestration_delivery_is_isolated_by_explicit_session_id() {
+    let h = Home::new("orch-sessions");
+    for session in ["s1", "s2"] {
+        orch_marker(&h, session, "same-epoch");
+        let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":session,"tool_name":"Agent"});
+        assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"), "{session} receives its own block");
+        assert_eq!(h.check("orch-on-spawn", &p, &[]), "");
+    }
+}
+
+#[test]
+fn malformed_persisted_advisory_json_fails_open() {
+    let h = Home::new("advisory-corrupt");
+    let p = serde_json::json!({"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"child-one"});
+    let env = [("ANTIHALL_PROTOCOL_LEVEL", "full")];
+    assert!(!h.check("verify-first-subagent", &p, &env).is_empty());
+    assert_eq!(h.check("verify-first-subagent", &p, &env), "");
+    std::fs::write(h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json"), "{not json").unwrap();
+    assert!(!h.check("verify-first-subagent", &p, &env).is_empty(), "damaged persisted state speaks");
+}
+
+#[test]
+fn session_only_advisory_is_delivered_again_after_context_reset() {
+    let h = Home::new("advisory-context-reset");
+    let p = serde_json::json!({"hook_event_name":"SubagentStart","session_id":"s1","agent_id":"child-one"});
+    let env = [("ANTIHALL_PROTOCOL_LEVEL", "full")];
+    for source in ["startup", "compact", "clear", "resume"] {
+        let reset = serde_json::json!({"hook_event_name":"SessionStart","session_id":"s1","source":source});
+        assert_eq!(h.check("emit-dedupe-reset", &reset, &[]), "");
+        assert!(!h.check("verify-first-subagent", &p, &env).is_empty(), "{source}: lost context receives protocol again");
+        assert_eq!(h.check("verify-first-subagent", &p, &env), "", "{source}: one copy in the new context");
+    }
+}
+
+#[test]
+fn undelivered_orchestration_injection_uses_retry_without_claiming_delivery() {
+    let h = Home::new("orch-retry");
+    orch_marker(&h, "s1", "retry");
+    let tp = h.dir.join("undelivered.jsonl");
+    std::fs::write(&tp, "{\"type\":\"user\",\"timestamp\":\"2026-01-01T00:00:00.000Z\"}\n").unwrap();
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent","transcript_path":tp});
+    assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"));
+    let dedupe_path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+    let attempted = std::fs::read_to_string(&dedupe_path).unwrap();
+    // No attachment was delivered. Expire the first claim's lease without waiting on wall time.
+    std::fs::write(h.home().join(".anti-hall/orch-full/orch-full-s1-retry-claim.json"), "{\"at\":1}").unwrap();
+    assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"), "an attempted emit is not proof of delivery: retry speaks");
+    assert_eq!(std::fs::read_to_string(dedupe_path).unwrap(), attempted, "a retry does not turn an attempted advisory into a delivery record");
+    assert_eq!(h.check("orch-on-spawn", &p, &[]), "", "only the existing bounded retry slot is used");
+}
+
+#[test]
+fn orchestration_delivery_returns_after_compaction_clear_and_resume() {
+    let h = Home::new("orch-context-loss");
+    let p = serde_json::json!({"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent"});
+    for source in ["startup", "compact", "clear", "resume"] {
+        let reset = serde_json::json!({"hook_event_name":"SessionStart","session_id":"s1","source":source});
+        assert_eq!(h.check("emit-dedupe-reset", &reset, &[]), "");
+        orch_marker(&h, "s1", source);
+        assert!(h.check("orch-on-spawn", &p, &[]).contains("ORCHESTRATION DISCIPLINE"), "{source}: context receives rules");
+        assert_eq!(h.check("orch-on-spawn", &p, &[]), "", "{source}: only once in this context");
+    }
 }

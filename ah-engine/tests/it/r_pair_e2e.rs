@@ -944,3 +944,31 @@ fn r_pair_e2e_other_owner_denial_names_the_owner_and_the_fix() {
         assert!(all.contains("owner=\"\"") && all.contains("name: \"someone-else\""), "{ev:?} names both ways out: {all}");
     }
 }
+
+#[test]
+fn post_pair_advisory_dedupes_and_named_store_owner_clears_stale_transcript() {
+    let w = World::new("adv-state");
+    let t = transcript(&[task(1, "in_progress", None)], &[("port the wake", Some("wake-worker"))]);
+    for i in 0..10 {
+        assert_eq!(pair_text(&w.post("wake-worker", &t, true)), i == 0, "call {i}");
+    }
+    *w.list_id.borrow_mut() = Some("named-list".into());
+    let dir = w.path("home/.claude/tasks/named-list");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("1.json");
+    std::fs::write(&file, r#"{"id":"1","status":"in_progress","owner":"wake-worker"}"#).unwrap();
+    assert!(!pair_text(&w.post("wake-worker", &t, true)), "named store owner clears stale transcript");
+    std::fs::write(&file, r#"{"id":"1","status":"in_progress","owner":""}"#).unwrap();
+    assert!(pair_text(&w.post("wake-worker", &t, true)), "a new unpaired state speaks");
+}
+
+#[test]
+fn post_named_store_owner_overrides_stale_unowned_transcript() {
+    let w = World::new("adv-owner");
+    let t = transcript(&[task(1, "in_progress", None)], &[("port the wake", Some("wake-worker"))]);
+    *w.list_id.borrow_mut() = Some("named-list".into());
+    let dir = w.path("home/.claude/tasks/named-list");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("1.json"), r#"{"id":"1","status":"in_progress","owner":"wake-worker"}"#).unwrap();
+    assert!(!pair_text(&w.post("wake-worker", &t, true)), "the owner is already set in the authoritative named list");
+}

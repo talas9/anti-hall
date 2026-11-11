@@ -509,3 +509,30 @@ fn t19_a_child_without_a_launch_id_releases_its_reservation_by_type() {
     let (code, out) = spawn_input(&h, "toolu_C", json!({"subagent_type":"Explore","prompt":"x","run_in_background":true}));
     assert_eq!(code, 2, "A running + B reserved fill the cap: {out}");
 }
+
+#[test]
+fn unchanged_usage_advisory_is_once_in_ten_calls_but_bucket_and_recovery_speak() {
+    let h = scratch("adv-state");
+    put(&h, ".anti-hall/settings.json", NO_CAP);
+    put(&h, "t.jsonl", "");
+    put(&h, CACHE, &usage(10.0, 76.0));
+    for i in 0..10 {
+        let (code, out) = spawn(&h);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out.contains("usage limit"), i == 0, "call {i}: {out}");
+    }
+    put(&h, CACHE, &usage(10.0, 79.0));
+    assert!(!spawn(&h).1.contains("usage limit"), "same five-percent bucket");
+    put(&h, CACHE, &usage(10.0, 81.0));
+    assert!(spawn(&h).1.contains("usage limit"), "a changed bucket speaks");
+    put(&h, CACHE, &usage(10.0, 20.0));
+    assert!(!spawn(&h).1.contains("usage limit"));
+    put(&h, CACHE, &usage(10.0, 81.0));
+    assert!(spawn(&h).1.contains("usage limit"), "recovery then relapse speaks");
+    put(&h, CACHE, &usage(10.0, 95.0));
+    for _ in 0..10 {
+        assert_eq!(spawn(&h).0, 2, "blocks are never deduped");
+    }
+    put(&h, CACHE, &usage(10.0, 81.0));
+    assert!(spawn(&h).1.contains("usage limit"), "returning from the blocked level is a state change");
+}
