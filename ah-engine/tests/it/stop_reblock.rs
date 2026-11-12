@@ -540,3 +540,70 @@ fn runtime_overlay_throw_preserves_the_publisher_block() {
     w.fixture("var oldWrite=ah.state.writeAtomic; ah.state.writeAtomic=function(p,t){if(p.indexOf('runtime-stop-overlay-')>=0)throw Error('write failed');return oldWrite(p,t);};");
     assert!(w.stop().contains("decision\\\":\\\"block"));
 }
+
+// The tracker history can fit its own budget while exhausting the smaller QuickJS heap.
+#[test]
+fn oversized_runtime_state_keeps_the_publisher_block_without_script_failure() {
+    let w = World::new("oom-state");
+    w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":true}));
+    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{"child":{"id":"child","parent":"parent","running":true}},"history":"x".repeat(4_000_000)}));
+    w.fixture("var oomRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json') || p.endsWith('/nudge-answers.ndjson')){if(ah.fs.size(p)>ah.cfgNum('silent_nudge.rt_reconcile_bytes'))throw Error('oversized evidence must not be read');}return oomRead(p,n);};");
+    let v = w.stop();
+    assert!(v.contains("decision\\\":\\\"block"), "publisher must still decide: {v}");
+    assert!(!v.contains("Error"), "guard must not fail unchecked: {v}");
+    let mut metrics = ah_engine::metrics::Metrics::default();
+    ah_engine::metrics::drain_pending(&mut metrics);
+    assert!(metrics.counter_total("runtime_escalation_reconcile_skipped") >= 1);
+}
+
+#[test]
+fn oversized_runtime_answers_keep_the_publisher_block() {
+    let w = World::new("oom-answers");
+    w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":true}));
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), " ".repeat(4_000_000)).unwrap();
+    w.fixture("var oomRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json') || p.endsWith('/nudge-answers.ndjson')){if(ah.fs.size(p)>ah.cfgNum('silent_nudge.rt_reconcile_bytes'))throw Error('oversized evidence must not be read');}return oomRead(p,n);};");
+    let v = w.stop();
+    assert!(v.contains("decision\\\":\\\"block"), "publisher must still decide: {v}");
+    let mut metrics = ah_engine::metrics::Metrics::default();
+    ah_engine::metrics::drain_pending(&mut metrics);
+    assert!(metrics.counter_total("runtime_escalation_reconcile_skipped") >= 1);
+}
+
+#[test]
+fn runtime_evidence_growing_during_read_keeps_publisher_block_and_caps_the_read() {
+    let w = World::new("oom-growth");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    w.fixture("var raceSize=ah.fs.size, raceRead=ah.fs.readText, grew=false; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json')){if(n>ah.cfgNum('silent_nudge.rt_reconcile_bytes')+1)throw Error('uncapped read');grew=true;}return raceRead(p,n);}; ah.fs.size=function(p){var n=raceSize(p);return grew && p.endsWith('/agent-tracker/state.json') ? n+1 : n;};");
+    let v = w.stop();
+    assert!(v.contains("decision\\\":\\\"block"), "changing evidence must not release publisher: {v}");
+}
+
+#[test]
+fn runtime_evidence_budget_is_shared_with_the_overlay() {
+    let w = World::new("oom-combined");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    let padding = "x".repeat(150_000);
+    w.write(".anti-hall/ah-engine/runtime-stop-overlay-parent.json", json!({"session":"parent","rows":{},"history":padding}));
+    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{"child":{"id":"child","parent":"parent","finished":true}},"history":padding}));
+    let v = w.stop();
+    assert!(v.contains("decision\\\":\\\"block"), "combined input must stay within one budget: {v}");
+}
+
+#[test]
+fn runtime_reconciliation_byte_budget_is_configurable_in_toml() {
+    let w = World::new("oom-custom-budget");
+    w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","finished":true}));
+    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{"child":{"id":"child","parent":"parent","finished":true}},"history":"x".repeat(2000)}));
+    std::fs::write(w.home.join("config.toml"), "[silent_nudge]\nrt_reconcile_bytes=1024\n").unwrap();
+    let v = w.cli_stop();
+    assert!(v.contains("block"), "owner's byte budget must control reconciliation: {v}");
+}
+
+#[test]
+fn unrelated_publisher_rows_still_allow_without_reading_tracker_state() {
+    let w = World::new("oom-unrelated");
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"another-parent","child":"child","block":true}]}));
+    w.fixture("var unrelatedRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json'))throw Error('unrelated Stop must not read tracker');return unrelatedRead(p,n);};");
+    let v = w.stop();
+    assert!(v.contains("Allow"), "unrelated publisher rows must allow: {v}");
+}
