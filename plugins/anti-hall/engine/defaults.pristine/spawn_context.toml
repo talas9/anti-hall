@@ -48,7 +48,7 @@ value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM
 
 [inbox_read.summary]
 doc = "One-line description of the inbox-read-guard check in the generated reference."
-value = "Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active."
+value = "Require bounded DevSwarm inbox reads. Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active."
 
 [inbox_read.setting]
 doc = "Where the on/off switch is read from (devswarm.inboxReadGuard, default on; it has no environment variable)."

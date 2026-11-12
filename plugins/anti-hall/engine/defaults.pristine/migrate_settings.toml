@@ -4,6 +4,9 @@
 [migrate.settings_schema]
 doc = "Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option."
 value = [
+  "{\"section\":\"devswarm\",\"key\":\"childStateOnly\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_CHILD_STATE_ONLY\"}",
+  "{\"section\":\"devswarm\",\"key\":\"parkedMaxWaitMin\",\"type\":\"number\",\"default\":60,\"min\":0}",
+  "{\"section\":\"devswarm\",\"key\":\"tokenOffsetToleranceBytes\",\"type\":\"number\",\"default\":4096,\"min\":0}",
   "{\"section\":\"devswarm\",\"key\":\"parkedDisplay\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_PARKED_DISPLAY\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenUnknown\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_TOKEN_UNKNOWN\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenFreshMs\",\"type\":\"number\",\"default\":1800000,\"env\":\"ANTIHALL_DEVSWARM_TOKEN_FRESH_MS\",\"min\":0}",

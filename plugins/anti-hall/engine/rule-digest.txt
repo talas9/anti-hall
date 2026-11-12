@@ -13,6 +13,7 @@ task_guard.setting	- Never stop with open tasks idle: assign each to an agent or
 	- Write files with the edit tools, never a Bash heredoc.
 tasklist_guard.setting	- Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop.
 --
+	- waste.msg: idle waste: ~... tokens saved in ... min by ... rules (level .../...).
 advisor.sw_review	- advisor.review: A review-shaped agent on ... is not allowed while the advisor is available.
 advisor.sw_plan	- advisor.plan: A plan is being written with no advisor call since the task began.
 advisor.sw_retry	- advisor.retry: ... is being edited again after a failed test or build, with no advisor call in between.

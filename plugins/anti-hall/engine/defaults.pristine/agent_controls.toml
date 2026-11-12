@@ -671,7 +671,7 @@ doc = "Where the stale-build downgrade switch is read from (guards.stopHookVersi
 value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
 
 [silent_nudge.ack_setting]
-doc = "Where the stop-ack switch is read from (guards.stopAck, default on)."
+doc = "Honor verified Stop acknowledgements. Where the stop-ack switch is read from (guards.stopAck, default on)."
 value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
 
 [silent_nudge.ack_dir]
@@ -763,11 +763,11 @@ value = 4096
 unit = "bytes"
 
 [ask_guard.child_deny_setting]
-doc = "Where the child-workspace deny switch is read from (guards.denyChildQuestions, default on): a DevSwarm child workspace never opens AskUserQuestion; the call is refused with a pointer to the mesh (GH #694). The DESTRUCTIVE:/CREDENTIAL: marker does not exempt a child."
+doc = "Refuse child workspace questions. Where the child-workspace deny switch is read from (guards.denyChildQuestions, default on): a DevSwarm child workspace never opens AskUserQuestion; the call is refused with a pointer to the mesh (GH #694). The DESTRUCTIVE:/CREDENTIAL: marker does not exempt a child."
 value = { section = "guards", key = "denyChildQuestions", env = "ANTIHALL_DENY_CHILD_QUESTIONS", aliases = [], option = "", default = true }
 
 [ask_guard.primary_deny_setting]
-doc = "Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the Primary session of a DevSwarm repo (ask_guard.primary_env set, ask_guard.child_env blank) never opens AskUserQuestion either; the owner is reached through the progress file (GH #694)."
+doc = "Refuse Primary questions. Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the Primary session of a DevSwarm repo (ask_guard.primary_env set, ask_guard.child_env blank) never opens AskUserQuestion either; the owner is reached through the progress file (GH #694)."
 value = { section = "guards", key = "denyPrimaryQuestions", env = "ANTIHALL_DENY_PRIMARY_QUESTIONS", aliases = [], option = "", default = true }
 
 [ask_guard.primary_env]
@@ -799,7 +799,7 @@ doc = "Label of the ask_guard_denied counter for a denied Primary."
 value = "primary"
 
 [silent_nudge.rt_reconcile_setting]
-doc = "Reconcile runtime escalation snapshots against current agent completion and all recorded owner actions at Stop; keep verdicts in a separate session overlay without writing the publisher snapshot (guards.runtimeStopReconcile, default on). Both hosts share this logic."
+doc = "Reconcile stale runtime Stop snapshots. Reconcile runtime escalation snapshots against current agent completion and all recorded owner actions at Stop; keep verdicts in a separate session overlay without writing the publisher snapshot (guards.runtimeStopReconcile, default on). Both hosts share this logic."
 value = { section = "guards", key = "runtimeStopReconcile", env = "ANTIHALL_RUNTIME_STOP_RECONCILE", aliases = [], option = "", default = true }
 
 [silent_nudge.rt_repair]
@@ -807,11 +807,11 @@ doc = "Logic-owned per-session runtime Stop overlay under paths.state_dir, writt
 value = { marker = "retired", file_prefix = "runtime-stop-overlay-", file_ext = ".json", ttl_ms = 14400000 }
 
 [stop_reblock.setting]
-doc = "Bound unchanged coordination Stop repeats on both hosts (guards.stopReblock, default on). Safety and destructive-action checks are excluded; changed reasons or meaningful guard state reset the budget."
+doc = "Bound unchanged coordination Stop repeats. Bound unchanged coordination Stop repeats on both hosts (guards.stopReblock, default on). Safety and destructive-action checks are excluded; changed reasons or meaningful guard state reset the budget."
 value = { section = "guards", key = "stopReblock", env = "ANTIHALL_STOP_REBLOCK", aliases = [], option = "", default = true }
 
 [stop_reblock.max_setting]
-doc = "Maximum repeats after the first identical Stop block on unchanged state (guards.stopReblockMax, default 2); zero releases the first repeat. The budget is persisted immediately, independent of assistant replies."
+doc = "Allowed unchanged Stop repeats. Maximum repeats after the first identical Stop block on unchanged state (guards.stopReblockMax, default 2); zero releases the first repeat. The budget is persisted immediately, independent of assistant replies."
 value = { section = "guards", key = "stopReblockMax", env = "ANTIHALL_STOP_REBLOCK_MAX", aliases = [], default = 2 }
 
 [stop_reblock.guards]

@@ -6,7 +6,7 @@
 # Every window, cap, word and text is tuned here, never in Rust.
 
 [agent_nudge.setting]
-doc = "Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before."
+doc = "Route unhealthy-child signals to its parent. Where the nudge loop's switch is read from (agents.nudge, default on): on, an unhealthy child's signals go to its direct parent as a nudge (the plain reminder routes stay quiet about them); off, the plain reminder routes of agent_tracker.routes deliver them as before."
 value = { section = "agents", key = "nudge", env = "ANTIHALL_AGENT_NUDGE", aliases = [], option = "", default = true }
 
 [agent_nudge.limits]
@@ -186,7 +186,7 @@ doc = "Confirmation that an answer was recorded. Placeholders: {child}, {answer}
 value = "nudge answer recorded for {child}: {answer} (the engine checks it at its next tick)"
 
 [agent_nudge.snooze_setting]
-doc = "Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge."
+doc = "Preserve snoozes per child and trigger. Where the switch of the held snooze is read from (agents.nudgeSnoozeHold, default on): on, a snooze is kept per child and trigger, outlives the nudge it was given to and holds a re-raised condition (no new nudge until it runs out; its count carries over); off, a snooze lives and dies with its nudge."
 value = { section = "agents", key = "nudgeSnoozeHold", env = "ANTIHALL_AGENT_NUDGE_SNOOZE_HOLD", aliases = [], option = "", default = true }
 
 [agent_nudge.once_setting]
@@ -206,7 +206,7 @@ doc = "The agentHealth label that holds the nudge for limits.health_done_hold_ms
 value = "done"
 
 [agent_nudge.scope_setting]
-doc = "Where the switch of the nudge and wake scope rules is read from (agents.nudgeScope, default on): on, an answered nudge is never queued again by the wake fallback, an agentHealth verdict of done holds the nudge, and heartbeat and lock-holder wake rows go only to the session that owns them (agent_tracker.wake_scope); off, the earlier behaviour."
+doc = "Scope nudges and wakes. Where the switch of the nudge and wake scope rules is read from (agents.nudgeScope, default on): on, an answered nudge is never queued again by the wake fallback, an agentHealth verdict of done holds the nudge, and heartbeat and lock-holder wake rows go only to the session that owns them (agent_tracker.wake_scope); off, the earlier behaviour."
 value = { section = "agents", key = "nudgeScope", env = "ANTIHALL_AGENT_NUDGE_SCOPE", aliases = [], option = "", default = true }
 
 [agent_nudge.suppress]

@@ -276,7 +276,12 @@ function decide(p, opts) {
     var block = [ah.cfg('devswarm_prompt.child_override'), ah.cfg('devswarm_prompt.child_autonomy'),
       sub(text.render(ah.cfg('devswarm_prompt.child_reminder'), { cli: cli })), sub(text.render(ah.cfg('devswarm_prompt.child_receive'), { cli: cli }))];
     var every = ah.settings.num('verify_first.num_repeat_every');
-    var staticOpts = { sessionId: sid, key: ah.cfg('devswarm_prompt.child_static_key'), content: block.join(ah.cfg('devswarm_prompt.child_block_joiner')), transcriptPath: tp, keepaliveTurns: isFinite(every) && every > 0 ? every : 0 };
+    var staticOpts = { sessionId: sid, key: ah.cfg('devswarm_prompt.child_static_key'), content: block.join(ah.cfg('devswarm_prompt.child_block_joiner')), transcriptPath: tp, stateOnly: ah.settings.bool('devswarm_prompt.child_static_state_only'), keepaliveTurns: isFinite(every) && every > 0 ? every : 0 };
+    // Mirror the dispatcher's configured comms cuts when proving delivery of the static state.
+    var markers = ah.cfg('inject_gate.comms_markers'), sep = ah.cfg('inject_gate.segment_sep');
+    staticOpts.deliveryContent = staticOpts.content.split(sep).filter(function (part) {
+      return !markers.some(function (marker) { return part.indexOf(marker) === 0; });
+    }).join(sep);
     var planOpts = plan === null ? null : { sessionId: sid, key: ah.cfg('devswarm_prompt.child_plan_key'), content: plan, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_prompt.child_plan_keepalive') };
     var dedupeOn = sid !== null && !dedupe.disabled();
     if (dedupeOn && ((banner !== null && banner.opts !== null && banner.content !== null && !dedupe.canDecide(banner.opts)) || !dedupe.canDecide(staticOpts) || (planOpts !== null && !dedupe.canDecide(planOpts)))) ctUnsure('dedupe-undecidable'); // a timestamp only V8 reads: decided on what the engine reads
@@ -327,7 +332,8 @@ function decide(p, opts) {
     var info = reg ? ctUnread(builder, home) : preInfo; // a registration may have created the cursor and the inbox
     var segments = [];
     if (bannerText !== null) segments.push(bannerText);
-    if (!dedupeOn || dedupe.shouldEmit(staticOpts)) segments = segments.concat(block);
+    var staticEmit = !dedupeOn || dedupe.evaluate(staticOpts, 'suppressed');
+    if (staticEmit) segments = segments.concat(block);
     if (meshDirect !== null) segments.push(meshDirect);
     if (plan !== null && (!dedupeOn || dedupe.shouldEmit(planOpts))) segments.push(plan);
     var archiveSegment = false;
@@ -339,7 +345,9 @@ function decide(p, opts) {
       }
     }
     if (archiveRequested && !archiveSegment) segments.push(text.render(ah.cfg('devswarm_prompt.archive_request'), { cli: cli, id: builder }));
-    if (!segments.length) return 'allow';
-    return { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_prompt.child_block_joiner'))) };
+    // Build the return value before recording an emission: a failed renderer delivered nothing.
+    var result = segments.length ? { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_prompt.child_block_joiner'))) } : 'allow';
+    if (dedupeOn && staticEmit) dedupe.shouldEmit(staticOpts);
+    return result;
   })();
 }

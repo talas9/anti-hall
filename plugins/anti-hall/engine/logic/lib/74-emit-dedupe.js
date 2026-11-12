@@ -166,7 +166,7 @@ var dedupe = {
   },
   // Whether the store can decide this block exactly (false: a transcript timestamp only V8 reads exactly, so the caller defers). Writes nothing.
   canDecide: function (o) { return dedupe.evaluate(o, false) !== 'unsure'; },
-  // The decision of `shouldEmit` (true / false, or 'unsure'); with `commit` false nothing is written.
+  // The decision of `shouldEmit` (true / false, or 'unsure'); false writes nothing, 'suppressed' writes only suppression records.
   evaluate: function (o, commit) {
     dedupe.scanMemo = {}; // the memo lives for one decision: the context outlives the request, and a transcript grows between requests
     if (dedupe.disabled()) return true;
@@ -178,16 +178,23 @@ var dedupe = {
     var rk = ah.cfg('emit_dedupe.reset_key');
     var resetAt = state[rk] && typeof state[rk].resetAt === 'number' && isFinite(state[rk].resetAt) ? state[rk].resetAt : 0;
     var fin = function (v) { return typeof v === 'number' && isFinite(v); };
-    var prevOk = prev && typeof prev.hash === 'string' && fin(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.tp || null) === tp;
+    var prevOk = prev && typeof prev.hash === 'string' && fin(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.tp || null) === tp && (!o.stateOnly || (prev.resetAt || 0) === resetAt);
     var same = prevOk && prev.hash === hash, lastSeen = prevOk && fin(prev.lastSeenAt) ? prev.lastSeenAt : 0, turns = prevOk && fin(prev.turnsSinceEmit) ? prev.turnsSinceEmit : 0;
-    var emit = true, nextTurns = 0, ctNext = null;
+    var emit = true, nextTurns = 0, ctNext = null, delivered = false;
     if (same) {
       var since = prev.lastEmittedAt - tol, ch = typeof prev.ch === 'string' ? prev.ch : '', k = fin(prev.k) && prev.k > 0 ? prev.k : 1;
-      var consumed = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
+      // A state-only caller may name the stable content that survives the dispatcher cuts.
+      // Neither a pending emission nor an unrelated attachment proves delivery.
+      var consumed = o.stateOnly && prev.delivered === true ? true : dedupe.findInTail(o.readPath || o.transcriptPath, function (a) {
+        return a.ts >= since && ((!!ch && dedupe.matchesExact(a.els, ch, k)) ||
+          (o.stateOnly && typeof prev.deliveryCh === 'string' && dedupe.matchesExact(a.els, prev.deliveryCh, prev.deliveryK)));
+      });
       if (consumed === 'unsure') return 'unsure';
-      if (consumed === null) {
+      delivered = consumed === true;
+      if (o.stateOnly && delivered) { emit = false; nextTurns = turns; }
+      else if (consumed === null) {
         if ((now - prev.lastEmittedAt) < windowMs) { emit = false; nextTurns = turns; }
-        else if (keepalive > 0) {
+        else if (keepalive > 0 && !o.stateOnly) {
           var newTurn = (now - lastSeen) >= ah.cfgNum('emit_dedupe.window_default_ms');
           if (!(newTurn && turns >= keepalive)) { emit = false; nextTurns = turns + (newTurn ? 1 : 0); }
         }
@@ -219,7 +226,13 @@ var dedupe = {
     var entry = emit
       ? Object.assign({ hash: hash, tp: tp, lastEmittedAt: now, lastSeenAt: now, turnsSinceEmit: 0 }, dedupe.exactId(content))
       : { hash: prev.hash, tp: prev.tp || null, ch: prev.ch, k: prev.k, lastEmittedAt: prev.lastEmittedAt, lastSeenAt: now, turnsSinceEmit: nextTurns, ct: ctNext !== null ? ctNext : prev.ct };
-    if (!commit) return emit;
+    if (o.stateOnly) {
+      entry.sessionOnly = true; entry.resetAt = resetAt; entry.delivered = delivered;
+      if (emit && typeof o.deliveryContent === 'string' && o.deliveryContent) {
+        var deliveryId = dedupe.exactId(o.deliveryContent); entry.deliveryCh = deliveryId.ch; entry.deliveryK = deliveryId.k;
+      } else if (!emit) { entry.deliveryCh = prev.deliveryCh; entry.deliveryK = prev.deliveryK; }
+    }
+    if (!commit || (emit && commit === 'suppressed')) return emit;
     if (!dedupe.writeEntry(o.sessionId, key, entry, now)) return true;
     if (!emit) dedupe.bumpSuppressed(o.sessionId, now);
     return emit;

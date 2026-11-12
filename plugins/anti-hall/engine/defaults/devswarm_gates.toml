@@ -16,15 +16,15 @@ doc = "One-line description of the devswarm-child-drain check in the generated r
 value = "DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged."
 
 [devswarm_gates.child_gate_setting]
-doc = "Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
+doc = "Check child reporting and inbox duties. Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
 value = { section = "devswarm", key = "childGate", env = "", aliases = [], option = "devswarm_child_gate", default = true }
 
 [devswarm_gates.reply_tracker_setting]
-doc = "Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)."
+doc = "Track parent replies. Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)."
 value = { section = "devswarm", key = "parentReplyTracker", env = "", aliases = [], option = "devswarm_parent_reply_tracker", default = true }
 
 [devswarm_gates.child_drain_setting]
-doc = "Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable)."
+doc = "Drain child messages. Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable)."
 value = { section = "devswarm", key = "childDrain", env = "", aliases = [], option = "devswarm_child_drain", default = true }
 
 [devswarm_gates.supervisor_mode]
@@ -188,7 +188,7 @@ doc = "Newest lines the cron-missing counter keeps."
 value = 500
 
 [devswarm_gates.cg_strict_setting]
-doc = "The setting devswarm.childGateStrict (on by default): when the durable inbox shows nothing, the gate also asks the native queue (`hivecontrol workspace message-count`). The engine answers only while it is unset."
+doc = "Check native unread when durable mail is empty. The setting devswarm.childGateStrict (on by default): when the durable inbox shows nothing, the gate also asks the native queue (`hivecontrol workspace message-count`). The engine answers only while it is unset."
 value = { section = "devswarm", key = "childGateStrict", env = "ANTIHALL_DEVSWARM_CHILD_GATE_STRICT", option = "", default = true }
 
 [devswarm_gates.cg_path_env]
@@ -336,7 +336,7 @@ doc = "How far in the future a receipt file may be dated and still count (clock 
 value = 60000
 
 [devswarm_gates.rt_window_setting]
-doc = "The setting devswarm.receiptWindowMs: how recent a send receipt must be to credit a reply this turn. The engine answers only while it is unset."
+doc = "Reply receipt freshness in milliseconds. The setting devswarm.receiptWindowMs: how recent a send receipt must be to credit a reply this turn. The engine answers only while it is unset."
 value = { section = "devswarm", key = "receiptWindowMs", env = "ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS", option = "", default = 300000 }
 
 [devswarm_gates.rt_state_dir]
@@ -376,7 +376,7 @@ doc = "Compact guard message text."
 value = "complete the pending workspace duty."
 
 [devswarm_gates.sw_cron_from_payload]
-doc = "Switch devswarm.cronFromPayload (default on): the child Stop gate decides whether the mailbox tick cron exists from the Stop payload's session_crons list; a payload without the list keeps the age-based check. Off always uses the age-based check."
+doc = "Detect mailbox cron from the Stop payload. Switch devswarm.cronFromPayload (default on): the child Stop gate decides whether the mailbox tick cron exists from the Stop payload's session_crons list; a payload without the list keeps the age-based check. Off always uses the age-based check."
 value = { section = "devswarm", key = "cronFromPayload", env = "ANTIHALL_DEVSWARM_CRON_FROM_PAYLOAD", option = "", default = true }
 
 [devswarm_gates.cg_payload_crons_field]
@@ -388,8 +388,8 @@ doc = "The field of a session_crons entry that holds the prompt the job submits 
 value = "prompt"
 
 [devswarm_gates.cg_cron_prompt_re]
-doc = "The regular expression a session_crons prompt must match to be the mailbox tick of this workspace: the prompt BEGINS (after an optional `Mailbox tick:` lead-in, `run`, and quotes or backticks) with the command that runs it - `node <path> inbox tick <id>` or `<cli> mesh inbox tick <id>` - so a prompt that only mentions the words (`Do not run inbox tick`, `never run <cli> mesh inbox tick`) is not the tick job."
-value = '''^\s*(?:Mailbox tick:?\s*)?(?:run\s+)?[`'"]*(?:node\s+[`'"]?[^\s`'"]+[`'"]?\s+|[`'"]?[^\s`'"]+[`'"]?\s+mesh\s+)inbox\s+tick\s+[^\s`'"]+'''
+doc = "The regular expression a session_crons prompt must match to be the mailbox tick of this workspace: the prompt BEGINS (after an optional `Mailbox tick:` lead-in, `run`, and quotes or backticks) with the command that runs it - `node <path> inbox tick <id>` or `ah-engine mesh inbox tick <id>` (bare executable or a path ending in ah-engine) - so a prompt that only mentions the words (`Do not run inbox tick`, `never run <cli> mesh inbox tick`) is not the tick job."
+value = '''^\s*(?:Mailbox tick:?\s*)?(?:run\s+)?[`'"]*(?:node\s+[`'"]?[^\s`'"]+[`'"]?\s+|[`'"]?(?:[^\s`'"]*/)?ah-engine[`'"]?\s+mesh\s+)inbox\s+tick\s+[^\s`'"]+'''
 
 [devswarm_gates.cg_payload_cron_recurring_field]
 doc = "The field of a session_crons entry that says the job repeats (true); a one-shot job is not a mailbox cron."

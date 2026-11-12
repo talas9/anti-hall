@@ -310,10 +310,10 @@ function ceCells(line, pipe) {
 // breaks stay, so nothing else moves.
 function ceMaskTableHeader(text0) {
   if (!ah.settings.bool('claim_evidence.sw_mask_table_header')) return text0;
-  var sep = ah.cfg('claim_evidence.table_sep_re'), pipe = ah.cfg('claim_evidence.table_pipe'), label = ah.cfg('claim_evidence.table_label_cell_re'), lines = text0.split('\n');
+  var sep = ah.cfg('claim_evidence.table_sep_re'), pipe = ah.cfg('claim_evidence.table_pipe'), label = ah.cfg('claim_evidence.table_label_cell_re'), lines = text0.split('\n'), original = lines.slice();
   for (var i = 1; i < lines.length; i++) {
     if (!ah.re.test(sep, '', lines[i]) || lines[i - 1].indexOf(pipe) < 0) continue;
-    if (i >= 2 && lines[i - 2].indexOf(pipe) >= 0) continue; // the line above is a table row too: this one is a body row, not a header
+    if (i >= 2 && original[i - 2].indexOf(pipe) >= 0) continue; // the line above is a table row too: this one is a body row, not a header
     var head = ceCells(lines[i - 1], pipe);
     if (head.length !== ceCells(lines[i], pipe).length) continue;
     if (!head.every(function (c) { return ah.re.test(label, '', c); })) continue;

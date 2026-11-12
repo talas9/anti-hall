@@ -243,7 +243,7 @@ value = "a side-pick"
 
 [ship_it.summary]
 doc = "One-line description of the ship-it-guard check in the generated reference."
-value = "Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare."
+value = "Require plans for hard-risk edits. Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare."
 
 [ship_it.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -664,7 +664,7 @@ doc = "Regex (case-insensitive) of a brief that writes a file or report (writes 
 value = '''\bwrit(?:e|es|ing|ten)\s+(?:\S+\s+){0,4}?(?:reports?|summar(?:y|ies)|findings|results?|notes|files?|output|logs?)\b|\b(?:reports?|findings|results?|output)\s+files?\b|\b(?:run|runs|running|execut(?:e|es|ing))\s+(?:\S+\s+){0,3}?(?:scripts?|shell|bash|commands?)\b|\bshell\s+(?:commands?|scripts?)\b|\b(?:bash|sh|python3?|node)\s+(?:-\S+\s+)*\S+\.(?:sh|py|js)\b'''
 
 [model_routing.explore_hint_skip_setting]
-doc = "Withholds the Explore hint for a review seat or a brief that runs tests (guards.exploreHintSkip, default on, #336): those agents run commands or hold a review role, so Explore is the wrong type."
+doc = "Withhold Explore hints for reviews and tests. Withholds the Explore hint for a review seat or a brief that runs tests (guards.exploreHintSkip, default on, #336): those agents run commands or hold a review role, so Explore is the wrong type."
 value = { section = "guards", key = "exploreHintSkip", env = "ANTIHALL_EXPLORE_HINT_SKIP", aliases = [], option = "", default = true }
 
 [model_routing.explore_hint_skip_re]
@@ -1662,7 +1662,7 @@ value = [
 
 [api_guard.summary]
 doc = "One-line description of the api-guard check in the generated reference."
-value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook."
+value = "Check APIs against verified declarations. Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook."
 
 [api_guard.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -1743,7 +1743,7 @@ doc = "The guard id this check answers to in skip.json and in messages."
 value = "edit-guard"
 
 [edit_guard.setting]
-doc = "Where the guard's on/off switch is read from (safety.editGuard, default on)."
+doc = "Gate coordinator edits. Where the guard's on/off switch is read from (safety.editGuard, default on)."
 value = { section = "safety", key = "editGuard", env = "ANTIHALL_EDIT_GUARD", aliases = [], option = "safety_edit_guard", default = true }
 
 [edit_guard.edit_tools]
@@ -1802,11 +1802,11 @@ doc = "One-line description of the devswarm-child-turn check in the generated re
 value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook."
 
 [devswarm_prompt.parent_setting]
-doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+doc = "Deliver parent inbox reminders. Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
 value = { section = "devswarm", key = "parentInbox", env = "", aliases = [], option = "devswarm_parent_inbox", default = true }
 
 [devswarm_prompt.child_setting]
-doc = "Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
+doc = "Deliver child turn reminders. Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
 value = { section = "devswarm", key = "childTurn", env = "", aliases = [], option = "devswarm_child_turn", default = true }
 
 [devswarm_prompt.judge_env]
@@ -1942,11 +1942,11 @@ doc = "A UUID cut short in its last group (a builder id of this shape was trunca
 value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1,11}$"
 
 [devswarm_prompt.plan_tracking_setting]
-doc = "The setting devswarm.planTracking (on by default): the child is shown its step plan each turn."
+doc = "Show the child its step plan. The setting devswarm.planTracking (on by default): the child is shown its step plan each turn."
 value = { section = "devswarm", key = "planTracking", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_TRACKING", option = "devswarm_plan_tracking", default = true }
 
 [devswarm_prompt.plan_required_setting]
-doc = "The setting devswarm.planRequired (off by default): a child without a step plan is asked to write one every turn."
+doc = "Require a child step plan. The setting devswarm.planRequired (off by default): a child without a step plan is asked to write one every turn."
 value = { section = "devswarm", key = "planRequired", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_REQUIRED", option = "devswarm_plan_required", default = false }
 
 [devswarm_prompt.plan_none]
@@ -2222,3 +2222,7 @@ value = { "api-guard" = "msg_what: this code references API(s) that do not exist
 [guardkit.details_actions]
 doc = "Compact guard message text."
 value = ["send the message through the DevSwarm mesh.", "read the inbox through the mesh CLI.", "read through the mesh inbox CLI.", "send through the DevSwarm mesh.", "ask the user to update and re-trust the edit allowlist.", "write it at the session handover path.", "run the handover maintenance command."]
+
+[devswarm_prompt.child_static_state_only]
+doc = "Delivered static child reminders only on changed content or context reset. devswarm.childStateOnly (default on) applies to Claude/OMC and Codex/OMX; undelivered copies retry after the configured pending window, and delivery matching accounts for downstream comms cuts. Off restores turn/time keepalives. Missing, corrupt or unwritable state always emits. Mail, plans and reporting duties remain independently actionable."
+value = { section = "devswarm", key = "childStateOnly", env = "ANTIHALL_DEVSWARM_CHILD_STATE_ONLY", aliases = [], option = "", default = true }

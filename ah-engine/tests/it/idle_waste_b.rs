@@ -77,6 +77,10 @@ fn missing_tokens_are_unknown_and_current_tokens_remain_visible() {
     assert!(probe(&h, &cell(false), &[]).contains("12k tok"));
     std::fs::write(&file, "usage\nnew\n").unwrap();
     assert!(probe(&h, &cell(false), &[]).contains("12k tok"), "small transcript growth stays known");
+    assert!(
+        probe(&h, &cell(false), &[("ANTIHALL_DEVSWARM_TOKEN_OFFSET_TOLERANCE_BYTES", "0")]).contains("tok ?"),
+        "configured tolerance changes actual token display"
+    );
     std::fs::write(&file, "x".repeat(4102)).unwrap();
     assert!(probe(&h, &cell(false), &[]).contains("12k tok"), "tolerance boundary remains known");
     std::fs::write(&file, "x".repeat(4103)).unwrap();
@@ -102,8 +106,13 @@ fn parked_stall_is_quiet_and_live_stall_and_unproven_burn_still_fire() {
 #[test]
 fn explicit_parked_sources_and_switch_off() {
     let h = Home::new("parked");
-    let expr = "JSON.stringify([piRowParked({now:ah.clock.now()},'c1',null,null,{gates:{done:true}},null),piRowParked({now:ah.clock.now()},'c1',null,null,{}, {active:false,archived:false}),piRowParked({now:ah.clock.now()},'c1',null,null,{}, {active:true,archived:false})])";
+    let expr = "JSON.stringify([piRowParked({now:ah.clock.now()},'c1',null,null,{gates:{done:true}},null),piRowParked({now:ah.clock.now()},'c1',null,null,{unread:0}, {active:false,archived:false}),piRowParked({now:ah.clock.now()},'c1',null,null,{}, {active:true,archived:false})])";
     assert_eq!(probe(&h, expr, &[]), "[true,true,false]");
+    assert_eq!(
+        probe(&h, "String(piRowParked({now:ah.clock.now()},'c1',null,null,{}, {active:false,archived:false}))", &[]),
+        "false",
+        "unknown unread cannot prove app closure is parked"
+    );
     assert_eq!(probe(&h, expr, &[("ANTIHALL_DEVSWARM_PARKED_DISPLAY", "0")]), "[false,false,false]");
 }
 
@@ -213,6 +222,7 @@ fn waiting_timeout_and_missing_corrupt_state_are_not_parked() {
     assert_eq!(probe(&h, waiting, &[]), "false", "long wait must escalate");
     let recent = waiting.replace("ah.clock.now()+7200000", "ah.clock.now()");
     assert_eq!(probe(&h, &recent, &[]), "true", "recent human wait parks");
+    assert_eq!(probe(&h, &recent, &[("ANTIHALL_DEVSWARM_PARKED_MAX_WAIT_MIN", "0")]), "false", "configured wait timeout restores flags");
     h.put(".claude/projects/-repo/s1.jsonl", "{broken\n");
     assert_eq!(probe(&h, &recent, &[]), "false", "parked -> unknown returns flags");
     assert_eq!(probe(&h, expr, &[]), "false", "corrupt transcript is not a deliberate stop");
@@ -229,4 +239,27 @@ fn effective_folded_unread_cannot_park_and_paused_roster_keeps_flags() {
     assert!(out.contains("\"parked\":false") && out.contains("\"notDraining\":true") && out.contains("\"status\":\"paused\""), "{out}");
     let mid_turn = "(function(){ah.mesh.sessionAlive=function(){return true;};ah.mesh.childBusy=function(){return {busy:true,waiting:false,seen:true};};return String(piRowParked({home:spawn.osHome(),now:ah.clock.now()},'c1','/repo','live',{unread:0},{active:false,archived:false}));})()";
     assert_eq!(probe(&h, mid_turn, &[]), "false", "closed UI does not excuse a mid-turn live session");
+}
+
+#[test]
+fn corrupt_unread_without_a_session_keeps_roster_flags() {
+    for (n, (unread, fallback)) in [("'corrupt'", "0"), ("-1", "0"), ("null", "0"), ("{}", "0"), ("undefined", "undefined")].iter().enumerate() {
+        let h = Home::new(&format!("corrupt-unread-{n}"));
+        h.put(".anti-hall/devswarm/liveness/c1.json", r#"{"notDraining":true,"status":"stale"}"#);
+        let expr = format!(
+            "(function(){{ahHost.piSnap=function(){{return JSON.stringify({{readable:true,file:true,focused:null}});}};ahHost.piWs=function(){{return JSON.stringify({{id:'c1',active:false,archived:false}});}};return JSON.stringify(piRoster({{home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{{known:true,value:null}}}},{{workspaces:{{c1:{{status:'stale',unread:{fallback},directUnread:{unread}}}}}}}));}})()"
+        );
+        let out = probe(&h, &expr, &[]);
+        assert!(out.contains("\"parked\":false") && out.contains("\"notDraining\":true") && out.contains("\"status\":\"stale\""), "{unread}: {out}");
+    }
+}
+
+#[test]
+fn parked_wait_and_token_tolerance_have_settings_and_env_overrides() {
+    let h = Home::new("gap-settings");
+    let expr = "JSON.stringify([ah.settings.num('devswarm_parent.parked_max_wait_min'),ah.settings.num('devswarm_parent.token_offset_tolerance_bytes')])";
+    assert_eq!(probe(&h, expr, &[]), "[60,4096]");
+    h.put(".anti-hall/settings.json", r#"{"devswarm":{"parkedMaxWaitMin":12,"tokenOffsetToleranceBytes":20}}"#);
+    assert_eq!(probe(&h, expr, &[]), "[12,20]");
+    assert_eq!(probe(&h, expr, &[("ANTIHALL_DEVSWARM_PARKED_MAX_WAIT_MIN", "3"), ("ANTIHALL_DEVSWARM_TOKEN_OFFSET_TOLERANCE_BYTES", "8")]), "[3,8]");
 }
