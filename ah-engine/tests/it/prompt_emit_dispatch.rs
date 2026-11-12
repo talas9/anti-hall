@@ -379,7 +379,8 @@ fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
     };
     // runs `scenario` with a `turn(origin)` that makes one turn of that origin and returns the advisory the hook sent ("" = none), and an
     // `age(secs)` that makes the last emit that old
-    let run = |counts_scheduled: bool, scenario: &dyn Fn(&mut dyn FnMut(&str) -> String, &dyn Fn(u64))| {
+    type Scenario = dyn Fn(&mut dyn FnMut(&str) -> String, &dyn Fn(u64));
+    let run = |counts_scheduled: bool, scenario: &Scenario| {
         let e = Env::new(if counts_scheduled { "ka-on" } else { "ka-off" });
         let transcript = e.dir.join("t.jsonl");
         let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
@@ -393,10 +394,18 @@ fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
         let state_file = e.home().join(".anti-hall/emit-dedupe/dedupe-ka.json");
         let mut turn = |origin: &str| -> String {
             std::thread::sleep(std::time::Duration::from_millis(30)); // strictly increasing real times
-            lines.borrow_mut().push(serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string());
+            lines.borrow_mut().push(
+                serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string(),
+            );
             std::fs::write(&transcript, lines.borrow().iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
             let now = t0.to_string();
-            let mut extra = vec![("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"), ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0")];
+            let mut extra = vec![
+                ("ANTIHALL_TEST_ISOLATION", "1"),
+                ("ANTIHALL_TEST_NOW_MS", now.as_str()),
+                ("ANTIHALL_PROMPT_DIGEST", "0"),
+                ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
+                ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+            ];
             if counts_scheduled {
                 extra.push(("ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", "1"));
             }
@@ -463,10 +472,17 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
     let map = e.map("UserPromptSubmit", "idle-agent-sweep");
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     let now = t0.to_string();
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"), ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0")];
+    let extra = [
+        ("ANTIHALL_TEST_ISOLATION", "1"),
+        ("ANTIHALL_TEST_NOW_MS", now.as_str()),
+        ("ANTIHALL_PROMPT_DIGEST", "0"),
+        ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
+        ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+    ];
     let mut turn = |origin: &str, first: bool| -> String {
         std::thread::sleep(std::time::Duration::from_millis(30));
-        lines.push(serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string());
+        lines
+            .push(serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string());
         std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         let payload = ups("kac", "go on", Some(&transcript));
         // the first call starts the daemon: ask until the daemon, not the stand-in Node hook, answers
@@ -478,7 +494,14 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
         adv
     };
     let count = |e: &Env| -> u64 {
-        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine")).args(["ctl", "metrics"]).env_clear().env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", e.home()).env("AH_ENGINE_DIR", e.state()).output().unwrap();
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["ctl", "metrics"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", e.home())
+            .env("AH_ENGINE_DIR", e.state())
+            .output()
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
         v["metrics"]["counters"]
             .as_array()

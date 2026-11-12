@@ -67,12 +67,8 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
-const CHILD_ENV: [(&str, &str); 4] = [
-    ("DEVSWARM_REPO_ID", "r1"),
-    ("DEVSWARM_SOURCE_BRANCH", "feat/x"),
-    ("DEVSWARM_BUILDER_ID", "b-1"),
-    ("DEVSWARM_AI_AGENT", "claude"),
-];
+const CHILD_ENV: [(&str, &str); 4] =
+    [("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feat/x"), ("DEVSWARM_BUILDER_ID", "b-1"), ("DEVSWARM_AI_AGENT", "claude")];
 
 /// A registered child whose last inbox tick is two hours old (the warning threshold is 60 minutes).
 fn stale_child(name: &str) -> Home {
@@ -112,7 +108,10 @@ fn the_child_gate_reads_the_cron_list_from_the_stop_payload() {
     let out = gate(&h, Some(serde_json::json!([{"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": TICK_PROMPT}])), &CHILD_ENV);
     assert!(!out.contains("Mailbox cron missing"), "a listed cron is not missing: {out}");
     // a list without the tick job (an empty one, or another job): the cron is missing, said from the list, with no CronList step
-    for (name, list) in [("cron-empty", serde_json::json!([])), ("cron-other", serde_json::json!([{"id": "c2", "schedule": "0 9 * * *", "recurring": true, "prompt": "check the build"}]))] {
+    for (name, list) in [
+        ("cron-empty", serde_json::json!([])),
+        ("cron-other", serde_json::json!([{"id": "c2", "schedule": "0 9 * * *", "recurring": true, "prompt": "check the build"}])),
+    ] {
         let h = stale_child(name);
         let out = gate(&h, Some(list), &CHILD_ENV);
         assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: {out}");
@@ -135,10 +134,19 @@ const PRIMARY_TIP: &str = "workspace-sized work needs a child workspace";
 fn transcript(h: &Home, tasks: u32, origin: &str, prompt: &str) -> PathBuf {
     let mut t = String::new();
     for n in 1..=tasks {
-        t += &format!("{}\n", serde_json::json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}}));
-        t += &format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}}));
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}})
+        );
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}})
+        );
     }
-    t += &format!("{}\n", serde_json::json!({"type": "user", "turnOrigin": origin, "timestamp": "2026-11-10T18:41:09.261Z", "message": {"role": "user", "content": prompt}}));
+    t += &format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "turnOrigin": origin, "timestamp": "2026-11-10T18:41:09.261Z", "message": {"role": "user", "content": prompt}})
+    );
     let p = h.dir.join("t.jsonl");
     std::fs::write(&p, t).unwrap();
     p
@@ -148,8 +156,15 @@ fn transcript(h: &Home, tasks: u32, origin: &str, prompt: &str) -> PathBuf {
 /// held back by the store, so any silence below is the scheduled-turn rule's).
 fn track(h: &Home, tp: &PathBuf, prompt: &str, extra: &[(&str, &str)]) -> String {
     std::fs::create_dir_all(h.home().join("proj")).unwrap();
-    let payload = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": prompt, "cwd": h.home().join("proj"), "transcript_path": tp});
-    let mut env = vec![("ANTIHALL_DEVSWARM_SUPERVISOR", "on"), ("ANTIHALL_DEDUPE_WINDOW_MIN", "0"), ("ANTIHALL_TASK_TRACKER_TERSE", "0"), ("AH_ENGINE_NOSPAWN", "1"), ("ANTIHALL_INGEST_DRY_RUN", "1")];
+    let payload =
+        serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": prompt, "cwd": h.home().join("proj"), "transcript_path": tp});
+    let mut env = vec![
+        ("ANTIHALL_DEVSWARM_SUPERVISOR", "on"),
+        ("ANTIHALL_DEDUPE_WINDOW_MIN", "0"),
+        ("ANTIHALL_TASK_TRACKER_TERSE", "0"),
+        ("AH_ENGINE_NOSPAWN", "1"),
+        ("ANTIHALL_INGEST_DRY_RUN", "1"),
+    ];
     env.extend_from_slice(extra);
     h.check("task-tracker", &payload, &env)
 }
@@ -223,7 +238,8 @@ fn a_constant_waste_rate_across_ten_ticks_warns_once_and_a_higher_level_warns_ag
 /// one-shot job, a job with no schedule and an expired one are not the tick job; an unrecognised list falls back to the age-based text.
 #[test]
 fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
-    let missing = |out: &str, name: &str| assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: should warn from the list: {out}");
+    let missing =
+        |out: &str, name: &str| assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: should warn from the list: {out}");
     let real = serde_json::json!({"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": TICK_PROMPT});
     let with = |patch: serde_json::Value| {
         let mut e = real.clone();
@@ -250,7 +266,10 @@ fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
         ("real", real.clone()),
         ("child-directive", with(serde_json::json!({"prompt": "node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet"}))),
         ("primary-text", with(serde_json::json!({"prompt": "node \"$CLI\" inbox tick prim --quiet"}))),
-        ("mailbox-tick-lead", with(serde_json::json!({"prompt": "Mailbox tick: run `node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet`"}))),
+        (
+            "mailbox-tick-lead",
+            with(serde_json::json!({"prompt": "Mailbox tick: run `node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet`"})),
+        ),
         ("quoted-engine", with(serde_json::json!({"prompt": "\"/Users/u/.anti-hall/ah-engine/bin/ah-engine\" mesh inbox tick b-1 --quiet"}))),
     ];
     for (name, e) in shapes {
@@ -260,13 +279,16 @@ fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
     }
     // a genuine job beside a misleading one still counts
     let h = stale_child("cron-mixed");
-    let out = gate(&h, Some(serde_json::json!([{"id": "x", "schedule": "* * * * *", "recurring": true, "prompt": "Do not run inbox tick"}, real.clone()])), &CHILD_ENV);
+    let out = gate(
+        &h,
+        Some(serde_json::json!([{"id": "x", "schedule": "* * * * *", "recurring": true, "prompt": "Do not run inbox tick"}, real.clone()])),
+        &CHILD_ENV,
+    );
     assert!(!out.contains("Mailbox cron missing"), "mixed: {out}");
     // a list of an unrecognised shape (old shape, malformed entries) is no evidence either way: the age-based text, which sends to CronList
-    for (name, list) in [
-        ("old-shape", serde_json::json!([{"cron": "7,37 * * * *", "command": TICK_PROMPT}])),
-        ("malformed", serde_json::json!(["inbox tick", 5, null])),
-    ] {
+    for (name, list) in
+        [("old-shape", serde_json::json!([{"cron": "7,37 * * * *", "command": TICK_PROMPT}])), ("malformed", serde_json::json!(["inbox tick", 5, null]))]
+    {
         let h = stale_child(&format!("cron-{name}"));
         let out = gate(&h, Some(list), &CHILD_ENV);
         assert!(out.contains("Mailbox cron missing: no inbox tick for") && out.contains("CronList"), "{name}: falls back to the age-based text: {out}");
@@ -307,7 +329,9 @@ fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
     let tp = raw_transcript(
         &h,
         "t2.jsonl",
-        &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT) + &rec("assistant", None, "2026-11-10T18:41:20.000Z", "ok")),
+        &(transcript_body(1)
+            + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT)
+            + &rec("assistant", None, "2026-11-10T18:41:20.000Z", "ok")),
     );
     assert!(track(&h, &tp, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "a stale scheduled record with the current one absent speaks");
     // the current record names no origin, an earlier scheduled one has the same text: speaks
@@ -323,7 +347,10 @@ fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
     // a tool result after the scheduled prompt (the same turn still running) does not make it stale
     let h2 = Home::new("p1b-toolresult");
     human(&h2);
-    let tr = format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "z", "content": "x"}]}}));
+    let tr = format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "z", "content": "x"}]}})
+    );
     let tp = raw_transcript(&h2, "t4.jsonl", &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT) + &tr));
     assert_eq!(track(&h2, &tp, CRON_PROMPT, &[]), "", "tool results are not a newer turn");
 }
@@ -332,8 +359,14 @@ fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
 fn transcript_body(n: u32) -> String {
     let mut t = String::new();
     for k in 1..=n {
-        t += &format!("{}\n", serde_json::json!({"type": "assistant", "message": {"id": format!("c{k}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{k}"), "name": "TaskCreate", "input": {"subject": format!("t{k}")}}]}}));
-        t += &format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{k}"), "content": format!("Task #{k} created successfully: t{k}")}]}}));
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "assistant", "message": {"id": format!("c{k}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{k}"), "name": "TaskCreate", "input": {"subject": format!("t{k}")}}]}})
+        );
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{k}"), "content": format!("Task #{k} created successfully: t{k}")}]}})
+        );
     }
     t
 }
@@ -500,7 +533,7 @@ fn child_static_advisory_survives_the_dispatchers_comms_cut_without_repeating() 
     assert!(out.contains("devswarm-autonomy"), "first advisory: {out}");
     // The dispatcher cuts the already-delivered comms paragraph. Its remaining THREE
     // segments cannot match the FOUR-segment fingerprint saved by child-turn.
-    let delivered = out.splitn(2, "\n\n").nth(1).expect("static comms then autonomy");
+    let delivered = out.split_once("\n\n").expect("static comms then autonomy").1;
     std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":"2026-11-12T10:00:00.000Z","attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
     let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
     let age = || {

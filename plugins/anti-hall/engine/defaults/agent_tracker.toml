@@ -278,7 +278,7 @@ value = "agent tracker: agent {agent} has not updated its heartbeat for {age} (i
 
 [msg.agent_monitor_unarmed]
 doc = "Reminder to re-arm the session wake-watch (generic sessions), one short line. Placeholders: {command}, {timeout}. At most once per configured cooldown, including after recovery and a later expiry; a live plugin-owned or model-owned agent watcher suppresses the reminder."
-value = "agent tracker: no live wake-watch covers this session, so you are not woken when background work ends. Re-arm it now: call `Monitor` with command `{command}` and timeout_ms {timeout}. Keep a live plugin watcher; re-arm only while no watcher covers the session. `CronCreate` stays the fallback."
+value = "agent tracker: no live wake-watch covers this session. Re-arm only while uncovered: call `Monitor` with command `{command}` and timeout_ms {timeout}. Keep the plugin watcher live; `CronCreate` stays the fallback."
 
 [msg.agent_monitor_off]
 doc = "One-time notice that the wake watcher is switched off (agents.wakeWatch=false for a main session, devswarm.wakeWatch=false for a DevSwarm workspace), so the session is never told to re-arm it. Placeholders: setting."

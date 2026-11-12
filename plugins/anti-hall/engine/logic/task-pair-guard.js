@@ -286,6 +286,8 @@ function prgPost(p, on, home) {
   // a name below pair_rule.name_min_chars is no name (the Pre fact too): with the by-id switch on there is no name to look for
   if (name.length < ah.cfgNum('pair_rule.name_min_chars') && ah.settings.bool('pair_rule.sw_by_id')) return 'allow';
   var all = ah.settings.bool('tool_advisory.pair_authoritative_store') ? prgByIdTasks(p, home) : prgOpenTasks(p, home);
+  // A failed store read is not an empty authoritative list: retain the task reader's transcript fallback.
+  if (all === null) all = prgAllTasks(p, home);
   var open = all === null ? null : all.filter(tk.isOpen);
   if (open === null) { prgSuppressed('no_rows'); return 'allow'; }
   var lc = prgLc(name), paired = open.some(function (t) { return prgLc(t.owner) === lc; });
