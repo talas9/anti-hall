@@ -204,6 +204,7 @@ function snRuntimeRead(path, budget) {
 }
 
 function snRuntimeEvidence(p, home, budget) {
+  budget = budget || { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
   var raw = snRuntimeRead(base + paths.state, budget);
   if (raw === null) return null;
@@ -233,6 +234,8 @@ function snRuntimeEvidence(p, home, budget) {
 }
 
 function snRuntimeVerdict(child, name, session, evidence) {
+  // Unreadable evidence cannot retire a candidate: preserve its normal nudge decision.
+  if (evidence === null) return { retired: null, since: 0 };
   var a = evidence.state.agents && evidence.state.agents[child];
   if (a && a.parent && a.parent !== session) a = null;
   var live = ah.transcript.trackedLiveness(child, evidence.live), terminal = live === false;
