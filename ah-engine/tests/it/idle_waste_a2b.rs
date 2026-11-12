@@ -34,6 +34,7 @@ impl Home {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["check", check])
             .env_clear()
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.home())
             .env("AH_ENGINE_DIR", self.dir.join("state"))
@@ -431,4 +432,104 @@ fn the_waste_warning_is_exact_quiet_on_write_failure_and_steady_at_a_threshold()
     let h = Home::new("w-corrupt");
     h.put(".anti-hall/waste/s1.json", "{not json");
     assert!(!human_turn(&h).contains("idle waste"));
+}
+
+#[test]
+fn cron_prompt_requires_a_cli_and_accepts_the_real_node_tick_shape() {
+    let real =
+        "run `node /home/x/.anti-hall/scripts/devswarm.js inbox tick 11111111-2222-4333-8444-555555555555 --child --quiet` and act on any parent messages";
+    for (n, prompt, is_tick) in [
+        ("real", real, true),
+        ("bare", "ah-engine mesh inbox tick b-1 --child --quiet", true),
+        ("word", "anything mesh inbox tick b-1", false),
+        ("prose", "never mesh inbox tick b-1", false),
+        ("path", "/tmp/unrelated mesh inbox tick b-1", false),
+    ] {
+        let h = stale_child(&format!("gap-cron-{n}"));
+        let mut env = CHILD_ENV.to_vec();
+        if n == "real" {
+            env[2].1 = "11111111-2222-4333-8444-555555555555";
+            h.put(".anti-hall/devswarm/workspaces/11111111-2222-4333-8444-555555555555.json", "{}");
+            h.put(
+                ".anti-hall/devswarm/wake-tick/11111111-2222-4333-8444-555555555555.json",
+                &format!("{{\"ts\":{},\"unreadTotal\":0,\"known\":true}}", now_ms() - 7_200_000),
+            );
+        }
+        let out = gate(&h, Some(serde_json::json!([{"recurring":true,"schedule":"7,37 * * * *","prompt":prompt}])), &env);
+        assert_eq!(!out.contains("Mailbox cron missing"), is_tick, "{n}: {out}");
+    }
+}
+
+#[test]
+fn real_workspace_stop_gate_releases_unchanged_blocks_and_preserves_switch_off() {
+    let default = stale_child("gap-workspace-default-cap");
+    let default_payload = stop(&default, Some(serde_json::json!([])));
+    let mut signatures = Vec::new();
+    for _ in 0..4 {
+        assert!(default.raw("devswarm-child-gate", &default_payload, &CHILD_ENV).contains("block"));
+        let record = std::fs::read_dir(default.home().join(".anti-hall/stop-reblock")).unwrap().next().unwrap().unwrap().path();
+        let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(record).unwrap()).unwrap();
+        signatures.push(state["devswarm-child-gate"]["sig"].clone());
+    }
+    assert_eq!(signatures[0], signatures[1], "same missing-cron duty");
+    assert_eq!(signatures[2], signatures[3], "same heartbeat/inbox duty");
+    assert_ne!(signatures[1], signatures[2], "after the cron budget, the gate checks a distinct unfinished duty");
+    assert!(!default.raw("devswarm-child-gate", &default_payload, &CHILD_ENV).contains("block"), "both default per-kind budgets are exhausted");
+    let h = stale_child("gap-workspace-cap");
+    let mut env = CHILD_ENV.to_vec();
+    env.push(("ANTIHALL_STOP_REBLOCK_MAX", "0"));
+    let p = stop(&h, Some(serde_json::json!([])));
+    assert!(h.raw("devswarm-child-gate", &p, &env).contains("block"));
+    assert!(!h.raw("devswarm-child-gate", &p, &env).contains("block"), "real workspace gate must honor the cap");
+    assert!(h.raw("devswarm-child-gate", &p, &env).contains("block"), "distinct heartbeat/inbox duty still fires after the cron breaker releases");
+    assert!(!h.raw("devswarm-child-gate", &p, &env).contains("block"), "the unchanged new duty honors the breaker too");
+    let off = stale_child("gap-workspace-switch-off");
+    let off_payload = stop(&off, Some(serde_json::json!([])));
+    assert!(off.raw("devswarm-child-gate", &off_payload, &env).contains("block"));
+    let mut changed = env.clone();
+    changed.push(("ANTIHALL_STOP_REBLOCK", "0"));
+    assert!(off.raw("devswarm-child-gate", &off_payload, &changed).contains("block"), "disabled breaker preserves true positive");
+}
+
+#[test]
+fn child_static_advisory_survives_the_dispatchers_comms_cut_without_repeating() {
+    let h = Home::new("gap-child-static");
+    let tp = h.dir.join("delivered.jsonl");
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":tp});
+    let out = h.check("devswarm-child-turn", &p, &CHILD_ENV);
+    assert!(out.contains("devswarm-autonomy"), "first advisory: {out}");
+    // The dispatcher cuts the already-delivered comms paragraph. Its remaining THREE
+    // segments cannot match the FOUR-segment fingerprint saved by child-turn.
+    let delivered = out.splitn(2, "\n\n").nth(1).expect("static comms then autonomy");
+    std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":"2026-11-12T10:00:00.000Z","attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
+    let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+    let age = || {
+        let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        state["child-turn-static"]["lastEmittedAt"] = (now_ms() - 1_200_000).into();
+        state["child-turn-static"]["lastSeenAt"] = (now_ms() - 1_200_000).into();
+        std::fs::write(&path, state.to_string()).unwrap();
+    };
+    age();
+    for _ in 0..8 {
+        assert!(!h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "unchanged static text must remain quiet after comms cut");
+    }
+    age();
+    let mut env = CHILD_ENV.to_vec();
+    env.push(("ANTIHALL_DEVSWARM_CHILD_STATE_ONLY", "0"));
+    assert!(h.check("devswarm-child-turn", &p, &env).contains("devswarm-autonomy"), "switch restores delivery retry");
+    let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    state["child-turn-static"]["hash"] = "old-text".into();
+    std::fs::write(&path, state.to_string()).unwrap();
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "changed text speaks");
+    // The shared reset operation changes the context even in the same millisecond.
+    h.put(".anti-hall/logic/devswarm-child-turn.js", "function decide(p){dedupe.reset(p.session_id);return 'allow';}");
+    h.raw("devswarm-child-turn", &p, &CHILD_ENV);
+    let source =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/logic/devswarm-child-turn.js")).unwrap();
+    h.put(".anti-hall/logic/devswarm-child-turn.js", &source);
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "context reset speaks");
+    std::fs::write(&path, "{corrupt").unwrap();
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "corrupt state fails open");
+    h.put(".anti-hall/logic/devswarm-child-turn.js", &(source + "\nvar realWrite=dedupe.writeEntry;dedupe.writeEntry=function(){return false;};"));
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "failed persistence fails open");
 }

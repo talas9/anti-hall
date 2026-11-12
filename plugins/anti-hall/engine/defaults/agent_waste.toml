@@ -6,7 +6,7 @@
 # unavailable. Every weight, threshold, window, word and text is tuned here, never in Rust.
 
 [agent_waste.setting]
-doc = "Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste."
+doc = "Score and flag agent waste. Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste."
 value = { section = "agents", key = "wasteSense", env = "ANTIHALL_AGENT_WASTE_SENSE", aliases = [], option = "", default = true }
 
 [agent_waste.limits]
@@ -82,11 +82,11 @@ doc = "Reason fragments the stall signals add to the waste reason. Placeholders:
 value = { stalled_fmt = "{label} has run {min} min with {cpu}", quiet_fmt = "no outcome for {min} min", cpu_idle = "near-zero CPU", cpu_unknown = "no CPU reading", stalled_word = "stalled_call", quiet_word = "no_outcome_time", signals_line = "stall signals: {reason}" }
 
 [lock_watch.setting]
-doc = "Where the lock-holder watchdog's on/off switch is read from (agents.lockWatch, default on): off, no lock file is watched."
+doc = "Watch lock holders. Where the lock-holder watchdog's on/off switch is read from (agents.lockWatch, default on): off, no lock file is watched."
 value = { section = "agents", key = "lockWatch", env = "ANTIHALL_AGENT_LOCK_WATCH", aliases = [], option = "", default = true }
 
 [lock_watch.term_setting]
-doc = "Where the watchdog's auto-action switch is read from (agents.lockWatchTerm, default OFF): on, a holder idle for limits.term_after_ms with waiters is sent SIGTERM, by its verified pid (re-checked to still hold the lock right before), never by name."
+doc = "Allow verified idle lock-holder SIGTERM. Where the watchdog's auto-action switch is read from (agents.lockWatchTerm, default OFF): on, a holder idle for limits.term_after_ms with waiters is sent SIGTERM, by its verified pid (re-checked to still hold the lock right before), never by name."
 value = { section = "agents", key = "lockWatchTerm", env = "ANTIHALL_AGENT_LOCK_TERM", aliases = [], option = "", default = false }
 
 [lock_watch.locks]

@@ -19,7 +19,7 @@ doc = "The guard id this check answers to in skip.json and in messages."
 value = "handover-hygiene"
 
 [handovers.setting]
-doc = "Where the on/off switch is read from (guards.handoverHygiene, default on). Off silences the SessionStart advisory and the scheduled job; the CLI verbs still work."
+doc = "Enforce handover hygiene. Where the on/off switch is read from (guards.handoverHygiene, default on). Off silences the SessionStart advisory and the scheduled job; the CLI verbs still work."
 value = { section = "guards", key = "handoverHygiene", env = "", aliases = [], option = "guards_handover_hygiene", default = true }
 
 [handovers.child_env]

@@ -276,7 +276,7 @@ function decide(p, opts) {
     var block = [ah.cfg('devswarm_prompt.child_override'), ah.cfg('devswarm_prompt.child_autonomy'),
       sub(text.render(ah.cfg('devswarm_prompt.child_reminder'), { cli: cli })), sub(text.render(ah.cfg('devswarm_prompt.child_receive'), { cli: cli }))];
     var every = ah.settings.num('verify_first.num_repeat_every');
-    var staticOpts = { sessionId: sid, key: ah.cfg('devswarm_prompt.child_static_key'), content: block.join(ah.cfg('devswarm_prompt.child_block_joiner')), transcriptPath: tp, keepaliveTurns: isFinite(every) && every > 0 ? every : 0 };
+    var staticOpts = { sessionId: sid, key: ah.cfg('devswarm_prompt.child_static_key'), content: block.join(ah.cfg('devswarm_prompt.child_block_joiner')), transcriptPath: tp, stateOnly: ah.settings.bool('devswarm_prompt.child_static_state_only'), keepaliveTurns: isFinite(every) && every > 0 ? every : 0 };
     var planOpts = plan === null ? null : { sessionId: sid, key: ah.cfg('devswarm_prompt.child_plan_key'), content: plan, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_prompt.child_plan_keepalive') };
     var dedupeOn = sid !== null && !dedupe.disabled();
     if (dedupeOn && ((banner !== null && banner.opts !== null && banner.content !== null && !dedupe.canDecide(banner.opts)) || !dedupe.canDecide(staticOpts) || (planOpts !== null && !dedupe.canDecide(planOpts)))) ctUnsure('dedupe-undecidable'); // a timestamp only V8 reads: decided on what the engine reads

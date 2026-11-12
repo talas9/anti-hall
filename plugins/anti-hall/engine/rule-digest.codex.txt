@@ -10,6 +10,7 @@ task_guard.setting	- Never stop with open tasks idle: assign each to an agent or
 	- Write files with the edit tools, never a Bash heredoc.
 tasklist_guard.setting	- Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop.
 --
+	- waste.msg: idle waste: ~... tokens saved in ... min by ... rules (level .../...).
 	- silent_nudge.msg: ... of your own ... have gone silent past the ...m threshold: .......
 	- silent_nudge.runtime: ...... still running past the runtime block step, not finished and not stopped.
 	- broad_kill.pattern: `...` is blocked: it kills every process that matches a name or pattern, not one process you started.

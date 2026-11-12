@@ -4,7 +4,7 @@
 # every number, argument, pattern and text is here (D88).
 
 [uncommitted.sw]
-doc = "Off lets a subagent leave work uncommitted (default on)."
+doc = "Warn about uncommitted subagent work. Off lets a subagent leave work uncommitted (default on)."
 value = { section = "guards", key = "uncommittedWork", env = "ANTIHALL_UNCOMMITTED_GUARD", option = "", default = true }
 
 [uncommitted.guard_name]
@@ -13,7 +13,7 @@ value = "uncommitted-guard"
 
 [uncommitted.summary]
 doc = "One-line description of the uncommitted-guard check in the generated reference."
-value = "PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only: warns past git.soft_uncommitted_lines and blocks past git.max_uncommitted_lines uncommitted lines in the subagent's worktree (commit first)."
+value = "Warn on large uncommitted subagent edits. PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only: warns past git.soft_uncommitted_lines and blocks past git.max_uncommitted_lines uncommitted lines in the subagent's worktree (commit first)."
 
 [git.max_uncommitted_lines]
 doc = "Hard line: uncommitted lines (insertions plus deletions against HEAD, plus the lines of untracked files) in a subagent's worktree at which its edits are blocked until it commits. 0 = no hard line."

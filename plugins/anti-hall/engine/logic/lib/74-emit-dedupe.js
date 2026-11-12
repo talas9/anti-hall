@@ -178,10 +178,13 @@ var dedupe = {
     var rk = ah.cfg('emit_dedupe.reset_key');
     var resetAt = state[rk] && typeof state[rk].resetAt === 'number' && isFinite(state[rk].resetAt) ? state[rk].resetAt : 0;
     var fin = function (v) { return typeof v === 'number' && isFinite(v); };
-    var prevOk = prev && typeof prev.hash === 'string' && fin(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.tp || null) === tp;
+    var prevOk = prev && typeof prev.hash === 'string' && fin(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.tp || null) === tp && (!o.stateOnly || (prev.resetAt || 0) === resetAt);
     var same = prevOk && prev.hash === hash, lastSeen = prevOk && fin(prev.lastSeenAt) ? prev.lastSeenAt : 0, turns = prevOk && fin(prev.turnsSinceEmit) ? prev.turnsSinceEmit : 0;
     var emit = true, nextTurns = 0, ctNext = null;
-    if (same) {
+    // State-only callers own their last fingerprint: downstream injection cuts may remove
+    // a segment before delivery, so transcript exact-match retries would re-send it forever.
+    if (same && o.stateOnly) { emit = false; nextTurns = turns; }
+    else if (same) {
       var since = prev.lastEmittedAt - tol, ch = typeof prev.ch === 'string' ? prev.ch : '', k = fin(prev.k) && prev.k > 0 ? prev.k : 1;
       var consumed = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
       if (consumed === 'unsure') return 'unsure';
@@ -219,6 +222,7 @@ var dedupe = {
     var entry = emit
       ? Object.assign({ hash: hash, tp: tp, lastEmittedAt: now, lastSeenAt: now, turnsSinceEmit: 0 }, dedupe.exactId(content))
       : { hash: prev.hash, tp: prev.tp || null, ch: prev.ch, k: prev.k, lastEmittedAt: prev.lastEmittedAt, lastSeenAt: now, turnsSinceEmit: nextTurns, ct: ctNext !== null ? ctNext : prev.ct };
+    if (o.stateOnly) { entry.sessionOnly = true; entry.resetAt = resetAt; }
     if (!commit) return emit;
     if (!dedupe.writeEntry(o.sessionId, key, entry, now)) return true;
     if (!emit) dedupe.bumpSuppressed(o.sessionId, now);

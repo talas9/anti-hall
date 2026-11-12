@@ -12,7 +12,7 @@
 
 [command.check_summary]
 doc = "One-line description of the command check for the generated reference."
-value = "command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook."
+value = "Delegate heavy commands and shell writes. command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook."
 
 [command.max_classify_len]
 doc = "Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it)."
@@ -252,7 +252,7 @@ doc = "Remote commands that run in the main thread whatever their body or output
 value = ["gh issue create", "gh issue comment", "gh issue edit", "gh issue close", "gh issue reopen", "gh label create", "gh label edit", "gh pr create", "gh pr comment", "gh pr edit", "gh pr ready"]
 
 [command.sw_resolve_wrapper_scripts]
-doc = "Default on: a `sh|bash <script>` run in the main thread is judged by the script's body (read up to script.read_max_bytes), the same verdict as the raw command (#547); off judges the wrapper as written."
+doc = "Judge shell wrappers by their script body. Default on: a `sh|bash <script>` run in the main thread is judged by the script's body (read up to script.read_max_bytes), the same verdict as the raw command (#547); off judges the wrapper as written."
 value = { section = "guards", key = "commandResolveWrapperScripts", type = "boolean", env = "ANTIHALL_COMMAND_RESOLVE_WRAPPER_SCRIPTS", option = "", default = true }
 
 [metric.command_wrapper_resolved]
@@ -815,7 +815,7 @@ value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely"
 # ---- settings the main-thread decision reads ---------------------------------------------------------------------------
 
 [command.allow_subagent_mailbox_setting]
-doc = "a one-off allow of the subagent mailbox verbs (default off)."
+doc = "Allow subagent mailbox verbs. a one-off allow of the subagent mailbox verbs (default off)."
 value = { section = "guards", key = "allowSubagentMailbox", type = "boolean", env = "ANTIHALL_ALLOW_SUBAGENT_MAILBOX", aliases = [], option = "guards_allow_subagent_mailbox", default = false }
 
 [command.stash_guard_setting]
@@ -1004,7 +1004,7 @@ unit = "ms"
 min = 100
 
 [command.name_segment_setting]
-doc = "Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own."
+doc = "Name the heavy segment in command blocks. Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own."
 value = { section = "guards", key = "commandNameSegment", type = "boolean", env = "ANTIHALL_COMMAND_NAME_SEGMENT", aliases = [], option = "", default = true }
 
 [command.segment_label_max]

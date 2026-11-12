@@ -1244,7 +1244,7 @@ doc = "guards.stopHookVersionDowngrade: skip the block while the host registered
 value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
 
 [tasklist_guard.ack_setting]
-doc = "guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
+doc = "Honor verified Stop acknowledgements. guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
 value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
 
 [tasklist_guard.ack_dir]
