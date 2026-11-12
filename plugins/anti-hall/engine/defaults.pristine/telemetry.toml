@@ -104,16 +104,25 @@ min = 50
 unit = "ms"
 
 [telemetry.block_keep_days]
-doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the first line of the message."
+doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the message."
 value = 14
 min = 1
 unit = "days"
 
 [telemetry.block_reason_chars]
-doc = "How many characters of a guard block's message (its first non-empty line) are kept with the block."
-value = 200
+doc = "How many characters of a guard block's full message are kept with the block (`ah-engine query guard_blocks`), so the block can be judged afterwards; the text is the one the host gave the model (a JSON block's reason, else the stderr of an exit 2)."
+value = 2048
 min = 20
+max = 16384
 unit = "chars"
+
+[telemetry.block_truncated_marker]
+doc = "Appended to a guard block's kept message when it was cut at `telemetry.block_reason_chars`, so a cut message is never mistaken for a whole one. The cut is at a character boundary that does not strand a combining mark."
+value = " [...cut]"
+
+[telemetry.block_channel_joiner]
+doc = "Put between the two texts of a block that exited 2 with a JSON reason on stdout and a different message on stderr: both are kept, the JSON reason first. When one contains the other (the usual case) only the longer is kept."
+value = "\n--- stderr ---\n"
 
 [telemetry.retention_days]
 doc = "How many days of per-day counter rows and events stay in hot.db; older ones are removed by `telemetry rollup` after they are archived in archive.db, where the daily rollups are kept."
@@ -263,6 +272,14 @@ value = "snapshot"
 doc = "Requests the daemon handled, any type."
 value = { kind = "counter", unit = "requests", labels = [] }
 
+[metric.supervised_start]
+doc = "Daemon starts by the service manager (launchd or systemd) that won the singleton lock, by start reason."
+value = { kind = "counter", unit = "starts", labels = ["reason"] }
+
+[metric.unit_kickstart]
+doc = "Asks of a hook client with no daemon to the service manager to start the engine unit, by outcome code (asked, ok, miss, failed); counted by the daemon that starts next, from the event log."
+value = { kind = "counter", unit = "asks", labels = ["code"] }
+
 [metric.busy_replies]
 doc = "Requests answered BUSY (queue full or rate limited), which made the client fall back."
 value = { kind = "counter", unit = "requests", labels = [] }
@@ -275,9 +292,29 @@ value = { kind = "counter", unit = "requests", labels = [] }
 doc = "Evaluations cut off by the per-request CPU budget."
 value = { kind = "counter", unit = "evaluations", labels = [] }
 
+[metric.guard_answer_dropped]
+doc = "Answers of guard events' checks that were not given, by reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred): the guard half of answers_dropped, so a Stop or PreToolUse gate that failed open stands out (#684). Lifetime."
+value = { kind = "counter", unit = "answers", labels = ["reason"] }
+
+[metric.verdicts_saved_by_cpu_budget]
+doc = "Per event, check answers given after the request passed daemon.request_wall_warn_ms of wall time (the wall deadline before #684), inside the wall ceiling daemon.request_hard_ms: verdicts a loaded host would have dropped when the wall clock was the deadline. Lifetime."
+value = { kind = "counter", unit = "answers", labels = ["event"] }
+
+[metric.wouldblock_retries]
+doc = "Replies written after the client's fail-fast wait (client.deadline_ms), by outcome (daemon.wouldblock_outcome_*): the client's read timed out (EAGAIN, os error 35 on macOS; logged once as client_late) and it kept waiting up to client.slow_fallback_max_ms less client.slow_wait_margin_ms. delivered = the client took the late verdict; lost = it had stopped waiting. Lifetime."
+value = { kind = "counter", unit = "replies", labels = ["outcome"] }
+
 [metric.answers_dropped]
 doc = "Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started."
 value = { kind = "counter", unit = "answers", labels = ["event", "kind", "reason"] }
+
+[metric.delivery_stage]
+doc = "Per check, how many of its answers reached each stage (#312): decided (it said something), delivered (the reply carrying it was written in time), complied (the agent made a reaction tool call within the window, `delivery.react`), ignored (the window ended without one). Lifetime; `status` delivery shows it with the lost and shed counts."
+value = { kind = "counter", unit = "answers", labels = ["check", "stage"] }
+
+[metric.delivery_lost]
+doc = "Per check and reason, answers that did not reach the agent: shed (CPU hard limit), hard_deadline, cpu_budget, client_gone, check_deferred (the reasons of answers_dropped) and undelivered (the reply was not written in time). Lifetime."
+value = { kind = "counter", unit = "answers", labels = ["check", "reason"] }
 
 [metric.delivery_funnel]
 doc = "The delivery funnel split by the session's model family and the project (B1; `telemetry funnel`): per check, model, project and stage (decided, delivered, acted_on, ignored, lost, shed, suppressed), how many answers reached it. A shadowed entry's answer is decided and suppressed, never delivered. Past the series cap only model and project fold into the overflow label (telemetry.overflow_keep_by_metric): no count is lost. acted_on and ignored follow the check's delivery.act (else delivery.react) condition. Lifetime. Off with delivery.funnel_enabled = 0."
@@ -288,8 +325,16 @@ doc = "Per check, model, project and output channel (delivery.channel_label: blo
 value = { kind = "counter", unit = "answers", labels = ["check", "channel", "model", "project"] }
 
 [metric.stop_channel]
-doc = "Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime."
+doc = "Uses of the Stop channel (GH #540; context.stopAdditionalContext): per outcome (emitted, over_k, over_total, limit_clamped, no_background_field, background_pending, transcript_unreadable, over_length, blocked_kept; stop_channel.counters), check, model family and project, how many moved Stop notes ended that way. Lifetime."
 value = { kind = "counter", unit = "stops", labels = ["counter", "check", "model", "project"] }
+
+[metric.context_spills]
+doc = "Joined hook contexts that were over the host's inline cap and spilled to a file (#311), by event. Lifetime; `status` delivery.spills_by_event."
+value = { kind = "counter", unit = "spills", labels = ["event"] }
+
+[metric.context_spill_pinned]
+doc = "Spills whose file held a context at or above dispatch.context_pin_priority (the case the priorities exist to prevent). Lifetime; `status` delivery.pinned_spills."
+value = { kind = "counter", unit = "spills", labels = [] }
 
 [metric.budget_soft]
 doc = "Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer."
@@ -367,6 +412,14 @@ value = { kind = "counter", unit = "lookups", labels = ["result"] }
 doc = "Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised)."
 value = { kind = "counter", unit = "lookups", labels = ["reason"] }
 
+[metric.transcript_line_skipped_oversize]
+doc = "Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there."
+value = { kind = "counter", unit = "lines", labels = ["reader"] }
+
+[metric.agent_scan_degraded]
+doc = "Agent scans that returned unknown (the callers' unsure path: the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) because the window held a line longer than agent_scan.max_line_bytes that was skipped unparsed, by reader: scan_window or scan_kept. Any oversize line degrades the scan, noise or not, since the skipped line may have carried a completion."
+value = { kind = "counter", unit = "scans", labels = ["reader"] }
+
 [metric.dispatch_overhead_us]
 doc = "Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon."
 value = { kind = "histogram", unit = "us", labels = ["event"] }
@@ -402,6 +455,26 @@ value = { kind = "histogram", unit = "bytes", labels = ["check"] }
 [metric.check_mem_retained_bytes]
 doc = "The bytes a check's calls kept allocated when they returned (allocated minus freed, positive only), by check: the sum over its calls. A check that keeps growing here holds on to memory. Calls that freed more than they allocated add nothing."
 value = { kind = "counter", unit = "bytes", labels = ["check"] }
+
+[metric.regex_scratch_trims]
+doc = "Cached `ah.re.*` patterns whose lazy-DFA scratch was dropped on a memory shrink or recycle (mem.regex_trim_scratch) instead of evicting the pattern."
+value = { kind = "counter", unit = "patterns", labels = [] }
+
+[metric.regex_scratch_trim_freed_bytes]
+doc = "Accounting bytes the regex cache stopped reporting because of trims: the reported weight of the trimmed patterns before minus after (a trimmed pattern reports the estimate until its searches are measured)."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.regex_compiles_latched]
+doc = "`ah.re.*` patterns compiled while the process was over its global hard memory limit. With mem.regex_latched_bytes each pattern should compile at most once per excursion; a rate here means the latch cap is too small."
+value = { kind = "counter", unit = "patterns", labels = [] }
+
+[metric.burst_dumps_written]
+doc = "Burst allocation-site dumps written (diagnostics.burst_profile): the counted heap grew past diagnostics.burst_dump_mb inside diagnostics.burst_window_ms."
+value = { kind = "counter", unit = "dumps", labels = [] }
+
+[metric.burst_dumps_suppressed]
+doc = "Heap bursts that wanted a dump but got none: past diagnostics.burst_dump_max_per_hour, or the dump directory was not writable."
+value = { kind = "counter", unit = "dumps", labels = [] }
 
 [metric.tasks_cache]
 doc = "Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh)."
@@ -562,6 +635,10 @@ value = { kind = "counter", unit = "bytes", labels = ["h", "e"] }
 doc = "Telemetry samples or events that could not be kept: slots (a counter table was full) or ring (an event was overwritten before it was flushed)."
 value = { kind = "counter", unit = "samples", labels = ["reason"] }
 
+[metric.tel_child_counts]
+doc = "Series a scheduled subprocess job handed to the daemon through its counts file: result series (added to the daemon's table), bad (a line that was not valid UTF-8 or not a valid counter for a registered metric) or overflow (lines past telemetry.inbox_max_bytes, not read)."
+value = { kind = "counter", unit = "series", labels = ["result"] }
+
 [metric.procwatch_events]
 doc = "Process-watch findings, by kind (orphan_candidate, orphan_kill, resource_warning, disk_warning) and class or reason."
 value = { kind = "counter", unit = "events", labels = ["kind", "class"] }
@@ -635,6 +712,10 @@ value = { kind = "counter", unit = "events", labels = ["name"] }
 [metric.fail_open]
 doc = "Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict)."
 value = { kind = "counter", unit = "events", labels = ["reason", "check"] }
+
+[metric.settings_value_invalid]
+doc = "Settings numbers outside the f64 range (such as 1e400, which JavaScript reads as Infinity) found in a settings file (#569), by file (guardkit.settings_file, guardkit.claude_settings_file, guardkit.skip_file, guardkit.migration_markers_file, guardkit.jev_legacy_file). Each one invalidates only its own key (the next source, then the default, answers); the rest of the file still counts. Counted once per file change. Lifetime."
+value = { kind = "counter", unit = "values", labels = ["file"] }
 
 [telemetry.spawn_tools]
 doc = "Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads."
@@ -735,3 +816,115 @@ value = "SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1"
 [telemetry.sql_update_event]
 doc = "SQL: rewrite one stored event row (?4 = its id) with the replayed completion's time (?1), kind (?2) and data (?3)."
 value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
+
+[metric.memory_leak_notices]
+doc = "Memory-registry leak notices, by largest holder."
+value = { kind = "counter", unit = "notices", labels = ["top"] }
+
+[metric.transcript_store_cold_builds]
+doc = "Session stores built from the transcript file (a first touch with no usable snapshot, or a rebuild)."
+value = { kind = "counter", unit = "builds", labels = [] }
+
+[metric.transcript_store_cold_bytes]
+doc = "Transcript bytes the cold builds read."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.transcript_store_refresh_bytes]
+doc = "Transcript bytes the incremental refreshes parsed; divided by transcript_store_appended_bytes it is 1.0 when every byte is parsed once."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.transcript_store_appended_bytes]
+doc = "Bytes the transcripts grew by between incremental refreshes."
+value = { kind = "counter", unit = "bytes", labels = [] }
+
+[metric.transcript_store_partial]
+doc = "Transcript questions answered unsure because the window starts before what the store holds or covers a skipped line."
+value = { kind = "counter", unit = "questions", labels = [] }
+
+[metric.transcript_store_waits]
+doc = "Requests that found a refresh of their session already in flight and waited for it."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_store_wait_timeouts]
+doc = "Waits that gave up after transcript.wait_ms and answered unsure."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_store_oversize_lines]
+doc = "Transcript lines skipped by the store because they were longer than transcript.max_line_bytes."
+value = { kind = "counter", unit = "lines", labels = [] }
+
+[metric.transcript_store_evictions]
+doc = "Session stores dropped by a budget, the session cap or the idle TTL."
+value = { kind = "counter", unit = "sessions", labels = [] }
+
+[metric.transcript_store_rebuilds]
+doc = "Session stores rebuilt because the transcript was truncated, rotated or rewritten."
+value = { kind = "counter", unit = "builds", labels = [] }
+
+[metric.transcript_store_snapshot_loads]
+doc = "Restart snapshots loaded on a first touch (the store then parsed only the bytes appended since)."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_snapshot_misses]
+doc = "Restart snapshots found but not usable (the file changed, the defaults changed, or the format differs)."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_snapshot_writes]
+doc = "Restart snapshots written."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_snapshot_skipped]
+doc = "Restart snapshots not written because they were over transcript.snapshot_max_bytes."
+value = { kind = "counter", unit = "snapshots", labels = [] }
+
+[metric.transcript_store_bytes]
+doc = "Bytes the session stores hold now."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.transcript_store_sessions]
+doc = "Session stores held now."
+value = { kind = "gauge", unit = "sessions", labels = [] }
+
+[metric.transcript_read_buf_max_bytes]
+doc = "The most memory any transcript reader held at once (its fixed buffer plus the longest line kept); the memory gate bounds it by transcript.read_buf_bytes plus transcript.max_line_bytes."
+value = { kind = "gauge", unit = "bytes", labels = [] }
+
+[metric.heap_burst_total]
+doc = "Times the live heap rose by more than mem_gate.burst_bytes within mem_gate.burst_window_ms (a transient allocation spike, whatever caused it)."
+value = { kind = "counter", unit = "bursts", labels = [] }
+
+[metric.ask_guard_denied]
+doc = "AskUserQuestion calls the ask guard refused outright because the session kind never asks the user (GH #694), by kind (child, primary)."
+value = { kind = "counter", unit = "calls", labels = ["kind"] }
+
+[metric.transcript_scan_peak_bytes]
+doc = "The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.transcript_scan_waits]
+doc = "Requests that had to wait for their turn at reading a transcript window (transcript.max_concurrent_scans windows are read at once)."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.transcript_scan_turn_bypassed]
+doc = "Requests that got no turn at reading a transcript window before their deadline (or transcript.scan_wait_max_ms) and read anyway, without a turn: the turn bounds concurrency and never changes an answer."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.devswarm_cron_ctl]
+doc = "Mailbox-cron decisions of a Primary (devswarm.wakeCronOnlyWithChild), by action (delete_ordered: the one order to delete the cron was shown)."
+value = { kind = "counter", unit = "decisions", labels = ["action"] }
+
+[metric.waste_events_total]
+doc = "Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level; usage, pair, disk, subagent, orchestration: unchanged tool-hook advisory fingerprints). Counts only while the daemon holds the counter."
+value = { kind = "counter", unit = "events", labels = ["category", "source"] }
+
+[metric.waste_tokens_total]
+doc = "Estimated tokens of the text the smarter rules did not send (#709), by category and source: the bytes of the left-out advisory divided by waste.bytes_per_token. An estimate of the advisory text only, not of the model turn it would have joined (that needs the transcript usage the engine does not expose to scripts). Counts only while the daemon holds the counter."
+value = { kind = "counter", unit = "tokens", labels = ["category", "source"] }
+
+[metric.waste_warnings_total]
+doc = "Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose."
+value = { kind = "counter", unit = "advisories", labels = ["category"] }
+
+[metric.token_usage_unresolved]
+doc = "Roster token totals displayed as unknown because their transcript or usage sample could not be verified (devswarm.tokenUnknown)."
+value = { kind = "counter", unit = "readings", labels = [] }

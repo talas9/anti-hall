@@ -5506,10 +5506,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `pair_rule.msg_stop_why` | `Each task should be owned by the name of the agent working on it, so the task...` |  |  | The Stop block: why (saved details). |
 | `pair_rule.name_max` | `24` |  |  | Most characters of an agent name or task owner shown on the visible line of a message (the saved details carry it whole). |
 | `pair_rule.name_min_chars` | `2` |  |  | Fewest characters an Agent or Task call's `name` needs to count as a name; a shorter or missing one is an unnamed spawn. |
-| `pair_rule.ref_end_chars` | ` 	\n
-:` |  |  | Characters that may follow the digits of the task reference (ASCII white space and `:`), besides the end of the whole description. Anything else (`#400a`, `#400,#401`, `#400#401`) is unclear and denied. |
-| `pair_rule.ref_lead_chars` | ` 	\n
-` |  |  | Characters the reference scan skips before the reference (ASCII white space). A no-break space, byte order mark or zero-width character is not one: a description that starts with it has no reference and is denied. |
+| `pair_rule.ref_end_chars` | ` 	\n:` |  |  | Characters that may follow the digits of the task reference (ASCII white space and `:`), besides the end of the whole description. Anything else (`#400a`, `#400,#401`, `#400#401`) is unclear and denied. |
+| `pair_rule.ref_lead_chars` | ` 	\n` |  |  | Characters the reference scan skips before the reference (ASCII white space). A no-break space, byte order mark or zero-width character is not one: a description that starts with it has no reference and is denied. |
 | `pair_rule.ref_sigil` | `#` |  |  | The character that starts a task reference in an unnamed spawn's description (`#` + digits). |
 | `pair_rule.summary` | `Pairs every task with the agent working on it: an unnamed spawn is denied unl...` |  |  | One-line summary of the task-pair-guard check. |
 | `pair_rule.sw` | `6 entries` |  |  | Switch guards.pairRule (default on). On: an Agent or Task spawn without a name is denied, a named agent no open task names as owner gets an advisory, and a Stop with a live named agent that owns no open task (or an in-progress task owned by the agent's id or description instead of its launch name) is blocked. Off: the facts are only counted. |
@@ -9208,8 +9206,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
-| `ops.trust_exotic_breaks` | `
-,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
+| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
@@ -11594,8 +11591,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ready_git_timeout_ms` | `4000` |  |  | How long one git call of ready-check may run; a call that overruns is unknown, never a fact. |
 | `devswarm_cli.ready_gitlink_mode` | `160000` |  |  | The git file mode of a submodule pointer (a gitlink). |
 | `devswarm_cli.ready_is_ancestor` | `--is-ancestor` |  |  | The merge-base option that asks whether the first commit is an ancestor of the second. |
-| `devswarm_cli.ready_line_terminators` | `\n
-  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
+| `devswarm_cli.ready_line_terminators` | `\n  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
 | `devswarm_cli.ready_merge_base` | `merge-base` |  |  | The git subcommand that answers ancestry questions. |
 | `devswarm_cli.ready_no_renames` | `--no-renames` |  |  | The git diff option that reports a rename as a delete and an add. |
 | `devswarm_cli.ready_quiet` | `--quiet` |  |  | The git flag that keeps the fetch of `ready-check --fetch` quiet. |
@@ -11726,8 +11722,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_long` | `--file` |  |  | The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`). |
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
-| `devswarm_cli.rr_mb_line_terms` | `\n
-  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
+| `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
 | `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
