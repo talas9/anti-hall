@@ -534,7 +534,7 @@ fn child_static_advisory_survives_the_dispatchers_comms_cut_without_repeating() 
     // The dispatcher cuts the already-delivered comms paragraph. Its remaining THREE
     // segments cannot match the FOUR-segment fingerprint saved by child-turn.
     let delivered = out.split_once("\n\n").expect("static comms then autonomy").1;
-    std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":"2026-11-12T10:00:00.000Z","attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
+    std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":ah_engine::checks::agent_scan::iso_utc(now_ms() as f64),"attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
     let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
     let age = || {
         let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
