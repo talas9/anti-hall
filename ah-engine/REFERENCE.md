@@ -2129,7 +2129,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.child_reminder` | `💡 anti-hall · devswarm-child-workspace: (per turn) keep the parent orchestrat...` |  |  | The child's per-turn report reminder; {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id. |
 | `devswarm_prompt.child_setting` | `6 entries` |  |  | Deliver child turn reminders. Where the devswarm.childTurn switch (default on) is read from: no environment variable, then settings.json, then the plugin option. |
 | `devswarm_prompt.child_static_key` | `child-turn-static` |  |  | The emit-dedupe key of the child's fixed per-turn block. |
-| `devswarm_prompt.child_static_state_only` | `6 entries` |  |  | Static child reminders only on changed content or context reset. devswarm.childStateOnly (default on) applies to Claude/OMC and Codex/OMX; downstream comms cuts cannot cause retries. Off restores delivery retries and turn/time keepalives. Missing, corrupt or unwritable state always emits. Mail, plans and reporting duties remain independently actionable. |
+| `devswarm_prompt.child_static_state_only` | `6 entries` |  |  | Delivered static child reminders only on changed content or context reset. devswarm.childStateOnly (default on) applies to Claude/OMC and Codex/OMX; undelivered copies retry after the configured pending window, and delivery matching accounts for downstream comms cuts. Off restores turn/time keepalives. Missing, corrupt or unwritable state always emits. Mail, plans and reporting duties remain independently actionable. |
 | `devswarm_prompt.child_summary` | `DevSwarm child prompt hook: answers the silent cases (not a child workspace, ...` |  |  | One-line description of the devswarm-child-turn check in the generated reference. |
 | `devswarm_prompt.defer_log_kind` | `child-turn-defer` |  |  | The event-log kind of the line the child-turn check writes when it hands a turn to the Node hook; the line's text is the cause. |
 | `devswarm_prompt.descriptor_dir` | `devswarm/workspaces` |  |  | The directory, under the anti-hall directory, of the workspace descriptors. |
@@ -6408,7 +6408,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `450 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `453 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 

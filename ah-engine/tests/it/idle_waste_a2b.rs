@@ -533,3 +533,94 @@ fn child_static_advisory_survives_the_dispatchers_comms_cut_without_repeating() 
     h.put(".anti-hall/logic/devswarm-child-turn.js", &(source + "\nvar realWrite=dedupe.writeEntry;dedupe.writeEntry=function(){return false;};"));
     assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "failed persistence fails open");
 }
+
+/// PR #720: an attempted advisory is not delivery; its pending lease must expire.
+#[test]
+fn review720_child_static_undelivered_advisory_retries_after_the_configured_window() {
+    let h = Home::new("review720-undelivered");
+    let tp = h.dir.join("undelivered.jsonl");
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":tp});
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"));
+    assert!(!h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "pending copy stays quiet within its lease");
+    let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+    let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let minutes = ah_engine::defaults::raw("emit_dedupe.num_window_min").get("default").and_then(|v| v.as_integer()).unwrap() as u64;
+    let window = minutes * ah_engine::defaults::num("emit_dedupe.ms_per_minute");
+    state["child-turn-static"]["lastEmittedAt"] = (now_ms() - window - 1).into();
+    state["child-turn-static"]["lastSeenAt"] = (now_ms() - window - 1).into();
+    std::fs::write(&path, state.to_string()).unwrap();
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "no delivery past the TOML retry window must retry");
+}
+
+/// A renderer failure before the advisory is returned cannot commit its fingerprint.
+#[test]
+fn review720_child_static_failed_return_does_not_record_an_emission() {
+    let h = Home::new("review720-return");
+    let source =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/logic/devswarm-child-turn.js")).unwrap();
+    h.put(".anti-hall/logic/devswarm-child-turn.js", &(source + "\ntext.advisoryJson=function(){throw new Error('renderer failed');};"));
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home()});
+    h.raw("devswarm-child-turn", &p, &CHILD_ENV);
+    let state = std::fs::read_to_string(h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json")).unwrap_or_else(|_| "{}".into());
+    let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert!(state.get("child-turn-static").is_none(), "failed return recorded an emission: {state}");
+}
+
+#[test]
+fn review720_gap_settings_set_and_reset_round_trip_each_new_key() {
+    for (key, value, default) in [
+        ("childStateOnly", "false", serde_json::json!(true)),
+        ("parkedMaxWaitMin", "12", serde_json::json!(60)),
+        ("tokenOffsetToleranceBytes", "20", serde_json::json!(4096)),
+    ] {
+        let h = Home::new(&format!("review720-settings-{key}"));
+        let name = format!("devswarm.{key}");
+        let run = |args: &[&str]| {
+            let out = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+                .args(args)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", h.home())
+                .env("AH_ENGINE_DIR", h.dir.join("state"))
+                .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&out.stdout)))
+        };
+        assert_eq!(run(&["settings", "set", &name, value, "--json"])["value"], serde_json::from_str::<serde_json::Value>(value).unwrap());
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.home().join(".anti-hall/settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["devswarm"][key], serde_json::from_str::<serde_json::Value>(value).unwrap());
+        assert_eq!(run(&["settings", "get", &name, "--json"])["value"], saved["devswarm"][key]);
+        assert_eq!(run(&["settings", "reset", &name, "--json"])["value"], default);
+        assert_eq!(run(&["settings", "get", &name, "--json"])["value"], default);
+        let reset: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.home().join(".anti-hall/settings.json")).unwrap()).unwrap();
+        assert!(reset["devswarm"].get(key).is_none(), "reset must remove the file override");
+    }
+}
+
+#[test]
+fn review720_only_matching_delivery_suppresses_unchanged_child_state() {
+    for matches in [false, true] {
+        let h = Home::new(&format!("review720-delivery-{matches}"));
+        let tp = h.dir.join("delivery.jsonl");
+        let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":tp});
+        let first = h.check("devswarm-child-turn", &p, &CHILD_ENV);
+        assert!(first.contains("devswarm-autonomy"));
+        let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+        let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        state["child-turn-static"]["lastEmittedAt"] = 1.into();
+        state["child-turn-static"]["lastSeenAt"] = 1.into();
+        std::fs::write(&path, state.to_string()).unwrap();
+        let delivered = if matches { first.as_str() } else { "unrelated advisory" };
+        std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":"2026-01-01T00:00:00.000Z","attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
+        assert_eq!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), !matches, "only matching content proves delivery");
+        if matches {
+            std::fs::write(&tp, "").unwrap();
+            assert!(!h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "known delivery survives tail rotation");
+            let mut changed = CHILD_ENV;
+            changed[2].1 = "b-2";
+            assert!(h.check("devswarm-child-turn", &p, &changed).contains("devswarm-autonomy"), "changed builder state must emit");
+        }
+    }
+}

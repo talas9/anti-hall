@@ -2224,5 +2224,5 @@ doc = "Compact guard message text."
 value = ["send the message through the DevSwarm mesh.", "read the inbox through the mesh CLI.", "read through the mesh inbox CLI.", "send through the DevSwarm mesh.", "ask the user to update and re-trust the edit allowlist.", "write it at the session handover path.", "run the handover maintenance command."]
 
 [devswarm_prompt.child_static_state_only]
-doc = "Static child reminders only on changed content or context reset. devswarm.childStateOnly (default on) applies to Claude/OMC and Codex/OMX; downstream comms cuts cannot cause retries. Off restores delivery retries and turn/time keepalives. Missing, corrupt or unwritable state always emits. Mail, plans and reporting duties remain independently actionable."
+doc = "Delivered static child reminders only on changed content or context reset. devswarm.childStateOnly (default on) applies to Claude/OMC and Codex/OMX; undelivered copies retry after the configured pending window, and delivery matching accounts for downstream comms cuts. Off restores turn/time keepalives. Missing, corrupt or unwritable state always emits. Mail, plans and reporting duties remain independently actionable."
 value = { section = "devswarm", key = "childStateOnly", env = "ANTIHALL_DEVSWARM_CHILD_STATE_ONLY", aliases = [], option = "", default = true }

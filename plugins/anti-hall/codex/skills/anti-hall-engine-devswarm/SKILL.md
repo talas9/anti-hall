@@ -31,7 +31,7 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.inboxCmd` = "": devswarm.inboxCmd: a consumer-configured command to read pending mesh messages (no default)
 - `devswarm.dispatchTierText` = true: devswarm.dispatchTierText: the DevSwarm Primary dispatch-tier text (default on)
 - `devswarm.childTurn` = true: Deliver child turn reminders
-- `devswarm.childStateOnly` = true: Static child reminders only on changed content or context reset
+- `devswarm.childStateOnly` = true: Delivered static child reminders only on changed content or context reset
 - `devswarm.parentInbox` = true: Deliver parent inbox reminders
 - `devswarm.planRequired` = false: Require a child step plan
 - `devswarm.planTracking` = true: Show the child its step plan
