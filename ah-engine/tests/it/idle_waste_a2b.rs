@@ -34,6 +34,7 @@ impl Home {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["check", check])
             .env_clear()
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.home())
             .env("AH_ENGINE_DIR", self.dir.join("state"))
@@ -66,12 +67,8 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
-const CHILD_ENV: [(&str, &str); 4] = [
-    ("DEVSWARM_REPO_ID", "r1"),
-    ("DEVSWARM_SOURCE_BRANCH", "feat/x"),
-    ("DEVSWARM_BUILDER_ID", "b-1"),
-    ("DEVSWARM_AI_AGENT", "claude"),
-];
+const CHILD_ENV: [(&str, &str); 4] =
+    [("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feat/x"), ("DEVSWARM_BUILDER_ID", "b-1"), ("DEVSWARM_AI_AGENT", "claude")];
 
 /// A registered child whose last inbox tick is two hours old (the warning threshold is 60 minutes).
 fn stale_child(name: &str) -> Home {
@@ -111,7 +108,10 @@ fn the_child_gate_reads_the_cron_list_from_the_stop_payload() {
     let out = gate(&h, Some(serde_json::json!([{"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": TICK_PROMPT}])), &CHILD_ENV);
     assert!(!out.contains("Mailbox cron missing"), "a listed cron is not missing: {out}");
     // a list without the tick job (an empty one, or another job): the cron is missing, said from the list, with no CronList step
-    for (name, list) in [("cron-empty", serde_json::json!([])), ("cron-other", serde_json::json!([{"id": "c2", "schedule": "0 9 * * *", "recurring": true, "prompt": "check the build"}]))] {
+    for (name, list) in [
+        ("cron-empty", serde_json::json!([])),
+        ("cron-other", serde_json::json!([{"id": "c2", "schedule": "0 9 * * *", "recurring": true, "prompt": "check the build"}])),
+    ] {
         let h = stale_child(name);
         let out = gate(&h, Some(list), &CHILD_ENV);
         assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: {out}");
@@ -134,10 +134,19 @@ const PRIMARY_TIP: &str = "workspace-sized work needs a child workspace";
 fn transcript(h: &Home, tasks: u32, origin: &str, prompt: &str) -> PathBuf {
     let mut t = String::new();
     for n in 1..=tasks {
-        t += &format!("{}\n", serde_json::json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}}));
-        t += &format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}}));
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}})
+        );
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}})
+        );
     }
-    t += &format!("{}\n", serde_json::json!({"type": "user", "turnOrigin": origin, "timestamp": "2026-11-10T18:41:09.261Z", "message": {"role": "user", "content": prompt}}));
+    t += &format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "turnOrigin": origin, "timestamp": "2026-11-10T18:41:09.261Z", "message": {"role": "user", "content": prompt}})
+    );
     let p = h.dir.join("t.jsonl");
     std::fs::write(&p, t).unwrap();
     p
@@ -147,8 +156,15 @@ fn transcript(h: &Home, tasks: u32, origin: &str, prompt: &str) -> PathBuf {
 /// held back by the store, so any silence below is the scheduled-turn rule's).
 fn track(h: &Home, tp: &PathBuf, prompt: &str, extra: &[(&str, &str)]) -> String {
     std::fs::create_dir_all(h.home().join("proj")).unwrap();
-    let payload = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": prompt, "cwd": h.home().join("proj"), "transcript_path": tp});
-    let mut env = vec![("ANTIHALL_DEVSWARM_SUPERVISOR", "on"), ("ANTIHALL_DEDUPE_WINDOW_MIN", "0"), ("ANTIHALL_TASK_TRACKER_TERSE", "0"), ("AH_ENGINE_NOSPAWN", "1"), ("ANTIHALL_INGEST_DRY_RUN", "1")];
+    let payload =
+        serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": prompt, "cwd": h.home().join("proj"), "transcript_path": tp});
+    let mut env = vec![
+        ("ANTIHALL_DEVSWARM_SUPERVISOR", "on"),
+        ("ANTIHALL_DEDUPE_WINDOW_MIN", "0"),
+        ("ANTIHALL_TASK_TRACKER_TERSE", "0"),
+        ("AH_ENGINE_NOSPAWN", "1"),
+        ("ANTIHALL_INGEST_DRY_RUN", "1"),
+    ];
     env.extend_from_slice(extra);
     h.check("task-tracker", &payload, &env)
 }
@@ -222,7 +238,8 @@ fn a_constant_waste_rate_across_ten_ticks_warns_once_and_a_higher_level_warns_ag
 /// one-shot job, a job with no schedule and an expired one are not the tick job; an unrecognised list falls back to the age-based text.
 #[test]
 fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
-    let missing = |out: &str, name: &str| assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: should warn from the list: {out}");
+    let missing =
+        |out: &str, name: &str| assert!(out.contains("has no `inbox tick` cron") && out.contains("CronCreate"), "{name}: should warn from the list: {out}");
     let real = serde_json::json!({"id": "c1", "schedule": "7,37 * * * *", "recurring": true, "prompt": TICK_PROMPT});
     let with = |patch: serde_json::Value| {
         let mut e = real.clone();
@@ -249,7 +266,10 @@ fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
         ("real", real.clone()),
         ("child-directive", with(serde_json::json!({"prompt": "node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet"}))),
         ("primary-text", with(serde_json::json!({"prompt": "node \"$CLI\" inbox tick prim --quiet"}))),
-        ("mailbox-tick-lead", with(serde_json::json!({"prompt": "Mailbox tick: run `node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet`"}))),
+        (
+            "mailbox-tick-lead",
+            with(serde_json::json!({"prompt": "Mailbox tick: run `node /Users/u/.anti-hall/bin/devswarm.js inbox tick b-1 --child --quiet`"})),
+        ),
         ("quoted-engine", with(serde_json::json!({"prompt": "\"/Users/u/.anti-hall/ah-engine/bin/ah-engine\" mesh inbox tick b-1 --quiet"}))),
     ];
     for (name, e) in shapes {
@@ -259,13 +279,16 @@ fn only_a_genuine_recurring_tick_job_ends_the_cron_warning() {
     }
     // a genuine job beside a misleading one still counts
     let h = stale_child("cron-mixed");
-    let out = gate(&h, Some(serde_json::json!([{"id": "x", "schedule": "* * * * *", "recurring": true, "prompt": "Do not run inbox tick"}, real.clone()])), &CHILD_ENV);
+    let out = gate(
+        &h,
+        Some(serde_json::json!([{"id": "x", "schedule": "* * * * *", "recurring": true, "prompt": "Do not run inbox tick"}, real.clone()])),
+        &CHILD_ENV,
+    );
     assert!(!out.contains("Mailbox cron missing"), "mixed: {out}");
     // a list of an unrecognised shape (old shape, malformed entries) is no evidence either way: the age-based text, which sends to CronList
-    for (name, list) in [
-        ("old-shape", serde_json::json!([{"cron": "7,37 * * * *", "command": TICK_PROMPT}])),
-        ("malformed", serde_json::json!(["inbox tick", 5, null])),
-    ] {
+    for (name, list) in
+        [("old-shape", serde_json::json!([{"cron": "7,37 * * * *", "command": TICK_PROMPT}])), ("malformed", serde_json::json!(["inbox tick", 5, null]))]
+    {
         let h = stale_child(&format!("cron-{name}"));
         let out = gate(&h, Some(list), &CHILD_ENV);
         assert!(out.contains("Mailbox cron missing: no inbox tick for") && out.contains("CronList"), "{name}: falls back to the age-based text: {out}");
@@ -306,7 +329,9 @@ fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
     let tp = raw_transcript(
         &h,
         "t2.jsonl",
-        &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT) + &rec("assistant", None, "2026-11-10T18:41:20.000Z", "ok")),
+        &(transcript_body(1)
+            + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT)
+            + &rec("assistant", None, "2026-11-10T18:41:20.000Z", "ok")),
     );
     assert!(track(&h, &tp, CRON_PROMPT, &[]).contains(PRIMARY_TIP), "a stale scheduled record with the current one absent speaks");
     // the current record names no origin, an earlier scheduled one has the same text: speaks
@@ -322,7 +347,10 @@ fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
     // a tool result after the scheduled prompt (the same turn still running) does not make it stale
     let h2 = Home::new("p1b-toolresult");
     human(&h2);
-    let tr = format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "z", "content": "x"}]}}));
+    let tr = format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "z", "content": "x"}]}})
+    );
     let tp = raw_transcript(&h2, "t4.jsonl", &(transcript_body(1) + &rec("user", Some("scheduled"), "2026-11-10T18:41:09.261Z", CRON_PROMPT) + &tr));
     assert_eq!(track(&h2, &tp, CRON_PROMPT, &[]), "", "tool results are not a newer turn");
 }
@@ -331,8 +359,14 @@ fn a_stale_scheduled_record_never_makes_the_current_turn_scheduled() {
 fn transcript_body(n: u32) -> String {
     let mut t = String::new();
     for k in 1..=n {
-        t += &format!("{}\n", serde_json::json!({"type": "assistant", "message": {"id": format!("c{k}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{k}"), "name": "TaskCreate", "input": {"subject": format!("t{k}")}}]}}));
-        t += &format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{k}"), "content": format!("Task #{k} created successfully: t{k}")}]}}));
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "assistant", "message": {"id": format!("c{k}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{k}"), "name": "TaskCreate", "input": {"subject": format!("t{k}")}}]}})
+        );
+        t += &format!(
+            "{}\n",
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{k}"), "content": format!("Task #{k} created successfully: t{k}")}]}})
+        );
     }
     t
 }
@@ -431,4 +465,195 @@ fn the_waste_warning_is_exact_quiet_on_write_failure_and_steady_at_a_threshold()
     let h = Home::new("w-corrupt");
     h.put(".anti-hall/waste/s1.json", "{not json");
     assert!(!human_turn(&h).contains("idle waste"));
+}
+
+#[test]
+fn cron_prompt_requires_a_cli_and_accepts_the_real_node_tick_shape() {
+    let real =
+        "run `node /home/x/.anti-hall/scripts/devswarm.js inbox tick 11111111-2222-4333-8444-555555555555 --child --quiet` and act on any parent messages";
+    for (n, prompt, is_tick) in [
+        ("real", real, true),
+        ("bare", "ah-engine mesh inbox tick b-1 --child --quiet", true),
+        ("word", "anything mesh inbox tick b-1", false),
+        ("prose", "never mesh inbox tick b-1", false),
+        ("path", "/tmp/unrelated mesh inbox tick b-1", false),
+    ] {
+        let h = stale_child(&format!("gap-cron-{n}"));
+        let mut env = CHILD_ENV.to_vec();
+        if n == "real" {
+            env[2].1 = "11111111-2222-4333-8444-555555555555";
+            h.put(".anti-hall/devswarm/workspaces/11111111-2222-4333-8444-555555555555.json", "{}");
+            h.put(
+                ".anti-hall/devswarm/wake-tick/11111111-2222-4333-8444-555555555555.json",
+                &format!("{{\"ts\":{},\"unreadTotal\":0,\"known\":true}}", now_ms() - 7_200_000),
+            );
+        }
+        let out = gate(&h, Some(serde_json::json!([{"recurring":true,"schedule":"7,37 * * * *","prompt":prompt}])), &env);
+        assert_eq!(!out.contains("Mailbox cron missing"), is_tick, "{n}: {out}");
+    }
+}
+
+#[test]
+fn real_workspace_stop_gate_releases_unchanged_blocks_and_preserves_switch_off() {
+    let default = stale_child("gap-workspace-default-cap");
+    let default_payload = stop(&default, Some(serde_json::json!([])));
+    let mut signatures = Vec::new();
+    for _ in 0..4 {
+        assert!(default.raw("devswarm-child-gate", &default_payload, &CHILD_ENV).contains("block"));
+        let record = std::fs::read_dir(default.home().join(".anti-hall/stop-reblock")).unwrap().next().unwrap().unwrap().path();
+        let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(record).unwrap()).unwrap();
+        signatures.push(state["devswarm-child-gate"]["sig"].clone());
+    }
+    assert_eq!(signatures[0], signatures[1], "same missing-cron duty");
+    assert_eq!(signatures[2], signatures[3], "same heartbeat/inbox duty");
+    assert_ne!(signatures[1], signatures[2], "after the cron budget, the gate checks a distinct unfinished duty");
+    assert!(!default.raw("devswarm-child-gate", &default_payload, &CHILD_ENV).contains("block"), "both default per-kind budgets are exhausted");
+    let h = stale_child("gap-workspace-cap");
+    let mut env = CHILD_ENV.to_vec();
+    env.push(("ANTIHALL_STOP_REBLOCK_MAX", "0"));
+    let p = stop(&h, Some(serde_json::json!([])));
+    assert!(h.raw("devswarm-child-gate", &p, &env).contains("block"));
+    assert!(!h.raw("devswarm-child-gate", &p, &env).contains("block"), "real workspace gate must honor the cap");
+    assert!(h.raw("devswarm-child-gate", &p, &env).contains("block"), "distinct heartbeat/inbox duty still fires after the cron breaker releases");
+    assert!(!h.raw("devswarm-child-gate", &p, &env).contains("block"), "the unchanged new duty honors the breaker too");
+    let off = stale_child("gap-workspace-switch-off");
+    let off_payload = stop(&off, Some(serde_json::json!([])));
+    assert!(off.raw("devswarm-child-gate", &off_payload, &env).contains("block"));
+    let mut changed = env.clone();
+    changed.push(("ANTIHALL_STOP_REBLOCK", "0"));
+    assert!(off.raw("devswarm-child-gate", &off_payload, &changed).contains("block"), "disabled breaker preserves true positive");
+}
+
+#[test]
+fn child_static_advisory_survives_the_dispatchers_comms_cut_without_repeating() {
+    let h = Home::new("gap-child-static");
+    let tp = h.dir.join("delivered.jsonl");
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":tp});
+    let out = h.check("devswarm-child-turn", &p, &CHILD_ENV);
+    assert!(out.contains("devswarm-autonomy"), "first advisory: {out}");
+    // The dispatcher cuts the already-delivered comms paragraph. Its remaining THREE
+    // segments cannot match the FOUR-segment fingerprint saved by child-turn.
+    let delivered = out.split_once("\n\n").expect("static comms then autonomy").1;
+    std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":ah_engine::checks::agent_scan::iso_utc(now_ms() as f64),"attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
+    let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+    let age = || {
+        let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        state["child-turn-static"]["lastEmittedAt"] = (now_ms() - 1_200_000).into();
+        state["child-turn-static"]["lastSeenAt"] = (now_ms() - 1_200_000).into();
+        std::fs::write(&path, state.to_string()).unwrap();
+    };
+    age();
+    for _ in 0..8 {
+        assert!(!h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "unchanged static text must remain quiet after comms cut");
+    }
+    age();
+    let mut env = CHILD_ENV.to_vec();
+    env.push(("ANTIHALL_DEVSWARM_CHILD_STATE_ONLY", "0"));
+    assert!(h.check("devswarm-child-turn", &p, &env).contains("devswarm-autonomy"), "switch restores delivery retry");
+    let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    state["child-turn-static"]["hash"] = "old-text".into();
+    std::fs::write(&path, state.to_string()).unwrap();
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "changed text speaks");
+    // The shared reset operation changes the context even in the same millisecond.
+    h.put(".anti-hall/logic/devswarm-child-turn.js", "function decide(p){dedupe.reset(p.session_id);return 'allow';}");
+    h.raw("devswarm-child-turn", &p, &CHILD_ENV);
+    let source =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/logic/devswarm-child-turn.js")).unwrap();
+    h.put(".anti-hall/logic/devswarm-child-turn.js", &source);
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "context reset speaks");
+    std::fs::write(&path, "{corrupt").unwrap();
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "corrupt state fails open");
+    h.put(".anti-hall/logic/devswarm-child-turn.js", &(source + "\nvar realWrite=dedupe.writeEntry;dedupe.writeEntry=function(){return false;};"));
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "failed persistence fails open");
+}
+
+/// PR #720: an attempted advisory is not delivery; its pending lease must expire.
+#[test]
+fn review720_child_static_undelivered_advisory_retries_after_the_configured_window() {
+    let h = Home::new("review720-undelivered");
+    let tp = h.dir.join("undelivered.jsonl");
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":tp});
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"));
+    assert!(!h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "pending copy stays quiet within its lease");
+    let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+    let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let minutes = ah_engine::defaults::raw("emit_dedupe.num_window_min").get("default").and_then(|v| v.as_integer()).unwrap() as u64;
+    let window = minutes * ah_engine::defaults::num("emit_dedupe.ms_per_minute");
+    state["child-turn-static"]["lastEmittedAt"] = (now_ms() - window - 1).into();
+    state["child-turn-static"]["lastSeenAt"] = (now_ms() - window - 1).into();
+    std::fs::write(&path, state.to_string()).unwrap();
+    assert!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "no delivery past the TOML retry window must retry");
+}
+
+/// A renderer failure before the advisory is returned cannot commit its fingerprint.
+#[test]
+fn review720_child_static_failed_return_does_not_record_an_emission() {
+    let h = Home::new("review720-return");
+    let source =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/logic/devswarm-child-turn.js")).unwrap();
+    h.put(".anti-hall/logic/devswarm-child-turn.js", &(source + "\ntext.advisoryJson=function(){throw new Error('renderer failed');};"));
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home()});
+    h.raw("devswarm-child-turn", &p, &CHILD_ENV);
+    let state = std::fs::read_to_string(h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json")).unwrap_or_else(|_| "{}".into());
+    let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert!(state.get("child-turn-static").is_none(), "failed return recorded an emission: {state}");
+}
+
+#[test]
+fn review720_gap_settings_set_and_reset_round_trip_each_new_key() {
+    for (key, value, default) in [
+        ("childStateOnly", "false", serde_json::json!(true)),
+        ("parkedMaxWaitMin", "12", serde_json::json!(60)),
+        ("tokenOffsetToleranceBytes", "20", serde_json::json!(4096)),
+    ] {
+        let h = Home::new(&format!("review720-settings-{key}"));
+        let name = format!("devswarm.{key}");
+        let run = |args: &[&str]| {
+            let out = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+                .args(args)
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", h.home())
+                .env("AH_ENGINE_DIR", h.dir.join("state"))
+                .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&out.stdout)))
+        };
+        assert_eq!(run(&["settings", "set", &name, value, "--json"])["value"], serde_json::from_str::<serde_json::Value>(value).unwrap());
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.home().join(".anti-hall/settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["devswarm"][key], serde_json::from_str::<serde_json::Value>(value).unwrap());
+        assert_eq!(run(&["settings", "get", &name, "--json"])["value"], saved["devswarm"][key]);
+        assert_eq!(run(&["settings", "reset", &name, "--json"])["value"], default);
+        assert_eq!(run(&["settings", "get", &name, "--json"])["value"], default);
+        let reset: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.home().join(".anti-hall/settings.json")).unwrap()).unwrap();
+        assert!(reset["devswarm"].get(key).is_none(), "reset must remove the file override");
+    }
+}
+
+#[test]
+fn review720_only_matching_delivery_suppresses_unchanged_child_state() {
+    for matches in [false, true] {
+        let h = Home::new(&format!("review720-delivery-{matches}"));
+        let tp = h.dir.join("delivery.jsonl");
+        let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":tp});
+        let first = h.check("devswarm-child-turn", &p, &CHILD_ENV);
+        assert!(first.contains("devswarm-autonomy"));
+        let path = h.home().join(".anti-hall/emit-dedupe/dedupe-s1.json");
+        let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        state["child-turn-static"]["lastEmittedAt"] = 1.into();
+        state["child-turn-static"]["lastSeenAt"] = 1.into();
+        std::fs::write(&path, state.to_string()).unwrap();
+        let delivered = if matches { first.as_str() } else { "unrelated advisory" };
+        std::fs::write(&tp, serde_json::json!({"type":"attachment","timestamp":"2026-01-01T00:00:00.000Z","attachment":{"type":"hook_additional_context","hookName":"UserPromptSubmit","hookEvent":"UserPromptSubmit","content":[delivered]}}).to_string()+"\n").unwrap();
+        assert_eq!(h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), !matches, "only matching content proves delivery");
+        if matches {
+            std::fs::write(&tp, "").unwrap();
+            assert!(!h.check("devswarm-child-turn", &p, &CHILD_ENV).contains("devswarm-autonomy"), "known delivery survives tail rotation");
+            let mut changed = CHILD_ENV;
+            changed[2].1 = "b-2";
+            assert!(h.check("devswarm-child-turn", &p, &changed).contains("devswarm-autonomy"), "changed builder state must emit");
+        }
+    }
 }

@@ -51,11 +51,11 @@ value = "hooks/install.sh"
 
 [verify_first.summary_subagent]
 doc = "One-line description of the verify-first-subagent check in the generated reference."
-value = "SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent."
+value = "Deliver the verify-first protocol to subagents. SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent."
 
 [verify_first.summary_full]
 doc = "One-line description of the verify-first-full check in the generated reference."
-value = "SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text."
+value = "Deliver session verify-first rules. SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text."
 
 [verify_first.guard_subagent]
 doc = "The guard id verify-first-subagent answers to in skip.json."

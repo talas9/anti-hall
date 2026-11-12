@@ -28,7 +28,10 @@ fn every_scripted_check_ships_its_script_and_every_shipped_script_is_registered(
     for c in ah_engine::checks::registry().iter().filter(|c| c.scripted()) {
         assert!(shipped.contains(c.name()), "scripted check {} has no engine/logic/{}.js", c.name(), c.name());
     }
+    let includes = ah_engine::defaults::raw("script.includes");
+    let included: std::collections::BTreeSet<String> =
+        registered.iter().flat_map(|name| includes.get(name).map(|v| v.strings()).unwrap_or_default()).map(str::to_string).collect();
     for s in &shipped {
-        assert!(registered.contains(s), "engine/logic/{s}.js belongs to no registered check");
+        assert!(registered.contains(s) || included.contains(s), "engine/logic/{s}.js belongs to no registered check or its includes");
     }
 }

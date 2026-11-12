@@ -168,11 +168,12 @@ function piRowParked(ctx, id, wt, sid, entry, app, unread) {
     var encoded = wt.split('').map(function (c) { return ah.cfg('devswarm_sup.lv_encode_chars').indexOf(c) >= 0 ? ah.cfg('devswarm_sup.lv_encode_to') : c; }).join('');
     var file = (ctx.home || spawn.osHome()) + '/' + ah.cfg('mesh_write.claude_dir') + '/' + ah.cfg('devswarm_sup.lv_projects_dir') + '/' + encoded + '/' + sid + ah.cfg('devswarm_sup.lv_transcript_ext');
     var ts = ah.fs.mtimeMs(file);
-    return piFinite(ts) && ts > 0 && ts <= ctx.now && ctx.now - ts < ah.cfgNum('devswarm_parent.parked_max_wait_min') * ah.cfgNum('devswarm_role.pg_ms_per_min');
+    return piFinite(ts) && ts > 0 && ts <= ctx.now && ctx.now - ts < ah.settings.num('devswarm_parent.parked_max_wait_min') * ah.cfgNum('devswarm_role.pg_ms_per_min');
   }
-  if (!piFinite(unread)) unread = entry && (piFinite(entry.directUnread) ? entry.directUnread : entry.unread);
+  // Explicit null means the roster could not validate its count; do not erase that unknown.
+  if (unread === undefined) unread = entry && (entry.directUnread !== undefined ? entry.directUnread : entry.unread);
   return sources.indexOf('app_closed') >= 0 && !!(app && app.active === false && app.archived === false)
-    && !(unread > 0) && (!sid || (b && b.seen === true && b.busy === false && !b.unsure));
+    && piFinite(unread) && unread === 0 && (!sid || (b && b.seen === true && b.busy === false && !b.unsure));
 }
 
 // `displayStatus(archiveReady, status, activityTs, now, dormant, notDraining, idleAlive)`.
@@ -535,7 +536,9 @@ function piRoster(ctx, summary) {
     }
     var dKey = wtPath ? ah.mesh.repoKey(wtPath) : null;
     if (key && dKey && dKey !== key) continue; // another project's workspace
-    var unread = (piFinite(entry.directUnread) ? entry.directUnread : (piFinite(entry.unread) ? entry.unread : 0)) + (foldedUnread[id] || 0);
+    var rawUnread = entry.directUnread !== undefined ? entry.directUnread : entry.unread;
+    var unreadKnown = piFinite(rawUnread) && rawUnread >= 0 && Math.floor(rawUnread) === rawUnread;
+    var unread = (unreadKnown ? rawUnread : 0) + (foldedUnread[id] || 0);
     var total = piFinite(entry.total) ? entry.total : 0;
     var cursor = piFinite(entry.cursor) ? entry.cursor : 0;
     var urgencyMax = entry.urgencyMax || null;
@@ -578,7 +581,7 @@ function piRoster(ctx, summary) {
     var archivedRow = st.marker;
     var appArchivedRow = st.app;
     var rowWs = appWs(id, wtPath);
-    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unread);
+    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unreadKnown ? unread : null);
     if (rowParked) {
       if (stuck || notDraining) waste.note(ctx.sid, 'stale_flag_on_parked', ah.cfg('devswarm_parent.parked_metric_source'), 0);
       stuck = false;
@@ -1041,7 +1044,7 @@ function piPlanCell(home, pf, dormant, plain, parked, sid) {
     if (ah.settings.bool('devswarm_parent.sw_token_unknown')) {
       var source = known && typeof tok.file === 'string' ? ah.fs.lstat(tok.file) : null;
       known = !!(source && source.kind === ah.cfg('devswarm_parent.token_file_kind') && piFinite(tok.offset) && tok.offset >= 0 && source.size >= tok.offset
-        && source.size - tok.offset <= ah.cfgNum('devswarm_parent.token_offset_tolerance_bytes')
+        && source.size - tok.offset <= ah.settings.num('devswarm_parent.token_offset_tolerance_bytes')
         && piFinite(tok.updated_at) && tok.updated_at <= ah.clock.now() && ah.clock.now() - tok.updated_at <= ah.settings.num('devswarm_parent.num_token_fresh_ms')
         && (source.size > tok.offset || source.mtimeMs <= tok.updated_at));
       if (!known) { label += ah.cfg('devswarm_parent.plan_tokens_unknown'); ah.metric('token_usage_unresolved'); }

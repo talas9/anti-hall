@@ -26,6 +26,7 @@ impl Home {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["check", check])
             .env_clear()
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.home())
             .env("AH_ENGINE_DIR", self.dir.join("state"))
@@ -266,6 +267,10 @@ fn only_a_genuine_table_header_is_masked_not_a_row_that_asserts() {
         h.check("claim-evidence-guard", &stop_payload(&h, reply), &[]).contains("block")
     };
     let claim = "All tests pass and the PR is merged.";
+    assert!(
+        blocked("ce-second-short", "| Lane | Result |\n| --- | --- |\n| a | Tests pass |\n| --- | --- |\n"),
+        "a short body claim before a second separator must not be masked"
+    );
     assert!(blocked("ce-rule", &format!("Status:\n\n| a | {claim} |\n---\n")), "a pipe row followed by a rule line is not a header");
     assert!(blocked("ce-hdr-assert", &format!("Status:\n\n| Lane | {claim} |\n| --- | --- |\n")), "a header cell that asserts is still scanned");
     assert!(blocked("ce-one-line", &format!("Status:\n\n| a | {claim} |\n")), "a lone pipe row is scanned");
@@ -290,6 +295,7 @@ fn the_statusline_window_size_prefers_the_documented_key_and_falls_back_to_the_o
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.arg("statusline")
             .env_clear()
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", h.home())
             .env("AH_ENGINE_DIR", h.dir.join("state"))

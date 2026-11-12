@@ -16,11 +16,11 @@ doc = "One-line description of the emit-dedupe-reset check in the generated refe
 value = "SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted."
 
 [emit_dedupe.sw_enabled]
-doc = "Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing."
+doc = "Suppress repeated injections. Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing."
 value = { section = "guards", key = "emitDedupe", env = "ANTIHALL_EMIT_DEDUPE", option = "guards_emit_dedupe", default = true }
 
 [emit_dedupe.num_window_min]
-doc = "Where the fallback suppression window is read from (context.dedupeWindowMin, minutes, default 20): used when the transcript cannot show whether a block was delivered; 0 turns the whole feature off."
+doc = "Fallback suppression window, minutes. Where the fallback suppression window is read from (context.dedupeWindowMin, minutes, default 20): used when the transcript cannot show whether a block was delivered; 0 turns the whole feature off."
 value = { section = "context", key = "dedupeWindowMin", env = "ANTIHALL_DEDUPE_WINDOW_MIN", option = "context_dedupe_window_min", default = 20, min = 0 }
 
 [emit_dedupe.ms_per_minute]
@@ -32,11 +32,11 @@ doc = "Milliseconds in a second (converts the wall-clock floor of the keepalive,
 value = 1000
 
 [emit_dedupe.sw_counts_scheduled]
-doc = "Switch guards.keepaliveCountsScheduled (default off): a turn the host's scheduler delivered (a cron tick) does not count toward the keepalive that re-shows an unchanged block, so an idle session is not re-told the same advisory every few ticks. On restores the old rule (every delivered turn counts)."
+doc = "Count scheduled turns toward keepalives. Switch guards.keepaliveCountsScheduled (default off): a turn the host's scheduler delivered (a cron tick) does not count toward the keepalive that re-shows an unchanged block, so an idle session is not re-told the same advisory every few ticks. On restores the old rule (every delivered turn counts)."
 value = { section = "guards", key = "keepaliveCountsScheduled", env = "ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", default = false }
 
 [emit_dedupe.num_repeat_min_s]
-doc = "Where the wall-clock floor of the keepalive is read from (guards.injectionRepeatMinS, seconds, default 7200): an unchanged block is also re-shown once this long after its last emit, so a session that only ever sees scheduled turns still gets it now and then; 0 turns the floor off. Used only while guards.keepaliveCountsScheduled is off."
+doc = "Keepalive wall-clock floor, seconds. Where the wall-clock floor of the keepalive is read from (guards.injectionRepeatMinS, seconds, default 7200): an unchanged block is also re-shown once this long after its last emit, so a session that only ever sees scheduled turns still gets it now and then; 0 turns the floor off. Used only while guards.keepaliveCountsScheduled is off."
 value = { section = "guards", key = "injectionRepeatMinS", env = "ANTIHALL_INJECTION_REPEAT_MIN_S", default = 7200, min = 0 }
 
 [emit_dedupe.origin_needles]
@@ -139,7 +139,7 @@ unit = "ms"
 
 [verify_first.summary]
 doc = "One-line description of the verify-first check in the generated reference."
-value = "UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node."
+value = "Deliver deduplicated verify-first reminders. UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node."
 
 [verify_first.event]
 doc = "The hook event name in the check's output."
@@ -150,7 +150,7 @@ doc = "Where the on/off switch is read from (context.verifyFirstTurn, default on
 value = { section = "context", key = "verifyFirstTurn", option = "context_verify_first_turn", default = true }
 
 [verify_first.num_repeat_every]
-doc = "Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn."
+doc = "Turns between reminder repeats. Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn."
 value = { section = "guards", key = "injectionRepeatEvery", env = "ANTIHALL_INJECTION_REPEAT_EVERY", option = "guards_injection_repeat_every", default = 10, min = 0 }
 
 [verify_first.prefix]
@@ -249,7 +249,7 @@ doc = "Nudges or blocks a reported misfire fix held back (GH #550 repeat of an a
 value = { kind = "counter", unit = "suppressions", labels = ["guard", "reason"] }
 
 [idle_sweep.num_repeat_every]
-doc = "Where the repeat interval of the idle-agents advisory is read from (guards.injectionRepeatEvery, delivered turns, default 10): once the same advisory was delivered it is not re-sent until this many turns pass or the set of idle agents changes; 0 re-sends it every turn."
+doc = "Turns between reminder repeats. Where the repeat interval of the idle-agents advisory is read from (guards.injectionRepeatEvery, delivered turns, default 10): once the same advisory was delivered it is not re-sent until this many turns pass or the set of idle agents changes; 0 re-sends it every turn."
 value = { section = "guards", key = "injectionRepeatEvery", env = "ANTIHALL_INJECTION_REPEAT_EVERY", option = "guards_injection_repeat_every", default = 10, min = 0 }
 
 [idle_sweep.env_test_isolation]
@@ -523,15 +523,15 @@ doc = "Where the switch of the CLAUDE.md / AGENTS.md no-workspaces detection is 
 value = { section = "jev", key = "dispatchTierDetectNoWorkspaces", env = "ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", default = true }
 
 [waste.sw_warn]
-doc = "Switch guards.wasteWarn (default on): when the tokens saved by the smarter rules (repeats of an advisory that were not sent) in the last guards.wasteWarnWindowMin minutes reach a higher level than before, one advisory tells the agent so. The rate must RISE to a new level to warn again; a constant rate warns once. Off keeps the counters and sends no advisory."
+doc = "Warn when saved-token levels rise. Switch guards.wasteWarn (default on): when the tokens saved by the smarter rules (repeats of an advisory that were not sent) in the last guards.wasteWarnWindowMin minutes reach a higher level than before, one advisory tells the agent so. The rate must RISE to a new level to warn again; a constant rate warns once. Off keeps the counters and sends no advisory."
 value = { section = "guards", key = "wasteWarn", env = "ANTIHALL_WASTE_WARN", option = "", default = true }
 
 [waste.num_window_min]
-doc = "The rolling window (minutes) of the waste warning (guards.wasteWarnWindowMin)."
+doc = "Saved-token warning window, minutes. The rolling window (minutes) of the waste warning (guards.wasteWarnWindowMin)."
 value = { section = "guards", key = "wasteWarnWindowMin", env = "ANTIHALL_WASTE_WARN_WINDOW_MIN", option = "", default = 60, min = 1 }
 
 [waste.num_level_tokens]
-doc = "The tokens saved in one window at which the first waste level is reached (guards.wasteWarnTokens); the later levels are waste.level_multipliers times it."
+doc = "First saved-token warning threshold. The tokens saved in one window at which the first waste level is reached (guards.wasteWarnTokens); the later levels are waste.level_multipliers times it."
 value = { section = "guards", key = "wasteWarnTokens", env = "ANTIHALL_WASTE_WARN_TOKENS", option = "", default = 1000, min = 1 }
 
 [waste.level_multipliers]

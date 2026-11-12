@@ -6,43 +6,43 @@ doc = "Per-source fingerprint switches and reminder settings. Each source stores
 value = { usage = { setting = "tool_advisory.sw_usage", repeat = "tool_advisory.repeat_usage" }, pair = { setting = "tool_advisory.sw_pair", repeat = "tool_advisory.repeat_pair" }, disk = { setting = "tool_advisory.sw_disk", repeat = "tool_advisory.repeat_disk" }, subagent = { setting = "tool_advisory.sw_subagent", repeat = "tool_advisory.repeat_subagent", session_only = true }, orchestration = { setting = "tool_advisory.sw_orchestration", repeat = "tool_advisory.repeat_orchestration", session_only = true } }
 
 [tool_advisory.sw_usage]
-doc = "Switch guards.usageAdvisoryOnChange: suppress unchanged usage advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
+doc = "Emit usage advisories on change. Switch guards.usageAdvisoryOnChange: suppress unchanged usage advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
 value = { section = "guards", key = "usageAdvisoryOnChange", env = "ANTIHALL_USAGE_ADVISORY_ON_CHANGE", default = true }
 
 [tool_advisory.repeat_usage]
-doc = "Reminder cooldown in seconds for unchanged usage advisory text (guards.usageAdvisoryOnChangeRepeatS); zero means no periodic reminder."
+doc = "Unchanged usage reminder interval, seconds. Reminder cooldown in seconds for unchanged usage advisory text (guards.usageAdvisoryOnChangeRepeatS); zero means no periodic reminder."
 value = { section = "guards", key = "usageAdvisoryOnChangeRepeatS", env = "ANTIHALL_USAGE_ADVISORY_ON_CHANGE_REPEAT_S", default = 7200, min = 0 }
 
 [tool_advisory.sw_pair]
-doc = "Switch guards.pairAdvisoryOnChange: suppress unchanged pair advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
+doc = "Emit pair advisories on change. Switch guards.pairAdvisoryOnChange: suppress unchanged pair advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
 value = { section = "guards", key = "pairAdvisoryOnChange", env = "ANTIHALL_PAIR_ADVISORY_ON_CHANGE", default = true }
 
 [tool_advisory.repeat_pair]
-doc = "Reminder cooldown in seconds for unchanged pair advisory text (guards.pairAdvisoryOnChangeRepeatS); zero means no periodic reminder."
+doc = "Unchanged pair reminder interval, seconds. Reminder cooldown in seconds for unchanged pair advisory text (guards.pairAdvisoryOnChangeRepeatS); zero means no periodic reminder."
 value = { section = "guards", key = "pairAdvisoryOnChangeRepeatS", env = "ANTIHALL_PAIR_ADVISORY_ON_CHANGE_REPEAT_S", default = 7200, min = 0 }
 
 [tool_advisory.sw_disk]
-doc = "Switch guards.diskToolAdvisoryOnChange: suppress unchanged disk advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
+doc = "Emit disk advisories on change. Switch guards.diskToolAdvisoryOnChange: suppress unchanged disk advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
 value = { section = "guards", key = "diskToolAdvisoryOnChange", env = "ANTIHALL_DISK_TOOL_ADVISORY_ON_CHANGE", default = true }
 
 [tool_advisory.repeat_disk]
-doc = "Reminder cooldown in seconds for unchanged disk advisory text (guards.diskToolAdvisoryOnChangeRepeatS); zero means no periodic reminder."
+doc = "Unchanged disk reminder interval, seconds. Reminder cooldown in seconds for unchanged disk advisory text (guards.diskToolAdvisoryOnChangeRepeatS); zero means no periodic reminder."
 value = { section = "guards", key = "diskToolAdvisoryOnChangeRepeatS", env = "ANTIHALL_DISK_TOOL_ADVISORY_ON_CHANGE_REPEAT_S", default = 21600, min = 0 }
 
 [tool_advisory.sw_subagent]
-doc = "Switch guards.subagentProtocolOnChange: suppress unchanged subagent advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
+doc = "Emit subagent protocol on change. Switch guards.subagentProtocolOnChange: suppress unchanged subagent advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
 value = { section = "guards", key = "subagentProtocolOnChange", env = "ANTIHALL_SUBAGENT_PROTOCOL_ON_CHANGE", default = true }
 
 [tool_advisory.repeat_subagent]
-doc = "Reminder cooldown in seconds for unchanged subagent advisory text (guards.subagentProtocolOnChangeRepeatS); zero means no periodic reminder."
+doc = "Unchanged subagent reminder interval, seconds. Reminder cooldown in seconds for unchanged subagent advisory text (guards.subagentProtocolOnChangeRepeatS); zero means no periodic reminder."
 value = { section = "guards", key = "subagentProtocolOnChangeRepeatS", env = "ANTIHALL_SUBAGENT_PROTOCOL_ON_CHANGE_REPEAT_S", default = 0, min = 0 }
 
 [tool_advisory.sw_orchestration]
-doc = "Switch guards.orchestrationOncePerSession: suppress unchanged orchestration advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
+doc = "Emit orchestration rules on context change. Switch guards.orchestrationOncePerSession: suppress unchanged orchestration advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
 value = { section = "guards", key = "orchestrationOncePerSession", env = "ANTIHALL_ORCHESTRATION_ONCE_PER_SESSION", default = true }
 
 [tool_advisory.repeat_orchestration]
-doc = "Reminder cooldown in seconds for unchanged orchestration advisory text (guards.orchestrationOncePerSessionRepeatS); zero means no periodic reminder."
+doc = "Unchanged orchestration reminder interval, seconds. Reminder cooldown in seconds for unchanged orchestration advisory text (guards.orchestrationOncePerSessionRepeatS); zero means no periodic reminder."
 value = { section = "guards", key = "orchestrationOncePerSessionRepeatS", env = "ANTIHALL_ORCHESTRATION_ONCE_PER_SESSION_REPEAT_S", default = 0, min = 0 }
 
 [tool_advisory.key_prefix]
@@ -50,9 +50,9 @@ doc = "Namespace of tool-hook fingerprints in the existing per-session emit-dedu
 value = "tool-advisory:"
 
 [tool_advisory.usage_bucket_pct]
-doc = "Usage percentage bucket width (guards.usageAdvisoryBucketPct); changing the fullest limit, bucket or reset time speaks immediately."
+doc = "Usage percentage bucket width. Usage percentage bucket width (guards.usageAdvisoryBucketPct); changing the fullest limit, bucket or reset time speaks immediately."
 value = { section = "guards", key = "usageAdvisoryBucketPct", env = "ANTIHALL_USAGE_ADVISORY_BUCKET_PCT", default = 5, min = 1 }
 
 [tool_advisory.pair_authoritative_store]
-doc = "Switch guards.pairPostAuthoritativeTasks: PostToolUse owner checks read the named task list first, as spawn-by-task-id does; avoids warning from a stale transcript after its owner was set."
+doc = "Use authoritative tasks for post-tool pairing. Switch guards.pairPostAuthoritativeTasks: PostToolUse owner checks read the named task list first, as spawn-by-task-id does; avoids warning from a stale transcript after its owner was set."
 value = { section = "guards", key = "pairPostAuthoritativeTasks", env = "ANTIHALL_PAIR_POST_AUTHORITATIVE_TASKS", default = true }

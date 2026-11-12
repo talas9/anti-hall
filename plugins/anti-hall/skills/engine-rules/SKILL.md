@@ -11,6 +11,7 @@ Every rule the engine enforces, with what, why and what to do instead.
 
 Generated from the same config the engine reads. Tier: essential rules are also in the session-start digest.
 
+- `waste.msg` (skill): idle waste: ~... tokens saved in ... min by ... rules (level .../...). Instead: end turns that have no new state; delete crons with nothing to watch.
 - `advisor.review` (skill, switch `guards.advisorReview`): A review-shaped agent on ... is not allowed while the advisor is available. Instead: Use an Opus, Fable or Codex agent for the review, or call the advisor yourself; retry this spawn once if the model is deliberate.
 - `advisor.plan` (skill, switch `guards.advisorPlan`): A plan is being written with no advisor call since the task began. Instead: Call the advisor on this plan first, then write it.
 - `advisor.retry` (skill, switch `guards.advisorRetry`): ... is being edited again after a failed test or build, with no advisor call in between. Instead: Consult the advisor on the failure before editing again.

@@ -88,7 +88,7 @@ impl Env {
     }
 
     fn no_child(&self) {
-        let _ = std::fs::remove_file(self.dsdir().join(format!("workspaces/{CHILD}.json"))); // a scratch dir of this test, not user data
+        std::fs::remove_file(self.dsdir().join(format!("workspaces/{CHILD}.json"))).expect("remove the fixture child"); // a scratch dir of this test, not user data
     }
 
     /// The Primary's inbox-tick marker, `ago_ms` old.

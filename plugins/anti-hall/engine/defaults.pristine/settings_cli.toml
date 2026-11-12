@@ -31,6 +31,9 @@ value = [
 [settings_cli.items]
 doc = "Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description."
 value = [
+  "{\"section\":\"devswarm\",\"key\":\"childStateOnly\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Suppress delivered static child reminders until state changes; undelivered copies retry. Off restores keepalives.\"}",
+  "{\"section\":\"devswarm\",\"key\":\"parkedMaxWaitMin\",\"type\":\"number\",\"default\":60,\"advanced\":true,\"description\":\"Maximum human-wait age in minutes before roster status flags return.\",\"min\":0}",
+  "{\"section\":\"devswarm\",\"key\":\"tokenOffsetToleranceBytes\",\"type\":\"number\",\"default\":4096,\"advanced\":true,\"description\":\"Maximum unsampled transcript bytes before roster tokens become unknown.\",\"min\":0}",
   "{\"section\":\"devswarm\",\"key\":\"parkedDisplay\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Compact parked roster display and suppression of stale status/not-draining nudges; actual unread mail remains visible.\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenUnknown\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Show tok ? when a roster token source cannot be verified.\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenFreshMs\",\"type\":\"number\",\"default\":1800000,\"advanced\":true,\"description\":\"Maximum age in milliseconds of a known roster token sample.\",\"min\":0}",

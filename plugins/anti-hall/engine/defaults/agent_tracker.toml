@@ -20,11 +20,11 @@ doc = "One-line description of the agent-reminders check in the generated refere
 value = "Delivers the agent tracker's queued reminders and advisories to the session or subagent that owns them, at its next UserPromptSubmit or PostToolUse (engine-only, advisory)."
 
 [agent_tracker.setting]
-doc = "Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing."
+doc = "Enable tracker ticks. Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing."
 value = { section = "agents", key = "tracker", env = "ANTIHALL_AGENT_TRACKER", aliases = [], option = "", default = true }
 
 [agent_tracker.remind_setting]
-doc = "Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent."
+doc = "Queue agent reminders. Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent."
 value = { section = "agents", key = "reminders", env = "ANTIHALL_AGENT_REMINDERS", aliases = [], option = "", default = true }
 
 [agent_tracker.rearm_idle_setting]
@@ -32,11 +32,11 @@ doc = "Quiets the re-arm note with no child workspaces. Where the switch is read
 value = { section = "agents", key = "rearmNeedsChildren", env = "ANTIHALL_AGENT_REARM_NEEDS_CHILDREN", aliases = [], option = "", default = true }
 
 [agent_tracker.owner_setting]
-doc = "Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file."
+doc = "Send owner-channel notices. Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file."
 value = { section = "agents", key = "ownerNotify", env = "ANTIHALL_AGENT_OWNER_NOTIFY", aliases = [], option = "", default = false }
 
 [agent_tracker.wake_setting]
-doc = "Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off, `agents wake-watch` arms nothing (the cron and ScheduleWakeup fallbacks are unaffected), a main session is no longer reported as unarmed, and it is told once that the watcher is switched off (signal monitor_off)."
+doc = "Arm the session wake watcher. Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off, `agents wake-watch` arms nothing (the cron and ScheduleWakeup fallbacks are unaffected), a main session is no longer reported as unarmed, and it is told once that the watcher is switched off (signal monitor_off)."
 value = { section = "agents", key = "wakeWatch", env = "ANTIHALL_AGENT_WAKE_WATCH", aliases = [], option = "", default = true }
 
 [agent_tracker.wake_setting_devswarm]
@@ -278,7 +278,7 @@ value = "agent tracker: agent {agent} has not updated its heartbeat for {age} (i
 
 [msg.agent_monitor_unarmed]
 doc = "Reminder to re-arm the session wake-watch (generic sessions), one short line. Placeholders: {command}, {timeout}. At most once per configured cooldown, including after recovery and a later expiry; a live plugin-owned or model-owned agent watcher suppresses the reminder."
-value = "agent tracker: no live wake-watch covers this session, so you are not woken when background work ends. Re-arm it now: call `Monitor` with command `{command}` and timeout_ms {timeout}. Keep a live plugin watcher; re-arm only while no watcher covers the session. `CronCreate` stays the fallback."
+value = "agent tracker: no live wake-watch covers this session. Only re-arm while uncovered: call `Monitor` with command `{command}` and timeout_ms {timeout}. Keep the plugin watcher live; `CronCreate` stays the fallback."
 
 [msg.agent_monitor_off]
 doc = "One-time notice that the wake watcher is switched off (agents.wakeWatch=false for a main session, devswarm.wakeWatch=false for a DevSwarm workspace), so the session is never told to re-arm it. Placeholders: setting."

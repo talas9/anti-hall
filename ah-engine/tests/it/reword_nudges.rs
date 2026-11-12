@@ -388,6 +388,9 @@ fn directive(tag: &str, table: &str, from: &str, to: &str, sw: &str, host: &str)
 fn directive_with(tag: &str, table: &str, from: &str, to: &str, sw: &str, host: &str, more: &[(&str, &str)]) -> String {
     let p = Plug::new(tag, &[("task_tracker.toml", table, from, to)]);
     let home = p.home("h0");
+    // Rotating verify-first reminders may share words with the tracker text under test.
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::write(home.join(".anti-hall/settings.json"), json!({"context": {"verifyFirstTurn": false}}).to_string()).unwrap();
     p.hook_in("h0", "UserPromptSubmit", host, &prompt_of("edited", &home, "do the thing"), &env_of(TT_SW, sw, more))
 }
 

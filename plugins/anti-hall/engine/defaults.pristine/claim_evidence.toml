@@ -9,7 +9,7 @@
 # not asked of Jev yet: they ship after the rule has a measured catch rate and noise (#313, #316).
 
 [claim_evidence.sw_claim]
-doc = "Switch guards.claimEvidence (default on): off lets a reply assert a check or outcome with no matching tool call this turn."
+doc = "Require evidence for factual claims. Switch guards.claimEvidence (default on): off lets a reply assert a check or outcome with no matching tool call this turn."
 value = { section = "guards", key = "claimEvidence", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE", option = "", default = true }
 
 [claim_evidence.sw_pushed]
@@ -17,15 +17,15 @@ doc = "Pushed work is not done switch. Switch guards.pushedNotDone (default on):
 value = { section = "guards", key = "pushedNotDone", type = "boolean", env = "ANTIHALL_PUSHED_NOT_DONE", option = "", default = true }
 
 [claim_evidence.sw_telemetry]
-doc = "Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change."
+doc = "Record claim-evidence outcomes. Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change."
 value = { section = "guards", key = "claimEvidenceTelemetry", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", option = "", default = true }
 
 [claim_evidence.sw_strict]
-doc = "Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading."
+doc = "Keep bare factual claims evidence-gated. Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading."
 value = { section = "guards", key = "claimEvidenceStrict", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_STRICT", option = "", default = true }
 
 [claim_evidence.log_read_counts]
-doc = "Switch guards.claimEvidenceLogRead (default on): a read of a log or output file this turn (claim_evidence.log_read_res: cat, grep, tail, head, sed -n) backs a claim that carries a figure when every figure of the claim (claim_evidence.figure_re) appears in the transcript's tool output (GH #376). Off restores the earlier reading: only a command of the row's `needs` list backs a claim. A claim without a figure is never backed by a read alone."
+doc = "Accept supporting log reads as evidence. Switch guards.claimEvidenceLogRead (default on): a read of a log or output file this turn (claim_evidence.log_read_res: cat, grep, tail, head, sed -n) backs a claim that carries a figure when every figure of the claim (claim_evidence.figure_re) appears in the transcript's tool output (GH #376). Off restores the earlier reading: only a command of the row's `needs` list backs a claim. A claim without a figure is never backed by a read alone."
 value = { section = "guards", key = "claimEvidenceLogRead", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_LOG_READ", option = "", default = true }
 
 [metric.claim_evidence_log_read_ok]
@@ -365,7 +365,7 @@ doc = "Rule 2 advice."
 value = "check the run (gh run list, gh pr checks), or report it as pushed, not done."
 
 [claim_evidence.sw_mask_table_header]
-doc = "Switch guards.claimEvidenceMaskTableHeader (default on): the header row of a markdown table is not scanned for claims, because it only labels the columns (a column named Verified or Merged is not a statement). The body rows are still scanned. Off scans the header like any other line."
+doc = "Mask genuine table-header labels. Switch guards.claimEvidenceMaskTableHeader (default on): the header row of a markdown table is not scanned for claims, because it only labels the columns (a column named Verified or Merged is not a statement). The body rows are still scanned. Off scans the header like any other line."
 value = { section = "guards", key = "claimEvidenceMaskTableHeader", env = "ANTIHALL_CLAIM_EVIDENCE_MASK_TABLE_HEADER", default = true }
 
 [claim_evidence.table_sep_re]
