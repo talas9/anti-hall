@@ -53,7 +53,7 @@ fn done_runtime_agent_does_not_block_and_repairs_overlay_idempotently() {
 fn nudge_stop_runtime_agent_does_not_block() {
     let w = World::new("nudge");
     w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":true}));
-    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), "{\"ts\":1,\"child\":\"child\",\"answer\":\"stop\"}\n").unwrap();
+    w.answer("stop", 0, 1000);
     assert!(!w.stop().contains("decision\\\":\\\"block"));
 }
 #[test]
@@ -319,6 +319,7 @@ impl World {
     }
     fn answer(&self, answer: &str, minutes: u64, age: u64) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        self.write(".anti-hall/agent-tracker/runtime-stop-first-seen.json", json!({"[\"parent\",\"child\"]":now-age-1000}));
         std::fs::write(
             self.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"),
             format!("{}\n", json!({"ts":now-age,"child":"child","answer":answer,"min":minutes,"text":"owner reason"})),
@@ -490,12 +491,14 @@ fn runtime_reconciliation_uses_toml_verbs_windows_cap_and_overlay_expiry() {
         ("later", 999, 360000, true),
         ("send", 0, 30000, false),
         ("send", 0, 90000, true),
-        ("halt", 0, 1000, false),
+        ("halt", 0, 100, false),
     ] {
         let w = World::new(&format!("toml-{answer}-{age}"));
         w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","running":true}));
         w.custom_toml();
         w.answer(answer, min, age);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        w.fixture(&format!("ah.clock.now=function(){{return {now};}};"));
         assert_eq!(w.cli_stop().contains("\"decision\":\"block\""), blocked, "{answer}/{age}");
     }
     let w = World::new("toml-expiry");
@@ -695,12 +698,9 @@ fn issue_725_newest_answer_in_bounded_tail_wins() {
     w.runtime(json!({"id":"child","parent":"parent","running":true}));
     w.oversized_tracker();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let rows = format!(
-        "{}\n{}\n{}\n",
-        "x".repeat(400_000),
-        json!({"ts":now-1000,"child":"child","answer":"other"}),
-        json!({"ts":now-10_000_000,"child":"child","answer":"msg"})
-    );
+    let partial = format!("{}{}", " ".repeat(400_000), json!({"ts":now-1000,"child":"child","answer":"stop"}));
+    let rows =
+        format!("{partial}\n{}\n{}\n", json!({"ts":now-1000,"child":"child","answer":"other"}), json!({"ts":now-10_000_000,"child":"child","answer":"msg"}));
     std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), rows).unwrap();
     let v = w.stop_without_script_error();
     assert!(v.contains("Allow"), "newest timestamp wins, partial first row ignored: {v}");
@@ -721,4 +721,77 @@ fn issue_725_runtime_block_cap_is_separate_and_honoured() {
     assert!(w.cli_stop().contains("\"decision\":\"block\""));
     assert!(w.cli_stop().contains("\"decision\":\"block\""));
     assert!(!w.cli_stop().contains("\"decision\":\"block\""));
+}
+
+#[test]
+fn issue_725_unreadable_state_rejects_ancient_answers() {
+    for answer in ["stop", "acted", "other"] {
+        let w = World::new(&format!("725-ancient-{answer}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":1,"child":"child","answer":answer}))).unwrap();
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "ancient {answer} must not release a new escalation");
+    }
+}
+#[test]
+fn issue_725_valid_json_partial_answer_line_is_excluded() {
+    for partial in [false, true] {
+        let w = World::new(&format!("725-valid-partial-{partial}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        w.write(".anti-hall/agent-tracker/runtime-stop-first-seen.json", json!({"[\"parent\",\"child\"]":now-1000}));
+        w.fixture(&format!("ah.clock.now=function(){{return {now};}};"));
+        let padding = if partial { " ".repeat(400_000) } else { String::new() };
+        let line = format!("{padding}{}\n", json!({"ts":now,"child":"child","answer":"stop"}));
+        assert!(serde_json::from_str::<Value>(&line).is_ok(), "fixture must be valid JSON even though the bounded read starts mid-line");
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), line).unwrap();
+        let out = w.stop_without_script_error();
+        assert_eq!(out.contains("decision\\\":\\\"block"), partial, "complete answer releases, same fresh answer on partial line must not: {out}");
+    }
+}
+#[test]
+fn issue_725_growing_tail_does_not_replay_ancient_stop() {
+    use std::io::Write;
+    let w = World::new("725-growing-tail");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let path = w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson");
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+    for _ in 0..2 {
+        writeln!(file, "{}", json!({"padding":"x".repeat(80_000)})).unwrap();
+        writeln!(file, "{}", json!({"ts":1,"child":"child","answer":"stop"})).unwrap();
+        file.flush().unwrap();
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "growth must not replay an ancient answer");
+    }
+}
+
+#[test]
+fn issue_725_first_seen_and_reescalation_require_new_answers() {
+    let w = World::new("725-generation");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let publisher = std::fs::read_to_string(w.home.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    // JS libraries are fingerprint-cached: vary data, not the loaded clock function.
+    w.fixture("ah.clock.now=function(){return JSON.parse(ah.fs.readText(ah.env.get(ah.cfg('env.home'))+'/clock.json'));};");
+    let clock = |offset| w.write("clock.json", json!(now + offset));
+    let answer = |ts| {
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":ts,"child":"child","answer":"acted"})))
+            .unwrap()
+    };
+    clock(0);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"));
+    clock(100);
+    answer(now + 100);
+    assert!(w.stop_without_script_error().contains("Allow"));
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[]}));
+    assert!(w.stop_without_script_error().contains("Allow"));
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/runtime-escalations.json"), publisher).unwrap();
+    clock(5000);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "old answer cannot release the next escalation");
+    answer(now + 5000);
+    assert!(w.stop_without_script_error().contains("Allow"));
+    clock(1_000_000);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "unchanged stop/acted answer must expire without TTL renewal");
 }

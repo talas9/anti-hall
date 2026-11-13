@@ -858,8 +858,12 @@ doc = "Runtime Stop reconciliation inputs skipped or truncated at their byte bou
 value = { kind = "counter", unit = "stops", labels = [] }
 
 [silent_nudge.rt_answers_bytes]
-doc = "Independent byte window of newest owner-answer NDJSON rows used for runtime Stop reconciliation on Claude/OMC and Codex/OMX. Native bounded line reads discard a partial first line; oversized or missing tracker state cannot consume this window. Newest timestamp per child wins. Publisher rows omit escalation timestamps, so unavailable tracker state retains the existing unknown-cutoff behavior. Does not increase rt_reconcile_bytes."
+doc = "Independent byte window of newest owner-answer NDJSON rows used for runtime Stop reconciliation on Claude/OMC and Codex/OMX. Native bounded line reads discard a partial first line; oversized or missing tracker state cannot consume this window. Newest timestamp per child wins. Publisher rows omit escalation timestamps; bounded plugin-owned first-seen anchors reject answers predating the current observation even when tracker state is unavailable. Does not increase rt_reconcile_bytes."
 value = 65536
 min = 1024
 max = 262144
 unit = "bytes"
+
+[silent_nudge.rt_first_seen]
+doc = "Bounded plugin-owned publisher observation clocks under the tracker directory, keyed by session and child, shared by Claude/OMC and Codex/OMX. Keep at most max_rows and max_bytes UTF-8 bytes; prune absent rows and replace anchors after ttl_ms. Overflow or failed writes cannot release a block. Answers must be at least first_seen minus the smaller of skew_ms (clock tolerance) and initial_window_ms (short unknown-row window). An unseen row starts now, never at zero. Stop/acted answers expire at their timestamp plus the smaller of rt_repair.ttl_ms and agent_nudge.limits.window_ms; evaluation never renews them."
+value = { file = "runtime-stop-first-seen.json", max_bytes = 32768, max_rows = 256, ttl_ms = 86400000, skew_ms = 2000, initial_window_ms = 5000 }
