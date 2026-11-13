@@ -53,14 +53,14 @@ function idOrder(p, tp, agents, codex, now) {
   if (!idleOrder.enabled() || typeof p.session_id !== 'string' || p.session_id === '') return null;
   var home = spawn.osHome(), kind = ah.cfg('idle_order.kind_teammate');
   var owners = codex || home === null ? [] : idOpenOwners(p, tp, home);
-  var after = idleOrder.afterMs(), cands = [];
+  var after = idleOrder.afterMs(), cands = [], keep = [];
   agents.forEach(function (a) {
     var idle = now - a.idleSinceMs;
     if (idle < after) return;
-    if (owners !== null && owners.indexOf(a.id) >= 0) { idleOrder.skip(kind, 'open_task'); return; }
+    if (owners !== null && owners.indexOf(a.id) >= 0) { idleOrder.skip(kind, 'open_task'); keep.push(a.id); return; }
     cands.push({ id: a.id, label: idOneLine(a.label, ah.cfgNum('idle_sweep.label_max')), idleMs: idle });
   });
-  var plan = idleOrder.plan(kind, p.session_id, cands, now);
+  var plan = idleOrder.plan(kind, p.session_id, cands, now, keep);
   if (plan.due.length === 0) return { plan: plan, text: '' };
   var key = codex ? 'idle_order.msg_codex_agent' : 'idle_order.msg_teammate';
   return { plan: plan, text: text.render(ah.cfg(key), { n: plan.due.length, list: idleOrder.list(plan.due, 'idle_order.item_mate'), id: plan.due[0].id }) };

@@ -157,6 +157,18 @@ fn recently_active_unread_archived_or_switched_off_child_gets_no_order() {
 }
 
 #[test]
+fn child_judged_done_is_never_ordered_gh430() {
+    // GH #430: a workspace whose done ruling stands (archive approved) must not be nagged, idle or not
+    let e = idle_child("order-done", 0, 45);
+    let st = ah_engine::meshw::store::MeshStore::open(&e.dsdir().join("store").join(&e.key).join("devswarm.db")).unwrap();
+    for gate in ["done", "merged", "tests_passed"] {
+        st.set_gate(CHILD, gate, true, "test", now_ms() as i64).unwrap();
+    }
+    let out = turn(&e, "idle-ord-done", &[]);
+    assert!(!out.contains(ORDER), "a child judged done gets no idle order, got: {out}");
+}
+
+#[test]
 fn acted_on_clears_the_record_and_counts() {
     let e = idle_child("order-acted", 0, 45);
     assert!(turn(&e, "idle-ord-7", &[]).contains(ORDER));
@@ -193,4 +205,15 @@ fn stop_block_does_not_demand_a_wake_path_for_an_idle_task_less_child() {
     with_inbox(&active);
     let out = run_event(&active, "Stop", "idle-stop-2", &claude);
     assert!(out.contains(NO_WAKE), "control: an active child still gets the wake-path block, got: {out}");
+}
+
+#[test]
+fn a_briefly_suppressed_idle_child_keeps_its_escalation_record() {
+    let e = idle_child("order-flap", 0, 45);
+    assert!(turn(&e, "idle-ord-flap", &[]).contains(ORDER));
+    // the child is still idle but now has unread mail (suppressed): its record must not be dropped, or the schedule would restart
+    e.summary(&e.dir.join("home/.devswarm/repos/3/8205fc11/child-wt").to_string_lossy(), 2, "normal", false);
+    assert!(!turn(&e, "idle-ord-flap", &[]).contains(ORDER));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(record(&e)).unwrap()).unwrap();
+    assert_eq!(v["subjects"][CHILD]["count"], 1, "the record survives a suppressed turn: {v}");
 }

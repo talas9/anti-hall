@@ -16,9 +16,10 @@ var idleOrder = {
     try { o = raw === null ? null : JSON.parse(raw); } catch (e) { o = null; }
     return o && typeof o === 'object' && o.subjects && typeof o.subjects === 'object' && !Array.isArray(o.subjects) ? o.subjects : {};
   },
-  // `cands`: [{id, label, idleMs}] of the children that are idle past the threshold and eligible for an order. Returns
-  // {rel, kind, due: [cand], next: subjects, acted: n, held: [reason]}; nothing is written.
-  plan: function (kind, scope, cands, now) {
+  // `cands`: [{id, label, idleMs}] of the children that are idle past the threshold and eligible for an order; `keep`: ids that are
+  // idle past it but silenced this turn (unread mail, busy, focused...): their record is carried forward, so a flap neither counts as
+  // acted on nor restarts the schedule. Returns {rel, kind, due: [cand], next: subjects, acted: n, held: [reason]}; nothing is written.
+  plan: function (kind, scope, cands, now, keep) {
     var rel = idleOrder.rel(kind, scope), prev = idleOrder.read(rel), next = {}, due = [], held = [];
     var steps = ah.cfg('idle_order.steps_min'), max = ah.cfgNum('idle_order.max_orders'), perMin = ah.cfgNum('idle_order.ms_per_minute');
     cands.forEach(function (c) {
@@ -29,6 +30,7 @@ var idleOrder = {
       due.push(c);
       next[c.id] = { count: count + 1, lastAt: now };
     });
+    (keep || []).forEach(function (id) { if (Object.prototype.hasOwnProperty.call(prev, id) && !Object.prototype.hasOwnProperty.call(next, id)) next[id] = prev[id]; });
     var acted = Object.keys(prev).filter(function (id) { return !Object.prototype.hasOwnProperty.call(next, id); }).length;
     return { rel: rel, kind: kind, due: due, next: next, acted: acted, held: held, changed: due.length > 0 || acted > 0 };
   },

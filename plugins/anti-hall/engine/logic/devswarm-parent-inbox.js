@@ -473,7 +473,7 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], idleCands: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
   // the DevSwarm app's database, read once
   var focusEnv = ah.env.get(ah.cfg('devswarm_parent.env_focus_ms'));
   var focusRaw = Number(focusEnv === null ? undefined : focusEnv); // Number(undefined) is NaN, Number(null) would be 0
@@ -652,7 +652,7 @@ function piRoster(ctx, summary) {
         var ib = ah.mesh.childBusy(id, wtPath, sessionId, now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
         if (ib.none !== true && (ib.busy || ib.waiting)) idleWhy = 'busy';
       }
-      if (idleWhy !== '') idleOrder.skip(idleKind, idleWhy);
+      if (idleWhy !== '') { idleOrder.skip(idleKind, idleWhy); out.idleKeep.push(id); }
       else out.idleCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - activityTs });
     }
     var appMarks = '';
@@ -1592,7 +1592,7 @@ function piDecide(p, opts) {
   // GH #744: the escalating order for children idle with no task; a record of an order given earlier whose child is no longer idle counts as acted on
   var idlePlan = null;
   if (roster !== null && idleOrder.enabled() && key && cliPath !== null) {
-    idlePlan = idleOrder.plan(ah.cfg('idle_order.kind_workspace'), key, roster.idleCands, now);
+    idlePlan = idleOrder.plan(ah.cfg('idle_order.kind_workspace'), key, roster.idleCands, now, roster.idleKeep);
     if (idlePlan.due.length) {
       pending.push({ kind: 'plain', rank: 155, text: text.render(ah.cfg('idle_order.msg_workspace'), { n: idlePlan.due.length, list: idleOrder.list(idlePlan.due, 'idle_order.item_ws'), cli: cliPath, id: idlePlan.due[0].id }) });
     }
