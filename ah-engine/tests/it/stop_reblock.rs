@@ -623,7 +623,10 @@ impl World {
 fn candidate_runtime_evidence_reconciles_normal_state_without_script_failure() {
     for finished in [false, true] {
         let w = World::new(&format!("candidate-normal-{finished}"));
-        w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{"child":{"id":"child","parent":"parent","kind":"teammate","running":!finished,"finished":finished}}}));
+        w.write(
+            ".anti-hall/agent-tracker/state.json",
+            json!({"agents":{"child":{"id":"child","parent":"parent","kind":"teammate","running":!finished,"finished":finished}}}),
+        );
         w.write(".anti-hall/agents/child.json", json!({"id":"child","session":"parent","status":"running","ts":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 - 1800000}));
         let v = w.stop_without_script_error();
         assert!(v.contains("Allow") || v.contains("decision\\\":\\\"block"), "candidate must produce a verdict without script failure: {v}");
@@ -635,7 +638,10 @@ fn candidate_runtime_evidence_reconciles_normal_state_without_script_failure() {
 fn candidate_runtime_evidence_over_bound_keeps_nudge_without_script_failure() {
     let w = World::new("candidate-over-bound");
     let budget = ah_engine::defaults::num("silent_nudge.rt_reconcile_bytes") as usize;
-    w.write(".anti-hall/agent-tracker/state.json", json!({"agents":{"child":{"id":"child","parent":"parent","kind":"teammate","finished":true}},"history":"x".repeat(budget + 1)}));
+    w.write(
+        ".anti-hall/agent-tracker/state.json",
+        json!({"agents":{"child":{"id":"child","parent":"parent","kind":"teammate","finished":true}},"history":"x".repeat(budget + 1)}),
+    );
     w.write(".anti-hall/agents/child.json", json!({"id":"child","session":"parent","status":"running","ts":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 - 1800000}));
     w.fixture("var candidateRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json'))throw Error('oversized candidate state must not be read');return candidateRead(p,n);};");
     let v = w.stop_without_script_error();
