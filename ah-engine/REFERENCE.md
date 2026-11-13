@@ -695,6 +695,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.diag_lines` | `8` |  |  | Event-log lines included in the diagnostic block of a permanent-failure advisory. |
 | `health.error_codes` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | Error-code classification: environment-class codes get a plain self-fix hint (a message key); every other code is a permanent failure that asks for an issue. |
 | `health.event_text_max` | `300` |  | chars | Longest kind, code or detail written to one log line (newlines and tabs become spaces). |
+| `health.exit_detail_clean` | `drained` |  |  | Detail text of a clean exit that had no recorded drain cause. |
+| `health.exit_detail_crashloop` | `crash-loop breaker tripped; supervised start declined` |  |  | Detail text of the exit row written when a supervised start is refused because the crash-loop breaker is tripped. |
+| `health.exit_detail_max` | `160` |  |  | Maximum characters of an exit row's detail text. |
+| `health.exit_detail_unclean` | `previous daemon left without recording an exit` |  |  | Detail text of the exit row written at the next start when the previous daemon left without recording an exit (killed, out of memory, or a crash). |
+| `health.exit_fields` | `8 entries` |  |  | Field names of an exit row and its health summary: timestamp is Unix milliseconds, uptime is seconds, rss is KB; counts and last cover the retained ring. |
+| `health.exit_kind_other` | `other` |  |  | The kind stored for an exit cause outside health.exit_kinds. |
+| `health.exit_kinds` | `15 items` |  |  | Allowed exit kinds: handoff (stop verb or newer build), idle, rss (cap), memory (registry hard limit), data (data-segment ceiling), stall, stuck, orphaned (parent or binary gone), sigterm, sigint, thread_panic, start_fail, crashloop (a supervised start refused by the crash-loop breaker), clean (loop ended without a recorded cause), unclean (found at the next start: killed or crashed without recording). Anything else is stored as the other kind. |
+| `health.exit_lock_poll_ms` | `5` |  | ms | How often a waiter retries the exit ring's lock. |
+| `health.exit_lock_wait_ms` | `500` |  | ms | Longest a daemon-exit record waits for the exit ring's lock file; past it the record is skipped (fail open) rather than hanging an exit behind a stuck holder. |
+| `health.exit_ring_bytes` | `65536` |  | bytes | Maximum bytes read or written for the exit ring; oversized or unreadable history is ignored and never blocks an exit. |
+| `health.exit_ring_file` | `exit-reasons.json` |  |  | The bounded JSON ring of daemon exits (kind, detail, uptime, footprint), relative to the engine state directory. |
+| `health.exit_ring_lock_kind` | `daemon_exit_ring_lock` |  |  | The discard diagnostic key when the exit ring's lock cannot be taken (timeout or unopenable lock file); that exit row is skipped. |
+| `health.exit_ring_rows` | `128` |  |  | Maximum retained daemon-exit rows; older rows are dropped first. |
+| `health.exit_ring_write_kind` | `daemon_exit_ring_write` |  |  | The discard diagnostic key when writing daemon-exit provenance fails; the exit continues. |
+| `health.exit_status_rows` | `10` |  |  | How many of the most recent exit rows status and the health summary show. |
 | `health.group_breaker` | `breaker` |  |  | Group name of the client breaker in a degraded reason. |
 | `health.group_crashloop` | `crashloop` |  |  | Group name of the crash-loop breaker in a degraded reason. |
 | `health.group_defaults` | `defaults` |  |  | Group name of a defaults fallback in a degraded reason. |
@@ -15344,6 +15359,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | Name | Kind | Unit | Labels | What it counts |
 |---|---|---|---|---|
 | `cfg_cache` | counter | reads | result | ah.cfg / ah.settings reads of check scripts, by whether the per-call memo answered (hit) or the host did (miss). Counted per check call and folded into the next call's single cfgGen host call. |
+| `daemon_exits` | counter | exits | kind | Daemon exits begun, by kind (health.exit_kinds): idle, rss, memory, handoff, sigterm, stall, and the rest. Counted when the drain begins. |
 | `requests_served` | counter | requests |  | Requests the daemon ran checks for (not skipped because the client had already hung up: see client_gone_skipped). |
 | `sigint_drains` | counter | drains |  | Graceful drains started by SIGINT (the same drain as SIGTERM). |
 | `tail_newest_reads` | counter | reads | mode | Newest-first transcript tail reads of check scripts (task-guard), by mode: capped (at most max lines) or fallback_full (no cap). |

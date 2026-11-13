@@ -2622,6 +2622,79 @@ value = ["crash", "panic"]
 doc = "The doctor's one-line retained daemon-start summary. Placeholders: counts (JSON), timestamp (last start Unix milliseconds, 0 if none), reason."
 value = "daemon starts (retained): {counts}; last ts={timestamp} reason={reason}"
 
+# Daemon exit provenance: bounded retained history of why each daemon exited (survives log rotation).
+[health.exit_ring_file]
+doc = "The bounded JSON ring of daemon exits (kind, detail, uptime, footprint), relative to the engine state directory."
+value = "exit-reasons.json"
+
+[health.exit_ring_rows]
+doc = "Maximum retained daemon-exit rows; older rows are dropped first."
+value = 128
+min = 1
+max = 4096
+
+[health.exit_ring_bytes]
+doc = "Maximum bytes read or written for the exit ring; oversized or unreadable history is ignored and never blocks an exit."
+value = 65536
+min = 1024
+unit = "bytes"
+
+[health.exit_detail_max]
+doc = "Maximum characters of an exit row's detail text."
+value = 160
+min = 16
+max = 1024
+
+[health.exit_status_rows]
+doc = "How many of the most recent exit rows status and the health summary show."
+value = 10
+min = 1
+max = 128
+
+[health.exit_kinds]
+doc = "Allowed exit kinds: handoff (stop verb or newer build), idle, rss (cap), memory (registry hard limit), data (data-segment ceiling), stall, stuck, orphaned (parent or binary gone), sigterm, sigint, thread_panic, start_fail, crashloop (a supervised start refused by the crash-loop breaker), clean (loop ended without a recorded cause), unclean (found at the next start: killed or crashed without recording). Anything else is stored as the other kind."
+value = ["handoff", "idle", "rss", "memory", "data", "stall", "stuck", "orphaned", "sigterm", "sigint", "thread_panic", "start_fail", "crashloop", "clean", "unclean"]
+
+[health.exit_kind_other]
+doc = "The kind stored for an exit cause outside health.exit_kinds."
+value = "other"
+
+[health.exit_detail_clean]
+doc = "Detail text of a clean exit that had no recorded drain cause."
+value = "drained"
+
+[health.exit_detail_unclean]
+doc = "Detail text of the exit row written at the next start when the previous daemon left without recording an exit (killed, out of memory, or a crash)."
+value = "previous daemon left without recording an exit"
+
+[health.exit_detail_crashloop]
+doc = "Detail text of the exit row written when a supervised start is refused because the crash-loop breaker is tripped."
+value = "crash-loop breaker tripped; supervised start declined"
+
+[health.exit_lock_wait_ms]
+doc = "Longest a daemon-exit record waits for the exit ring's lock file; past it the record is skipped (fail open) rather than hanging an exit behind a stuck holder."
+value = 500
+min = 1
+unit = "ms"
+
+[health.exit_lock_poll_ms]
+doc = "How often a waiter retries the exit ring's lock."
+value = 5
+min = 1
+unit = "ms"
+
+[health.exit_ring_lock_kind]
+doc = "The discard diagnostic key when the exit ring's lock cannot be taken (timeout or unopenable lock file); that exit row is skipped."
+value = "daemon_exit_ring_lock"
+
+[health.exit_fields]
+doc = "Field names of an exit row and its health summary: timestamp is Unix milliseconds, uptime is seconds, rss is KB; counts and last cover the retained ring."
+value = { timestamp = "ts", pid = "pid", uptime = "uptime_s", rss = "rss_kb", kind = "kind", detail = "detail", counts = "exits_by_kind", last = "last_exits" }
+
+[health.exit_ring_write_kind]
+doc = "The discard diagnostic key when writing daemon-exit provenance fails; the exit continues."
+value = "daemon_exit_ring_write"
+
 [updater.engine_serve_args]
 doc = "The legacy updater restart and detached restart-tail arguments after serve; identify both actual launch paths as deploy/routine."
 value = ["--start-reason", "deploy/routine"]
@@ -2727,3 +2800,7 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.sigint_drains]
 doc = "Graceful drains started by SIGINT (the same drain as SIGTERM)."
 value = { kind = "counter", unit = "drains", labels = [] }
+
+[metric.daemon_exits]
+doc = "Daemon exits begun, by kind (health.exit_kinds): idle, rss, memory, handoff, sigterm, stall, and the rest. Counted when the drain begins."
+value = { kind = "counter", unit = "exits", labels = ["kind"] }
