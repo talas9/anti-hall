@@ -684,7 +684,8 @@ fn issue_725_name_answer_releases_missing_tracker() {
     let w = World::new("725-missing-name");
     w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"parent","child":"child","name":"worker","block":true}]}));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":now-1000,"child":"worker","answer":"other"}))).unwrap();
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":now-1000,"child":"worker","answer":"other"})))
+        .unwrap();
     let v = w.stop_without_script_error();
     assert!(v.contains("Allow"), "publisher name resolves without tracker: {v}");
 }
@@ -694,7 +695,12 @@ fn issue_725_newest_answer_in_bounded_tail_wins() {
     w.runtime(json!({"id":"child","parent":"parent","running":true}));
     w.oversized_tracker();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let rows = format!("{}\n{}\n{}\n", "x".repeat(400_000), json!({"ts":now-1000,"child":"child","answer":"other"}), json!({"ts":now-10_000_000,"child":"child","answer":"msg"}));
+    let rows = format!(
+        "{}\n{}\n{}\n",
+        "x".repeat(400_000),
+        json!({"ts":now-1000,"child":"child","answer":"other"}),
+        json!({"ts":now-10_000_000,"child":"child","answer":"msg"})
+    );
     std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), rows).unwrap();
     let v = w.stop_without_script_error();
     assert!(v.contains("Allow"), "newest timestamp wins, partial first row ignored: {v}");

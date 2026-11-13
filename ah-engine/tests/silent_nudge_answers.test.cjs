@@ -9,8 +9,8 @@ const source = fs.readFileSync(path.join(__dirname, '../../plugins/anti-hall/eng
 function fixture({ state = null, answers = [], rows = [], live = null, budget = 1024 } = {}) {
   const now = 10_000, words = { stop: 'stop', acted: 'acted', msg: 'msg', snooze: 'snooze', other: 'other' };
   const files = new Map();
-  if (state !== null) files.set('/home/tracker/state.json', JSON.stringify(state));
-  files.set('/home/tracker/answers.ndjson', answers.map(a => JSON.stringify(a)).join('\n') + '\n');
+  if (state !== null) files.set('/fixture/tracker/state.json', JSON.stringify(state));
+  files.set('/fixture/tracker/answers.ndjson', answers.map(a => JSON.stringify(a)).join('\n') + '\n');
   const cfg = {
     'silent_nudge.rt_reconcile_bytes': budget, 'silent_nudge.rt_answers_bytes': 1024,
     'script.read_max_bytes': 8192, 'agent_tracker.paths': { base: '', dir: 'tracker', state: 'state.json' },
@@ -40,7 +40,7 @@ function fixture({ state = null, answers = [], rows = [], live = null, budget = 
     }, transcript: { trackedAgents: () => [], trackedLiveness: () => live },
   }, jx: { parse: raw => { try { return { v: JSON.parse(raw) }; } catch { return { invalid: true }; } } } });
   vm.runInContext(source, context);
-  const evidence = context.snRuntimeEvidence({ session_id: 'parent' }, '/home', undefined, rows);
+  const evidence = context.snRuntimeEvidence({ session_id: 'parent' }, '/fixture', undefined, rows);
   return { evidence, tails, verdict: () => context.snRuntimeVerdict('child', 'worker', 'parent', evidence) };
 }
 
