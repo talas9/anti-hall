@@ -2152,3 +2152,20 @@ The pristine `script.toml` checksum fixture is untouched; a fallback without the
 Tool-hook advisory fingerprints (#709) live in `tool_advisory.toml` (mirrored in defaults.pristine). PreToolUse usage warnings normalize the fullest limit, percentage bucket and reset; PostToolUse pairing reads the authoritative named task list before the transcript. Unchanged advisory text stays silent until its configurable cooldown; recovery followed by relapse speaks again. Blocks bypass suppression. Orchestration rules on spawn are once per session; SubagentStart protocol is once per receiving child identity, and missing identity fails open. Each behavior has a guards switch and a reminder setting, listed in the generated reference. Suppressed text increments `waste_events_total` with category `repeated_advisory` and the source. The shared engine logic serves Claude/OMC and Codex/OMX where each host exposes the event; usage and task-owner checks retain their existing Claude-only applicability.
 
 The Advisor-first dispatch notice already fires only at the first thinking dispatch of a user turn; its second dispatch block and later allowed calls retain the existing state machine. This change does not alter that guard.
+
+Runtime Stop reconciliation on both Claude/OMC and Codex/OMX has a shared
+`silent_nudge.rt_reconcile_bytes` input budget (256 KiB) for tracker state, answers
+and the session overlay. Metadata is checked before reading, each read is capped,
+and a size change discards the evidence. Oversized input increments
+`runtime_escalation_reconcile_skipped`; only reconciliation is skipped, preserving
+the original publisher rows, true-positive blocks and existing Stop caps. No
+truncated state or answers are interpreted as completion.
+
+Tracker retention is separate: `agent_tracker.limits.active_window_ms` prunes by
+`seen`, which rediscovery refreshes even for finished rows; `done_keep_ms` controls
+display retention. `max_agents` limits discovery, not all retained rows.
+`state_max_bytes` rejects oversized loads but does not bound serialized saves.
+`agent_nudge.limits.log_max` trims ordinary closed nudges, while dead-notice append
+paths do not apply that trim. A future engine-side bound should trim closed history
+on every save and expire completed rows using terminal/last-output age, preserving
+live rows and open nudges; it requires Rust changes and is not implemented here.

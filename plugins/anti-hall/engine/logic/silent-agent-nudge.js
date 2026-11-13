@@ -191,11 +191,28 @@ function snStuckAdvisory(p) {
 // coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
 // Reconcile the published snapshot at read time: status/answers and snapshot publication have separate lifecycles.
 // Retain audit verdicts separately from the publisher snapshot, which is never modified here.
-function snRuntimeEvidence(p, home) {
+// A single shared input budget bounds strings AND their parse expansion in QuickJS. Never
+// parse a prefix: an oversized or changing file leaves the publisher's original decision intact.
+function snRuntimeRead(path, budget) {
+  var size = ah.fs.size(path);
+  if (size === null) return '';
+  if (size > budget.left) return null;
+  var raw = ah.fs.readText(path, budget.left + 1);
+  if (raw === null || raw.length > budget.left || ah.fs.size(path) !== size) return null;
+  budget.left -= size;
+  return raw;
+}
+
+function snRuntimeEvidence(p, home, budget) {
+  budget = budget || { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
-  var parsed = jx.parse(ah.fs.readText(base + paths.state) || '');
+  var raw = snRuntimeRead(base + paths.state, budget);
+  if (raw === null) return null;
+  var answers = snRuntimeRead(base + ah.cfg('agent_nudge.paths').answers, budget);
+  if (answers === null) return null;
+  var parsed = jx.parse(raw);
   var state = !parsed.invalid && !parsed.unsure && parsed.v || {};
-  var answersByChild = {}, answers = ah.fs.readText(base + ah.cfg('agent_nudge.paths').answers);
+  var answersByChild = {};
   var words = ah.cfgLive('agent_nudge.answers'), nudges = state.nudges || {};
   if (answers !== null) answers.split('\n').forEach(function (line) {
     var a; try { a = JSON.parse(line); } catch (e) { return; }
@@ -217,6 +234,8 @@ function snRuntimeEvidence(p, home) {
 }
 
 function snRuntimeVerdict(child, name, session, evidence) {
+  // Unreadable evidence cannot retire a candidate: preserve its normal nudge decision.
+  if (evidence === null) return { retired: null, since: 0 };
   var a = evidence.state.agents && evidence.state.agents[child];
   if (a && a.parent && a.parent !== session) a = null;
   var live = ah.transcript.trackedLiveness(child, evidence.live), terminal = live === false;
@@ -254,12 +273,19 @@ function snRetired(child, name, session, evidence) {
 // Preserve every audit row; expired verdicts are ignored, and current live evidence supersedes old completion.
 function snRuntimeRows(p, home, session, doc) {
   var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
-  if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
+  if (rows.length === 0 || !ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
   var cfg = ah.cfgLive('silent_nudge.rt_repair');
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + cfg.file_prefix + encodeURIComponent(session) + cfg.file_ext;
-  var parsed = jx.parse(ah.fs.readText(home + '/' + rel) || '');
+  var budget = { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
+  var raw = snRuntimeRead(home + '/' + rel, budget);
+  var evidence = raw !== null ? snRuntimeEvidence(p, home, budget) : null;
+  if (evidence === null) {
+    ah.metric('runtime_escalation_reconcile_skipped', []);
+    return rows; // skip only reconciliation: the original publisher rows still block, subject to the usual caps
+  }
+  var parsed = jx.parse(raw);
   var overlay = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) && parsed.v.session === session && jx.isObj(parsed.v.rows) ? parsed.v : { session: session, rows: {} };
-  var evidence = snRuntimeEvidence(p, home), changed = false, kept = [];
+  var changed = false, kept = [];
   rows.forEach(function (r) {
     var key = JSON.stringify([r.child, r.name]), old = jx.isObj(overlay.rows[key]) ? overlay.rows[key] : null;
     var verdict = snRuntimeVerdict(r.child, r.name, session, evidence);
