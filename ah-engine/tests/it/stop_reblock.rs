@@ -860,3 +860,58 @@ fn issue_725_kernel_lock_excludes_competing_anchor_writer() {
     drop(lock);
     assert!(w.cli_stop().is_empty(), "the fresh answer works after the kernel lock is released");
 }
+
+#[test]
+fn issue_725_publisher_ticks_preserve_answer_but_reminders_reescalate() {
+    let w = World::new("725-publisher-ticks");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    w.fixture("ah.clock.now=function(){return JSON.parse(ah.fs.readText(ah.env.get(ah.cfg('env.home'))+'/clock.json'));};");
+    let clock = |now| w.write("clock.json", json!(now));
+    let publish = |duration, reminders| {
+        w.write(
+            ".anti-hall/agent-tracker/runtime-escalations.json",
+            json!({"rows":[{"session":"parent","child":"child","name":"worker","dur_ms":duration,"reminders":reminders,"block":true}]}),
+        )
+    };
+    let answer = |ts| {
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":ts,"child":"child","answer":"other"})))
+            .unwrap()
+    };
+    clock(10000);
+    publish(10000, 2);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"));
+    clock(10100);
+    answer(10100);
+    assert!(w.stop_without_script_error().contains("Allow"));
+    for tick in 1..=20 {
+        clock(10100 + tick * 60000 + (tick % 2) * 5000);
+        publish(10000 + tick * 60000, 2);
+        assert!(w.stop_without_script_error().contains("Allow"), "ordinary publisher tick {tick}");
+    }
+    clock(1300000);
+    publish(1300000, 3);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "a genuine reminder requires a fresh answer");
+    answer(1300000);
+    assert!(w.stop_without_script_error().contains("Allow"));
+}
+
+#[test]
+fn issue_725_future_anchor_is_missing_and_reanchors_now() {
+    for at in [12001, 9007199254740991] {
+        let w = World::new(&format!("725-future-anchor-{at}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        w.anchor(at);
+        w.fixture("ah.clock.now=function(){return JSON.parse(ah.fs.readText(ah.env.get(ah.cfg('env.home'))+'/clock.json'));};");
+        w.write("clock.json", json!(10000));
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"));
+        let anchors: Value =
+            serde_json::from_str(&std::fs::read_to_string(w.home.join(".anti-hall/agent-tracker/runtime-stop-first-seen.json")).unwrap()).unwrap();
+        assert_eq!(anchors["[\"parent\",\"child\"]"]["at"], 10000);
+        w.write("clock.json", json!(10100));
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":10100,"child":"child","answer":"other"})))
+            .unwrap();
+        assert!(w.stop_without_script_error().contains("Allow"));
+    }
+}

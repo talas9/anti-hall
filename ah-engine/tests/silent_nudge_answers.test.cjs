@@ -16,7 +16,7 @@ function fixture({ state = null, answers = [], rows = [], live = null, budget = 
     'script.read_max_bytes': 8192, 'agent_tracker.paths': { base: '', dir: 'tracker', state: 'state.json' },
     'agent_nudge.paths': { answers: 'answers.ndjson' }, 'agent_nudge.runtime_escalation': { file: 'runtime-escalations.json' }, 'agent_nudge.answers': words,
     'agent_nudge.limits': { window_ms: 1000, snooze_default_min: 30, snooze_min_min: 1, snooze_max_min: 60 },
-    'silent_nudge.rt_first_seen': { file: 'runtime-first-seen.json', max_bytes: 4096, max_rows: 4, ttl_ms: 20000, skew_ms: 1000, initial_window_ms: 1000 },
+    'silent_nudge.rt_first_seen': { file: 'runtime-first-seen.json', max_bytes: 4096, max_rows: 4, ttl_ms: 20000, skew_ms: 1000, initial_window_ms: 1000, future_allowance_ms: 2000 },
     'agent_tracker.fmt': { unit_ms: [1, 60000] }, 'silent_nudge.rt_repair': { ttl_ms: 1000 },
   };
   const normalize = p => p.replace('//', '/');
@@ -133,10 +133,10 @@ test('anchor row cap fails closed for overflow and prunes disappeared rows', () 
   assert.equal(f.files.get('/fixture/tracker/runtime-first-seen.json'), '{}');
 });
 test('anchor UTF-8 byte cap fails closed and stays bounded', () => {
-  const f = fixture(); f.cfg['silent_nudge.rt_first_seen'].max_bytes = 100;
+  const f = fixture(); f.cfg['silent_nudge.rt_first_seen'].max_bytes = 80;
   const row = { session: 'parent', child: 'é'.repeat(12) };
-  const candidate = JSON.stringify({ [JSON.stringify([row.session, row.child])]: { at: 10000, dur_ms: null, reminders: null, block: false } });
-  assert.ok(candidate.length <= 100 && Buffer.byteLength(candidate) > 100, 'only UTF-8 byte accounting catches this overflow');
+  const candidate = JSON.stringify({ [JSON.stringify([row.session, row.child])]: { at: 10000, reminders: null, block: false } });
+  assert.ok(candidate.length <= 80 && Buffer.byteLength(candidate) > 80, 'only UTF-8 byte accounting catches this overflow');
   f.observe([row]);
   assert.equal(f.files.get('/fixture/tracker/runtime-first-seen.json'), '{}');
 });
@@ -167,15 +167,15 @@ test('a delayed stale observer cannot roll back anchors or drop a newer child', 
   assert.notEqual(f.observe(newRows).retired, true);
 });
 
-test('a publisher change is a distinct generation even when counters only increase', () => {
+test('a genuine publisher reminder requires a fresh answer', () => {
   const f = fixture();
   const row = { session: 'parent', child: 'child', reminders: 1, dur_ms: 10000 };
   f.observe([row]); f.advance(2000); f.answer('other');
   assert.equal(f.observe([row]).retired, true);
   f.advance(500);
-  assert.notEqual(f.observe([{ ...row, dur_ms: 12500 }]).retired, true);
+  assert.notEqual(f.observe([{ ...row, reminders: 2, dur_ms: 12500 }]).retired, true);
   f.answer('other');
-  assert.equal(f.observe([{ ...row, dur_ms: 12500 }]).retired, true);
+  assert.equal(f.observe([{ ...row, reminders: 2, dur_ms: 12500 }]).retired, true);
 });
 test('a held anchor lock prevents a competing writer and failed acquisition never releases', () => {
   const f = fixture(); f.observe(); f.answer('other');
@@ -202,9 +202,9 @@ test('successive generations retain their newest anchors across delayed observer
   const f = fixture();
   const first = [{ session: 'parent', child: 'child', reminders: 1, dur_ms: 10000 }];
   f.observe(first); f.advance(15000);
-  const second = [{ ...first[0], dur_ms: 25000 }];
+  const second = [{ ...first[0], reminders: 2, dur_ms: 25000 }];
   f.observe(second); f.advance(1000);
-  const third = [{ ...first[0], dur_ms: 26000 }, { session: 'parent', child: 'new-child', dur_ms: 1000 }];
+  const third = [{ ...first[0], reminders: 3, dur_ms: 26000 }, { session: 'parent', child: 'new-child', dur_ms: 1000 }];
   f.observe(third);
   const before = f.files.get('/fixture/tracker/runtime-first-seen.json');
   f.context.snRuntimeFirstSeen('/fixture', second, 25000);
@@ -214,4 +214,34 @@ test('successive generations retain their newest anchors across delayed observer
   assert.notEqual(f.observe(third).retired, true);
   f.answer('other');
   assert.equal(f.observe(third).retired, true);
+});
+
+test('an answer stays accepted across many ordinary publisher duration ticks', () => {
+  const f = fixture();
+  f.cfg['silent_nudge.rt_first_seen'].ttl_ms = 86400000;
+  const row = { session: 'parent', child: 'child', reminders: 2, block: true, dur_ms: 10000 };
+  f.observe([row]); f.advance(100); f.answer('other');
+  assert.equal(f.observe([row]).retired, true);
+  for (let tick = 1; tick <= 20; tick++) {
+    f.advance(60000 + (tick % 2 ? 5000 : -5000));
+    assert.equal(f.observe([{ ...row, dur_ms: 10000 + tick * 60000 }]).retired, true, `ordinary tick ${tick}`);
+  }
+});
+for (const offset of [2001, Number.MAX_SAFE_INTEGER]) test(`future anchor ${offset} is replaced, then a fresh answer releases`, () => {
+  const f = fixture();
+  const row = { session: 'parent', child: 'child', reminders: 2, block: true, dur_ms: 10000 };
+  const key = JSON.stringify(['parent', 'child']);
+  f.files.set('/fixture/tracker/runtime-first-seen.json', JSON.stringify({ [key]: { at: 10000 + offset, reminders: 2, block: true, dur_ms: 10000 } }));
+  f.answer('other', 9999);
+  assert.notEqual(f.observe([row]).retired, true);
+  assert.equal(JSON.parse(f.files.get('/fixture/tracker/runtime-first-seen.json'))[key].at, 10000);
+  f.advance(100); f.answer('other');
+  assert.equal(f.observe([row]).retired, true);
+});
+test('future allowance boundary keeps a valid anchor without rollback', () => {
+  const f = fixture();
+  const key = JSON.stringify(['parent', 'child']);
+  f.files.set('/fixture/tracker/runtime-first-seen.json', JSON.stringify({ [key]: { at: 12000, reminders: null, block: true } }));
+  f.observe();
+  assert.equal(JSON.parse(f.files.get('/fixture/tracker/runtime-first-seen.json'))[key].at, 12000);
 });

@@ -226,14 +226,16 @@ function snRuntimeFirstSeen(home, rows, now) {
       if (!r || typeof r.session !== 'string' || typeof r.child !== 'string') return;
       var key = JSON.stringify([r.session, r.child]);
       if (Object.prototype.hasOwnProperty.call(seen, key) || count >= cfg.max_rows) return;
-      var prior = old[key], valid = jx.isObj(prior) && snNum(prior.at) && prior.at > 0;
-      // The publisher exposes no nudge ID. Treat ANY counter/block-tier change as a new generation:
-      // monotonic progress and a missed disappearance/re-escalation are indistinguishable.
-      // Conservatively reset instead of letting an old answer retire a newer escalation.
-      var duration = snNum(r.dur_ms) ? r.dur_ms : null, reminders = snNum(r.reminders) ? r.reminders : null;
-      var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.dur_ms !== duration || prior.reminders !== reminders || prior.block !== (r.block === true);
+      var prior = old[key], valid = jx.isObj(prior) && snNum(prior.at) && prior.at > 0 && prior.at <= now + cfg.future_allowance_ms;
+      // ah-engine/src/agents/nudge.rs:873 recomputes dur_ms on every publication; it is not a generation.
+      // reminders changes on an actual send/refire (:610-632, :979-985); block reflects tier/extension
+      // state (:517-523). Those changes, or a row pruned here and then republished (:865-873),
+      // require a new answer. No nudge ID is published to detect an unobserved disappearance.
+      var reminders = snNum(r.reminders) ? r.reminders : null;
+      var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.reminders !== reminders || prior.block !== (r.block === true);
       var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
-      seen[key] = { at: at, dur_ms: duration, reminders: reminders, block: r.block === true };
+      // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
+      seen[key] = { at: at, reminders: reminders, block: r.block === true };
       // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
       if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
       anchors[key] = at;
@@ -302,7 +304,7 @@ function snRuntimeVerdict(child, name, session, evidence) {
   var anchorKey = JSON.stringify([session, child]);
   var firstSeen = evidence.firstSeen && evidence.firstSeen[anchorKey];
   // Never subtract clock skew: that admits an answer from before this escalation.
-  // Unknown candidate clocks also start now; a future anchor only tightens the check.
+  // Unknown candidate clocks also start now; stored anchors have a bounded future allowance.
   if (evidence.firstSeen) since = snNum(firstSeen) ? Math.max(since, firstSeen) : evidence.now;
   else if (since === 0) since = evidence.now;
   var answer = evidence.answers[child];
