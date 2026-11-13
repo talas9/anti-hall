@@ -207,7 +207,23 @@ function snRuntimeRead(path, budget) {
 // no stale-lock takeover can let a delayed writer publish after its successor. Re-read the
 // publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
 // Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
-function snRuntimeFirstSeen(home, rows, now) {
+// Latest tracker last_sent per [session, child] from the already-read tracker state ({} when unavailable).
+function snRuntimeSentTimes(state) {
+  var out = {};
+  if (!state || !jx.isObj(state.nudges)) return out;
+  Object.keys(state.nudges).forEach(function (id) {
+    var n = state.nudges[id];
+    if (!n || typeof n.parent !== 'string' || !snNum(n.last_sent)) return;
+    [n.child, id].forEach(function (c) {
+      if (typeof c !== 'string') return;
+      var key = JSON.stringify([n.parent, c]);
+      if (!snNum(out[key]) || n.last_sent > out[key]) out[key] = n.last_sent;
+    });
+  });
+  return out;
+}
+
+function snRuntimeFirstSeen(home, rows, now, state) {
   var cfg = ah.cfgLive('silent_nudge.rt_first_seen'), paths = ah.cfg('agent_tracker.paths');
   var rel = paths.base + '/' + paths.dir + '/' + cfg.file;
   var lock = ah.cfg('stop_reblock.lock'), held;
@@ -222,6 +238,9 @@ function snRuntimeFirstSeen(home, rows, now) {
     var raw = snRuntimeRead(home + '/' + rel, { left: cfg.max_bytes });
     var parsed = jx.parse(raw === null ? '' : raw), old = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) ? parsed.v : {};
     var seen = {}, anchors = {}, count = 0;
+    // #751: the tracker stamps last_sent when it sends/re-escalates, before the coordinator can see it. A new
+    // generation anchors there (bounded below by the previous anchor and backdate_max_ms), not at this Stop's clock.
+    var sent = snRuntimeSentTimes(state);
     doc.v.rows.forEach(function (r) {
       if (!r || typeof r.session !== 'string' || typeof r.child !== 'string') return;
       var key = JSON.stringify([r.session, r.child]);
@@ -234,6 +253,11 @@ function snRuntimeFirstSeen(home, rows, now) {
       var reminders = snNum(r.reminders) ? r.reminders : null;
       var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.reminders !== reminders || prior.block !== (r.block === true);
       var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
+      if (restart) {
+        var ls = sent[key], floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
+        // Only a send newer than the previous anchor is a real new generation; a block-tier change alone is not.
+        if (snNum(ls) && ls > floor && ls <= now && (!valid || ls > prior.at)) at = ls;
+      }
       // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
       seen[key] = { at: at, reminders: reminders, block: r.block === true };
       // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
@@ -333,13 +357,14 @@ function snRetired(child, name, session, evidence) {
 function snRuntimeRows(p, home, session, doc) {
   var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
   if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
-  var firstSeen = snRuntimeFirstSeen(home, doc && Array.isArray(doc.rows) ? doc.rows : [], ah.clock.now());
-  if (rows.length === 0) return rows;
+  var allRows = doc && Array.isArray(doc.rows) ? doc.rows : [];
+  if (rows.length === 0) { snRuntimeFirstSeen(home, allRows, ah.clock.now(), null); return rows; }
   var cfg = ah.cfgLive('silent_nudge.rt_repair');
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + cfg.file_prefix + encodeURIComponent(session) + cfg.file_ext;
   var budget = { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var raw = snRuntimeRead(home + '/' + rel, budget);
   var evidence = raw !== null ? snRuntimeEvidence(p, home, budget, doc.rows) : null;
+  var firstSeen = snRuntimeFirstSeen(home, allRows, ah.clock.now(), evidence && evidence.state);
   if (evidence === null) {
     ah.metric('runtime_escalation_reconcile_skipped', []);
     return rows; // skip only reconciliation: the original publisher rows still block, subject to the usual caps
