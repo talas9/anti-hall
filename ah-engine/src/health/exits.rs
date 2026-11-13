@@ -64,8 +64,39 @@ fn rows(dir: &std::path::Path) -> Vec<Value> {
     serde_json::from_slice::<Vec<Value>>(&bytes).unwrap_or_default()
 }
 
+/// Take the ring's exclusive flock, bounded by `health.exit_lock_wait_ms`. On a timeout or an unopenable lock file the caller skips its
+/// record (fail open: an exit must never hang behind a stuck holder) and the cause is logged under `health.exit_ring_lock_kind`.
+fn lock_ring(dir: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let kind = defaults::text("health.exit_ring_lock_kind");
+    let f = match std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(paths::lock_for(&file(dir))) {
+        Ok(f) => f,
+        Err(e) => {
+            crate::discard::note(kind, &e.to_string());
+            return None;
+        }
+    };
+    let until = Instant::now() + defaults::millis("health.exit_lock_wait_ms");
+    loop {
+        // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Some(f);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::WouldBlock || Instant::now() >= until {
+            crate::discard::note(kind, &e.to_string());
+            return None;
+        }
+        std::thread::sleep(defaults::millis("health.exit_lock_poll_ms"));
+    }
+}
+
 /// Append one row and trim the ring to its row and byte bounds (oldest rows first).
 pub fn append_in(dir: &std::path::Path, kind_name: &str, detail: &str, uptime_s: u64, rss_kb: u64, pid: u32) {
+    // The read-modify-write below is one critical section: concurrent starts (several clients, a supervisor start) would otherwise
+    // each read the same ring and the last rename would drop the others' rows. The lock is a sibling file, held until this returns.
+    let Some(_guard) = lock_ring(dir) else { return };
     let mut ring = rows(dir);
     let max = defaults::num("health.exit_detail_max") as usize;
     let detail: String = detail.chars().take(max).collect();

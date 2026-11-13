@@ -2310,6 +2310,8 @@ pub fn serve(start_reason: &str) -> i32 {
     let supervised = SUPERVISED.load(SeqCst);
     if supervised {
         if health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
+            health::exits::note("crashloop", defaults::text("health.exit_detail_crashloop"));
+            health::exits::record_exit();
             return 0;
         }
         health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));

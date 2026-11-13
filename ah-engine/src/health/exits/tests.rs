@@ -83,3 +83,49 @@ fn first_noted_cause_wins_and_one_exit_records_once() {
     assert_eq!(r[0][field("detail")], json!("SIGTERM"));
     reset_for_test();
 }
+
+#[test]
+fn concurrent_recorders_each_keep_their_row() {
+    let d = scratch("exit-concurrent");
+    let n = 16;
+    let dir = d.0.clone();
+    let handles: Vec<_> = (0..n)
+        .map(|i| {
+            let dir = dir.clone();
+            std::thread::spawn(move || append_in(&dir, "start_fail", "racing", i, 0, 100 + i as u32))
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("recorder thread");
+    }
+    let r = read(&d.0);
+    assert_eq!(r.len(), n as usize, "every concurrent record survives: {r:?}");
+    let mut pids: Vec<u64> = r.iter().filter_map(|row| row[field("pid")].as_u64()).collect();
+    pids.sort_unstable();
+    assert_eq!(pids, (0..n).map(|i| 100 + i).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_stuck_lock_holder_skips_the_record_and_logs_instead_of_hanging() {
+    let d = scratch("exit-stuck");
+    let held = lock_ring(&d.0).expect("first lock");
+    let t = Instant::now();
+    append_in(&d.0, "idle", "blocked", 0, 0, 1);
+    assert!(t.elapsed() < defaults::millis("health.exit_lock_wait_ms") * 20, "bounded wait");
+    assert!(read(&d.0).is_empty(), "the record was skipped, not written unlocked");
+    assert!(crate::discard::captured().iter().any(|(c, _)| c == defaults::text("health.exit_ring_lock_kind")), "the skip is logged");
+    drop(held);
+    append_in(&d.0, "idle", "free", 0, 0, 2);
+    assert_eq!(read(&d.0).len(), 1);
+}
+
+#[test]
+fn the_crashloop_kind_is_allowed_and_has_text() {
+    let d = scratch("exit-crashloop");
+    assert!(defaults::list("health.exit_kinds").contains(&"crashloop"));
+    note("crashloop", defaults::text("health.exit_detail_crashloop"));
+    let n = NOTED.lock().unwrap_or_else(|e| e.into_inner()).take();
+    assert_eq!(n.as_ref().map(|(k, _)| k.as_str()), Some("crashloop"));
+    append_in(&d.0, "crashloop", defaults::text("health.exit_detail_crashloop"), 0, 0, 7);
+    assert_eq!(read(&d.0)[0][field("kind")], json!("crashloop"));
+}
