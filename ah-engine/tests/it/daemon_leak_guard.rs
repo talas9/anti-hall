@@ -3,7 +3,7 @@
 //!
 //! Each case runs a small harness scenario in a child process (this test binary, the ignored `scenario` test below) that
 //! auto-starts a real daemon through the client, in a scratch HOME and state directory under the system temp directory,
-//! exactly as the `e2e` and `gitcheck` harnesses do. The parent then checks the daemon the child left behind.
+//! exactly as the `e2e` and `gitcheck` harnesses do (the daemon's `daemon.scratch_idle_exit_s` is what ends it when no `Drop` runs). The parent then checks the daemon the child left behind.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use crate::common;
 use std::io::Write;
@@ -27,7 +27,6 @@ impl Harness {
             .env("AH_ENGINE_VERSION", "0.1.0")
             .env_remove("AH_ENGINE_NOSPAWN")
             .env_remove("AH_ENGINE_IDLE_EXIT_S");
-        common::backstop(&mut c);
         c
     }
 }
@@ -72,7 +71,7 @@ fn child(root: &Path, mode: &str, backstop_s: &str) -> std::process::Child {
         .args(["--ignored", "--exact", "daemon_leak_guard::scenario", "--test-threads", "1"])
         .env("AH_LEAK_ROOT", root)
         .env("AH_LEAK_MODE", mode)
-        .env("AH_TEST_BACKSTOP_IDLE_S", backstop_s)
+        .env("AH_ENGINE_SCRATCH_IDLE_EXIT_S", backstop_s)
         .env_remove("AH_ENGINE_IDLE_EXIT_S")
         .env_remove("AH_ENGINE_NOSPAWN")
         .stdin(Stdio::null())
@@ -119,7 +118,7 @@ fn a_panicking_harness_test_leaves_no_daemon_and_no_scratch_dir() {
 }
 
 #[test]
-fn a_killed_test_process_leaves_no_daemon_beyond_the_idle_backstop() {
+fn a_killed_test_process_leaves_no_daemon_beyond_the_scratch_idle_cap() {
     let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-leakguard-kill-{}", std::process::id())));
     let mut c = child(root.path(), "hang", "3");
     let started = wait_for(|| daemon_pid(root.path()).is_some(), common::READY_CEILING);
@@ -129,7 +128,7 @@ fn a_killed_test_process_leaves_no_daemon_beyond_the_idle_backstop() {
     let pid = daemon_pid(root.path());
     assert!(started && pid.is_some(), "the scenario never started its daemon");
     let pid = pid.unwrap();
-    // the backstop is 3 s of idleness, checked every idle_check_ms; allow for a loaded machine
+    // the cap is 3 s of idleness, checked every idle_check_ms; allow for a loaded machine
     let gone = wait_for(|| !common::alive(pid), common::READY_CEILING);
     kill_leftover(pid);
     assert!(gone, "daemon {pid} of a killed test process was still running {:?} after its test died", common::READY_CEILING);

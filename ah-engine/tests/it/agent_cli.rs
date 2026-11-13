@@ -37,7 +37,6 @@ impl Env {
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", "0.1.0")
             .env_remove("AH_ENGINE_NOSPAWN");
-        common::backstop(&mut c);
         for (k, v) in &self.extra {
             c.env(k, v);
         }
