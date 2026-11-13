@@ -77,7 +77,6 @@ function cgResolvedId() {
 }
 
 function cgDq(s) { return '"' + s.replace(/["\\$`]/g, function (c) { return '\\' + c; }) + '"'; }
-function cgShQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'"; }
 
 // `wakeReassertLine(env, true)`: the child's mailbox-wake re-verify line (Claude only).
 function cgWakeLine(l) {
@@ -92,7 +91,7 @@ function cgWakeLine(l) {
 function cgFrame(body, ctx) {
   var guard = ah.cfg('devswarm_gates.child_gate_guard_name');
   var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: cgShQuote(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
   var reason = text.message('block', guard, {
     what: ah.cfg('devswarm_gates.cg_headline'),
     instead: ah.cfg('devswarm_gates.cg_short_instead'),

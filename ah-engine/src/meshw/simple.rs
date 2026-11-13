@@ -995,7 +995,7 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
             defaults::raw("devswarm_role.sw_rearm").get("default").and_then(|d| d.as_bool()).unwrap_or(true),
         ),
     };
-    // the engine shims agents run (devswarm_role.engine_cli / engine_watcher)
+    // the engine shims agents run (devswarm_role.engine_bin + engine_verb / watcher_verb)
     let (cli, watcher) = (role_text::engine_cli(&home), role_text::engine_watcher(&home));
     let agent_raw = inv.env.get(defaults::text("devswarm_role.agent_env")).map(String::as_str).unwrap_or("");
     let agent = js_trim(agent_raw).to_lowercase();

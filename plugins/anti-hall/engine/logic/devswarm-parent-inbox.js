@@ -88,7 +88,7 @@ function piFinite(v) { return typeof v === 'number' && isFinite(v); }
 // The CLI path the reminders name: the stable launcher when that is switched on and installed, else the plugin's own script (`preferStableLauncher`).
 // null when the plugin root cannot be resolved the way Node's `__dirname` would be.
 function piCli(opts, home) {
-  return dwEngineCmd('devswarm_role.engine_cli', home);
+  return dwCliCmd(home);
 }
 
 // `listEscalationIntents` + `parkedEscalationSegment(home, parentId, cli)`: the supervisor's escalations parked for this Primary, or null.
@@ -852,7 +852,7 @@ function piCronCtl(ctx, lc) {
 
 // The mailbox watcher path the line names (`preferStableLauncher('wakeWatch', RAW_WATCHER)`).
 function piWatcherPath(opts, home) {
-  return dwEngineCmd('devswarm_role.engine_watcher', home);
+  return dwWatcherCmd(home);
 }
 
 // ---- the maintainer notices and the session drift -----------------------------------------------------------------------

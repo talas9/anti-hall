@@ -5595,10 +5595,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.cron_charset` | `0123456789*/,-` |  |  | The only characters a cron field may contain (anything else would let the setting inject text into the directive). |
 | `devswarm_role.cron_ctl_fresh_sources` | `startup` |  |  | The SessionStart `source` values of a session that starts with no mailbox cron (a new session; a resumed, cleared or compacted one lives in a process that may still hold a cron armed earlier, since cron jobs are session-process-only). Such a session is recorded as cron-less, so it is not ordered to delete a cron it never had. |
 | `devswarm_role.cron_fields` | `5` |  |  | How many whitespace-separated fields a valid cron schedule has. |
-| `devswarm_role.engine_bin` | `{home}/.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). engine_cli = engine_bin + " " + engine_verb (a test asserts it). Placeholder: {home}. |
-| `devswarm_role.engine_cli` | `{home}/.anti-hall/ah-engine/bin/ah-engine mesh` |  |  | The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory. |
+| `devswarm_role.engine_bin` | `{home}/.anti-hall/ah-engine/bin/ah-engine` |  |  | The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). The {cli} text is the shell-quoted binary path then engine_verb. Placeholder: {home}. |
 | `devswarm_role.engine_verb` | `mesh` |  |  | The verb after the engine binary for every DevSwarm CLI command (the {verb} part, kept OUTSIDE the quotes around the binary path). |
-| `devswarm_role.engine_watcher` | `{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto` |  |  | The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}. |
 | `devswarm_role.gate_guard` | `devswarm-parent-gate` |  |  | The skip-file name of the parent gate. |
 | `devswarm_role.gate_summary` | `Stop: the DevSwarm Primary gate (decided in the plugin's engine/logic/devswar...` |  |  | One-line description of the devswarm-parent-gate check in the generated reference. |
 | `devswarm_role.hooks_dir` | `hooks` |  |  | The plugin's hooks directory, relative to the plugin root; the Node hooks resolve their own location from it (real path). |
@@ -5802,7 +5800,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.sw_wake_cron_child_only` | `4 entries` |  |  | Switch devswarm.wakeCronOnlyWithChild (default on): a Primary arms the mailbox-wake cron only while at least one child workspace is alive. The SessionStart directive arms the Monitor wake-watch alone, one order deletes the cron when the last child is gone, and the NO MAILBOX TICK / NO MAILBOX WAKE PATH line asks for it back at the next live child. Off restores the always-armed cron. |
 | `devswarm_role.test_markers` | `ANTIHALL_TEST, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; with one of them set and the home equal to the real home the Node settings reader refuses, so the script counts the case as abandoned and allows rather than guess what Node does. |
 | `devswarm_role.wake_child_flag` | ` --child` |  |  | The child-mode suffix of the inbox tick command in live-watcher SessionStart instructions. |
-| `devswarm_role.watcher_verb` | `devswarm wake-watch --auto` |  |  | The verbs after the engine binary for the mailbox watcher (the {wverb} part; engine_watcher = engine_bin + " " + watcher_verb, a test asserts it). |
+| `devswarm_role.watcher_verb` | `devswarm wake-watch --auto` |  |  | The verbs after the engine binary for the mailbox watcher (the {wverb} part; the {watcher} text is the shell-quoted binary path then these verbs). |
 
 ### roles.toml / roles
 
@@ -7433,7 +7431,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `mesh_write.ack_command` | `{bin} {verb} inbox ack-primary {id} --receipt {rid}` |  |  | The `ackCommand` of a read-primary result: `{bin}` is the JSON-quoted engine binary path (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id. |
+| `mesh_write.ack_command` | `{bin} {verb} inbox ack-primary {id} --receipt {rid}` |  |  | The `ackCommand` of a read-primary result: `{bin}` is the engine binary path shell-quoted in POSIX single quotes (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id. |
 | `mesh_write.ack_hint` | `read-only: nothing was acked. After you have consumed these messages run ackC...` |  |  | The `ackHint` of a read-primary result. |
 | `mesh_write.act_inbox_prefix` | `inbox-` |  |  | What the `action` of an id-resolution refusal of an inbox verb starts with (the action is `inbox-<sub>`). |
 | `mesh_write.action_ack_primary` | `ack-primary` |  |  | The `action` of an ack-primary result. |
