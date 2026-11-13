@@ -185,8 +185,8 @@ function decide(p) {
   var stateDir = ah.cfg('replykit.state_dir');
   var stateRel = stateDir + '/' + stateName;
 
-  var payloadText = typeof p.last_assistant_message === 'string' && p.last_assistant_message.trim() ? p.last_assistant_message : null;
-  var mask = ah.text.maskQuoted;
+  var payloadText = typeof p.last_assistant_message === 'string' && p.last_assistant_message.trim() ? rp.ownText(p.last_assistant_message) : null;
+  var mask = rp.ownMasked;
   var tailLines, asstLines;
   // the lines lastAssistant reads: entries that name `assistant` (or spell it with an escape); the host hands over just those
   function assistantLines() {
@@ -195,7 +195,7 @@ function decide(p) {
   }
   function fromTranscript(map) {
     var al = assistantLines();
-    return al === null ? { text: null } : rp.lastAssistant(al, map);
+    return al === null ? { text: null } : rp.lastAssistant(al, map, undefined, true);
   }
   var lastText;
   if (payloadText !== null) lastText = payloadText;
@@ -205,7 +205,8 @@ function decide(p) {
     if (r.text === null) return 'allow';
     lastText = r.text;
   }
-  if (lastText === '') return 'allow';
+  lastText = rp.ownText(lastText);
+  if (lastText.trim() === '') return 'allow';
   if (jx.loneSurrogate(lastText)) { ah.unable('speculation-guard:lone_surrogate'); lastText = ahWf(lastText); }
   var markerText;
   if (payloadText !== null) markerText = mask(payloadText);
@@ -214,7 +215,7 @@ function decide(p) {
     if (m.unsure) ah.unable('speculation-guard:masked_unsure');
     markerText = m.unsure || m.text === null ? '' : m.text;
   }
-  if (!markerText.trim()) markerText = lastText;
+  if (!markerText.trim()) return 'allow';
   var msgHash = ah.sha1(lastText);
   var prior = sgPrior(home + '/' + stateRel);
   var cap = blockCap.open(prior, transcript, 'speculation_guard.cap_scope', home, stateRel);
@@ -231,10 +232,11 @@ function decide(p) {
     var jevFull = payloadText;
     if (jevFull === null) {
       var al2 = assistantLines();
-      var dd = al2 === null ? { text: null } : rp.lastAssistant(al2, undefined, true);
+      var dd = al2 === null ? { text: null } : rp.lastAssistant(al2, undefined, true, true);
       if (dd.unsure) ah.unable('speculation-guard:jev_reply_unsure');
       jevFull = dd.unsure || !dd.text ? lastText : dd.text;
     }
+    jevFull = rp.ownText(jevFull);
     if (jx.loneSurrogate(jevFull)) { ah.unable('speculation-guard:jev_lone_surrogate'); jevFull = ahWf(jevFull); }
     jevText = jx.sliceUnits(jevFull, ah.cfgNum('speculation_guard.jev_state_chars')); // a cut through a surrogate pair drops the half pair
   }

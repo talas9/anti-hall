@@ -66,6 +66,7 @@ function textOf(entry) {
   return { text: typeof content === 'string' ? hookProc.usv(content) : '', result: false };
 }
 
+// Human resolution prompts retain their prior quote handling; only assistant hedges use the authored-prose mask.
 function maskedMaybe(t) {
   var m = ah.text.maskQuoted(t);
   return m.trim() === '' && t.trim() !== '' ? t : m;
@@ -87,7 +88,7 @@ function readRecords(tail) {
     var entry;
     try { entry = JSON.parse(line); } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
     var type = isObj(entry) ? entry.type : undefined;
-    if (type === 'assistant') out.push({ k: 'a', t: maskedMaybe(textOf(entry).text) });
+    if (type === 'assistant' && rp.authoredEntry(entry)) out.push({ k: 'a', t: rp.ownMasked(textOf(entry).text) });
     else if (type === 'user') {
       if (truthy(entry.isMeta) || truthy(entry.isSidechain) || truthy(entry.isCompactSummary) || nonHuman(entry)) { out.push({ k: 'o' }); continue; }
       var tx = textOf(entry);

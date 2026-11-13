@@ -340,17 +340,17 @@ function decide(p) {
   if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; }) || coordinator.isCodexPayload(p)) return 'allow';
   var guard = ah.cfg('claim_evidence.guard_name');
   if (ah.settings.skipped(guard)) return 'allow';
-  var reply = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+  var reply = typeof p.last_assistant_message === 'string' ? rp.ownText(p.last_assistant_message) : '';
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (!reply.trim() || !tp) return 'allow';
 
   // the cheap gate: the reply alone, with quoted text and code removed (and the table headers, which only label columns)
   var sreply = ceMaskTableHeader(reply);
-  var scan = ah.text.maskQuoted(sreply), claim = null, done = false;
+  var scan = rp.ownMasked(sreply), claim = null, done = false;
   if (r1) {
     // rule 1 reads quoted text too (quote marks out, code, fences and blockquotes still masked): a quote is covered only by a
     // reporting verb that opens its clause, never by its quote marks alone
-    var seen = [], scan1 = ah.text.maskQuoted(ceUnquote(sreply));
+    var seen = [], scan1 = rp.ownMasked(ceUnquote(sreply));
     claim = ceFindClaim(scan1, seen);
     // a claim that exists only inside code, a fence or a blockquote is suppressed (the masked scan cannot see it)
     if (claim === null && scan1 !== sreply) {

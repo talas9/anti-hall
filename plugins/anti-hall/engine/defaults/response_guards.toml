@@ -630,3 +630,16 @@ value = "A mixed summary is not a clean pass."
 [output_verify.msg_instead]
 doc = "Advisory advice."
 value = "read the full output before reporting the result."
+
+# Reply-source boundaries shared by merge and Stop guards (#722).
+[replykit.injected_text_patterns]
+doc = "Non-authored context embedded in assistant text: hook/system wrappers and echoed guard output. Strip only these spans/lines; adjacent authored prose remains eligible."
+value = ['<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder\s*>', '<user-prompt-submit-hook\b[^>]*>[\s\S]*?<\/user-prompt-submit-hook\s*>', '<hook-specific-output\b[^>]*>[\s\S]*?<\/hook-specific-output\s*>', '<hookSpecificOutput\b[^>]*>[\s\S]*?<\/hookSpecificOutput\s*>', '^\s*Stop hook feedback:[^\r\n]*', '^[^\w\r\n]*(?:merge check|claim check|claim-evidence guard|claim evidence guard):[^\r\n]*(?:\r?\n(?:Do instead:|Instead:)[^\r\n]*)?']
+
+[replykit.human_origins]
+doc = "Explicit origins that still denote an authored assistant transcript entry; synthetic entries are excluded from merge hedges."
+value = ["human", "user", "assistant"]
+
+[replykit.mask_boundary]
+doc = "Plain suffix used only while masking quoted material so the host does not restore an all-quoted protocol; removed from the result before any decision."
+value = "Assistant prose boundary."
