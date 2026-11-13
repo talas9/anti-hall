@@ -203,28 +203,46 @@ function snRuntimeRead(path, budget) {
   return raw;
 }
 
-// Publisher rows have no timestamp. Persist a small, independent observation clock, never
-// tracker history. A missing/expired/evicted anchor starts now; it cannot inherit an old
-// overlay. A failed write or an overflow leaves no usable anchor and therefore no release.
+// Publisher rows have no timestamp. A kernel lock serializes the entire read/merge/write:
+// no stale-lock takeover can let a delayed writer publish after its successor. Re-read the
+// publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
+// Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
 function snRuntimeFirstSeen(home, rows, now) {
   var cfg = ah.cfgLive('silent_nudge.rt_first_seen'), paths = ah.cfg('agent_tracker.paths');
   var rel = paths.base + '/' + paths.dir + '/' + cfg.file;
-  var raw = snRuntimeRead(home + '/' + rel, { left: cfg.max_bytes });
-  var parsed = jx.parse(raw === null ? '' : raw), old = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) ? parsed.v : {};
-  var seen = {}, count = 0;
-  rows.forEach(function (r) {
-    if (!r || typeof r.session !== 'string' || typeof r.child !== 'string') return;
-    var key = JSON.stringify([r.session, r.child]);
-    if (Object.prototype.hasOwnProperty.call(seen, key) || count >= cfg.max_rows) return;
-    var at = old[key];
-    seen[key] = snNum(at) && at > 0 && at <= now && now - at < cfg.ttl_ms ? at : now;
-    // JSON is ASCII except publisher identifiers; bound UTF-8 bytes, not JS code units.
-    if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
-    count++;
-  });
-  var ok = false;
-  try { ok = ah.state.writeAtomic(rel, JSON.stringify(seen)) === true; } catch (e) { ok = false; }
-  return ok ? seen : {};
+  var lock = ah.cfg('stop_reblock.lock'), held;
+  try { held = ah.state.flock(rel + lock.suffix, lock.group, lock.wait_ms); } catch (e) { return {}; }
+  if (typeof held !== 'number') return {};
+  try {
+    // Read the clock after taking the lock, never an old caller's observation time.
+    now = Math.max(now, ah.clock.now());
+    var publisher = snRuntimeRead(home + '/' + paths.base + '/' + paths.dir + '/' + ah.cfg('agent_nudge.runtime_escalation').file, { left: cfg.max_bytes });
+    var doc = jx.parse(publisher === null ? '' : publisher);
+    if (doc.invalid || doc.unsure || !jx.isObj(doc.v) || !Array.isArray(doc.v.rows)) return {};
+    var raw = snRuntimeRead(home + '/' + rel, { left: cfg.max_bytes });
+    var parsed = jx.parse(raw === null ? '' : raw), old = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) ? parsed.v : {};
+    var seen = {}, anchors = {}, count = 0;
+    doc.v.rows.forEach(function (r) {
+      if (!r || typeof r.session !== 'string' || typeof r.child !== 'string') return;
+      var key = JSON.stringify([r.session, r.child]);
+      if (Object.prototype.hasOwnProperty.call(seen, key) || count >= cfg.max_rows) return;
+      var prior = old[key], valid = jx.isObj(prior) && snNum(prior.at) && prior.at > 0;
+      // The publisher exposes no nudge ID. Treat ANY counter/block-tier change as a new generation:
+      // monotonic progress and a missed disappearance/re-escalation are indistinguishable.
+      // Conservatively reset instead of letting an old answer retire a newer escalation.
+      var duration = snNum(r.dur_ms) ? r.dur_ms : null, reminders = snNum(r.reminders) ? r.reminders : null;
+      var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.dur_ms !== duration || prior.reminders !== reminders || prior.block !== (r.block === true);
+      var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
+      seen[key] = { at: at, dur_ms: duration, reminders: reminders, block: r.block === true };
+      // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
+      if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
+      anchors[key] = at;
+      count++;
+    });
+    var ok = false;
+    try { ok = ah.state.writeAtomic(rel, JSON.stringify(seen)) === true; } catch (e) { ok = false; }
+    return ok ? anchors : {};
+  } finally { ah.state.unlock(held); }
 }
 
 function snRuntimeEvidence(p, home, budget, rows) {
@@ -281,13 +299,12 @@ function snRuntimeVerdict(child, name, session, evidence) {
   if (n && n.parent && n.parent !== session) n = null;
   var since = Math.max(a && typeof a.first_seen === 'number' ? a.first_seen : 0, n && typeof n.sent_at === 'number' ? n.sent_at : 0);
   var words = ah.cfgLive('agent_nudge.answers'), limits = ah.cfgLive('agent_nudge.limits');
-  var anchorCfg = ah.cfgLive('silent_nudge.rt_first_seen');
   var anchorKey = JSON.stringify([session, child]);
   var firstSeen = evidence.firstSeen && evidence.firstSeen[anchorKey];
-  // Candidate reconciliation has no publisher snapshot: absent a reliable state clock,
-  // apply the same short initial window, never the old since=0 answer fallback.
-  if (evidence.firstSeen) since = snNum(firstSeen) ? Math.max(since, firstSeen - Math.min(anchorCfg.skew_ms, anchorCfg.initial_window_ms)) : evidence.now;
-  else if (since === 0) since = evidence.now - Math.min(anchorCfg.skew_ms, anchorCfg.initial_window_ms);
+  // Never subtract clock skew: that admits an answer from before this escalation.
+  // Unknown candidate clocks also start now; a future anchor only tightens the check.
+  if (evidence.firstSeen) since = snNum(firstSeen) ? Math.max(since, firstSeen) : evidence.now;
+  else if (since === 0) since = evidence.now;
   var answer = evidence.answers[child];
   var ttl = ah.cfgLive('silent_nudge.rt_repair').ttl_ms;
   if ((!evidence.firstSeen || snNum(firstSeen)) && answer && answer.ts > 0 && answer.ts >= since && answer.ts <= evidence.now) {
