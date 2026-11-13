@@ -598,3 +598,81 @@ value = 10
 min = 0
 max = 50
 unit = "percent"
+
+# ---- idle orders (GH #744): an idle finished workspace or teammate gets one order to the coordinator, repeated on an escalating schedule ----
+
+[idle_order.sw_enabled]
+doc = "Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before."
+value = { section = "guards", key = "idleOrder", env = "ANTIHALL_IDLE_ORDER", default = true }
+
+[idle_order.num_after_min]
+doc = "Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default 30): a child workspace with no activity, no open plan and no unread mail, or a teammate that delivered its report and owns no open task, that long gets the order. A workspace idle this long also needs no mailbox wake path."
+value = { section = "guards", key = "idleOrderAfterMin", env = "ANTIHALL_IDLE_ORDER_AFTER_MIN", default = 30, min = 1 }
+
+[idle_order.steps_min]
+doc = "The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn."
+value = [30, 60, 120]
+
+[idle_order.max_orders]
+doc = "Most orders given for one idle workspace or teammate; after that it is left alone (counted as suppressed, reason cap)."
+value = 6
+
+[idle_order.dir]
+doc = "The state directory (under the home directory) of the idle-order records: one file per kind and scope holding {subjects: {<id>: {count, lastAt}}}."
+value = ".anti-hall/idle-orders"
+
+[idle_order.key_max]
+doc = "Most characters of a scope or subject id kept in a record file name."
+value = 80
+
+[idle_order.file_prefix]
+doc = "The file name prefix of an idle-order record (<prefix>-<kind>-<scope>.json); stale ones are pruned by that prefix."
+value = "idle"
+
+[idle_order.ms_per_minute]
+doc = "Milliseconds in a minute (idle times are kept in ms, settings in minutes)."
+value = 60000
+
+[idle_order.list_max]
+doc = "Most children named in one order; the rest are counted."
+value = 5
+
+[idle_order.list_joiner]
+doc = "Separator between the children named in one order."
+value = ", "
+
+[idle_order.more]
+doc = "Appended to the named children when more are idle. Placeholder: {m}."
+value = " +{m} more"
+
+[idle_order.item_ws]
+doc = "One idle workspace in the order. Placeholders: {name} its title (or id), {min} minutes idle."
+value = "{name} ({min}m)"
+
+[idle_order.item_mate]
+doc = "One idle teammate in the order. Placeholders: {name}, {min} minutes idle."
+value = "{name} ({min}m)"
+
+[idle_order.msg_workspace]
+doc = "The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically)."
+value = "⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to report, give it new work, or archive it: `{cli} archive-request {id}`."
+
+[idle_order.msg_teammate]
+doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name."
+value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{id}\"}`) or give it new work."
+
+[idle_order.msg_codex_agent]
+doc = "The order for idle Codex agents that finished and were never closed. Placeholders: {n}, {list}, {id} the first listed agent's id."
+value = "⚠️ Do now: {n} agent(s) finished and idle: {list}. Verify each result, then close it (`close_agent {\"target\":\"{id}\"}`) or give it new work."
+
+[idle_order.kind_workspace]
+doc = "The kind label of a child workspace in the idle-order counter."
+value = "workspace"
+
+[idle_order.kind_teammate]
+doc = "The kind label of a teammate (or Codex agent) in the idle-order counter."
+value = "teammate"
+
+[metric.idle_order]
+doc = "Idle orders (GH #744) by kind (workspace, teammate) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task)."
+value = { kind = "counter", unit = "orders", labels = ["kind", "outcome", "reason"] }

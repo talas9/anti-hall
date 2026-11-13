@@ -8,13 +8,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const CHILD: &str = "11111111-aaaa-4bbb-8ccc-222222222222";
-const NOW_MS: u64 = 1_900_000_000_000;
+pub(crate) const CHILD: &str = "11111111-aaaa-4bbb-8ccc-222222222222";
+pub(crate) const NOW_MS: u64 = 1_900_000_000_000;
 
-struct Env {
-    dir: PathBuf,
-    repo: PathBuf,
-    key: String,
+pub(crate) struct Env {
+    pub(crate) dir: PathBuf,
+    pub(crate) repo: PathBuf,
+    pub(crate) key: String,
     /// What the next turn's summary is built from: (worktree, messages, urgency).
     pending: std::cell::RefCell<Option<(String, u32, String)>>,
     /// The session id the child's live descriptor names (`None`: it records none).
@@ -22,7 +22,7 @@ struct Env {
 }
 
 impl Env {
-    fn new(name: &str) -> Env {
+    pub(crate) fn new(name: &str) -> Env {
         let dir = std::env::temp_dir().join(format!("aha-arch-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         let repo = dir.join("repo");
@@ -37,12 +37,12 @@ impl Env {
         Env { dir, repo, key, pending: std::cell::RefCell::new(None), desc_sid: std::cell::RefCell::new(Some("sess-1".into())) }
     }
 
-    fn dsdir(&self) -> PathBuf {
+    pub(crate) fn dsdir(&self) -> PathBuf {
         self.dir.join("home/.anti-hall/devswarm")
     }
 
     /// The child's worktree path, under the home like a DevSwarm repos root; `exists` makes the directory.
-    fn worktree(&self, exists: bool) -> String {
+    pub(crate) fn worktree(&self, exists: bool) -> String {
         let wt = self.dir.join("home/.devswarm/repos/3/8205fc11/child-wt");
         std::fs::create_dir_all(self.dir.join("home/.devswarm/repos")).unwrap();
         if exists {
@@ -52,11 +52,11 @@ impl Env {
     }
 
     /// A path outside the home, behind a directory that does not exist (an unmounted volume).
-    fn unmounted_worktree(&self) -> String {
+    pub(crate) fn unmounted_worktree(&self) -> String {
         self.dir.join("elsewhere/wts/child-wt").to_string_lossy().to_string()
     }
 
-    fn put(&self, rel: &str, v: serde_json::Value) {
+    pub(crate) fn put(&self, rel: &str, v: serde_json::Value) {
         let p = self.dsdir().join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, v.to_string()).unwrap();
@@ -65,11 +65,11 @@ impl Env {
     /// The one child holds `unread` real messages (the newest of urgency `urgency`), 40 days old, in a real SQLite store; the summary
     /// the Primary's turn reads is computed from it by the engine at the start of each turn, `stale_registry` is not a parameter: the
     /// engine derives it from the registry row.
-    fn summary(&self, wt: &str, unread: u32, urgency: &str, _stale_registry: bool) {
+    pub(crate) fn summary(&self, wt: &str, unread: u32, urgency: &str, _stale_registry: bool) {
         *self.pending.borrow_mut() = Some((wt.to_string(), unread, urgency.to_string()));
     }
 
-    fn materialize(&self) {
+    pub(crate) fn materialize(&self) {
         use ah_engine::meshw::store::{MeshRow, MeshStore, RegistryRow};
         let Some((wt, unread, urgency)) = self.pending.borrow().clone() else { return };
         let home = self.dir.join("home");
@@ -115,7 +115,7 @@ impl Env {
     }
 
     /// anti-hall's archive marker for the child, naming session `sid` (`None`: the marker records none).
-    fn archive_with(&self, wt: &str, sid: Option<&str>) {
+    pub(crate) fn archive_with(&self, wt: &str, sid: Option<&str>) {
         let mut d = serde_json::json!({"id": CHILD, "worktreePath": wt, "archivedAt": 100});
         if let Some(sid) = sid {
             d["sessionId"] = sid.into();
@@ -124,28 +124,28 @@ impl Env {
     }
 
     /// The archive completes between the summary being taken and the nudge being decided: the marker is there and the descriptor is gone.
-    fn archive_completes_after_summary(&self, wt: &str) {
+    pub(crate) fn archive_completes_after_summary(&self, wt: &str) {
         self.materialize();
         self.pending.borrow_mut().take(); // the summary on disk stays as it was
         self.archive(wt);
         std::fs::remove_file(self.dsdir().join(format!("workspaces/{CHILD}.json"))).unwrap();
     }
 
-    fn archive(&self, wt: &str) {
+    pub(crate) fn archive(&self, wt: &str) {
         self.archive_with(wt, Some("sess-1"));
     }
 
     /// Sets a file's modification time `secs` seconds after a fixed point (the two files of a case are ordered by it).
-    fn mtime(&self, rel: &str, secs: u64) {
+    pub(crate) fn mtime(&self, rel: &str, secs: u64) {
         let f = std::fs::OpenOptions::new().write(true).open(self.dsdir().join(rel)).unwrap();
         f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs)).unwrap();
     }
 
-    fn settings(&self, on: bool) {
+    pub(crate) fn settings(&self, on: bool) {
         std::fs::write(self.dir.join("home/.anti-hall/settings.json"), serde_json::json!({"devswarm": {"skipArchivedChildren": on}}).to_string()).unwrap();
     }
 
-    fn turn(&self) -> String {
+    pub(crate) fn turn(&self) -> String {
         self.materialize();
         let map = self.dir.join("map.json");
         let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "UserPromptSubmit").into_iter().map(|x| x.id).collect();
