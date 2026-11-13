@@ -190,7 +190,7 @@ function decide(p) {
   var tailLines, asstLines;
   // the lines lastAssistant reads: entries that name `assistant` (or spell it with an escape); the host hands over just those
   function assistantLines() {
-    if (asstLines === undefined) asstLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'), ['assistant', '\\u']) : null;
+    if (asstLines === undefined) asstLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'), ['assistant', 'agent_message', '\\u']) : null;
     return asstLines;
   }
   function fromTranscript(map) {

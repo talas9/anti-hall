@@ -87,7 +87,11 @@ function readRecords(tail) {
     try { entry = JSON.parse(line); } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
     entry = rp.entry(entry);
     var type = isObj(entry) ? (entry.type === 'message' ? entry.role : entry.type) : undefined;
-    if (type === 'assistant') out.push({ k: 'a', t: maskedMaybe(textOf(entry).text) });
+    if (type === 'assistant') {
+      var text = maskedMaybe(textOf(entry).text), previous = out[out.length - 1];
+      // Codex normally persists both event_msg and response_item copies of one reply.
+      if (!previous || previous.k !== 'a' || previous.t !== text) out.push({ k: 'a', t: text });
+    }
     else if (type === 'user') {
       if (truthy(entry.isMeta) || truthy(entry.isSidechain) || truthy(entry.isCompactSummary) || nonHuman(entry)) { out.push({ k: 'o' }); continue; }
       var tx = textOf(entry);

@@ -1573,7 +1573,7 @@ value = ["pending owner", "do not merge", "pending review", "needs review", "nee
 
 [merge_gate.hedge_patterns]
 doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched as whole Unicode words against the recent assistant output."
-value = ['first[- ]pass', 'not pixel[- ]perfect']
+value = ['first(?:-|\s+)pass', 'not\s+pixel(?:-|\s+)perfect']
 
 [merge_gate.resolutions]
 doc = "Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge."
