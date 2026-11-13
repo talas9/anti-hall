@@ -81,7 +81,7 @@ function sgClaim(text) {
 function sgHit(text) {
   var markers = ah.cfg('speculation_guard.markers'), modal = ah.cfg('speculation_guard.modal_markers');
   for (var i = 0; i < markers.length; i++) {
-    var all = ah.re.findAll(markers[i], 'i', text);
+    var all = rp.wordHits(markers[i], 'i', text);
     if (all.length === 0) continue;
     var first = text.slice(all[0][0], all[0][1]);
     if (modal.indexOf(first.toLowerCase()) < 0) return { text: first, at: all[0][0] };
@@ -190,7 +190,7 @@ function decide(p) {
   var tailLines, asstLines;
   // the lines lastAssistant reads: entries that name `assistant` (or spell it with an escape); the host hands over just those
   function assistantLines() {
-    if (asstLines === undefined) asstLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'), ['assistant', '\\u']) : null;
+    if (asstLines === undefined) asstLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'), ['assistant', 'agent_message', '\\u']) : null;
     return asstLines;
   }
   function fromTranscript(map) {

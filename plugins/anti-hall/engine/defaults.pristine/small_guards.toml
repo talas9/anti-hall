@@ -1568,12 +1568,12 @@ min = 1024
 max = 16777216
 
 [merge_gate.hedge_phrases]
-doc = "Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output."
-value = ["pending owner", "do not merge", "pending review", "needs your review", "needs your eyes", "review it in the build", "built, pending"]
+doc = "Self-hedge phrases, matched case-insensitively as whole Unicode words in the recent assistant output."
+value = ["pending owner", "do not merge", "pending review", "needs review", "needs your review", "needs your eyes", "review it in the build", "built, pending"]
 
 [merge_gate.hedge_patterns]
-doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output."
-value = ['first[- ]pass', 'not pixel[- ]perfect']
+doc = "Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched as whole Unicode words against the recent assistant output."
+value = ['first(?:-|\s+)pass', 'not\s+pixel(?:-|\s+)perfect']
 
 [merge_gate.resolutions]
 doc = "Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge."

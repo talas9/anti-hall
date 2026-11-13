@@ -2314,8 +2314,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_gate.clear_step_setting` | `6 entries` |  |  | Where the switch for the clear-step block text is read from (guards.mergeGateClearStep, default off): on, the block uses msg_what_v2 and msg_instead_v2 (#538). |
 | `merge_gate.env_assign` | `^[A-Za-z_][A-Za-z0-9_]*=` |  |  | Regex source of a leading environment assignment the scan skips before the command word. |
 | `merge_gate.guard_name` | `merge-gate` |  |  | The guard id this check answers to in skip.json. |
-| `merge_gate.hedge_patterns` | `first[- ]pass, not pixel[- ]perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched against the recent assistant output. |
-| `merge_gate.hedge_phrases` | `7 items` |  |  | Self-hedge phrases, matched case-insensitively as plain text in the recent assistant output. |
+| `merge_gate.hedge_patterns` | `first(?:-\\|\s+)pass, not\s+pixel(?:-\\|\s+)perfect` |  |  | Self-hedge phrases with punctuation or spacing variants: regex sources (case-insensitive) matched as whole Unicode words against the recent assistant output. |
+| `merge_gate.hedge_phrases` | `8 items` |  |  | Self-hedge phrases, matched case-insensitively as whole Unicode words in the recent assistant output. |
 | `merge_gate.injected_user` | `^\s*(<(task-notification\|system-reminder\|command-name\|command-message\|local-c...` |  |  | Regex source (case-insensitive) of the user-role bodies that are not a human typing (task notifications, system reminders, hook feedback, cross-session messages). |
 | `merge_gate.jev_false` | `no unresolved hedge` |  |  | The label for a false answer of the mergeGateHedge question. |
 | `merge_gate.jev_id` | `mergeGateHedge` |  |  | The Jev integration id of the shadow question asked when a hedge is found on a merge command. |
@@ -4004,6 +4004,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `replykit.role_assistant` | `assistant` |  |  | The role value of an assistant transcript entry. |
 | `replykit.state_dir` | `.anti-hall` |  |  | The per-user state directory under the home directory, where the guards keep their state files. |
 | `replykit.unsure_parse_errors` | `surrogate, hex escape, recursion limit, out of range` |  |  | Fragments of the JSON parser's error text that mark input the Node hook might still parse (a lone surrogate escape or a short hex escape, a number beyond the double range, nesting beyond the recursion limit): the whole call is then left to Node instead of the line being skipped. |
+| `replykit.word_after_re` | `^[\w&&[^_]]` |  |  | Rust Unicode regex that recognizes a word character other than Markdown underscore immediately after a candidate hedge; such a candidate is embedded in a word. |
+| `replykit.word_before_re` | `[\w&&[^_]]$` |  |  | Rust Unicode regex that recognizes a word character other than Markdown underscore immediately before a candidate hedge; such a candidate is embedded in a word. |
 
 ### response_guards.toml / speculation_guard
 
