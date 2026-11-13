@@ -3996,8 +3996,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `replykit.human_origins` | `human, user, assistant` |  |  | Explicit origins that still denote an authored assistant transcript entry; synthetic entries are excluded from merge hedges. |
+| `replykit.injected_text_patterns` | `<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder\s*>, <user-prompt-submit-h...` |  |  | Non-authored context embedded in assistant text: hook/system wrappers and echoed guard output. Strip only these spans/lines; adjacent authored prose remains eligible. |
 | `replykit.json_ext` | `.json` |  |  | File extension of the JSON state files (also the suffix the stale-file sweep looks for). |
 | `replykit.json_max_depth` | `256` |  |  | Deepest JSON nesting the state-file parser reads; deeper input is left to the Node hook, which has a larger stack. |
+| `replykit.mask_boundary` | `Assistant prose boundary.` |  |  | Plain suffix used only while masking quoted material so the host does not restore an all-quoted protocol; removed from the result before any decision. |
 | `replykit.prune_stamp_prefix` | `.prune-stamp-` |  |  | Prefix of the stamp file that records the last sweep of stale state files of one writer (the writer's own prefix and the JSON extension follow). |
 | `replykit.prune_throttle_ms` | `21600000` |  | ms | The sweep of stale state files runs at most once per this long for each writer (6 hours). |
 | `replykit.prune_ttl_ms` | `604800000` |  | ms | A per-session state file untouched for this long is removed by the sweep (7 days: long enough that no live session is ever swept). |
