@@ -72,6 +72,22 @@ pub const READY_CEILING: Duration = Duration::from_secs(20);
 /// Ceiling for a blocking socket read in a test that is waiting for the other side (mock servers, a daemon's reply).
 pub const IO_CEILING: Duration = Duration::from_secs(30);
 
+/// How long (seconds) without a request a daemon that a harness may auto-start waits before it exits by itself. This is the
+/// backstop for a test process that is killed (a nextest timeout, a CI cancel, Ctrl-C): no `Drop` runs then, and a daemon the
+/// client detached (its own process group, parent gone) would otherwise live for `daemon.idle_exit_s` (30 min by default).
+pub const BACKSTOP_IDLE_S: &str = "180";
+
+/// Give a harness command the idle-exit backstop (`BACKSTOP_IDLE_S`), unless the caller's environment or an earlier
+/// `.env("AH_ENGINE_IDLE_EXIT_S", ..)` of its own already set one. Call it before applying a test's `extra` variables.
+pub fn backstop(c: &mut std::process::Command) -> &mut std::process::Command {
+    const KEY: &str = "AH_ENGINE_IDLE_EXIT_S";
+    if std::env::var_os(KEY).is_none() && !c.get_envs().any(|(k, v)| k == KEY && v.is_some()) {
+        // the test of this very backstop (it/daemon_leak_guard.rs) shortens it through its own variable
+        c.env(KEY, std::env::var("AH_TEST_BACKSTOP_IDLE_S").unwrap_or_else(|_| BACKSTOP_IDLE_S.to_string()));
+    }
+    c
+}
+
 /// True when a process with this pid exists.
 pub fn alive(pid: i32) -> bool {
     // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.

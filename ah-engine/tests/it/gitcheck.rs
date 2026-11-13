@@ -63,6 +63,7 @@ impl Env {
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", "0.1.0")
             .env_remove("AH_ENGINE_NOSPAWN");
+        common::backstop(&mut c);
         if self.scope {
             c.env("ANTIHALL_GIT_PUSH_CREDIT_SCOPE", "1");
         }

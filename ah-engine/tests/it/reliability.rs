@@ -145,6 +145,7 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
             .env("AH_ENGINE_VERSION", "0.1.0")
             .env("AH_ENGINE_TEST_HOOKS", "1")
             .env_remove("AH_ENGINE_NOSPAWN");
+        common::backstop(&mut c);
         for (k, v) in &self.extra {
             c.env(k, v);
         }

@@ -29,6 +29,7 @@ impl Env {
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", version)
             .env_remove("AH_ENGINE_NOSPAWN");
+        common::backstop(&mut c);
         c
     }
     fn hook(&self, version: &str, input: &str) -> (String, i32) {

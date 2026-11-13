@@ -56,6 +56,7 @@ impl Env {
     fn spawning_cmd(&self) -> Command {
         let mut c = self.cmd();
         c.env_remove("AH_ENGINE_NOSPAWN");
+        common::backstop(&mut c);
         c
     }
     fn start(&mut self) {
