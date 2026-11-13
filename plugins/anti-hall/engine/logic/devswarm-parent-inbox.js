@@ -465,6 +465,40 @@ function piReadSummary(home, key) {
   return piParseSummary(r.text);
 }
 
+// Closed-only eligibility without piRow's transcript-based supersession enrichment.
+// Preserve #508's archive proof (host_parentinbox::archived_closed) using marker/descriptor metadata only.
+function piClosedRow(ctx, id, wt, app) {
+  var marker = JSON.parse(ahHost.piMarker(id, wt, null));
+  var st = { marker: marker.archived === true, app: app.archived === true, closed: false, ignored: ahHost.piIgnored(id) };
+  if (!ah.settings.bool('devswarm_parent.sw_skip_archived')) return st;
+  if (st.app) { st.closed = true; st.why = 'app'; return st; }
+  if (!st.marker) return st;
+  var root = piDevswarmDir(ctx.home), file = id + '.json';
+  var mp = root + '/' + ah.cfg('mesh_write.dir_archived') + '/' + file;
+  var dp = root + '/' + ah.cfg('mesh_write.dir_workspaces') + '/' + file;
+  var m = piJson(mp), r = jx.read(dp), desc;
+  st.why = 'session_unknown';
+  if (r.text === undefined) {
+    if (ah.fs.lstat(dp) === null) { st.closed = true; st.why = 'marker'; }
+    return st;
+  }
+  if (r.big) return st;
+  var parsed = jx.parse(r.text);
+  if (parsed.unsure || parsed.invalid) return st;
+  desc = parsed.v;
+  if (!jx.isObj(desc)) { st.closed = true; st.why = 'marker'; return st; }
+  var field = ah.cfg('mesh_write.field_session_id');
+  function sid(v) { return v === undefined || v === null || String(v) === '' ? null : String(v); }
+  var ms = sid(m && m[field]), ds = sid(desc[field]);
+  if (ms !== null && ms === ds) { st.closed = true; st.why = 'marker'; }
+  else if (ms === null && ds === null) {
+    var mt = ah.fs.mtimeMs(mp), dt = ah.fs.mtimeMs(dp);
+    st.closed = piFinite(mt) && piFinite(dt) && dt <= mt;
+    st.why = st.closed ? 'marker' : 'descriptor_newer';
+  }
+  return st;
+}
+
 // What the Node hook would do with the summary's rows, decided without a write: the rows, the nudges and the archive recommendations,
 // or the cause of a deferral. `ctx`: {home, key, top, primaryId, now, sid}.
 function piRoster(ctx, summary) {
@@ -488,6 +522,22 @@ function piRoster(ctx, summary) {
     if (r !== null && r.unsure) { ah.unable('devswarm-parent-inbox:app_workspace'); return null; }
     return r;
   }
+  // #743: only explicit app closure with no live session can skip enrichment. Missing app facts stay unknown.
+  // Cache the snapshot rows so the liveness preflight does not add a second per-child app lookup.
+  var appRows = Object.create(null);
+  var enrich = !ah.settings.bool('devswarm_parent.skip_closed_enrichment');
+  if (!enrich) {
+    enrich = ids.some(function (id) {
+      if (!piSafeId(id) || id === ctx.primaryId) return false;
+      var entry = summaryWorkspaces[id];
+      if (!jx.isObj(entry)) return true;
+      var row = appWs(id, piStrField(entry.worktreePath));
+      appRows[id] = row;
+      return !row || (row.archived !== true && row.active !== false)
+        || !!(entry.sessionId && ah.mesh.sessionAlive(piStrField(entry.sessionId)));
+    });
+  }
+  out.closedRows = enrich ? null : appRows;
   var graceMs = piSetDefault('devswarm_parent.set_grace') * 1000;
   var renagMs = piSetDefault('devswarm_parent.set_renag') * ah.cfgNum('devswarm_parent.ms_per_hour');
   var ignoreV = piJson(piDevswarmDir(home) + '/' + ah.cfg('devswarm_role.pg_ignore_file'));
@@ -576,12 +626,13 @@ function piRoster(ctx, summary) {
       else graced = true;
     }
     var unreadForNag = unread > 0 && !graced;
-    var st = JSON.parse(ahHost.piRow(id, wtPath, sessionId, key, now));
+    var rowWs = Object.prototype.hasOwnProperty.call(appRows, id) ? appRows[id] : appWs(id, wtPath);
+    var st = enrich ? JSON.parse(ahHost.piRow(id, wtPath, sessionId, key, now))
+      : piClosedRow(ctx, id, wtPath, rowWs);
     if (st.unsure) { ah.unable('devswarm-parent-inbox:row_state'); st = { unsure: false, marker: false, app: false }; } // taken as not put away
     var archivedRow = st.marker;
     var appArchivedRow = st.app;
-    var rowWs = appWs(id, wtPath);
-    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unreadKnown ? unread : null);
+    var rowParked = enrich && piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unreadKnown ? unread : null);
     if (rowParked) {
       if (stuck || notDraining) waste.note(ctx.sid, 'stale_flag_on_parked', ah.cfg('devswarm_parent.parked_metric_source'), 0);
       stuck = false;
@@ -610,13 +661,13 @@ function piRoster(ctx, summary) {
     // the live-table row
     var archivedSuperseded = !archivedRow && st.superseded;
     if (!archivedRow && appArchivedRow) archivedRow = true;
-    var hb = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
+    var hb = enrich ? piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json') : null;
     var heartbeat = hb && typeof hb === 'object' ? hb : null;
     var lastOut = verdict && piFinite(verdict.lastOutboundTs) ? verdict.lastOutboundTs : null;
     var a = (lastOut !== null ? lastOut : 0), b = heartbeat && piFinite(heartbeat.ts) ? heartbeat.ts : 0, best = Math.max(a, b);
     var activityTs = best > 0 ? best : null;
     var dormant = false, idleAlive = false, idleMs = 0;
-    if (!archivedRow) {
+    if (enrich && !archivedRow) {
       var act = JSON.parse(ahHost.piActivity(id, wtPath, sessionId, lastOut, key, now));
       if (act.unsure) { ah.unable('devswarm-parent-inbox:row_activity'); act = { idleMs: 0, ts: null, dormant: false, idleAlive: false }; }
       idleMs = act.idleMs;
@@ -633,7 +684,7 @@ function piRoster(ctx, summary) {
       ds = piDisplayStatus(archiveReady, status, activityTs, now, dormant, false, idleAlive, idleMs);
     }
     var finishCell = piDoneState(entry, heartbeat);
-    if (/^working\b/.test(finishCell) && gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) !== false) {
+    if (enrich && /^working\b/.test(finishCell) && gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) !== false) {
       var pf = JSON.parse(ahHost.piFinish(id, wtPath, now));
       if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; }
       if (pf.label !== null) finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid);
@@ -698,7 +749,7 @@ function piChildState(ctx, id, wt, sid, marker, appKey) {
   if (ah.settings.touched('devswarm_parent.set_held')) ah.unable('devswarm-parent-inbox:held_partitions'); // the owner's held partitions are not applied here
   if (ahHost.piIgnored(id)) return 'quiet';
   var live = sid ? ah.mesh.sessionAlive(sid) : false;
-  if (id !== '' && sid && wt) {
+  if (id !== '' && sid && wt && !(ctx.closedRows && Object.prototype.hasOwnProperty.call(ctx.closedRows, id))) {
     var b = ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
     if (b.none !== true && b.waiting && live) return 'quiet';
   }
@@ -1450,7 +1501,9 @@ function piDecide(p, opts) {
         var visible = summary.staleRegistryPartitions.filter(function (row) {
           if (!row || row.id == null) return true;
           if (skipArchived) { // GH #508: explicitly archived (the app, or anti-hall's marker with proof the id was not re-created): not named
-            var rs = JSON.parse(ahHost.piRow(String(row.id), piStrField(row.worktreePath), null, key, now));
+            var rs = roster && roster.closedRows && Object.prototype.hasOwnProperty.call(roster.closedRows, String(row.id))
+              ? piClosedRow({ home: home }, String(row.id), piStrField(row.worktreePath), { archived: false })
+              : JSON.parse(ahHost.piRow(String(row.id), piStrField(row.worktreePath), null, key, now));
             if (!rs.unsure && rs.closed === true) { ah.metric('devswarm_archived_child_skipped', ['check', 'stale_registry', 'reason', String(rs.why)]); return false; }
             if (!rs.unsure && rs.marker && rs.why) ah.metric('devswarm_archived_child_kept', ['reason', String(rs.why)]);
           }
@@ -1466,7 +1519,7 @@ function piDecide(p, opts) {
       }
     }
     if (roster !== null && roster.rows.length) banner = piIngest(health, key, now, sid, tp);
-    var wctx = { home: home, primaryId: primaryId, now: now, sid: sid };
+    var wctx = { home: home, primaryId: primaryId, now: now, sid: sid, closedRows: roster && roster.closedRows };
     var wlc = piClaudePrimary() ? piLiveChildren(wctx, cwd) : null; // one read of the live children for the wake line and the cron order
     if (wlc !== null) {
       wakeLine = piWakeLine(wctx, cwd, cli, opts, wlc);

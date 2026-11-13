@@ -810,3 +810,7 @@ value = "wake-ctl"
 [devswarm_parent.set_wake_rearm_cooldown]
 doc = "Minimum gap between watcher arm orders, milliseconds. Setting devswarm.wakeWatchRearmCooldownMs: minimum gap between missing-watcher arm orders, even across live/missing transitions. Unchanged missing state never repeats. Independent of guards.emitDedupe and context injection keepalives."
 value = { section = "devswarm", key = "wakeWatchRearmCooldownMs", env = "ANTIHALL_DEVSWARM_WAKE_WATCH_REARM_COOLDOWN_MS", type = "number", min = 0, max = 86400000, default = 1800000 }
+
+[devswarm_parent.skip_closed_enrichment]
+doc = "Skip activity, finish and transcript enrichment when every child roster row is explicitly closed or archived and no child session is alive. Unknown rows retain enrichment. Pending mail and escalations still surface. Shared by Claude/OMC and Codex/OMX. Off restores per-prompt enrichment."
+value = { section = "devswarm", key = "skipClosedEnrichment", env = "ANTIHALL_DEVSWARM_SKIP_CLOSED_ENRICHMENT", type = "boolean", default = true }
