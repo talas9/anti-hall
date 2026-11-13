@@ -40,9 +40,8 @@ function isAutoMerge(cmd) {
 }
 
 function hasHedge(t) {
-  var lower = t.toLowerCase();
-  return ah.cfg('merge_gate.hedge_phrases').some(function (h) { return lower.indexOf(h) >= 0; }) ||
-    ah.cfg('merge_gate.hedge_patterns').some(function (src) { return ah.re.test(src, 'i', t); });
+  return ah.cfg('merge_gate.hedge_phrases').some(function (h) { return rp.phraseHits(h, t).length > 0; }) ||
+    ah.cfg('merge_gate.hedge_patterns').some(function (src) { return rp.wordHits(src, 'i', t).length > 0; });
 }
 
 function hasResolution(t) {
@@ -53,12 +52,12 @@ function hasResolution(t) {
 // The text blocks of an entry (a lone surrogate, which the host's masking cannot take, read as U+FFFD: no hedge or quote rule
 // matches either).
 function textOf(entry) {
-  var m = entry.message, content = isObj(m) ? m.content : undefined;
+  var m = isObj(entry.message) ? entry.message : entry, content = isObj(m) ? m.content : undefined;
   if (Array.isArray(content)) {
     var parts = [], result = false;
     content.forEach(function (b) {
       if (!isObj(b)) return;
-      if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+      if ((b.type === 'text' || b.type === 'output_text' || b.type === 'input_text') && typeof b.text === 'string') parts.push(b.text);
       if (b.type === 'tool_result') result = true;
     });
     return { text: hookProc.usv(parts.join('\n')), result: result };
@@ -86,7 +85,8 @@ function readRecords(tail) {
     if (line === '') continue;
     var entry;
     try { entry = JSON.parse(line); } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
-    var type = isObj(entry) ? entry.type : undefined;
+    entry = rp.entry(entry);
+    var type = isObj(entry) ? (entry.type === 'message' ? entry.role : entry.type) : undefined;
     if (type === 'assistant') out.push({ k: 'a', t: maskedMaybe(textOf(entry).text) });
     else if (type === 'user') {
       if (truthy(entry.isMeta) || truthy(entry.isSidechain) || truthy(entry.isCompactSummary) || nonHuman(entry)) { out.push({ k: 'o' }); continue; }
@@ -112,11 +112,11 @@ function hedgeUnresolved(records) {
 
 // The hedge that occurs last in the text (a phrase found earlier wins a tie).
 function lastHedgePhrase(t) {
-  var lower = t.toLowerCase(), best = null;
+  var best = null;
   var consider = function (idx, phrase) { if (best === null || idx > best.idx) best = { idx: idx, phrase: phrase }; };
-  ah.cfg('merge_gate.hedge_phrases').forEach(function (h) { var at = lower.lastIndexOf(h); if (at >= 0) consider(at, h); });
+  ah.cfg('merge_gate.hedge_phrases').forEach(function (h) { var hits = rp.phraseHits(h, t); if (hits.length) consider(hits[hits.length - 1][0], h); });
   ah.cfg('merge_gate.hedge_patterns').forEach(function (src) {
-    var hits = ah.re.findAll(src, 'i', t);
+    var hits = rp.wordHits(src, 'i', t);
     if (hits.length) { var h = hits[hits.length - 1]; consider(h[0], t.slice(h[0], h[1])); }
   });
   return best === null ? '' : best.phrase;

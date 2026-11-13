@@ -120,7 +120,7 @@ function ceInReach(list, head, reach, row) {
 function ceLabelled(sent, hit) {
   var list = ah.cfg('claim_evidence.ack_res'), reach = ah.cfgNum('claim_evidence.reach_label'), strict = ceStrict();
   for (var i = 0; i < list.length; i++) {
-    var all = ah.re.findAll(list[i], 'i', sent);
+    var all = rp.wordHits(list[i], 'i', sent);
     for (var j = 0; j < all.length; j++) {
       // GH #427: a label word that is itself negated ('not unverified') or used as a noun/aside ('unchecked boxes', 'unverified aside') is no label
       if (strict && (ah.re.find(ah.cfg('claim_evidence.ack_before_not_re'), 'i', sent.slice(0, all[j][0])) || ah.re.find(ah.cfg('claim_evidence.ack_after_not_re'), 'i', sent.slice(all[j][1])))) {

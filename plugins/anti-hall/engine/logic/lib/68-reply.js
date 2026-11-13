@@ -3,6 +3,24 @@
 // last assistant entry. Shared by the reply checks (speculation-guard, speculation-judge).
 'use strict';
 var rp = {
+  // Native Codex message records carry the role/content in payload. Other response items are not conversation messages.
+  entry: function (entry) {
+    if (entry && entry.type === 'response_item' && entry.payload && entry.payload.type === 'message') return entry.payload;
+    return entry;
+  },
+  // Filter candidate hits with the host's Unicode word class (letters, marks, numbers, connector punctuation and joiners).
+  wordBoundary: function (text, hit) {
+    return !ah.re.test(ah.cfg('replykit.word_before_re'), 'r', text.slice(0, hit[0])) &&
+      !ah.re.test(ah.cfg('replykit.word_after_re'), 'r', text.slice(hit[1]));
+  },
+  wordHits: function (src, flags, text) {
+    return ah.re.findAll(src, flags, text).filter(function (hit) { return rp.wordBoundary(text, hit); });
+  },
+  phraseHits: function (phrase, text) {
+    if (!phrase) return [];
+    var src = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return rp.wordHits(src, 'i', text);
+  },
   // The last `window` bytes of a transcript as lines (`split(/\r?\n/)`, a line cut by the window dropped), or null when unreadable.
   // `needles` (optional): only the lines holding one of them come back (the host picks them; a caller that skips every other line
   // anyway never sees the rest, which is what keeps a 512 KB window out of the interpreter).
@@ -44,7 +62,7 @@ var rp = {
       var r = jx.parse(t);
       if (r.unsure) return { unsure: true };
       if (r.invalid) continue;
-      var e = r.v;
+      var e = rp.entry(r.v);
       var role = e && (e.role || (e.message && e.message.role));
       if (role !== ah.cfg('replykit.role_assistant')) continue;
       var text = rp.collect(e, map, dedup);

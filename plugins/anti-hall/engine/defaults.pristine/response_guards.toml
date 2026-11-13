@@ -43,6 +43,14 @@ value = ["surrogate", "hex escape", "recursion limit", "out of range"]
 doc = "The role value of an assistant transcript entry."
 value = "assistant"
 
+[replykit.word_before_re]
+doc = "Rust Unicode regex that recognizes a word character immediately before a candidate hedge; such a candidate is embedded in a word."
+value = '\w$'
+
+[replykit.word_after_re]
+doc = "Rust Unicode regex that recognizes a word character immediately after a candidate hedge; such a candidate is embedded in a word."
+value = '^\w'
+
 # ---- once-per-turn gate ----------------------------------------------------------
 
 # ---- speculation-guard -------------------------------------------------------
