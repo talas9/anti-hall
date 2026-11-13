@@ -191,8 +191,8 @@ function snStuckAdvisory(p) {
 // coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
 // Reconcile the published snapshot at read time: status/answers and snapshot publication have separate lifecycles.
 // Retain audit verdicts separately from the publisher snapshot, which is never modified here.
-// A single shared input budget bounds strings AND their parse expansion in QuickJS. Never
-// parse a prefix: an oversized or changing file leaves the publisher's original decision intact.
+// State and overlay share an input budget; answers have an independent bounded tail. Never parse
+// a truncated state document. Unavailable state leaves answers and live tracked agents usable.
 function snRuntimeRead(path, budget) {
   var size = ah.fs.size(path);
   if (size === null) return '';
@@ -203,24 +203,77 @@ function snRuntimeRead(path, budget) {
   return raw;
 }
 
-function snRuntimeEvidence(p, home, budget) {
+// Publisher rows have no timestamp. A kernel lock serializes the entire read/merge/write:
+// no stale-lock takeover can let a delayed writer publish after its successor. Re-read the
+// publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
+// Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
+function snRuntimeFirstSeen(home, rows, now) {
+  var cfg = ah.cfgLive('silent_nudge.rt_first_seen'), paths = ah.cfg('agent_tracker.paths');
+  var rel = paths.base + '/' + paths.dir + '/' + cfg.file;
+  var lock = ah.cfg('stop_reblock.lock'), held;
+  try { held = ah.state.flock(rel + lock.suffix, lock.group, lock.wait_ms); } catch (e) { return {}; }
+  if (typeof held !== 'number') return {};
+  try {
+    // Read the clock after taking the lock, never an old caller's observation time.
+    now = Math.max(now, ah.clock.now());
+    var publisher = snRuntimeRead(home + '/' + paths.base + '/' + paths.dir + '/' + ah.cfg('agent_nudge.runtime_escalation').file, { left: cfg.max_bytes });
+    var doc = jx.parse(publisher === null ? '' : publisher);
+    if (doc.invalid || doc.unsure || !jx.isObj(doc.v) || !Array.isArray(doc.v.rows)) return {};
+    var raw = snRuntimeRead(home + '/' + rel, { left: cfg.max_bytes });
+    var parsed = jx.parse(raw === null ? '' : raw), old = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) ? parsed.v : {};
+    var seen = {}, anchors = {}, count = 0;
+    doc.v.rows.forEach(function (r) {
+      if (!r || typeof r.session !== 'string' || typeof r.child !== 'string') return;
+      var key = JSON.stringify([r.session, r.child]);
+      if (Object.prototype.hasOwnProperty.call(seen, key) || count >= cfg.max_rows) return;
+      var prior = old[key], valid = jx.isObj(prior) && snNum(prior.at) && prior.at > 0 && prior.at <= now + cfg.future_allowance_ms;
+      // ah-engine/src/agents/nudge.rs:873 recomputes dur_ms on every publication; it is not a generation.
+      // reminders changes on an actual send/refire (:610-632, :979-985); block reflects tier/extension
+      // state (:517-523). Those changes, or a row pruned here and then republished (:865-873),
+      // require a new answer. No nudge ID is published to detect an unobserved disappearance.
+      var reminders = snNum(r.reminders) ? r.reminders : null;
+      var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.reminders !== reminders || prior.block !== (r.block === true);
+      var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
+      // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
+      seen[key] = { at: at, reminders: reminders, block: r.block === true };
+      // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
+      if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
+      anchors[key] = at;
+      count++;
+    });
+    var ok = false;
+    try { ok = ah.state.writeAtomic(rel, JSON.stringify(seen)) === true; } catch (e) { ok = false; }
+    return ok ? anchors : {};
+  } finally { ah.state.unlock(held); }
+}
+
+function snRuntimeEvidence(p, home, budget, rows) {
   budget = budget || { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
   var raw = snRuntimeRead(base + paths.state, budget);
-  if (raw === null) return null;
-  var answers = snRuntimeRead(base + ah.cfg('agent_nudge.paths').answers, budget);
-  if (answers === null) return null;
-  var parsed = jx.parse(raw);
+  if (raw === null) ah.metric('runtime_escalation_reconcile_skipped', []);
+  var answerBytes = Math.min(ah.cfgNum('silent_nudge.rt_answers_bytes'), ah.cfgNum('script.read_max_bytes') - 1);
+  var answerPath = base + ah.cfg('agent_nudge.paths').answers;
+  if (ah.fs.size(answerPath) > answerBytes) ah.metric('runtime_escalation_reconcile_skipped', []);
+  // Native bounded line reading drops a partial first line and never loads the whole answers file.
+  var answers = ah.fs.tailLines(answerPath, answerBytes, false);
+  var parsed = jx.parse(raw === null ? '' : raw);
   var state = !parsed.invalid && !parsed.unsure && parsed.v || {};
   var answersByChild = {};
   var words = ah.cfgLive('agent_nudge.answers'), nudges = state.nudges || {};
-  if (answers !== null) answers.split('\n').forEach(function (line) {
+  if (answers !== null) answers.forEach(function (line) {
     var a; try { a = JSON.parse(line); } catch (e) { return; }
     if (!a || typeof a.child !== 'string' || !snNum(a.ts) || [words.stop, words.acted, words.msg, words.snooze, words.other].indexOf(a.answer) < 0) return;
     var key = a.child;
     if (!nudges[key] && !(state.agents && state.agents[key])) {
       var refs = Object.keys(nudges).filter(function (id) { var n = nudges[id]; return n && typeof n.ref_id === 'string' && n.ref_id && n.ref_id.toLowerCase() === a.child.toLowerCase(); });
       var matches = refs.length ? refs : Object.keys(nudges).filter(function (id) { return nudges[id] && nudges[id].child_name === a.child; });
+      if (matches.length === 0 && rows) {
+        var publishers = rows.filter(function (r) { return r && (r.child === a.child || r.name === a.child); });
+        // Check all publishers, including other sessions, before accepting a name alias.
+        if (publishers.some(function (r) { return r.session !== p.session_id; })) return;
+        publishers.forEach(function (r) { if (matches.indexOf(r.child) < 0) matches.push(r.child); });
+      }
       // Names are not session identities. Ambiguous aliases cannot release either parent's Stop.
       if (matches.length > 1) return;
       if (matches.length === 1) key = matches[0];
@@ -248,11 +301,17 @@ function snRuntimeVerdict(child, name, session, evidence) {
   if (n && n.parent && n.parent !== session) n = null;
   var since = Math.max(a && typeof a.first_seen === 'number' ? a.first_seen : 0, n && typeof n.sent_at === 'number' ? n.sent_at : 0);
   var words = ah.cfgLive('agent_nudge.answers'), limits = ah.cfgLive('agent_nudge.limits');
+  var anchorKey = JSON.stringify([session, child]);
+  var firstSeen = evidence.firstSeen && evidence.firstSeen[anchorKey];
+  // Never subtract clock skew: that admits an answer from before this escalation.
+  // Unknown candidate clocks also start now; stored anchors have a bounded future allowance.
+  if (evidence.firstSeen) since = snNum(firstSeen) ? Math.max(since, firstSeen) : evidence.now;
+  else if (since === 0) since = evidence.now;
   var answer = evidence.answers[child];
   var ttl = ah.cfgLive('silent_nudge.rt_repair').ttl_ms;
-  if (answer && answer.ts > 0 && answer.ts >= since && answer.ts <= evidence.now) {
+  if ((!evidence.firstSeen || snNum(firstSeen)) && answer && answer.ts > 0 && answer.ts >= since && answer.ts <= evidence.now) {
     var until = answer.ts;
-    if (answer.answer === words.stop || answer.answer === words.acted) until = evidence.now + ttl;
+    if (answer.answer === words.stop || answer.answer === words.acted) until = answer.ts + Math.min(ttl, limits.window_ms);
     if (answer.answer === words.msg) until = answer.ts + limits.window_ms;
     if (answer.answer === words.other || answer.answer === words.snooze) {
       var minutes = answer.answer === words.snooze && snNum(answer.min) && answer.min > 0 ? answer.min : limits.snooze_default_min;
@@ -273,23 +332,26 @@ function snRetired(child, name, session, evidence) {
 // Preserve every audit row; expired verdicts are ignored, and current live evidence supersedes old completion.
 function snRuntimeRows(p, home, session, doc) {
   var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
-  if (rows.length === 0 || !ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
+  if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
+  var firstSeen = snRuntimeFirstSeen(home, doc && Array.isArray(doc.rows) ? doc.rows : [], ah.clock.now());
+  if (rows.length === 0) return rows;
   var cfg = ah.cfgLive('silent_nudge.rt_repair');
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + cfg.file_prefix + encodeURIComponent(session) + cfg.file_ext;
   var budget = { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var raw = snRuntimeRead(home + '/' + rel, budget);
-  var evidence = raw !== null ? snRuntimeEvidence(p, home, budget) : null;
+  var evidence = raw !== null ? snRuntimeEvidence(p, home, budget, doc.rows) : null;
   if (evidence === null) {
     ah.metric('runtime_escalation_reconcile_skipped', []);
     return rows; // skip only reconciliation: the original publisher rows still block, subject to the usual caps
   }
+  evidence.firstSeen = firstSeen;
   var parsed = jx.parse(raw);
   var overlay = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) && parsed.v.session === session && jx.isObj(parsed.v.rows) ? parsed.v : { session: session, rows: {} };
   var changed = false, kept = [];
   rows.forEach(function (r) {
     var key = JSON.stringify([r.child, r.name]), old = jx.isObj(overlay.rows[key]) ? overlay.rows[key] : null;
     var verdict = snRuntimeVerdict(r.child, r.name, session, evidence);
-    var active = old && old[cfg.marker] === true && snNum(old.until) && old.until > evidence.now && old.since === verdict.since;
+    var active = old && old[cfg.marker] === true && snNum(old.until) && old.until > evidence.now && old.since === verdict.since && snNum(firstSeen[JSON.stringify([session, r.child])] );
     if (verdict.retired === true) {
       if (!active || old.answer_at !== verdict.answer_at || old.until > verdict.until) {
         var entry = { since: verdict.since, until: Math.min(verdict.until, evidence.now + cfg.ttl_ms), answer_at: verdict.answer_at };

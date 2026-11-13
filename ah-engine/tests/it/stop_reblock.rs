@@ -53,7 +53,7 @@ fn done_runtime_agent_does_not_block_and_repairs_overlay_idempotently() {
 fn nudge_stop_runtime_agent_does_not_block() {
     let w = World::new("nudge");
     w.runtime(json!({"id":"child","kind":"teammate","parent":"parent","running":true}));
-    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), "{\"ts\":1,\"child\":\"child\",\"answer\":\"stop\"}\n").unwrap();
+    w.answer("stop", 0, 1000);
     assert!(!w.stop().contains("decision\\\":\\\"block"));
 }
 #[test]
@@ -317,8 +317,19 @@ impl World {
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(lib.join("99-runtime-fixture.js"), js).unwrap();
     }
+    fn anchor(&self, at: u64) {
+        let publisher: Value =
+            serde_json::from_str(&std::fs::read_to_string(self.home.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap()).unwrap();
+        let mut anchors = serde_json::Map::new();
+        for row in publisher["rows"].as_array().unwrap() {
+            let key = serde_json::to_string(&json!([row["session"], row["child"]])).unwrap();
+            anchors.insert(key, json!({"at":at,"dur_ms":row["dur_ms"],"reminders":row["reminders"],"block":row["block"] == true}));
+        }
+        self.write(".anti-hall/agent-tracker/runtime-stop-first-seen.json", Value::Object(anchors));
+    }
     fn answer(&self, answer: &str, minutes: u64, age: u64) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        self.anchor(now - age - 1000);
         std::fs::write(
             self.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"),
             format!("{}\n", json!({"ts":now-age,"child":"child","answer":answer,"min":minutes,"text":"owner reason"})),
@@ -490,12 +501,14 @@ fn runtime_reconciliation_uses_toml_verbs_windows_cap_and_overlay_expiry() {
         ("later", 999, 360000, true),
         ("send", 0, 30000, false),
         ("send", 0, 90000, true),
-        ("halt", 0, 1000, false),
+        ("halt", 0, 100, false),
     ] {
         let w = World::new(&format!("toml-{answer}-{age}"));
         w.runtime(json!({"id":"child","parent":"parent","kind":"teammate","running":true}));
         w.custom_toml();
         w.answer(answer, min, age);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        w.fixture(&format!("ah.clock.now=function(){{return {now};}};"));
         assert_eq!(w.cli_stop().contains("\"decision\":\"block\""), blocked, "{answer}/{age}");
     }
     let w = World::new("toml-expiry");
@@ -646,4 +659,259 @@ fn candidate_runtime_evidence_over_bound_keeps_nudge_without_script_failure() {
     w.fixture("var candidateRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json'))throw Error('oversized candidate state must not be read');return candidateRead(p,n);};");
     let v = w.stop_without_script_error();
     assert!(v.contains("decision\\\":\\\"block"), "unknown runtime evidence must keep the candidate nudge without script failure: {v}");
+}
+
+// #725: owner answers must survive tracker history exceeding the QuickJS input bound.
+impl World {
+    fn oversized_tracker(&self) {
+        let budget = ah_engine::defaults::num("silent_nudge.rt_reconcile_bytes") as usize;
+        self.write(".anti-hall/agent-tracker/state.json", json!({"history":"x".repeat(budget + 1)}));
+        self.fixture("var boundedRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json'))throw Error('oversized tracker must not enter QuickJS');return boundedRead(p,n);};");
+    }
+}
+#[test]
+fn issue_725_other_answer_releases_oversized_tracker_on_both_hosts() {
+    for host in ["claude", "codex"] {
+        let w = World::new(&format!("725-other-{host}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        w.answer("other", 0, 1000);
+        drop(ah_engine::telemetry::emit::take_queued());
+        let v = w.stop_env(&[("DEVSWARM_AI_AGENT", host)]);
+        let events = ah_engine::telemetry::emit::take_queued();
+        assert!(!events.iter().any(|e| e.o == ah_engine::telemetry::event::Outcome::Error), "{events:?}");
+        assert!(v.contains("Allow"), "recorded extension must release: {v}");
+    }
+}
+#[test]
+fn issue_725_stop_answer_releases_oversized_tracker() {
+    let w = World::new("725-stop");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    w.answer("stop", 0, 1000);
+    let v = w.stop_without_script_error();
+    assert!(v.contains("Allow"), "recorded stop must release: {v}");
+}
+#[test]
+fn issue_725_name_answer_releases_missing_tracker() {
+    let w = World::new("725-missing-name");
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"parent","child":"child","name":"worker","block":true}]}));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    w.anchor(now - 2000);
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":now-1000,"child":"worker","answer":"other"})))
+        .unwrap();
+    let v = w.stop_without_script_error();
+    assert!(v.contains("Allow"), "publisher name resolves without tracker: {v}");
+}
+#[test]
+fn issue_725_newest_answer_in_bounded_tail_wins() {
+    let w = World::new("725-tail");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    w.anchor(now - 2000);
+    let partial = format!("{}{}", " ".repeat(400_000), json!({"ts":now-1000,"child":"child","answer":"stop"}));
+    let rows =
+        format!("{partial}\n{}\n{}\n", json!({"ts":now-1000,"child":"child","answer":"other"}), json!({"ts":now-10_000_000,"child":"child","answer":"msg"}));
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), rows).unwrap();
+    let v = w.stop_without_script_error();
+    assert!(v.contains("Allow"), "newest timestamp wins, partial first row ignored: {v}");
+}
+#[test]
+fn issue_725_runtime_stop_cap_applies_only_to_reminder_rows() {
+    let w = World::new("725-reminder-cap");
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"parent","child":"child","name":"worker","block":false}]}));
+    w.oversized_tracker();
+    assert!(w.stop().contains("decision\\\":\\\"block"));
+    assert!(w.stop().contains("Allow"), "rt_stop_cap=1 must cap reminders");
+}
+#[test]
+fn issue_725_runtime_block_cap_is_separate_and_honoured() {
+    let w = World::new("725-block-cap");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    std::fs::write(w.home.join("config.toml"), "[silent_nudge]\nrt_block_cap=2\n").unwrap();
+    assert!(w.cli_stop().contains("\"decision\":\"block\""));
+    assert!(w.cli_stop().contains("\"decision\":\"block\""));
+    assert!(!w.cli_stop().contains("\"decision\":\"block\""));
+}
+
+#[test]
+fn issue_725_unreadable_state_rejects_ancient_answers() {
+    for answer in ["stop", "acted", "other"] {
+        let w = World::new(&format!("725-ancient-{answer}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":1,"child":"child","answer":answer}))).unwrap();
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "ancient {answer} must not release a new escalation");
+    }
+}
+#[test]
+fn issue_725_valid_json_partial_answer_line_is_excluded() {
+    for partial in [false, true] {
+        let w = World::new(&format!("725-valid-partial-{partial}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        w.anchor(now - 1000);
+        w.fixture(&format!("ah.clock.now=function(){{return {now};}};"));
+        let padding = if partial { " ".repeat(400_000) } else { String::new() };
+        let line = format!("{padding}{}\n", json!({"ts":now,"child":"child","answer":"stop"}));
+        assert!(serde_json::from_str::<Value>(&line).is_ok(), "fixture must be valid JSON even though the bounded read starts mid-line");
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), line).unwrap();
+        let out = w.stop_without_script_error();
+        assert_eq!(out.contains("decision\\\":\\\"block"), partial, "complete answer releases, same fresh answer on partial line must not: {out}");
+    }
+}
+#[test]
+fn issue_725_growing_tail_does_not_replay_ancient_stop() {
+    use std::io::Write;
+    let w = World::new("725-growing-tail");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let path = w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson");
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+    for _ in 0..2 {
+        writeln!(file, "{}", json!({"padding":"x".repeat(80_000)})).unwrap();
+        writeln!(file, "{}", json!({"ts":1,"child":"child","answer":"stop"})).unwrap();
+        file.flush().unwrap();
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "growth must not replay an ancient answer");
+    }
+}
+
+#[test]
+fn issue_725_first_seen_and_reescalation_require_new_answers() {
+    let w = World::new("725-generation");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let publisher = std::fs::read_to_string(w.home.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    // JS libraries are fingerprint-cached: vary data, not the loaded clock function.
+    w.fixture("ah.clock.now=function(){return JSON.parse(ah.fs.readText(ah.env.get(ah.cfg('env.home'))+'/clock.json'));};");
+    let clock = |offset| w.write("clock.json", json!(now + offset));
+    let answer = |ts| {
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":ts,"child":"child","answer":"acted"})))
+            .unwrap()
+    };
+    clock(0);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"));
+    clock(100);
+    answer(now + 100);
+    assert!(w.stop_without_script_error().contains("Allow"));
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[]}));
+    assert!(w.stop_without_script_error().contains("Allow"));
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/runtime-escalations.json"), publisher).unwrap();
+    clock(5000);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "old answer cannot release the next escalation");
+    answer(now + 5000);
+    assert!(w.stop_without_script_error().contains("Allow"));
+    clock(1_000_000);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "unchanged stop/acted answer must expire without TTL renewal");
+}
+
+#[test]
+fn issue_725_answer_just_before_first_seen_cannot_release_reescalation() {
+    for answer in ["acted", "other"] {
+        let w = World::new(&format!("725-before-anchor-{answer}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        w.anchor(12500);
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":12000,"child":"child","answer":answer})))
+            .unwrap();
+        w.fixture("ah.clock.now=function(){return 12500;};");
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "older {answer} must not release a new escalation");
+    }
+}
+
+#[test]
+fn issue_725_locked_reread_preserves_newer_anchors_and_new_child() {
+    let w = World::new("725-delayed-anchor");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let next = json!({"rows":[
+        {"session":"parent","child":"child","name":"worker","dur_ms":25000,"reminders":1,"block":true},
+        {"session":"parent","child":"new-child","name":"new worker","dur_ms":1000,"reminders":1,"block":true}
+    ]});
+    w.fixture(&format!("ah.clock.now=function(){{return 25000;}}; var acquire=ah.state.flock; ah.state.flock=function(p,g,t){{if(p.indexOf('runtime-stop-first-seen')>=0){{ah.state.writeAtomic('.anti-hall/agent-tracker/runtime-escalations.json',JSON.stringify({next}));}}return acquire(p,g,t);}};"));
+    w.stop_without_script_error();
+    let path = w.home.join(".anti-hall/agent-tracker/runtime-stop-first-seen.json");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let anchors: Value = serde_json::from_str(&before).unwrap();
+    assert_eq!(anchors["[\"parent\",\"child\"]"]["at"], 25000);
+    assert_eq!(anchors["[\"parent\",\"new-child\"]"]["at"], 25000);
+    // Run the authoritative publisher through another delayed caller. Neither anchor can vanish.
+    w.stop_without_script_error();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+}
+
+#[test]
+fn issue_725_kernel_lock_excludes_competing_anchor_writer() {
+    use std::os::fd::AsRawFd;
+    let w = World::new("725-held-anchor-lock");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    w.answer("other", 0, 1000);
+    let anchor = w.home.join(".anti-hall/agent-tracker/runtime-stop-first-seen.json");
+    let before = std::fs::read_to_string(&anchor).unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(anchor.with_extension("json.flock")).unwrap();
+    // SAFETY: lock owns a valid open descriptor for the duration of this kernel lock.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    assert!(w.cli_stop().contains("\"decision\":\"block\""), "a competing process must preserve the block");
+    assert_eq!(std::fs::read_to_string(&anchor).unwrap(), before, "busy lock must not publish a snapshot");
+    drop(lock);
+    assert!(w.cli_stop().is_empty(), "the fresh answer works after the kernel lock is released");
+}
+
+#[test]
+fn issue_725_publisher_ticks_preserve_answer_but_reminders_reescalate() {
+    let w = World::new("725-publisher-ticks");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    w.fixture("ah.clock.now=function(){return JSON.parse(ah.fs.readText(ah.env.get(ah.cfg('env.home'))+'/clock.json'));};");
+    let clock = |now| w.write("clock.json", json!(now));
+    let publish = |duration, reminders| {
+        w.write(
+            ".anti-hall/agent-tracker/runtime-escalations.json",
+            json!({"rows":[{"session":"parent","child":"child","name":"worker","dur_ms":duration,"reminders":reminders,"block":true}]}),
+        )
+    };
+    let answer = |ts| {
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":ts,"child":"child","answer":"other"})))
+            .unwrap()
+    };
+    clock(10000);
+    publish(10000, 2);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"));
+    clock(10100);
+    answer(10100);
+    assert!(w.stop_without_script_error().contains("Allow"));
+    for tick in 1..=20 {
+        clock(10100 + tick * 60000 + (tick % 2) * 5000);
+        publish(10000 + tick * 60000, 2);
+        assert!(w.stop_without_script_error().contains("Allow"), "ordinary publisher tick {tick}");
+    }
+    clock(1300000);
+    publish(1300000, 3);
+    assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"), "a genuine reminder requires a fresh answer");
+    answer(1300000);
+    assert!(w.stop_without_script_error().contains("Allow"));
+}
+
+#[test]
+fn issue_725_future_anchor_is_missing_and_reanchors_now() {
+    for at in [12001, 9007199254740991] {
+        let w = World::new(&format!("725-future-anchor-{at}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        w.anchor(at);
+        w.fixture("ah.clock.now=function(){return JSON.parse(ah.fs.readText(ah.env.get(ah.cfg('env.home'))+'/clock.json'));};");
+        w.write("clock.json", json!(10000));
+        assert!(w.stop_without_script_error().contains("decision\\\":\\\"block"));
+        let anchors: Value =
+            serde_json::from_str(&std::fs::read_to_string(w.home.join(".anti-hall/agent-tracker/runtime-stop-first-seen.json")).unwrap()).unwrap();
+        assert_eq!(anchors["[\"parent\",\"child\"]"]["at"], 10000);
+        w.write("clock.json", json!(10100));
+        std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":10100,"child":"child","answer":"other"})))
+            .unwrap();
+        assert!(w.stop_without_script_error().contains("Allow"));
+    }
 }
