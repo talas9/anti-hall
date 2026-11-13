@@ -191,8 +191,8 @@ function snStuckAdvisory(p) {
 // coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
 // Reconcile the published snapshot at read time: status/answers and snapshot publication have separate lifecycles.
 // Retain audit verdicts separately from the publisher snapshot, which is never modified here.
-// A single shared input budget bounds strings AND their parse expansion in QuickJS. Never
-// parse a prefix: an oversized or changing file leaves the publisher's original decision intact.
+// State and overlay share an input budget; answers have an independent bounded tail. Never parse
+// a truncated state document. Unavailable state leaves answers and live tracked agents usable.
 function snRuntimeRead(path, budget) {
   var size = ah.fs.size(path);
   if (size === null) return '';
@@ -203,24 +203,33 @@ function snRuntimeRead(path, budget) {
   return raw;
 }
 
-function snRuntimeEvidence(p, home, budget) {
+function snRuntimeEvidence(p, home, budget, rows) {
   budget = budget || { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
   var raw = snRuntimeRead(base + paths.state, budget);
-  if (raw === null) return null;
-  var answers = snRuntimeRead(base + ah.cfg('agent_nudge.paths').answers, budget);
-  if (answers === null) return null;
-  var parsed = jx.parse(raw);
+  if (raw === null) ah.metric('runtime_escalation_reconcile_skipped', []);
+  var answerBytes = Math.min(ah.cfgNum('silent_nudge.rt_answers_bytes'), ah.cfgNum('script.read_max_bytes') - 1);
+  var answerPath = base + ah.cfg('agent_nudge.paths').answers;
+  if (ah.fs.size(answerPath) > answerBytes) ah.metric('runtime_escalation_reconcile_skipped', []);
+  // Native bounded line reading drops a partial first line and never loads the whole answers file.
+  var answers = ah.fs.tailLines(answerPath, answerBytes, false);
+  var parsed = jx.parse(raw === null ? '' : raw);
   var state = !parsed.invalid && !parsed.unsure && parsed.v || {};
   var answersByChild = {};
   var words = ah.cfgLive('agent_nudge.answers'), nudges = state.nudges || {};
-  if (answers !== null) answers.split('\n').forEach(function (line) {
+  if (answers !== null) answers.forEach(function (line) {
     var a; try { a = JSON.parse(line); } catch (e) { return; }
     if (!a || typeof a.child !== 'string' || !snNum(a.ts) || [words.stop, words.acted, words.msg, words.snooze, words.other].indexOf(a.answer) < 0) return;
     var key = a.child;
     if (!nudges[key] && !(state.agents && state.agents[key])) {
       var refs = Object.keys(nudges).filter(function (id) { var n = nudges[id]; return n && typeof n.ref_id === 'string' && n.ref_id && n.ref_id.toLowerCase() === a.child.toLowerCase(); });
       var matches = refs.length ? refs : Object.keys(nudges).filter(function (id) { return nudges[id] && nudges[id].child_name === a.child; });
+      if (matches.length === 0 && rows) {
+        var publishers = rows.filter(function (r) { return r && (r.child === a.child || r.name === a.child); });
+        // Check all publishers, including other sessions, before accepting a name alias.
+        if (publishers.some(function (r) { return r.session !== p.session_id; })) return;
+        publishers.forEach(function (r) { if (matches.indexOf(r.child) < 0) matches.push(r.child); });
+      }
       // Names are not session identities. Ambiguous aliases cannot release either parent's Stop.
       if (matches.length > 1) return;
       if (matches.length === 1) key = matches[0];
@@ -278,7 +287,7 @@ function snRuntimeRows(p, home, session, doc) {
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + cfg.file_prefix + encodeURIComponent(session) + cfg.file_ext;
   var budget = { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
   var raw = snRuntimeRead(home + '/' + rel, budget);
-  var evidence = raw !== null ? snRuntimeEvidence(p, home, budget) : null;
+  var evidence = raw !== null ? snRuntimeEvidence(p, home, budget, doc.rows) : null;
   if (evidence === null) {
     ah.metric('runtime_escalation_reconcile_skipped', []);
     return rows; // skip only reconciliation: the original publisher rows still block, subject to the usual caps

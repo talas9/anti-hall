@@ -647,3 +647,72 @@ fn candidate_runtime_evidence_over_bound_keeps_nudge_without_script_failure() {
     let v = w.stop_without_script_error();
     assert!(v.contains("decision\\\":\\\"block"), "unknown runtime evidence must keep the candidate nudge without script failure: {v}");
 }
+
+// #725: owner answers must survive tracker history exceeding the QuickJS input bound.
+impl World {
+    fn oversized_tracker(&self) {
+        let budget = ah_engine::defaults::num("silent_nudge.rt_reconcile_bytes") as usize;
+        self.write(".anti-hall/agent-tracker/state.json", json!({"history":"x".repeat(budget + 1)}));
+        self.fixture("var boundedRead=ah.fs.readText; ah.fs.readText=function(p,n){if(p.endsWith('/agent-tracker/state.json'))throw Error('oversized tracker must not enter QuickJS');return boundedRead(p,n);};");
+    }
+}
+#[test]
+fn issue_725_other_answer_releases_oversized_tracker_on_both_hosts() {
+    for host in ["claude", "codex"] {
+        let w = World::new(&format!("725-other-{host}"));
+        w.runtime(json!({"id":"child","parent":"parent","running":true}));
+        w.oversized_tracker();
+        w.answer("other", 0, 1000);
+        drop(ah_engine::telemetry::emit::take_queued());
+        let v = w.stop_env(&[("DEVSWARM_AI_AGENT", host)]);
+        let events = ah_engine::telemetry::emit::take_queued();
+        assert!(!events.iter().any(|e| e.o == ah_engine::telemetry::event::Outcome::Error), "{events:?}");
+        assert!(v.contains("Allow"), "recorded extension must release: {v}");
+    }
+}
+#[test]
+fn issue_725_stop_answer_releases_oversized_tracker() {
+    let w = World::new("725-stop");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    w.answer("stop", 0, 1000);
+    let v = w.stop_without_script_error();
+    assert!(v.contains("Allow"), "recorded stop must release: {v}");
+}
+#[test]
+fn issue_725_name_answer_releases_missing_tracker() {
+    let w = World::new("725-missing-name");
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"parent","child":"child","name":"worker","block":true}]}));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), format!("{}\n", json!({"ts":now-1000,"child":"worker","answer":"other"}))).unwrap();
+    let v = w.stop_without_script_error();
+    assert!(v.contains("Allow"), "publisher name resolves without tracker: {v}");
+}
+#[test]
+fn issue_725_newest_answer_in_bounded_tail_wins() {
+    let w = World::new("725-tail");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    w.oversized_tracker();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let rows = format!("{}\n{}\n{}\n", "x".repeat(400_000), json!({"ts":now-1000,"child":"child","answer":"other"}), json!({"ts":now-10_000_000,"child":"child","answer":"msg"}));
+    std::fs::write(w.home.join(".anti-hall/agent-tracker/nudge-answers.ndjson"), rows).unwrap();
+    let v = w.stop_without_script_error();
+    assert!(v.contains("Allow"), "newest timestamp wins, partial first row ignored: {v}");
+}
+#[test]
+fn issue_725_runtime_stop_cap_applies_only_to_reminder_rows() {
+    let w = World::new("725-reminder-cap");
+    w.write(".anti-hall/agent-tracker/runtime-escalations.json", json!({"rows":[{"session":"parent","child":"child","name":"worker","block":false}]}));
+    w.oversized_tracker();
+    assert!(w.stop().contains("decision\\\":\\\"block"));
+    assert!(w.stop().contains("Allow"), "rt_stop_cap=1 must cap reminders");
+}
+#[test]
+fn issue_725_runtime_block_cap_is_separate_and_honoured() {
+    let w = World::new("725-block-cap");
+    w.runtime(json!({"id":"child","parent":"parent","running":true}));
+    std::fs::write(w.home.join("config.toml"), "[silent_nudge]\nrt_block_cap=2\n").unwrap();
+    assert!(w.cli_stop().contains("\"decision\":\"block\""));
+    assert!(w.cli_stop().contains("\"decision\":\"block\""));
+    assert!(!w.cli_stop().contains("\"decision\":\"block\""));
+}
