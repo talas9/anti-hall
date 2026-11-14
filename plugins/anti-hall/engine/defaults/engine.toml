@@ -594,8 +594,8 @@ env = "AH_ENGINE_SCRATCH_IDLE_EXIT_S"
 unit = "s"
 
 [daemon.scratch_roots]
-doc = "Directories, besides the system temp directory, under which a daemon's state directory counts as scratch (daemon.scratch_idle_exit_s). Compared after resolving symlinks."
-value = ["/tmp", "/var/tmp"]
+doc = "Directories, besides the system temp directory, under which a daemon's state directory counts as scratch (daemon.scratch_idle_exit_s). Compared after resolving symlinks. /var/folders is the macOS per-user temp directory (a daemon started without TMPDIR does not see it as its temp directory). A root that is `/` or equals or contains the user's real home or real state directory is ignored."
+value = ["/tmp", "/var/tmp", "/var/folders"]
 
 [daemon.cpu_check_ms]
 doc = "How often the watchdog compares process CPU time to wall time for the sustained-CPU self-check; 0 disables the check."

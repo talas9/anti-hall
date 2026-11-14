@@ -86,6 +86,8 @@ impl Env {
             .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
+            // the state dir lives under the parent's temp dir: the daemon must see the same temp root to count it scratch
+            .env("TMPDIR", std::env::temp_dir())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("ANTIHALL_JEV_RECOMMEND_NOTICE", "false") // the session gate answers the notice itself; these tests probe the Node fallback
             .env("ANTIHALL_ROLE_NOTE", "0") // the role note is injected at every SessionStart; these tests probe the Node fallback and the exact bytes
@@ -134,6 +136,8 @@ impl Env {
             .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
+            // the state dir lives under the parent's temp dir: the daemon must see the same temp root to count it scratch
+            .env("TMPDIR", std::env::temp_dir())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             // DevSwarm active, together with a SessionStart payload that names no working directory, makes the native

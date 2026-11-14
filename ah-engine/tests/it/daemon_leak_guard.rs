@@ -133,3 +133,72 @@ fn a_killed_test_process_leaves_no_daemon_beyond_the_scratch_idle_cap() {
     kill_leftover(pid);
     assert!(gone, "daemon {pid} of a killed test process was still running {:?} after its test died", common::READY_CEILING);
 }
+
+/// The shipped cap, read from the plugin's own defaults (never a literal in the test).
+fn shipped_scratch_cap() -> u64 {
+    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    let t: toml::Table = std::fs::read_to_string(plugin.join("engine/defaults/engine.toml")).unwrap().parse().unwrap();
+    t["daemon"]["scratch_idle_exit_s"]["value"].as_integer().unwrap() as u64
+}
+
+/// A daemon started the way `dispatch_e2e` does (state dir under the parent's temp directory, `env_clear()`, so the daemon
+/// resolves its own temp directory differently) with the SHIPPED cap (no override) is still capped.
+#[test]
+fn the_shipped_cap_holds_under_a_cleared_env() {
+    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-leakguard-env-{}", std::process::id())));
+    assert_eq!(daemon_idle_exit(root.path(), None), Some(shipped_scratch_cap()), "a daemon under the temp dir with a cleared env escaped the shipped cap");
+}
+
+/// A state dir that is no scratch (outside every temp root) is never capped, even when `TMPDIR` is `/` or the user's home:
+/// such a temp root would otherwise make every real daemon "scratch" (idle exit ignores scheduled jobs, shutdown kills them).
+#[test]
+fn a_temp_root_of_slash_or_home_does_not_make_a_real_state_dir_scratch() {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("ah-leakguard-real-{}", std::process::id()));
+    let home = ah_engine::checks::jsport::home::real_home().unwrap_or_else(|| "/".into());
+    let root = common::TempDir::at(base);
+    for tmpdir in ["/", home.as_str()] {
+        let got = daemon_idle_exit(root.path(), Some(tmpdir));
+        assert!(got > Some(shipped_scratch_cap()), "TMPDIR={tmpdir} made a non-scratch state dir scratch: idle exit {got:?}");
+    }
+}
+
+/// Starts a daemon through a client with a cleared env (scratch HOME, state under `root`, optional `TMPDIR`), reads its idle
+/// exit from `status --json`, and stops it.
+fn daemon_idle_exit(root: &Path, tmpdir: Option<&str>) -> Option<u64> {
+    let state = root.join("state");
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let cmd = || {
+        let mut c = Command::new(BIN);
+        c.env_clear()
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", root.join("home"))
+            .env("AH_ENGINE_DIR", &state)
+            .env("AH_ENGINE_VERSION", "0.1.0");
+        if let Some(t) = tmpdir {
+            c.env("TMPDIR", t);
+        }
+        c
+    };
+    let mut ch = cmd().arg("hook").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(PAYLOAD.as_bytes()).unwrap();
+    ch.wait().unwrap();
+    let t = Instant::now();
+    while !common::marker_pid(&state).is_some_and(common::is_daemon) {
+        assert!(t.elapsed() < common::READY_CEILING, "no daemon started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // the marker shows before the socket listens: ask until the daemon itself answers (its status carries the key)
+    let v = loop {
+        let o = cmd().args(["status", "--json"]).output().unwrap();
+        if let Some(v) = serde_json::from_slice::<serde_json::Value>(&o.stdout).ok().filter(|v| v.get("idle_exit_s").is_some()) {
+            break v;
+        }
+        assert!(t.elapsed() < common::READY_CEILING, "the daemon never answered a status: {}", String::from_utf8_lossy(&o.stdout));
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    common::reap(&state, || {
+        ah_engine::discard::harmless(cmd().args(["ctl", "stop"]).output());
+    });
+    v["idle_exit_s"].as_u64()
+}
