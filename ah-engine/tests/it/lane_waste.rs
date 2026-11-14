@@ -457,3 +457,19 @@ fn the_depth_bound_is_a_setting() {
     assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[]).0, 0, "default on");
     assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[("ANTIHALL_ALLOW_WIDE_SEARCH", "0")]).0, 0);
 }
+
+#[test]
+fn the_worker_text_and_the_wait_guard_share_one_limit() {
+    // Both texts render the limit from queued_wait.bounded_max_s: the WORKER line carries a placeholder, never the number.
+    let toml = std::fs::read_to_string(plugin().join("engine/defaults/verify_first.toml")).unwrap();
+    let worker = toml.split("[verify_first.worker]").nth(1).unwrap().split("\n[").next().unwrap();
+    assert!(worker.contains("{max}") && !worker.contains("540"), "the WORKER text must render the limit, not repeat it: {worker}");
+    let start = json!({"session_id": "s1", "cwd": "/tmp", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"});
+    let (code, out, _) = run(&["check", "verify-first-subagent"], &[], &start.to_string());
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("within 540s") && out.contains("timeout 540 gh pr checks --watch"), "WORKER text: {out}");
+    assert!(out.contains("SendMessage your lead") && out.contains("wake me when done"), "WORKER text: {out}");
+    assert!(!out.contains("run long commands in the foreground or poll"), "the old advice is gone: {out}");
+    let (_, block, _) = wait_guard("while true; do sleep 60; done", "subagent", false, &[]);
+    assert!(block.contains("timeout 540 gh pr checks --watch") && block.contains("wake me when done"), "guard text: {block}");
+}
