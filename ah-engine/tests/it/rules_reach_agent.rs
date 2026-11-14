@@ -49,3 +49,13 @@ fn the_reminders_the_owner_relies_on_are_in_shed_never() {
     }
 }
 
+/// Item 3: a Jev integration that is on but has no key is not a failed call in the report.
+#[test]
+fn a_missing_jev_key_is_not_a_counted_failure() {
+    for (d, v) in both("jev_report.toml", "jevrep.thr_failure_reasons") {
+        let reasons: Vec<&str> = v.as_array().unwrap().iter().filter_map(|r| r.as_str()).collect();
+        assert!(!reasons.contains(&"no-key"), "{d}: no-key must not count as a real failure: {reasons:?}");
+        assert!(reasons.contains(&"timeout"), "{d}: a timeout still counts: {reasons:?}");
+    }
+}
+
