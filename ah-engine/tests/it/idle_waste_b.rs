@@ -263,3 +263,141 @@ fn parked_wait_and_token_tolerance_have_settings_and_env_overrides() {
     assert_eq!(probe(&h, expr, &[]), "[12,20]");
     assert_eq!(probe(&h, expr, &[("ANTIHALL_DEVSWARM_PARKED_MAX_WAIT_MIN", "3"), ("ANTIHALL_DEVSWARM_TOKEN_OFFSET_TOLERANCE_BYTES", "8")]), "[3,8]");
 }
+
+#[test]
+fn closed_roster_skips_enrichment_without_losing_mail_or_escalations() {
+    for (name, app, alive, enabled, expected) in [
+        ("closed", "{active:false,archived:false}", false, true, 0),
+        ("live", "{active:true,archived:false}", false, true, 1),
+        ("unknown", "null", false, true, 1),
+        ("unreadable", "{active:false,archived:false}", false, true, 1),
+        ("session-live", "{active:false,archived:false}", true, true, 1),
+        ("disabled", "{active:false,archived:false}", false, false, 1),
+    ] {
+        let h = Home::new(&format!("closed-enrichment-{name}"));
+        h.put(".anti-hall/devswarm/escalation-pending/e1.json", r#"{"parentId":"primary","childId":"c1","row":{}}"#);
+        let readable = name != "unreadable";
+        let expr = format!(
+            r#"(function(){{
+            var calls={{row:0,activity:0,finish:0,transcript:0}};
+            ahHost.piRow=function(){{calls.row++;return JSON.stringify({{marker:false,app:false,closed:false,ignored:false}});}};
+            ahHost.piSnap=function(){{return JSON.stringify({{readable:{readable},file:true,focused:null}});}};
+            ahHost.piWs=function(){{return JSON.stringify({app});}};
+            ah.mesh.sessionAlive=function(){{return {alive};}};
+            ah.mesh.childBusy=function(){{calls.transcript++;return {{none:true}};}};
+            ahHost.piActivity=function(){{calls.activity++;return JSON.stringify({{idleMs:0,ts:null,dormant:false,idleAlive:false}});}};
+            ahHost.piFinish=function(){{calls.finish++;return JSON.stringify({{label:null}});}};
+            var roster=piRoster({{home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{{known:true,value:null}}}},{{workspaces:{{c1:{{worktreePath:'/repo/child',sessionId:'dead',unread:2,directUnread:2,urgencyMax:'high',oldestDirectUnreadTs:1}}}}}});
+            return JSON.stringify({{calls:calls,attention:roster.attention,own:piOwnSegment(2,'primary','high',[],[],function(id){{return id;}},{{}},'mesh',ah.clock.now()),escalations:piParked(spawn.osHome(),'primary','mesh')}});
+        }})()"#
+        );
+        let out = probe(&h, &expr, &[("ANTIHALL_DEVSWARM_SKIP_CLOSED_ENRICHMENT", if enabled { "1" } else { "0" })]);
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{name}: {e}: {out}"));
+        assert_eq!(value["calls"]["row"], expected, "{name}: {out}");
+        assert_eq!(value["calls"]["activity"], expected, "{name}: {out}");
+        assert_eq!(value["calls"]["finish"], expected, "{name}: {out}");
+        assert_eq!(value["calls"]["transcript"], expected, "{name}: {out}");
+        assert_eq!(value["attention"][0]["unread"], 2, "{name}: child mail: {out}");
+        assert!(value["own"].as_str().unwrap().contains("2"), "{name}: parent mail: {out}");
+        assert!(value["escalations"].as_str().unwrap().contains("c1"), "{name}: escalation: {out}");
+    }
+}
+
+#[test]
+fn closed_enrichment_preserves_archived_marker_eligibility() {
+    let h = Home::new("closed-marker");
+    h.put(".anti-hall/devswarm/archived/c1.json", r#"{"sessionId":"dead"}"#);
+    h.put(".anti-hall/devswarm/workspaces/c1.json", r#"{"id":"c1","sessionId":"dead","worktreePath":"/repo/child"}"#);
+    let expr = r#"(function(){
+        ahHost.piSnap=function(){return JSON.stringify({readable:true,file:true,focused:null});};
+        ahHost.piWs=function(){return JSON.stringify({id:'c1',active:false,archived:false});};
+        ah.mesh.sessionAlive=function(){return false;};
+        ahHost.piRow=function(){throw Error('unexpected row enrichment');};
+        ahHost.piActivity=function(){throw Error('unexpected activity enrichment');};
+        ahHost.piFinish=function(){throw Error('unexpected finish enrichment');};
+        ah.mesh.childBusy=function(){throw Error('unexpected transcript enrichment');};
+        return JSON.stringify(piRoster({home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{known:true,value:null}}, {workspaces:{c1:{sessionId:'dead',unread:2,archive_ready:true}}}));
+    })()"#;
+    let out = probe(&h, expr, &[("ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN", "1")]);
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert_eq!(value["attention"].as_array().unwrap().len(), 0, "{out}");
+    assert_eq!(value["archiveList"].as_array().unwrap().len(), 0, "{out}");
+    assert_eq!(value["rows"][0]["unread"], 2, "raw mail remains intact: {out}");
+}
+
+#[test]
+fn closed_enrichment_full_parent_hook_delivers_mail_and_escalations_on_both_hosts() {
+    for agent in ["claude", "codex"] {
+        let h = Home::new(&format!("closed-full-{agent}"));
+        h.put(".anti-hall/devswarm/workspaces/c1.json", r#"{"id":"c1","worktreePath":"/repo/child","sessionId":"dead"}"#);
+        h.put(".anti-hall/devswarm/escalation-pending/e1.json", r#"{"parentId":"primary","childId":"c1","row":{}}"#);
+        let expr = r#"(function(){
+            ah.repo.context=function(){return {root:'/repo'};};
+            ah.mesh.ident=function(){return {top:'/repo',own:'primary'};};
+            ah.mesh.repoKey=function(){return 'k';};
+            ah.mesh.sessionAlive=function(){return false;};
+            ahHost.ctIngest=function(){return JSON.stringify({status:'healthy'});};
+            ahHost.piSnap=function(){return JSON.stringify({readable:true,file:true,focused:null});};
+            ahHost.piWs=function(){return JSON.stringify({id:'c1',active:false,archived:false});};
+            ahHost.piAppChildren=function(){return JSON.stringify({children:[]});};
+            ahHost.piRow=function(){throw Error('unexpected row enrichment');};
+            ahHost.piActivity=function(){throw Error('unexpected activity enrichment');};
+            ahHost.piFinish=function(){throw Error('unexpected finish enrichment');};
+            ah.mesh.childBusy=function(){throw Error('unexpected transcript enrichment');};
+            piCli=function(){return 'mesh';};
+            piDriftNotice=function(){return null;};
+            piReadSummary=function(){return {summary:{workspaces:{primary:{unread:3},c1:{worktreePath:'/repo/child',sessionId:'dead',unread:2,directUnread:2,urgencyMax:'high',oldestDirectUnreadTs:1}}}};};
+            var answer=piDecide({cwd:'/repo',session_id:'s1',prompt:'hi'},{});
+            return JSON.stringify(answer);
+        })()"#;
+        let out = probe(&h, expr, &[("DEVSWARM_AI_AGENT", agent), ("ANTIHALL_DEVSWARM_SUPERVISOR", "on")]);
+        assert!(out.contains("devswarm-own-inbox") && out.contains("3 unread"), "{agent}: parent mail: {out}");
+        assert!(out.contains("URGENT/HIGH-priority") && out.contains("c1"), "{agent}: child mail: {out}");
+        assert!(out.contains("devswarm-escalations"), "{agent}: escalation: {out}");
+    }
+}
+
+#[test]
+fn closed_roster_does_not_disable_unknown_wake_child_activity() {
+    let h = Home::new("closed-wake-unknown");
+    let expr = r#"(function(){
+        var calls=0;
+        ah.mesh.childBusy=function(){calls++;return {waiting:true};};
+        ah.mesh.sessionAlive=function(){return true;};
+        var ctx={home:spawn.osHome(),now:ah.clock.now(),closedRows:{c1:{active:false}}};
+        var closed=piChildState(ctx,'c1','/repo/child','dead',false,undefined);
+        var unknown=piChildState(ctx,'c2','/repo/other','live',false,undefined);
+        return JSON.stringify({calls:calls,closed:closed,unknown:unknown});
+    })()"#;
+    let out = probe(&h, expr, &[]);
+    assert_eq!(out, r#"{"calls":1,"closed":"live","unknown":"quiet"}"#);
+}
+
+#[test]
+fn closed_row_with_done_gate_stays_parked_when_enrichment_is_skipped() {
+    // A closed child whose done gate is set holds unread mail and a stale, not-draining liveness verdict.
+    // Skipping enrichment must keep the metadata-only parking proof: no drain nag, parked label.
+    for enabled in [false, true] {
+        let h = Home::new(&format!("closed-done-parked-{enabled}"));
+        h.put(".anti-hall/devswarm/liveness/c1.json", r#"{"status":"stale","notDraining":true}"#);
+        let expr = r#"(function(){
+            ahHost.piRow=function(){return JSON.stringify({marker:false,app:false,closed:false,ignored:false});};
+            ahHost.piSnap=function(){return JSON.stringify({readable:true,file:true,focused:null});};
+            ahHost.piWs=function(){return JSON.stringify({active:false,archived:false});};
+            ahHost.piActivity=function(){return JSON.stringify({idleMs:0,ts:null,dormant:false,idleAlive:false});};
+            ahHost.piFinish=function(){return JSON.stringify({label:null});};
+            ah.mesh.sessionAlive=function(){return false;};
+            ah.mesh.childBusy=function(){return {none:true};};
+            var roster=piRoster({home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{known:true,value:'9.9.9'}},{workspaces:{c1:{worktreePath:'/repo/child',sessionId:'dead',unread:2,directUnread:2,oldestDirectUnreadTs:1,gates:{done:true}}}});
+            return JSON.stringify({attention:roster.attention.map(function(a){return {parked:a.parked,notDraining:a.notDraining,status:a.status};}),skipped:roster.closedRows!==null,label:roster.rows[0].label});
+        })()"#;
+        let out = probe(&h, expr, &[("ANTIHALL_DEVSWARM_SKIP_CLOSED_ENRICHMENT", if enabled { "1" } else { "0" })]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        assert_eq!(v["skipped"], enabled, "{out}");
+        for a in v["attention"].as_array().unwrap() {
+            assert_eq!(a["notDraining"], false, "enabled={enabled}: false drain nag: {out}");
+            assert_eq!(a["parked"], true, "enabled={enabled}: {out}");
+        }
+        assert!(v["label"].as_str().unwrap().to_lowercase().contains("park"), "enabled={enabled}: {out}");
+    }
+}
