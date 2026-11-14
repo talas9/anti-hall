@@ -55,7 +55,7 @@ fn daemon_says(sh: &Shared, cwd: &str, cmd: &str) -> String {
 #[test]
 #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation, before any thread reads it
 fn rules_and_settings_layer_shipped_user_project() {
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-layers-{}", std::process::id())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-layers-{}", std::process::id())));
     let (home, state) = (root.join("home"), root.join("state"));
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::create_dir_all(&state).unwrap();

@@ -90,7 +90,7 @@ fn task_stop_cost_is_measured() {
     // AH_TSCOST_ROOT picks the scratch dir (to keep the output); without it the test makes its own, so the pack runs it anywhere
     // an explicit AH_TSCOST_ROOT is kept (the caller owns it); otherwise the scratch dir is removed when the test ends
     let keep = std::env::var_os("AH_TSCOST_ROOT").map(std::path::PathBuf::from);
-    let guard = keep.is_none().then(|| common::TempDir::at(std::env::temp_dir().join(format!("ah-tscost-{}", std::process::id()))));
+    let guard = keep.is_none().then(|| common::TempDir::at(common::testtmp::path(format!("ah-tscost-{}", std::process::id()))));
     let root = keep.unwrap_or_else(|| guard.as_ref().unwrap().path().to_path_buf());
     std::fs::create_dir_all(&root).unwrap();
     let root = std::fs::canonicalize(&root).unwrap();

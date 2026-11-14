@@ -15,7 +15,7 @@ static N: AtomicUsize = AtomicUsize::new(0);
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-cascade-it-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let d = crate::common::testtmp::path(format!("ah-cascade-it-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d.canonicalize().unwrap()

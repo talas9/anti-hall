@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// A scratch directory holding an executable `hivecontrol` that prints a word.
 fn bin_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hcguard-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("hcguard-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let f = d.join("hivecontrol");
     std::fs::write(&f, "#!/bin/sh\necho stub\n").unwrap();

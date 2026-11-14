@@ -100,7 +100,7 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let home = std::env::temp_dir().join(format!("ah-watcher-{}-{tag}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-watcher-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"))).unwrap();
         std::fs::create_dir_all(devswarm_root(&home).join(defaults::text("mesh_write.dir_locks"))).unwrap();

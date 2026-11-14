@@ -5,6 +5,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::jev::Question;
 use ah_engine::jev::assist::{AskRequest, Backend, Jev, Trust};
 use ah_engine::jev::breaker::SystemClock;
@@ -196,7 +199,7 @@ fn an_oversized_body_is_cut_off_and_reads_as_unparsable() {
 }
 
 fn temp_home(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-jev-http-{tag}-{}", std::process::id()));
+    let d = testtmp::path(format!("ah-jev-http-{tag}-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d

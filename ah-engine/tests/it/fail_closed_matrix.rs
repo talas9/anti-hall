@@ -711,7 +711,7 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
         for event in ah_engine::defaults::list("dispatch.guard_events") {
             if !table::entries(host, event).is_empty() {
                 let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-                cases.push(Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fc-{host}-{event}-{}", std::process::id())) });
+                cases.push(Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-fc-{host}-{event}-{}", std::process::id())) });
             }
         }
     }
@@ -797,7 +797,7 @@ fn a_truly_absent_daemon_fails_open_without_running_hooks() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-absent-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-absent-{host}-{event}-{}", std::process::id())) };
             let row = Row { name: "absent daemon", daemon: Daemon::Absent, ..BASE };
             ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
             // the first run builds the defaults cache (slow in a debug binary on a busy box); the wrapper's watchdog bounds that
@@ -825,7 +825,7 @@ fn a_truly_absent_daemon_fails_open_without_running_hooks() {
 fn pretooluse_invalid_utf8_fails_closed_before_hooks_run() {
     for host in table::hosts() {
         let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-        let case = Case { host, event: "PreToolUse".to_string(), dir: std::env::temp_dir().join(format!("ahd-utf8-pre-{host}-{}", std::process::id())) };
+        let case = Case { host, event: "PreToolUse".to_string(), dir: crate::common::testtmp::path(format!("ahd-utf8-pre-{host}-{}", std::process::id())) };
         if table::entries(case.host, &case.event).is_empty() {
             continue;
         }
@@ -843,7 +843,7 @@ fn stop_active_invalid_utf8_fails_open_before_utf8_rejection() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
             let row = Row {
                 name: "stop_hook_active with non-UTF-8 stdin",
                 stdin: Stdin::StopActiveNotUtf8,
@@ -870,7 +870,7 @@ fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fl-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-fl-{host}-{event}-{}", std::process::id())) };
             // checks down: every Stop entry has a built-in check by now, which would answer in the client without needing the install;
             // the count is about hooks that cannot run
             let broken = Row { name: "broken install", runnable: false, daemon: Daemon::Down, ..BASE };
@@ -899,7 +899,7 @@ fn the_unknown_session_counter_resets_wording_and_pruning() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-un-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-un-{host}-{event}-{}", std::process::id())) };
             ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
             let counters = case.dir.join("state").join(dir_name);
             std::fs::create_dir_all(&counters).unwrap();
@@ -928,7 +928,7 @@ fn the_unknown_session_counter_resets_wording_and_pruning() {
 /// a SubagentStop when its script hit the limit on a long transcript). Every shipped engine-only check is `open`.
 #[test]
 fn an_engine_only_advisory_whose_script_fails_on_a_guard_event_allows() {
-    let dir = std::env::temp_dir().join(format!("ah-fcm-script-{}", std::process::id()));
+    let dir = crate::common::testtmp::path(format!("ah-fcm-script-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     std::fs::create_dir_all(dir.join("home/.anti-hall/logic")).unwrap();
     let t = dir.join("t.jsonl");

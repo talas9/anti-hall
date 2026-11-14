@@ -30,7 +30,7 @@ fn launcher_bin() -> PathBuf {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-crashloop-{tag}-{}", std::process::id()));
+    let d = crate::common::testtmp::path(format!("ah-crashloop-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&d).ok(); // a scratch dir of this test process
     std::fs::create_dir_all(&d).unwrap();
     d

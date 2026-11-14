@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn the_project_file_is_read_from_the_payload_cwd_and_a_missing_one_is_none() {
-        let d = std::env::temp_dir().join(format!("ah-hookcfg-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-hookcfg-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
         assert_eq!(load_project(d.to_str().unwrap()).unwrap(), None);

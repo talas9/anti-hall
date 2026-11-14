@@ -382,7 +382,7 @@ mod tests {
     /// file both parsers reject is missing for both and changes nothing.
     #[test]
     fn a_settings_file_only_javascript_can_parse_takes_the_failure_policy_of_every_check() {
-        let home = std::env::temp_dir().join(format!("ah-badsettings-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-badsettings-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let h = home.to_string_lossy().to_string();

@@ -2931,7 +2931,7 @@ mod tests {
         let sh = Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into());
         let payload =
             r#"{"session_id":"s","cwd":"/","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
-        let home = std::env::temp_dir().join(format!("ahd-env-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ahd-env-{}", std::process::id()));
         let envs = [
             crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_str().unwrap())]),
             crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_str().unwrap()), ("ANTIHALL_GIT_GUARD", "0")]),

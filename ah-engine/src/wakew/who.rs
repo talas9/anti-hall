@@ -254,7 +254,7 @@ mod tests {
     /// run, as `isDevswarmActiveGate` runs them (devswarm-wake-watch.js:1567-1613).
     #[test]
     fn an_unreadable_settings_file_still_lets_the_later_tiers_arm_the_gate() {
-        let home = std::env::temp_dir().join(format!("ah-who-gate-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-who-gate-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         std::fs::write(home.join(".anti-hall/settings.json"), "{not json").unwrap();
         let env: Env = [(defaults::text("wake_watch.env_source_branch"), "b"), (defaults::text("mesh_write.env_builder_id"), "id1")]

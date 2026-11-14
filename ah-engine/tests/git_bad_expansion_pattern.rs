@@ -4,6 +4,9 @@
 //! `commit_expansion_patterns` holds the bad entries.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::checks::Verdict;
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
@@ -46,7 +49,7 @@ fn text(v: &Verdict) -> String {
 
 #[test]
 fn a_bad_expansion_pattern_is_dropped_told_once_and_never_blocks_bash() {
-    let tmp = std::env::temp_dir().join(format!("ah-badexp-{}", std::process::id()));
+    let tmp = testtmp::path(format!("ah-badexp-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let tmp = std::fs::canonicalize(&tmp).unwrap();
     // BAD: \b, a lookbehind, `^` inside a group and inside a lookahead, an invalid regex.

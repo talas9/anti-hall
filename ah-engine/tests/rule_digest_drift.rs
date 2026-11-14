@@ -13,7 +13,7 @@ const EDITED_DIGEST: &str = "ZZ-edited digest line.";
 #[test]
 #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation in a single-test process
 fn editing_an_enforced_rule_message_changes_the_digest_and_makes_the_committed_digest_stale() {
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-digest-drift-{}", std::process::id())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-digest-drift-{}", std::process::id())));
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(root.join("eng")).unwrap();
     let plugin = root.join("plugin");

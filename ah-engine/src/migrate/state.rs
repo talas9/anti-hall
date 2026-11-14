@@ -622,7 +622,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn ctx(name: &str) -> Ctx {
-        let home = std::env::temp_dir().join(format!("ah-state-unit-{}-{name}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-state-unit-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&home).expect("temp home");
         Ctx::new(home.to_string_lossy().into_owned(), home.to_string_lossy().into_owned(), BTreeMap::new(), false, None, None)
     }

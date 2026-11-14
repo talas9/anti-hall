@@ -743,7 +743,7 @@ mod tests {
 
     /// A store in Node's schema with `n` messages of workspace `w`, each body `len` bytes.
     fn store(n: usize, len: usize) -> (PathBuf, MeshReader) {
-        let dir = std::env::temp_dir().join(format!("ah-mesh-unit-{}-{n}-{len}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-mesh-unit-{}-{n}-{len}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("devswarm.db");

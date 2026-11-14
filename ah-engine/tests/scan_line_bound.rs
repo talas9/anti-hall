@@ -5,6 +5,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::checks::agent_scan::{Opts, Res, Scan, Unsupported, read_line_bounded, scan_transcript, scan_transcript_uncached};
 use serde_json::{Value, json};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -139,7 +142,7 @@ fn counts() -> (usize, usize) {
 
 #[test]
 fn an_oversize_line_is_read_past_not_held_and_the_other_lines_still_count() {
-    let dir = std::env::temp_dir().join(format!("ah-scan-line-bound-{}", std::process::id()));
+    let dir = testtmp::path(format!("ah-scan-line-bound-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // scratch HOME: nothing here may touch the real one
     // SAFETY: the one test that reads the environment, and the only thread running when it is set (it is set first).

@@ -3,6 +3,9 @@
 //! `cargo test --release --test silent_nudge_stop_cost -- --nocapture`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::io::Write;
@@ -95,7 +98,7 @@ fn silent_nudge_stop_is_measured() {
     // this measures the kept walk (`agent_scan.use_store = 0`); with the store, the default, no walk is kept per scan window
     ah_engine::defaults::init().unwrap();
     ah_engine::defaults::set_overlay(&[("agent_scan.use_store", json!(0))]);
-    let home = std::env::temp_dir().join(format!("ah-sncost-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-sncost-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();
     let tp = real.join("t.jsonl");

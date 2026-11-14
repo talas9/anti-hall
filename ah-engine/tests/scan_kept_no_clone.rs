@@ -5,6 +5,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::checks::agent_scan::{Opts, scan_transcript, scan_transcript_uncached};
 use serde_json::{Value, json};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -87,7 +90,7 @@ fn an_answer_from_the_kept_walk_does_not_copy_the_walk() {
     // this measures the kept walk, which `agent_scan.use_store = 0` selects (with the store on, the default, no walk is kept)
     ah_engine::defaults::init().unwrap();
     ah_engine::defaults::set_overlay(&[("agent_scan.use_store", serde_json::json!(0))]);
-    let dir = std::env::temp_dir().join(format!("ah-scan-no-clone-{}", std::process::id()));
+    let dir = testtmp::path(format!("ah-scan-no-clone-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let tp = dir.join("t.jsonl");
     write_transcript(&tp);

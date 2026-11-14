@@ -588,7 +588,7 @@ mod tests {
     fn a_check_that_decided_allow_is_answered_natively_not_deferred() {
         let mut deferred = Vec::new();
         // the checks that keep their state in the client's home need one (without it they defer, D74): an empty one here
-        let home = std::env::temp_dir().join(format!("ah-native-quiet-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-native-quiet-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string())]);
@@ -646,7 +646,7 @@ mod tests {
     fn a_force_push_is_never_a_native_allow_for_the_command_guard() {
         let cmd = ["git push", "--force", "origin main"].join(" ");
         let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}});
-        let home = std::env::temp_dir().join(format!("ah-native-fp-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-native-fp-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string()), ("CLAUDE_CODE_ENTRYPOINT", "cli".to_string())]);
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn the_session_and_subagent_start_entries_are_answered_with_the_node_hooks_bytes() {
-        let d = std::env::temp_dir().join(format!("ah-native-vf-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-native-vf-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join("plugin/hooks")).unwrap();
         std::fs::write(d.join("plugin/hooks/install.sh"), "").unwrap();

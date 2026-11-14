@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn a_transcript_condition_reads_the_index_and_flips_with_its_facts() {
         // two agents a compaction re-injected as live; one then reports a terminal status: one stays unresolved
-        let dir = std::env::temp_dir().join(format!("ah-when-transcript-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-when-transcript-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");

@@ -104,7 +104,7 @@ mod tests {
         ["message", "content"].iter().map(|s| s.to_string()).collect()
     }
     fn file(tag: &str, text: &str) -> String {
-        let p = std::env::temp_dir().join(format!("ah-tus-{tag}-{}", std::process::id()));
+        let p = crate::testtmp::path(format!("ah-tus-{tag}-{}", std::process::id()));
         std::fs::write(&p, text).unwrap();
         p.to_string_lossy().into_owned()
     }

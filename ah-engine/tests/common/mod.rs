@@ -6,6 +6,7 @@
 #![allow(dead_code)] // each test binary uses a subset
 
 pub mod scale;
+pub mod testtmp;
 
 /// The built thin client (`ah-launcher`, binary `ah-hook`): AH_HOOK_BIN, else its release or debug build in this checkout. The
 /// hook command of both hosts is this binary (the plugin ships no shell wrapper), so a test that drives "the hook" runs it.

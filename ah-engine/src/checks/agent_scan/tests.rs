@@ -190,7 +190,7 @@ fn launch_lines(id: &str) -> String {
 /// A fresh directory for one completeness test, and a transcript in it holding one background launch after `filler_bytes` of filler.
 fn swap_fixture(tag: &str, filler_bytes: usize) -> (std::path::PathBuf, std::path::PathBuf) {
     use std::io::Write;
-    let dir = std::env::temp_dir().join(format!("ah-scan-{tag}-{}", std::process::id()));
+    let dir = crate::testtmp::path(format!("ah-scan-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap();
@@ -427,7 +427,7 @@ fn walk_corpus() -> String {
 fn the_store_answers_like_a_fresh_scan_while_the_transcript_grows() {
     use std::io::Write;
     let corpus = walk_corpus();
-    let dir = std::env::temp_dir().join(format!("ah-scan-store-{}", std::process::id()));
+    let dir = crate::testtmp::path(format!("ah-scan-store-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).unwrap();
     let dir = std::fs::canonicalize(&dir).unwrap();
@@ -479,7 +479,7 @@ fn zz_store_parity_real() {
                 };
                 eprintln!("PARITY {p} tail {tail} ignore {ignore}: {verdict} ({} bytes, {:?})", b.len(), t0.elapsed());
                 if verdict == "DIFF" {
-                    let dump = std::env::temp_dir().join("ah-parity-diff");
+                    let dump = crate::testtmp::path("ah-parity-diff");
                     std::fs::create_dir_all(&dump).ok();
                     std::fs::write(dump.join("store.txt"), a.unwrap_or_default()).ok();
                     std::fs::write(dump.join("fresh.txt"), &b).ok();

@@ -1,5 +1,8 @@
 //! Regression for hedge substrings (#722), using the shipped scripts and real regex host.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::{checks::Verdict, reqenv::RequestEnv, script};
 use serde_json::json;
 
@@ -13,7 +16,7 @@ fn merge(text: &str, codex: bool) -> bool {
 }
 
 fn merge_records(records: &[serde_json::Value]) -> bool {
-    let home = std::env::temp_dir().join(format!("ah-hedge-records-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let home = testtmp::path(format!("ah-hedge-records-{}-{:?}", std::process::id(), std::thread::current().id()));
     std::fs::create_dir_all(&home).unwrap();
     let tp = home.join("transcript.jsonl");
     let transcript = records.iter().map(|record| format!("{record}\n")).collect::<String>();
@@ -77,7 +80,7 @@ fn literal_phrase_boundaries_and_offsets() {
 #[test]
 fn claim_evidence_labels_are_whole_words() {
     for (text, blocked) in [("éunverified: tests passed.", true), ("unverified界: tests passed.", true), ("unverified: tests passed.", false)] {
-        let home = std::env::temp_dir().join(format!("ah-claim-boundary-{}", std::process::id()));
+        let home = testtmp::path(format!("ah-claim-boundary-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         let tp = home.join("transcript.jsonl");
         let user = json!({"type":"user","message":{"role":"user","content":"Check the change."}});
@@ -160,7 +163,7 @@ fn codex_event_only_reply_and_duplicate() {
 
 #[test]
 fn codex_event_only_stop_reply() {
-    let home = std::env::temp_dir().join(format!("ah-hedge-stop-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-hedge-stop-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let tp = home.join("transcript.jsonl");
     let event = json!({"type":"event_msg","payload":{"type":"agent_message","message":"This probably works."}});

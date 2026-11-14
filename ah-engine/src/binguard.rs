@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn binguard_sha256_matches_the_known_vector_and_streams_large_files() {
-        let d = std::env::temp_dir().join(format!("ah-binguard-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-binguard-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("abc");
         std::fs::write(&f, "abc").unwrap();

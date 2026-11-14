@@ -34,7 +34,7 @@ impl Drop for World {
 impl World {
     fn new(tag: &str) -> World {
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("ah-mrj-{tag}-{}-{n}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ah-mrj-{tag}-{}-{n}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: an absent dir is the goal state
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("bin")).unwrap();

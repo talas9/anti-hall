@@ -73,7 +73,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn scratch(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ah-judgehost-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-judgehost-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         d.to_string_lossy().into_owned()

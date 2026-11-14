@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn an_overflowing_number_is_counted_once_and_does_not_make_the_file_unreadable() {
-        let home = std::env::temp_dir().join(format!("ah-ovf-count-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-ovf-count-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let file = format!("{}/{}", home.display(), defaults::text("guardkit.settings_file"));
         std::fs::write(&file, r#"{"a":{"x":1e400,"y":-1e400},"ok":true}"#).unwrap();

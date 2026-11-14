@@ -563,7 +563,7 @@ mod tests {
     use std::io::Write;
 
     fn path(tag: &str) -> String {
-        std::env::temp_dir().join(format!("ah-tkcache-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
+        crate::testtmp::path(format!("ah-tkcache-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
     }
 
     /// One transcript line of kind `i % 16`: task calls and their results mixed with lines that mean nothing to a reconstruction.

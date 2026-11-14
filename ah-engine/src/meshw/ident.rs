@@ -1035,7 +1035,7 @@ pub(crate) mod fifo_kit {
 
     /// A fresh scratch directory.
     pub fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ah-fifo-{}-{tag}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-fifo-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         dir
