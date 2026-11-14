@@ -66,7 +66,7 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     let home = &inv.home;
     let cwd = ident::project_cwd_for(home, &inv.env, &inv.cwd)?;
     let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else { return Ok(refusal(&[("reason", s(defaults::text("mesh_write.reason_no_project")))])) };
-    let from = ident::caller_identity_detailed(&inv.env, &cwd)?.identity;
+    let from = ident::caller_identity_for(&inv.env, &cwd, &inv.home)?.identity;
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
     let own = resolve_mesh_target(inv, Some(st.reader()), &rows, Some(&from))?;

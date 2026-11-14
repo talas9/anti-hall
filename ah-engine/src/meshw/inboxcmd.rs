@@ -122,7 +122,7 @@ pub(crate) fn locate(inv: &Inv, sub: &str, raw: &str, ack_as_owner: bool, dispat
                 return Ok(Found::Out(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None }));
             }
             if !ack_as_owner {
-                let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+                let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
                 let own_entry = resolve_mesh_target(inv, Some(&reader), &rows, Some(caller.identity.as_str()))?;
                 let owns = caller.identity == survivor
                     || own_entry.as_ref().is_some_and(|e| e.id == survivor)
@@ -402,7 +402,7 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     // NDJSON side and leaves the store side alone
     let mut owns_store = st.is_some();
     if !ack_as_owner && st.is_some() {
-        let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+        let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
         let own_entry = resolve_mesh_target(inv, None, &rows, Some(caller.identity.as_str()))?;
         let owns = caller.identity == id
             || own_entry.as_ref().is_some_and(|e| e.id == id)

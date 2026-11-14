@@ -44,7 +44,7 @@ pub fn mesh_candidates(rows: &[Row], mesh_id: Option<&str>) -> R<Vec<Row>> {
     let mut out = Vec::new();
     for d in rows {
         let Some(wp) = d.worktree_path.as_deref() else { continue };
-        let canon = match ident::canonical_mesh_id(wp)? {
+        let canon = match ident::registry_mesh_id(rows, wp)? {
             Some(c) => Some(c),
             None => ident::raw_path_mesh_id(wp)?,
         };
