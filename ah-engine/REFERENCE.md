@@ -3389,22 +3389,30 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `idle_order.dir` | `.anti-hall/idle-orders` |  |  | The state directory (under the home directory) of the idle-order records: one file per kind and scope holding {subjects: {<id>: {count, lastAt}}}. |
 | `idle_order.file_prefix` | `idle` |  |  | The file name prefix of an idle-order record (<prefix>-<kind>-<scope>.json); stale ones are pruned by that prefix. |
+| `idle_order.idle_marker` | `idle_notification` |  |  | The type of the notice a teammate sends when its turn ends (read from the transcript). |
 | `idle_order.item_mate` | `{name} ({min}m)` |  |  | One idle teammate in the order. Placeholders: {name}, {min} minutes idle. |
 | `idle_order.item_ws` | `{name} ({min}m)` |  |  | One idle workspace in the order. Placeholders: {name} its title (or id), {min} minutes idle. |
 | `idle_order.key_max` | `80` |  |  | Most characters of a scope or subject id kept in a record file name. |
 | `idle_order.kind_teammate` | `teammate` |  |  | The kind label of a teammate (or Codex agent) in the idle-order counter. |
+| `idle_order.kind_waiting` | `teammate_waiting` |  |  | The kind label of a teammate waiting on background work in the idle-order counter. |
 | `idle_order.kind_workspace` | `workspace` |  |  | The kind label of a child workspace in the idle-order counter. |
+| `idle_order.line_max` | `262144` |  |  | Longest transcript line (characters) the waiting-teammate scan reads; a longer one is skipped. |
 | `idle_order.list_joiner` | `, ` |  |  | Separator between the children named in one order. |
 | `idle_order.list_max` | `5` |  |  | Most children named in one order; the rest are counted. |
 | `idle_order.max_orders` | `6` |  |  | Most orders given for one idle workspace or teammate; after that it is left alone (counted as suppressed, reason cap). |
 | `idle_order.more` | ` +{m} more` |  |  | Appended to the named children when more are idle. Placeholder: {m}. |
 | `idle_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (idle times are kept in ms, settings in minutes). |
-| `idle_order.msg_codex_agent` | `⚠️ Do now: {n} agent(s) finished and idle: {list}. Verify each result, then c...` |  |  | The order for idle Codex agents that finished and were never closed. Placeholders: {n}, {list}, {id} the first listed agent's id. |
 | `idle_order.msg_teammate` | `⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, the...` |  |  | The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. |
+| `idle_order.msg_waiting` | `⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {l...` |  |  | The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check. |
 | `idle_order.msg_workspace` | `⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to repo...` |  |  | The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically). |
 | `idle_order.num_after_min` | `5 entries` |  |  | Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default 30): a child workspace with no activity, no open plan and no unread mail, or a teammate that delivered its report and owns no open task, that long gets the order. A workspace idle this long also needs no mailbox wake path. |
+| `idle_order.re_idle_json` | `\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}` |  |  | The idle_notification object inside a teammate message (JavaScript regex, first match). |
+| `idle_order.re_plan_done` | `^steps (\d+)/\1 done` |  |  | A workspace's step-plan finish label that says every step is done (JavaScript regex; the head of mesh_write.lbl_all_done, 'steps N/N done'). A plan with that label is finished, not open: its workspace is idle like one with no plan. |
+| `idle_order.re_retask` | `"name"\s*:\s*"(?:SendMessage\|TaskStop)"` |  |  | A tool call that re-tasks or ends a teammate (JavaScript regex over a transcript line): a later one naming the teammate means it is no longer idle. |
+| `idle_order.scan_needles` | `SendMessage, TaskStop` |  |  | Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate. |
 | `idle_order.steps_min` | `30, 60, 120` |  |  | The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
 | `idle_order.sw_enabled` | `4 entries` |  |  | Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before. |
+| `idle_order.waiting_after_min` | `15` |  |  | Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner. |
 
 ### prompt_emit.toml / idle_sweep
 
@@ -15529,7 +15537,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
-| `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, teammate) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task). |
+| `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task, unknown_state, running). |
 | `misfire_suppressed` | counter | suppressions | guard, reason | Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason. |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
 | `ctx_keep_dropped` | counter | contexts | event, check | Model-facing contexts dropped by the per-event budget while ctx_keep.sw_main is on, by event and by the base id of the check. Every check seen here has a priority below dispatch.context_pin_priority. |

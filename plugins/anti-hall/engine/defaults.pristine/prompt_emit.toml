@@ -661,10 +661,6 @@ value = "⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask ea
 doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name."
 value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{id}\"}`) or give it new work."
 
-[idle_order.msg_codex_agent]
-doc = "The order for idle Codex agents that finished and were never closed. Placeholders: {n}, {list}, {id} the first listed agent's id."
-value = "⚠️ Do now: {n} agent(s) finished and idle: {list}. Verify each result, then close it (`close_agent {\"target\":\"{id}\"}`) or give it new work."
-
 [idle_order.kind_workspace]
 doc = "The kind label of a child workspace in the idle-order counter."
 value = "workspace"
@@ -673,6 +669,42 @@ value = "workspace"
 doc = "The kind label of a teammate (or Codex agent) in the idle-order counter."
 value = "teammate"
 
+[idle_order.re_plan_done]
+doc = "A workspace's step-plan finish label that says every step is done (JavaScript regex; the head of mesh_write.lbl_all_done, 'steps N/N done'). A plan with that label is finished, not open: its workspace is idle like one with no plan."
+value = '^steps (\d+)/\1 done'
+
+[idle_order.waiting_after_min]
+doc = "Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner."
+value = 15
+
+[idle_order.line_max]
+doc = "Longest transcript line (characters) the waiting-teammate scan reads; a longer one is skipped."
+value = 262144
+
+[idle_order.scan_needles]
+doc = "Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate."
+value = ["SendMessage", "TaskStop"]
+
+[idle_order.idle_marker]
+doc = "The type of the notice a teammate sends when its turn ends (read from the transcript)."
+value = "idle_notification"
+
+[idle_order.re_idle_json]
+doc = "The idle_notification object inside a teammate message (JavaScript regex, first match)."
+value = '\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}'
+
+[idle_order.re_retask]
+doc = "A tool call that re-tasks or ends a teammate (JavaScript regex over a transcript line): a later one naming the teammate means it is no longer idle."
+value = '"name"\s*:\s*"(?:SendMessage|TaskStop)"'
+
+[idle_order.msg_waiting]
+doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check."
+value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {list}. Check that the work is running; if not, resume it now (`SendMessage {\"to\":\"{id}\"}`) or stop it (`TaskStop {\"task_id\":\"{id}\"}`)."
+
+[idle_order.kind_waiting]
+doc = "The kind label of a teammate waiting on background work in the idle-order counter."
+value = "teammate_waiting"
+
 [metric.idle_order]
-doc = "Idle orders (GH #744) by kind (workspace, teammate) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task)."
+doc = "Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task, unknown_state, running)."
 value = { kind = "counter", unit = "orders", labels = ["kind", "outcome", "reason"] }

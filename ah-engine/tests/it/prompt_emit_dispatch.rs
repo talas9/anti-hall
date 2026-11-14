@@ -240,7 +240,8 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let now = t0.to_string();
     // the prompt digest (inject_gate) folds the tracker, sweep and verify-first lines into headlines in importance order, and only when it is
     // shorter than the whole (which the rotating verify-first line decides): this test is about the join order and the request clock, so it is off
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0")];
+    // the idle order (GH #744, on by default) owns teammates idle 30 min and more: this test is about the plain advisory
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_IDLE_ORDER", "0")];
     let (code, out, err) = e.run(&args, true, &p, &extra);
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(out.contains("1 finished agent is idle and not stopped: zed (30m)") && !out.contains("NODE-RAN"), "{out}");
@@ -405,6 +406,7 @@ fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
                 ("ANTIHALL_PROMPT_DIGEST", "0"),
                 ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
                 ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+                ("ANTIHALL_IDLE_ORDER", "0"), // the plain advisory is what the keepalive counts here
             ];
             if counts_scheduled {
                 extra.push(("ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", "1"));
@@ -478,6 +480,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
         ("ANTIHALL_PROMPT_DIGEST", "0"),
         ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
         ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+        ("ANTIHALL_IDLE_ORDER", "0"), // the plain advisory is what the keepalive counts here
     ];
     let mut turn = |origin: &str, first: bool| -> String {
         std::thread::sleep(std::time::Duration::from_millis(30));

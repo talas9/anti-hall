@@ -217,3 +217,26 @@ fn a_briefly_suppressed_idle_child_keeps_its_escalation_record() {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(record(&e)).unwrap()).unwrap();
     assert_eq!(v["subjects"][CHILD]["count"], 1, "the record survives a suppressed turn: {v}");
 }
+
+/// The child's step plan: `steps` are (text, status) pairs.
+fn plan(e: &Env, steps: &[(&str, &str)]) {
+    let wt = e.dir.join("home/.devswarm/repos/3/8205fc11/child-wt");
+    let steps: Vec<serde_json::Value> = steps.iter().enumerate().map(|(i, (t, s))| serde_json::json!({"n": i + 1, "text": t, "status": s})).collect();
+    e.put(&format!("plans/{CHILD}.json"), serde_json::json!({"id": CHILD, "worktreePath": wt, "steps": steps, "created_at": now_ms() - 3_600_000}));
+}
+
+#[test]
+fn a_finished_plan_does_not_count_as_open_gh744() {
+    // the finish label is also given for a plan whose every step is done: that child is idle, not working
+    let claude = [("DEVSWARM_AI_AGENT", "claude")];
+    let done = idle_child("order-plan-done", 0, 45);
+    plan(&done, &[("a", "done"), ("b", "done")]);
+    let out = turn(&done, "idle-plan-1", &claude);
+    assert!(out.contains(ORDER), "a taskless child whose plan is fully done gets the idle order, got: {out}");
+    assert!(!out.contains(NO_WAKE), "and needs no mailbox wake path, got: {out}");
+    // control: an unfinished plan is a child still working
+    let open = idle_child("order-plan-open", 0, 45);
+    plan(&open, &[("a", "done"), ("b", "doing")]);
+    let out = turn(&open, "idle-plan-2", &claude);
+    assert!(!out.contains(ORDER), "a child with an open plan is not ordered, got: {out}");
+}

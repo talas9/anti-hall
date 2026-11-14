@@ -636,7 +636,7 @@ function piRoster(ctx, summary) {
     if (/^working\b/.test(finishCell) && gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) !== false) {
       var pf = JSON.parse(ahHost.piFinish(id, wtPath, now));
       if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; }
-      if (pf.label !== null) { planOpen = true; finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid); }
+      if (pf.label !== null) { planOpen = !piPlanDone(pf.label); finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid); }
     }
     // GH #744: a live, unarchived child idle past guards.idleOrderAfterMin with no open plan, no unread mail and no done ruling is a candidate for the idle order
     if (idleOrder.enabled() && !archivedRow && !appArchivedRow && !archivedSuperseded && activityTs !== null && now - activityTs >= idleOrder.afterMs()) {
@@ -702,6 +702,12 @@ function piDescriptors(home) {
   return out;
 }
 
+// GH #744: the finish label (ah.meshw plan.rs finish_label) is also returned for a plan whose every step is done ("steps N/N done ..."),
+// so a label alone does not mean an open plan: a fully done plan leaves its workspace idle like a taskless one.
+function piPlanDone(label) {
+  return typeof label === 'string' && jx.re('idle_order.re_plan_done').test(label);
+}
+
 // GH #744: ms since the last sign of life of a child (its last outbound mail, heartbeat or session activity, as the roster row reads them),
 // or null when none is known or the repository key is missing.
 function piIdleElapsed(ctx, id, wt, sid) {
@@ -723,7 +729,7 @@ function piIdleQuiet(ctx, id, wt, sid, busy) {
   var idle = piIdleElapsed(ctx, id, wt, sid);
   if (idle === null || idle < idleOrder.afterMs()) return false;
   var pf = JSON.parse(ahHost.piFinish(id, wt, ctx.now));
-  return !pf.unsure && pf.label === null;
+  return !pf.unsure && (pf.label === null || piPlanDone(pf.label));
 }
 
 // The part of `rowEligibility(row, { liveness: true })` the live-child test reads: is the row put away, held, ignored or waiting on a human?
