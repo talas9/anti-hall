@@ -713,3 +713,13 @@ fn a_child_prompt_turn_names_the_cli_as_one_shell_word_for_a_home_with_a_space_a
     );
     assert!(assert_engine_paths_are_one_word(&out, &home) >= 1, "the child reminder names the cli, got: {out:?}");
 }
+
+#[test]
+fn the_wake_monitor_arm_text_is_one_shell_word_for_a_home_with_a_space_and_a_quote() {
+    let (_e, home) = spaced_quoted_home_env("q700 arm a'b");
+    ah_engine::bootstrap::set_root_flag(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"));
+    ah_engine::defaults::init().unwrap();
+    let text = ah_engine::operator::postpull::wake_arm_text(&home);
+    assert!(text.contains("wake-watch --auto"), "the arm text names the watcher, got: {text:?}");
+    assert!(assert_engine_paths_are_one_word(&text, &home) >= 1, "the arm text names the engine path, got: {text:?}");
+}

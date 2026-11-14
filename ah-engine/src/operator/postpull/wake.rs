@@ -39,6 +39,12 @@ fn probe(pid: f64) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// The "how to arm the watcher by hand" text with the engine watcher command for `home` filled in (`update_post.wake_arm_cmd`).
+pub(super) fn arm_text(home: &str) -> String {
+    let watcher = crate::checks::devswarm_role::text::engine_watcher(home);
+    defaults::fill(text("update_post.wake_arm_cmd"), &[("watcher", &watcher)])
+}
+
 impl Run<'_> {
     /// `None` when the engine cannot reproduce the script's answer (a checkout nested in another one, an undecidable setting): the
     /// script answers then.
@@ -47,8 +53,7 @@ impl Run<'_> {
         let home = Path::new(self.home);
         let root = devswarm_root(home);
         let ensured = std::fs::create_dir_all(root.join(text("update_post.wake_state_dir"))).is_ok();
-        let engine_watcher = crate::checks::devswarm_role::text::engine_watcher(self.home);
-        let arm = defaults::fill(text("update_post.wake_arm_cmd"), &[("watcher", &engine_watcher)]);
+        let arm = arm_text(self.home);
         let cwd = std::env::current_dir().ok()?.to_string_lossy().into_owned();
         let st = crate::checks::git::util::Settings { home: self.home.to_string(), env: self.env.to_map() };
         let p = Proc { home: home.to_path_buf(), cwd: cwd.clone(), env: self.env.to_map().into_iter().collect(), st, root: self.paths.plugin_src.clone() };
