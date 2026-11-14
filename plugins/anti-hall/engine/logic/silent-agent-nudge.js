@@ -260,8 +260,11 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       if (!restart && valid && prior.provisional === true) {
         var te = sent[key];
         if (te && reminders !== null && te.reminders === reminders) {
+          // Lower only when the tracker proves THIS generation's send: last_sent strictly newer than the previous anchor
+          // (same newer-send rule as the restart path). Unchanged reminders with an old last_sent stay provisional.
           var low = Math.max(te.at, now - cfg.backdate_max_ms, prev);
-          if (snNum(te.at) && te.at <= now && low < at) at = low;
+          if (snNum(te.at) && te.at > prev && te.at <= now) { if (low < at) at = low; }
+          else provisional = true;
         } else provisional = true;
       }
       if (restart) {

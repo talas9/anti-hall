@@ -304,3 +304,20 @@ test('a provisional anchor drops to last_sent once the tracker catches up (#751 
 test('an answer from before the escalation still does not clear after the anchor is lowered', () => {
   assert.notEqual(lagging(18000).retired, true);
 });
+
+// #751 round 3: a provisional anchor stored while the tracker was unreadable (block-tier change) must not drop to an
+// old last_sent from the SAME reminders generation: that send predates the escalation and is not newer than prev.
+test('a returning tracker with unchanged reminders and an old last_sent keeps the provisional anchor (#751 round 3)', () => {
+  const f = fixture();
+  const track = (sent, reminders) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders } } }));
+  const row = block => [{ session: 'parent', child: 'child', name: 'worker', reminders: 3, block }];
+  f.observe((track(9500, 3), row(false)));
+  f.advance(10000);
+  f.files.delete('/fixture/tracker/state.json');
+  f.observe(row(true));
+  f.advance(500);
+  f.answer('other', 15000);
+  track(9500, 3);
+  f.observe(row(true));
+  assert.notEqual(f.observe(row(true)).retired, true);
+});
