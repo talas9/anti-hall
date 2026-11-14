@@ -55,7 +55,12 @@ var tk = {
     for (var i = 0; i < names.length; i++) {
       var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
       var files = ah.fs.readdir(dir);
-      if (files === null) continue;
+      if (files === null) {
+        // null is "absent" and also "present but unlistable" (unreadable, not a directory, or over the host's listing cap): a strict caller
+        // must tell them apart, so a directory that exists and cannot be listed is a gap, never a store the session lacks.
+        if (gaps && ah.fs.realpathEx(dir).error !== 'NotFound') { ah.unable('tasks:store_unlistable'); gaps.n++; return null; }
+        continue;
+      }
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
       if (files.length > maxFiles) { ah.unable('tasks:store_big'); if (gaps) gaps.n++; return null; }
       var out = [];

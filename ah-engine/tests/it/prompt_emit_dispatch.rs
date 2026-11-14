@@ -526,7 +526,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
 /// sibling must not license a stop when another task file (possibly the teammate's own open task) was dropped as unreadable.
 #[test]
 fn teammate_idle_order_needs_a_complete_task_store() {
-    let order_for = |name: &str, extra_file: Option<&str>| -> String {
+    let order_for = |name: &str, extra_file: Option<&str>, after: &dyn Fn(&std::path::Path)| -> String {
         let e = Env::new(name);
         let t0 = 1_790_000_000_000u64;
         let iso = |ms: u64| {
@@ -549,24 +549,38 @@ fn teammate_idle_order_needs_a_complete_task_store() {
         if let Some(body) = extra_file {
             std::fs::write(store.join("2.json"), body).unwrap();
         }
+        after(&store);
         let map = e.map("UserPromptSubmit", "none");
         let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
         let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
         let now = t0.to_string();
-        let extra = [
-            ("ANTIHALL_TEST_ISOLATION", "1"),
-            ("ANTIHALL_TEST_NOW_MS", now.as_str()),
-            ("ANTIHALL_PROMPT_DIGEST", "0"),
-            ("AH_ENGINE_PLUGIN_ROOT", plugin),
-        ];
+        let extra =
+            [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
         let (code, out, err) = e.run(&args, true, &ups("sess0001-x", "go on", Some(&transcript)), &extra);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)); // so the scratch dir can be removed
+        }
         assert_eq!((code, err.as_str()), (0, ""));
         ctx(&out)
     };
-    let control = order_for("idle-store-ok", None);
+    let control = order_for("idle-store-ok", None, &|_| {});
     assert!(control.contains("TaskStop"), "control: a complete store with no open task owned by the teammate gets the order, got: {control}");
     for (name, body) in [("idle-store-bad-json", "{not json"), ("idle-store-bad-shape", r#"{"id":"2","subject":"mine"}"#)] {
-        let out = order_for(name, Some(body));
+        let out = order_for(name, Some(body), &|_| {});
         assert!(!out.contains("TaskStop"), "{name}: a dropped task file makes the state unknown, no order, got: {out}");
     }
+    // a task directory that exists but cannot be listed (permission denied) is an unknown state, not "this session has no store"
+    let denied = order_for("idle-store-denied", None, &|d| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o000)).unwrap();
+    });
+    assert!(!denied.contains("TaskStop"), "an unlistable task directory is an unknown state, no order, got: {denied}");
+    // a directory over the host's listing cap (script.readdir_max, 10000) is listed as null: the same unknown state
+    let huge = order_for("idle-store-huge", None, &|d| {
+        for i in 0..10_001 {
+            std::fs::write(d.join(format!("{i}.dat")), "").unwrap();
+        }
+    });
+    assert!(!huge.contains("TaskStop"), "a task directory the host refuses to list is an unknown state, no order, got: {huge}");
 }
