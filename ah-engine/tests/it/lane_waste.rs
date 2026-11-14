@@ -276,7 +276,63 @@ fn a_wait_block_names_the_foreground_remedy_and_reaches_both_channels() {
     assert!(reason.contains("Run the command in the foreground under the shared lock."), "{reason}");
     assert_eq!(reason.lines().count(), 2);
     let (_, out, _) = wait_guard("sleep 99", "subagent", false, &[]);
-    assert!(out.contains("End the turn and wait for the completion notification."), "{out}");
+    assert!(out.contains("SendMessage lead"), "{out}");
+    assert!(!out.contains("End the turn and wait"), "an idle helper is not woken by a notification: {out}");
+}
+
+// A subagent that is blocked must keep a path to its result (GH #755): a bounded watch within the limit, or a message to its lead.
+const WATCH_170: &str = "timeout 170 bash -c 'until gh pr checks --required; do sleep 20; done'";
+
+#[test]
+fn a_bounded_watch_within_the_limit_is_allowed_for_a_subagent() {
+    for who in ["subagent", "codex-subagent"] {
+        for cmd in [
+            WATCH_170,
+            "timeout 170 gh pr checks 12 --watch",
+            "gh pr checks 12 --watch",
+            "timeout 540 gh run watch 99",
+            "timeout 3m gh pr checks --watch",
+            "timeout -k 5 170 bash -c 'while ! test -f /tmp/done; do sleep 10; done'",
+            "timeout 100 sleep 100",
+        ] {
+            let (code, out, _) = wait_guard(cmd, who, false, &[]);
+            assert_eq!(code, 0, "{who}: {cmd} must be allowed: {out}");
+        }
+    }
+}
+
+#[test]
+fn an_unbounded_wait_is_blocked_with_a_bounded_watch_or_message_the_lead() {
+    for cmd in ["while true; do sleep 60; done", "until [ -f /tmp/done ]; do sleep 30; done", "sleep 170"] {
+        let (code, out, err) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 2, "{cmd}");
+        assert!(out.contains("timeout 540 gh pr checks --watch"), "{cmd}: {out}");
+        assert!(out.contains("SendMessage lead \\\"waiting on <X>; wake me when done\\\""), "{cmd}: {out}");
+        assert!(!out.contains("End the turn and wait") && !err.contains("End the turn and wait"), "{cmd}: {out}");
+    }
+}
+
+#[test]
+fn an_over_limit_bounded_wait_is_blocked_with_the_message_the_lead_instruction() {
+    for cmd in [
+        "timeout 900 gh pr checks --watch",
+        "timeout 541 gh run watch 1",
+        "timeout 10m bash -c 'until true; do sleep 10; done'",
+        "timeout 600 sleep 600",
+    ] {
+        let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 2, "{cmd} must be blocked");
+        assert!(out.contains("over the limit") && out.contains("limit 540s"), "{cmd}: {out}");
+        assert!(out.contains("SendMessage lead"), "{cmd}: {out}");
+        assert!(!out.contains("End the turn and wait"), "{cmd}: {out}");
+    }
+}
+
+#[test]
+fn the_main_session_keeps_its_unbounded_waits() {
+    for cmd in ["timeout 900 gh pr checks --watch", "while true; do sleep 60; done"] {
+        assert_eq!(wait_guard(cmd, "main", false, &[]).0, 0, "{cmd}");
+    }
 }
 
 #[test]

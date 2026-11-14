@@ -5,7 +5,8 @@
 'use strict';
 var laneWaste = {
   // Simple commands of `cmd` as { words, inLoop }: `words` start at the command that really runs (wrappers, assignments and shell
-  // keywords removed); `inLoop` says a while/until/for loop encloses it.
+  // keywords removed); `inLoop` says a while/until/for loop encloses it; `pre` is the wrapper words removed in front (and, for a
+  // command inside `sh -c '...'`, those of the shell too), so a caller can read a `timeout N` that bounds it.
   commands: function (cmd, depth) {
     var out = [];
     if (depth > ah.cfgNum('lane_waste.max_depth') || typeof cmd !== 'string' || cmd.trim() === '') return out;
@@ -14,13 +15,13 @@ var laneWaste = {
     for (var s = 0; s < segs.length; s++) {
       var at = laneWaste.commandAt(segs[s].words);
       if (at < 0) continue;
-      var words = segs[s].words.slice(at);
-      out.push({ words: words, inLoop: segs[s].inLoop });
+      var words = segs[s].words.slice(at), pre = segs[s].words.slice(0, at);
+      out.push({ words: words, inLoop: segs[s].inLoop, pre: pre });
       if (shells.indexOf(shellScan.basename(words[0])) >= 0) {
         for (var a = 1; a + 1 < words.length; a++) {
           if (ah.re.test(flagRe, 'r', words[a])) {
             var inner = laneWaste.commands(words[a + 1], depth + 1);
-            for (var k = 0; k < inner.length; k++) { inner[k].inLoop = inner[k].inLoop || segs[s].inLoop; out.push(inner[k]); }
+            for (var k = 0; k < inner.length; k++) { inner[k].inLoop = inner[k].inLoop || segs[s].inLoop; inner[k].pre = pre.concat(words.slice(0, a + 1), inner[k].pre); out.push(inner[k]); }
           }
         }
       }

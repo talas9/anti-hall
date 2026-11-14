@@ -253,6 +253,24 @@ max = 3600
 doc = "Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds."
 value = { s = 1, m = 60, h = 3600, d = 86400 }
 
+[queued_wait.bounded_max_s]
+doc = "The longest bounded foreground wait or watch a subagent may run (a wait or watch under an explicit `timeout N`, N at most this). 540 s is under the Bash tool's 600 s timeout ceiling, with a minute of margin for the command's own start and exit; an idle subagent is not woken by a completion notification, so a wait it can finish in the foreground is the only one that keeps its path to the result."
+value = 540
+unit = "s"
+min = 1
+max = 600
+
+[queued_wait.timeout_commands]
+doc = "Wrapper commands that bound the wait of the command after them (`timeout 170 gh pr checks --watch`); their duration word is read as the bound. Flags that take a value are read from lane_waste.wrappers."
+value = ["timeout"]
+
+[queued_wait.watch_res]
+doc = "Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in)."
+value = [
+  '^gh\s+pr\s+checks\b.*--watch',
+  '^gh\s+run\s+watch(?:\s|$)',
+]
+
 [queued_wait.bg_field]
 doc = "The Bash tool input field that starts the command in the background."
 value = "run_in_background"
@@ -269,6 +287,14 @@ value = "this wait is too long ({secs}s; limit {max}s): {cmd}"
 doc = "Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit."
 value = "this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}"
 
+[queued_wait.msg_what_over]
+doc = "Heading of the block on a bounded wait or watch above the limit. Placeholders: {cmd} the command as it was written, {secs} its timeout in seconds, {max} the limit."
+value = "this bounded wait is over the limit ({secs}s; limit {max}s): {cmd}"
+
+[queued_wait.msg_instead_over]
+doc = "What to do instead of a bounded wait above the limit. Placeholders: {max} the limit."
+value = "Use {max}s or less, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."
+
 [queued_wait.msg_why]
 doc = "Why background heavy commands and poll loops are blocked."
 value = "Repeated checks while waiting use the work budget without making progress."
@@ -278,8 +304,8 @@ doc = "What to do instead of a background heavy command."
 value = "Run the command in the foreground under the shared lock."
 
 [queued_wait.msg_instead_sleep]
-doc = "What to do instead of a long sleep or poll loop."
-value = "End the turn and wait for the completion notification."
+doc = "What to do instead of a long sleep or poll loop. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification."
+value = "Run `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."
 
 [queued_wait.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

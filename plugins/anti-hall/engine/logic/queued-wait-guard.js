@@ -1,7 +1,8 @@
 // check = "queued-wait-guard" (PreToolUse on Bash, subagents only; engine-only, no Node twin; GH #270). Blocks the two ways a lane agent
 // pays to wait: a build or test command started with run_in_background (it then polls or re-reads while the build lock is held;
 // run in the foreground under the lock, waiting costs nothing) and a sleep above a configured number of seconds, standing alone or
-// inside a while/until/for poll loop. The main session and a workspace child are never judged. Every list, pattern, number and
+// inside a while/until/for poll loop. A wait under an explicit `timeout N` (N within queued_wait.bounded_max_s) is allowed: a subagent
+// must keep a path to its result, and an idle subagent is not woken by a notification. Over the limit, or with no bound, it is blocked. The main session and a workspace child are never judged. Every list, pattern, number and
 // text is in lane_waste.toml. A failure of this script allows (script.failure_mode_by_check): the guard never blocks by breaking.
 'use strict';
 
@@ -16,6 +17,20 @@ function qwSleepSeconds(args) {
     total += parseFloat(m[1]) * mult; seen = true;
   }
   return seen ? total : null;
+}
+
+// The seconds of the tightest `timeout [flags] N` among the wrapper words `pre` of a command, or null when none bounds it.
+function qwTimeoutSeconds(pre) {
+  var names = ah.cfg('queued_wait.timeout_commands'), valued = ah.cfg('lane_waste.wrappers'), best = null;
+  for (var i = 0; i < pre.length; i++) {
+    var b = shellScan.basename(pre[i]);
+    if (names.indexOf(b) < 0) continue;
+    var vals = Object.prototype.hasOwnProperty.call(valued, b) ? valued[b] : [], j = i + 1;
+    while (j < pre.length && pre[j].charAt(0) === '-' && pre[j].length > 1) j += vals.indexOf(pre[j]) >= 0 ? 2 : 1;
+    var secs = j < pre.length ? qwSleepSeconds([pre[j]]) : null;
+    if (secs !== null && (best === null || secs < best)) best = secs;
+  }
+  return best;
 }
 
 function qwBlock(what, instead) {
@@ -34,15 +49,28 @@ function decide(p, opts) {
   var cmds = laneWaste.commands(cmd, 0);
   var background = input[ah.cfg('queued_wait.bg_field')] === true, heavy = ah.cfg('queued_wait.heavy_res');
   var sleepers = ah.cfg('queued_wait.sleep_commands');
+  var watches = ah.cfg('queued_wait.watch_res'), boundedMax = ah.cfgNum('queued_wait.bounded_max_s');
   var plainMax = ah.cfgNum('queued_wait.sleep_max_s'), loopMax = ah.cfgNum('queued_wait.loop_sleep_max_s');
   for (var c = 0; c < cmds.length; c++) {
     var words = cmds[c].words, joined = words.join(' ');
-    if (sleepers.indexOf(shellScan.basename(words[0])) >= 0) {
+    var isSleep = sleepers.indexOf(shellScan.basename(words[0])) >= 0, isWatch = false;
+    for (var w = 0; !isSleep && !isWatch && w < watches.length; w++) isWatch = ah.re.test(watches[w], 'r', joined);
+    if (isSleep || isWatch) {
+      // an explicit `timeout N` bounds the wait: within the limit it is allowed (the agent keeps the result in hand), above it blocked
+      var bound = qwTimeoutSeconds(cmds[c].pre || []);
+      if (bound !== null) {
+        if (bound <= boundedMax) continue;
+        return qwBlock(text.render(ah.cfg('queued_wait.msg_what_over'), { cmd: laneWaste.shown(words), secs: bound, max: boundedMax }),
+          text.render(ah.cfg('queued_wait.msg_instead_over'), { max: boundedMax }));
+      }
+    }
+    if (isSleep) {
       var secs = qwSleepSeconds(words.slice(1));
       var max = cmds[c].inLoop ? loopMax : plainMax;
       if (secs !== null && secs > max) {
         return qwBlock(text.render(ah.cfg(cmds[c].inLoop ? 'queued_wait.msg_what_loop' : 'queued_wait.msg_what_sleep'),
-          { cmd: laneWaste.shown(words), secs: secs, max: max }), ah.cfg('queued_wait.msg_instead_sleep'));
+          { cmd: laneWaste.shown(words), secs: secs, max: max }),
+          text.render(ah.cfg('queued_wait.msg_instead_sleep'), { max: boundedMax }));
       }
       continue;
     }
