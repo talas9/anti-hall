@@ -2226,3 +2226,15 @@ value = ["send the message through the DevSwarm mesh.", "read the inbox through 
 [devswarm_prompt.child_static_state_only]
 doc = "Delivered static child reminders only on changed content or context reset. devswarm.childStateOnly (default on) applies to Claude/OMC and Codex/OMX; undelivered copies retry after the configured pending window, and delivery matching accounts for downstream comms cuts. Off restores turn/time keepalives. Missing, corrupt or unwritable state always emits. Mail, plans and reporting duties remain independently actionable."
 value = { section = "devswarm", key = "childStateOnly", env = "ANTIHALL_DEVSWARM_CHILD_STATE_ONLY", aliases = [], option = "", default = true }
+
+[devswarm_prompt.sw_unread_on_change]
+doc = "Inbox advisories on change (#709). Switch devswarm.inboxAdvisoryOnChange (default on): the unread-inbox advisory of a child workspace and of a Primary speaks when the unread set changed since the last one spoken in the session, or when the cooldown has passed, instead of on every prompt. A new unread message always speaks at once. Off restores the advisory on every prompt."
+value = { section = "devswarm", key = "inboxAdvisoryOnChange", type = "boolean", env = "ANTIHALL_DEVSWARM_INBOX_ADVISORY_ON_CHANGE", option = "", default = true }
+
+[devswarm_prompt.set_unread_cooldown_min]
+doc = "Inbox advisory cooldown, minutes. Setting devswarm.inboxAdvisoryCooldownMin: an unchanged unread set is announced again only after this many minutes since the last announcement. Applies while devswarm.inboxAdvisoryOnChange is on."
+value = { section = "devswarm", key = "inboxAdvisoryCooldownMin", type = "number", min = 0, max = 1440, env = "ANTIHALL_DEVSWARM_INBOX_ADVISORY_COOLDOWN_MIN", default = 10 }
+
+[devswarm_prompt.dir_child_unread_seen]
+doc = "The directory (under the devswarm state dir) of the per-session records of the last child-inbox advisory spoken ({sig, at})."
+value = "child-unread-seen"

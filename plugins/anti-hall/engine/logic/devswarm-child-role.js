@@ -142,6 +142,27 @@ function dwCronCtlSeed(p) {
   dwCronCtlWrite(sid, { deleted: true, at: ah.clock.now() });
 }
 
+// ---- inbox advisories speak on change or after a cooldown (devswarm.inboxAdvisoryOnChange, #709) ----
+// The unread-inbox advisory of a child and of a Primary used to repeat on every prompt while the same mail sat unread. Now it speaks when the
+// unread SET (a signature of its identities, not just its count) differs from the last one spoken in this session, or when the cooldown since
+// that emission has passed. A new unread message always differs, so it speaks at once. The record is one small {sig, at} per session and kind.
+function dwUnreadRel(dirKey, sid) {
+  return ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg(dirKey) + '/' + String(sid).replace(/[^A-Za-z0-9_.-]/g, '_') + '.json';
+}
+// true: speak (and record it afterwards); false: the same set was spoken within the cooldown.
+function dwUnreadSpeak(dirKey, sid, sig, now) {
+  if (!sid || ah.settings.bool('devswarm_prompt.sw_unread_on_change') !== true) return true;
+  var raw = ah.state.readText(dwUnreadRel(dirKey, sid)), rec = null;
+  try { rec = raw === null ? null : JSON.parse(raw); } catch (e) { rec = null; }
+  if (!rec || typeof rec !== 'object' || rec.sig !== sig || typeof rec.at !== 'number' || !isFinite(rec.at)) return true;
+  var gap = now - rec.at;
+  return gap < 0 || gap >= ah.settings.num('devswarm_prompt.set_unread_cooldown_min') * ah.cfgNum('devswarm_prompt.ms_per_minute');
+}
+function dwUnreadRecord(dirKey, sid, sig, now) {
+  if (!sid || ah.settings.bool('devswarm_prompt.sw_unread_on_change') !== true) return;
+  try { ah.state.writeAtomic(dwUnreadRel(dirKey, sid), JSON.stringify({ sig: sig, at: now })); } catch (e) { /* best effort: the next turn speaks again */ }
+}
+
 function dwChildContext(cli, watcher, agent, id, cron, tickOnly) {
   return dwContext(true, cli, watcher, agent, id, cron, tickOnly);
 }

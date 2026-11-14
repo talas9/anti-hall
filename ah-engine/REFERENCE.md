@@ -2133,6 +2133,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.child_summary` | `DevSwarm child prompt hook: answers the silent cases (not a child workspace, ...` |  |  | One-line description of the devswarm-child-turn check in the generated reference. |
 | `devswarm_prompt.defer_log_kind` | `child-turn-defer` |  |  | The event-log kind of the line the child-turn check writes when it hands a turn to the Node hook; the line's text is the cause. |
 | `devswarm_prompt.descriptor_dir` | `devswarm/workspaces` |  |  | The directory, under the anti-hall directory, of the workspace descriptors. |
+| `devswarm_prompt.dir_child_unread_seen` | `child-unread-seen` |  |  | The directory (under the devswarm state dir) of the per-session records of the last child-inbox advisory spoken ({sig, at}). |
 | `devswarm_prompt.escape_marker` | `\u` |  |  | The text that marks a JSON escape sequence; a descriptor the engine's parser rejects and that holds one is left to the Node hook (JavaScript may parse it). |
 | `devswarm_prompt.event` | `UserPromptSubmit` |  |  | The hook event name of the prompt hooks' answer. |
 | `devswarm_prompt.fault_banner` | `⚠️ anti-hall · devswarm-ingest-failing: the ingest daemon is healthy (heartbe...` |  |  | The banner for a live ingest daemon whose app monitor is not answering and that is not a configuration fault (buildMonitorFaultBanner). Placeholders: {beat}, {what}, {err}. |
@@ -2185,6 +2186,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.repo_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable whose non-blank value makes the DevSwarm integration active in auto mode. |
 | `devswarm_prompt.seat_dir` | `devswarm/primary-seat` |  |  | The directory, under the anti-hall directory, of the per-session seat-conflict markers the SessionStart hook writes. |
 | `devswarm_prompt.seat_shown_max` | `2` |  |  | A seat-conflict marker is owed a repeat while the number of times it was shown is below this. |
+| `devswarm_prompt.set_unread_cooldown_min` | `7 entries` |  |  | Inbox advisory cooldown, minutes. Setting devswarm.inboxAdvisoryCooldownMin: an unchanged unread set is announced again only after this many minutes since the last announcement. Applies while devswarm.inboxAdvisoryOnChange is on. |
 | `devswarm_prompt.skip_descriptor_surrogate` | `descriptor holds a lone-surrogate escape` |  |  | The cause logged when the child's old descriptor holds a lone-surrogate JSON escape (JavaScript parses it, a Rust string cannot carry it), so rewriting it would change its text; the registration is left for the turn. |
 | `devswarm_prompt.skip_descriptor_unreadable` | `descriptor not merged: ` |  |  | The cause logged when the child's old descriptor cannot be merged because it is no regular file (a FIFO, socket or device a read could block on) or is over the read cap; the registration is left for the turn and retried on the next. The refusal reason follows. |
 | `devswarm_prompt.skip_phantom_lock` | `workspace lock busy` |  |  | Why a truncated-id phantom descriptor is kept this turn: its workspace lock stayed busy. |
@@ -2195,6 +2197,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.stale_doctor` | `Run /anti-hall:doctor to check the DevSwarm ingest daemon. ` |  |  | The stale banner's advice when the daemon's launchd job is not disabled. |
 | `devswarm_prompt.stale_key` | `devswarm-ingest-stale` |  |  | The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it. |
 | `devswarm_prompt.summary_dir` | `devswarm/summaries` |  |  | The directory, under the anti-hall directory, of the per-project mailbox summaries the registration refreshes and the hook reads. |
+| `devswarm_prompt.sw_unread_on_change` | `6 entries` |  |  | Inbox advisories on change (#709). Switch devswarm.inboxAdvisoryOnChange (default on): the unread-inbox advisory of a child workspace and of a Primary speaks when the unread set changed since the last one spoken in the session, or when the cooldown has passed, instead of on every prompt. A new unread message always speaks at once. Off restores the advisory on every prompt. |
 | `devswarm_prompt.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; under one the service manager is never asked. |
 | `devswarm_prompt.unread_segment` | `⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread paren...` |  |  | The child's unread-parent-mail segment. Placeholders: {count}, {cli}, {id}. |
 | `devswarm_prompt.urgent_levels` | `urgent, high` |  |  | The urgency values (the summary's urgencyMax) that make the mesh-direct nudge loud. |
@@ -14229,6 +14232,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
+| `devswarm_parent.dir_own_unread_seen` | `own-unread-seen` |  |  | The directory (under the devswarm state dir) of the per-session records of the last own-inbox advisory spoken ({sig, at}). |
 | `devswarm_parent.dir_reply_state` | `parent-gate` |  |  | The per-project reply records (parent-gate/<repoKey>-replies.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_stray` | `stray` |  |  | The per-plan straying records (stray/<key>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_token_usage` | `token-usage` |  |  | The per-plan token burn records (token-usage/<key>.json), under the DevSwarm directory. |
@@ -15641,6 +15645,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `engine_currency_check` | counter | checks | result | Engine currency checks (diagnostics.engineCurrency on, a checkout set), by result: ok, behind, files_differ, unreadable. |
 | `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
 | `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
+| `devswarm_inbox_advisory_suppressed` | counter | advisories | kind | Unread-inbox advisories not repeated, by kind (child, own): the unread set was unchanged within the cooldown (#709). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds

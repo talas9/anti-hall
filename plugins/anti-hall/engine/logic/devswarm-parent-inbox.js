@@ -1436,7 +1436,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSig = null, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1468,6 +1468,7 @@ function piDecide(p, opts) {
           var rd = JSON.parse(ahHost.ctReaders(key, primaryId));
           if (rd.unsure || rd.declared) ah.unable('devswarm-parent-inbox:own_reader'); // the reader-identity correction is not made: the summary count is shown as it is
           ownUnread = own.unread;
+          ownSigBase = String(own.cursor) + '/' + String(own.total);
           ownUrgency = own.urgencyMax || null;
         }
         if (Array.isArray(own.pendingQuestions)) {
@@ -1479,7 +1480,7 @@ function piDecide(p, opts) {
           }
         }
       }
-      if (roster.ownExtra > 0) { ownUnread += roster.ownExtra; if (!ownUrgency) ownUrgency = roster.ownExtraUrgency; }
+      if (roster.ownExtra > 0) { ownSigBase += '+' + String(roster.ownExtra); ownUnread += roster.ownExtra; if (!ownUrgency) ownUrgency = roster.ownExtraUrgency; }
       if (Array.isArray(summary.recent) && summary.recent.length && ahHost.piJev()) ah.unable('devswarm-parent-inbox:broadcast_jev'); // Jev may label the feed: shown unlabelled
       if (roster.rows.length) syncNotes = piSyncNotes({ home: home, key: key }, roster.rows, roster.snapUnreadable, jx.isObj(p) ? p.session_id : undefined);
     }
@@ -1589,7 +1590,10 @@ function piDecide(p, opts) {
       var row = summaryForTitle && summaryForTitle.workspaces && summaryForTitle.workspaces[wid];
       return (row && row.label) || piReadName(home, wid);
     };
-    pending.push({ kind: 'plain', rank: 110, text: piOwnSegment(ownUnread, primaryId, ownUrgency, ownUnanswered, ownInfo, titleFor, ownPreviews, cliPath, ah.clock.now()) });
+    var ownSigParts = [ownUnread, ownUrgency, ownSigBase].concat(ownUnanswered.concat(ownInfo).map(function (q) { return q ? [q.seq, q.from, q.ts].join(':') : ''; }));
+    ownSig = ah.sha1(JSON.stringify(ownSigParts)); // the unread set (cursor..total, the questions asked), not the minutes they have waited (#709)
+    if (dwUnreadSpeak('devswarm_parent.dir_own_unread_seen', sid, ownSig, now)) pending.push({ kind: 'plain', rank: 110, text: piOwnSegment(ownUnread, primaryId, ownUrgency, ownUnanswered, ownInfo, titleFor, ownPreviews, cliPath, ah.clock.now()) });
+    else { ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'own']); ownSig = null; }
   }
   if (parked !== null) pending.push({ kind: 'plain', rank: 120, text: parked });
   if (urgentList.length) {
@@ -1615,6 +1619,7 @@ function piDecide(p, opts) {
     dwCronCtlWrite(sid, cronCtl.rec);
     if (cronCtl.text !== null) ah.metric('devswarm_cron_ctl', ['action', 'delete_ordered']);
   }
+  if (ownSig !== null) dwUnreadRecord('devswarm_parent.dir_own_unread_seen', sid, ownSig, now);
   if (orphansSig !== null) ah.state.writeAtomic(piOrphansSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ sig: orphansSig, at: now })); // shown once per id set per session
   if (noticeSeg !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_notice_cursor') + '/' + key + '.json'), JSON.stringify({ lastSeenId: noticeSeg.lastId })); // shown once, marked seen
   var emitted = [];
