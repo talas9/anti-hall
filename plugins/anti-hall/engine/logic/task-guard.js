@@ -545,7 +545,9 @@ function tgIdleRuleCount(idle, listed, skips, now) {
 // that cannot be written or read exactly lets the Stop through (fail-open: a block that cannot be counted could never end).
 function tgEnforce(p, out) {
   var pruneOn = ah.settings.bool('task_guard.prune_block_setting'), prioOn = ah.settings.bool('task_guard.priority_check_setting');
-  if (!pruneOn && !prioOn) return null;
+  // GH #762: completed tasks left in the list past the age are ordered deleted; at Stop that is a block, only with handover.taskListEnforce = block
+  var orderOn = dord.on() && ah.settings.enum('ctxbudget.set_h_task_enforce') === 'block';
+  if (!pruneOn && !prioOn && !orderOn) return null;
   var transcript = p.transcript_path, home = ah.home();
   if (!transcript || typeof transcript !== 'string' || !home) return null;
   var given = p.session_id ? String(p.session_id) : '';
@@ -592,7 +594,16 @@ function tgEnforce(p, out) {
       }
     }
   }
-  if (reason === '') return null;
+  var dpl = null;
+  if (reason === '' && orderOn) {
+    dpl = dord.plan(sessionId, tasks, ah.clock.now());
+    if (dpl.due.length > 0) reason = dord.order(dpl.due);
+  }
+  if (reason === '') {
+    if (dpl !== null && (dpl.changed || dpl.lingering > 0)) { ah.commit(); dord.apply(dpl); }
+    return null;
+  }
+  if (dpl !== null) { ah.commit(); if (!dord.apply(dpl)) return null; } // an order that cannot be counted is never given
   var wrote = false;
   try { wrote = ah.state.writeAtomic(stateRel, JSON.stringify(st)); } catch (e) { wrote = false; }
   if (!wrote) return null; // a block that cannot be counted is never made

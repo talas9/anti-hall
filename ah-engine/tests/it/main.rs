@@ -31,6 +31,7 @@ mod ctx_keep_e2e;
 mod ctxbudget_e2e;
 mod defaults_failover;
 mod defaults_keys;
+mod done_order;
 mod dep_budget;
 mod devswarm_rt;
 mod devswarm_wire;

@@ -82,6 +82,8 @@ What the automatic guards check and how to read a block.
 - `guards.maxConcurrentAgents` = 6: Cap on agents running at once (default 6, 0 = no cap)
 - `guards.spawnCeiling` = true: Limit simultaneous agent fan-out
 - `guards.usageAwareDispatch` = true: Use usage-aware dispatch
+- `guards.doneOrderAfterMin` = 10: Where the minutes a completed task may stay in the list before the first order are read from...
+- `guards.doneOrder` = true: Claude only (Codex has no task tools)
 - `guards.priorityTagBlockMax` = 2: Max priority-tag Stop blocks per tag set
 - `guards.priorityTagCheck` = true: Stop check for non-P0-P3 priority tags
 - `guards.pruneStopBlockMax` = 2: Max prune Stop blocks per completed-task count
