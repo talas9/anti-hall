@@ -59,3 +59,36 @@ fn a_missing_jev_key_is_not_a_counted_failure() {
     }
 }
 
+/// Item 7: when silent-agent-nudge throws, the error text is kept (one bounded line in its own log) and the error still reaches
+/// the engine's failure policy. The host is a stub whose first call throws, so the test needs no real failure to provoke.
+#[test]
+fn a_silent_agent_nudge_error_keeps_its_text() {
+    use rquickjs::{Context, Runtime};
+    let src = std::fs::read_to_string(engine_dir().join("logic/silent-agent-nudge.js")).unwrap();
+    let prelude = r#"
+var captured = { rel: null, line: null }, cfgs = { 'silent_nudge.err_file': 'err.log', 'procwatch.f_event': 'hook_event_name' };
+var nums = { 'silent_nudge.err_max_bytes': 1000000, 'silent_nudge.err_text_max': 2000 };
+var ah = {
+  cfg: function (k) { return cfgs[k]; }, cfgNum: function (k) { return nums[k]; }, home: function () { return '/h'; },
+  fs: { lstat: function () { return null; } },
+  state: { appendFile: function (rel, s) { captured.rel = rel; captured.line = s; }, op: function () {} },
+  clock: { now: function () { return 0; } },
+  env: { get: function () { throw new Error('boom-764'); } },
+};
+"#;
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::full(&rt).unwrap();
+    let out: String = ctx.with(|c| {
+        c.eval::<(), _>(prelude).unwrap();
+        c.eval::<(), _>(src.as_str()).unwrap();
+        c.eval::<String, _>(
+            "var thrown = ''; try { decide({ hook_event_name: 'Stop' }, null); } catch (e) { thrown = e.message; }\nJSON.stringify([thrown, String(captured.rel), String(captured.line)])",
+        )
+        .unwrap()
+    });
+    let got: Vec<String> = serde_json::from_str(&out).unwrap();
+    let (thrown, rel, line) = (&got[0], &got[1], &got[2]);
+    assert_eq!(thrown, "boom-764", "the error must still reach the engine's failure policy");
+    assert_eq!(rel, "err.log");
+    assert!(line.contains("boom-764") && line.contains("\"event\":\"Stop\""), "the error text is recorded: {line}");
+}

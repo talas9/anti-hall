@@ -419,7 +419,24 @@ function snRtStop(p, home, session, rows, cap, stateFile, whatTpl, insteadTpl) {
   return stopReblock.finish(ah.cfg('silent_nudge.guard_name'), p, { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } }, rows.map(function (r) { return [r.child, r.name, r.block, r.reminders]; }).sort());
 }
 
-function decide(p, opts) { return snDecide(p, opts); }
+// A failed call keeps its error text (#764): the engine's own `script_error` line is rate-limited across all checks, so most failures
+// lost the text. The text goes to a size-bounded JSONL file, then the error goes on to the engine's failure policy unchanged.
+function snLogError(e, p) {
+  try {
+    var home = ah.home();
+    if (!home) return;
+    var rel = ah.cfg('silent_nudge.err_file'), st = ah.fs.lstat(home + '/' + rel);
+    if (st && st.kind === 'file' && st.size >= ah.cfgNum('silent_nudge.err_max_bytes')) ah.state.op(home, 'rename', rel, rel + '.1');
+    var msg = [e && e.message, e && e.stack].filter(function (x) { return typeof x === 'string' && x !== ''; }).join('\n') || String(e);
+    msg = msg.slice(0, ah.cfgNum('silent_nudge.err_text_max'));
+    var event = p !== null && typeof p === 'object' && typeof p[ah.cfg('procwatch.f_event')] === 'string' ? p[ah.cfg('procwatch.f_event')] : '';
+    ah.state.appendFile(rel, JSON.stringify({ ts: new Date(ah.clock.now()).toISOString(), event: event, error: msg }) + '\n');
+  } catch (e2) { /* a lost error record never changes the verdict */ }
+}
+
+function decide(p, opts) {
+  try { return snDecide(p, opts); } catch (e) { snLogError(e, p); throw e; }
+}
 
 function snDecide(p, opts) {
   if (ah.env.get(ah.cfg('silent_nudge.judge_child_env')) === ah.cfg('silent_nudge.judge_child_value')) return 'allow';

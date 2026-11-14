@@ -498,6 +498,22 @@ doc = "Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES)."
 value = 67108864
 unit = "bytes"
 
+[silent_nudge.err_file]
+doc = "JSONL file, relative to the home directory, that keeps the error text of a failed silent-agent-nudge call (#764). The engine's own script_error line is rate-limited across all checks, so most failures lost their text."
+value = ".anti-hall/silent-agent-nudge-errors.log"
+
+[silent_nudge.err_max_bytes]
+doc = "Size at which the silent-agent-nudge error log is rotated to its .1 file."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[silent_nudge.err_text_max]
+doc = "Most characters of one error text (message and stack) kept in the silent-agent-nudge error log."
+value = 2000
+min = 80
+unit = "chars"
+
 [silent_nudge.state_file]
 doc = "Nudge state file, relative to the home directory."
 value = ".anti-hall/silent-agent-nudge-state.json"
