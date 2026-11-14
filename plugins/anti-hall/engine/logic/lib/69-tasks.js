@@ -18,8 +18,13 @@ var tk = {
   },
   // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
-  tasksOf: function (home, sid, path, variant) {
-    var st = tk.storeTasks(home, sid);
+  // `strict` (GH #744, callers that ORDER something from the list): a store with a file the read dropped (unreadable, over the size cap,
+  // unparsable, or of an unmodelled shape) or one too big to list is an unknown state, `{unsure: true, unreadable: true}`, never a
+  // partial list read as the whole one. Every other caller keeps the lenient read.
+  tasksOf: function (home, sid, path, variant, strict) {
+    var gaps = { n: 0 };
+    var st = tk.storeTasks(home, sid, strict ? gaps : undefined);
+    if (strict && gaps.n > 0) return { tasks: [], unsure: true, unreadable: true, store: true };
     if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
@@ -42,7 +47,8 @@ var tk = {
   // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
   // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
-  storeTasks: function (home, sid) {
+  // `gaps` (optional `{n}`): counts the store files the read dropped or could not list, so a strict caller can tell a partial list.
+  storeTasks: function (home, sid, gaps) {
     if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
@@ -51,14 +57,14 @@ var tk = {
       var files = ah.fs.readdir(dir);
       if (files === null) continue;
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
-      if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+      if (files.length > maxFiles) { ah.unable('tasks:store_big'); if (gaps) gaps.n++; return null; }
       var out = [];
       for (var k = 0; k < files.length; k++) {
         var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
-        if (raw === null) continue;
+        if (raw === null) { if (gaps) gaps.n++; continue; }
         var rec;
-        try { rec = JSON.parse(raw); } catch (e) { continue; }
-        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+        try { rec = JSON.parse(raw); } catch (e) { if (gaps) gaps.n++; continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') { if (gaps) gaps.n++; continue; }
         out.push({
           id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
           description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,

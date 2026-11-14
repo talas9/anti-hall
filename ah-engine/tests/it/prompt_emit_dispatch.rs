@@ -521,3 +521,52 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
         assert_eq!(count(&e), i, "tick {i}: one more saved repeat");
     }
 }
+
+/// GH #744 (review round 2): the teammate idle order is given only from a COMPLETE read of the session's task store. A readable completed
+/// sibling must not license a stop when another task file (possibly the teammate's own open task) was dropped as unreadable.
+#[test]
+fn teammate_idle_order_needs_a_complete_task_store() {
+    let order_for = |name: &str, extra_file: Option<&str>| -> String {
+        let e = Env::new(name);
+        let t0 = 1_790_000_000_000u64;
+        let iso = |ms: u64| {
+            let s = ms / 1000;
+            let (days, sod) = (s / 86400, s % 86400);
+            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+        };
+        let (spawn_at, idle_at) = (t0 - 3_600_000, t0 - 1_800_000);
+        let transcript = e.dir.join("t.jsonl");
+        let lines = [
+            serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}),
+        ];
+        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        // the session's task store: one readable completed task, plus (optionally) a file the read cannot use
+        let store = e.home().join(".claude/tasks/session-sess0001");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("1.json"), r#"{"id":"1","subject":"done","status":"completed","owner":"other"}"#).unwrap();
+        if let Some(body) = extra_file {
+            std::fs::write(store.join("2.json"), body).unwrap();
+        }
+        let map = e.map("UserPromptSubmit", "none");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
+        let now = t0.to_string();
+        let extra = [
+            ("ANTIHALL_TEST_ISOLATION", "1"),
+            ("ANTIHALL_TEST_NOW_MS", now.as_str()),
+            ("ANTIHALL_PROMPT_DIGEST", "0"),
+            ("AH_ENGINE_PLUGIN_ROOT", plugin),
+        ];
+        let (code, out, err) = e.run(&args, true, &ups("sess0001-x", "go on", Some(&transcript)), &extra);
+        assert_eq!((code, err.as_str()), (0, ""));
+        ctx(&out)
+    };
+    let control = order_for("idle-store-ok", None);
+    assert!(control.contains("TaskStop"), "control: a complete store with no open task owned by the teammate gets the order, got: {control}");
+    for (name, body) in [("idle-store-bad-json", "{not json"), ("idle-store-bad-shape", r#"{"id":"2","subject":"mine"}"#)] {
+        let out = order_for(name, Some(body));
+        assert!(!out.contains("TaskStop"), "{name}: a dropped task file makes the state unknown, no order, got: {out}");
+    }
+}

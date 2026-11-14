@@ -633,9 +633,11 @@ function piRoster(ctx, summary) {
       ds = piDisplayStatus(archiveReady, status, activityTs, now, dormant, false, idleAlive, idleMs);
     }
     var finishCell = piDoneState(entry, heartbeat), planOpen = false;
-    if (/^working\b/.test(finishCell) && gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) !== false) {
+    // GH #744: idleness is proven only by a plan state that was actually read: tracking off, or a plan the host could not read, is unknown
+    var planUnknown = gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) === false;
+    if (/^working\b/.test(finishCell) && !planUnknown) {
       var pf = JSON.parse(ahHost.piFinish(id, wtPath, now));
-      if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; }
+      if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; planUnknown = true; }
       if (pf.label !== null) { planOpen = !piPlanDone(pf.label); finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid); }
     }
     // GH #744: a live, unarchived child idle past guards.idleOrderAfterMin with no open plan, no unread mail and no done ruling is a candidate for the idle order
@@ -648,6 +650,7 @@ function piRoster(ctx, summary) {
       else if (ownerFocused) idleWhy = 'focused';
       else if (unread > 0 || !unreadKnown) idleWhy = 'unread';
       else if (planOpen) idleWhy = 'plan';
+      else if (planUnknown) idleWhy = 'plan_unknown';
       else if (wtPath && sessionId) {
         var ib = ah.mesh.childBusy(id, wtPath, sessionId, now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
         if (ib.none !== true && (ib.busy || ib.waiting)) idleWhy = 'busy';

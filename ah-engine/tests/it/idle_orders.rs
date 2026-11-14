@@ -240,3 +240,15 @@ fn a_finished_plan_does_not_count_as_open_gh744() {
     let out = turn(&open, "idle-plan-2", &claude);
     assert!(!out.contains(ORDER), "a child with an open plan is not ordered, got: {out}");
 }
+
+#[test]
+fn unknown_or_untracked_plan_state_gives_no_order_gh744() {
+    let claude = [("DEVSWARM_AI_AGENT", "claude")];
+    // control: plan tracking on, no plan: the child is provably idle and is ordered
+    let on = idle_child("order-track-on", 0, 45);
+    assert!(turn(&on, "idle-track-1", &claude).contains(ORDER), "control: a provably idle child is ordered");
+    // plan tracking off: whether a plan is open cannot be known, so idleness is not proven
+    let off = idle_child("order-track-off", 0, 45);
+    let out = turn(&off, "idle-track-2", &[("DEVSWARM_AI_AGENT", "claude"), ("ANTIHALL_DEVSWARM_PLAN_TRACKING", "0")]);
+    assert!(!out.contains(ORDER), "plan tracking off: no idle order, got: {out}");
+}

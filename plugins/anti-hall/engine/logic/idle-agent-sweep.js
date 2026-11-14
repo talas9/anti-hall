@@ -40,7 +40,7 @@ function idMessage(list, codex, now) {
 // GH #744: the open-task owners of this session (names that own an unfinished task), or null when the list cannot be read.
 function idOpenOwners(p, tp, home) {
   var sid = typeof p.session_id === 'string' ? p.session_id : '';
-  var r = tk.tasksOf(home, sid, tp, 'state');
+  var r = tk.tasksOf(home, sid, tp, 'state', true); // strict: a store file the read dropped is an unknown state, no order
   if (r.unsure || r.unreadable) return null;
   var out = [];
   (r.tasks || []).forEach(function (t) { if (tk.isOpen(t) && typeof t.owner === 'string' && t.owner !== '') out.push(t.owner); });

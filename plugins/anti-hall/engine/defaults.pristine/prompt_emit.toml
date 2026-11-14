@@ -706,5 +706,5 @@ doc = "The kind label of a teammate waiting on background work in the idle-order
 value = "teammate_waiting"
 
 [metric.idle_order]
-doc = "Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task, unknown_state, running)."
+doc = "Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task, unknown_state, plan_unknown, running)."
 value = { kind = "counter", unit = "orders", labels = ["kind", "outcome", "reason"] }
