@@ -16,7 +16,7 @@ function fixture({ state = null, answers = [], rows = [], live = null, budget = 
     'script.read_max_bytes': 8192, 'agent_tracker.paths': { base: '', dir: 'tracker', state: 'state.json' },
     'agent_nudge.paths': { answers: 'answers.ndjson' }, 'agent_nudge.runtime_escalation': { file: 'runtime-escalations.json' }, 'agent_nudge.answers': words,
     'agent_nudge.limits': { window_ms: 1000, snooze_default_min: 30, snooze_min_min: 1, snooze_max_min: 60 },
-    'silent_nudge.rt_first_seen': { file: 'runtime-first-seen.json', max_bytes: 4096, max_rows: 4, ttl_ms: 20000, skew_ms: 1000, initial_window_ms: 1000, future_allowance_ms: 2000 },
+    'silent_nudge.rt_first_seen': { file: 'runtime-first-seen.json', max_bytes: 4096, max_rows: 4, ttl_ms: 20000, skew_ms: 1000, initial_window_ms: 1000, future_allowance_ms: 2000, backdate_max_ms: 60000 },
     'agent_tracker.fmt': { unit_ms: [1, 60000] }, 'silent_nudge.rt_repair': { ttl_ms: 1000 },
   };
   const normalize = p => p.replace('//', '/');
@@ -46,7 +46,7 @@ function fixture({ state = null, answers = [], rows = [], live = null, budget = 
   function observe(current = publishers) {
     files.set('/fixture/tracker/runtime-escalations.json', JSON.stringify({ rows: current }));
     const e = context.snRuntimeEvidence({ session_id: 'parent' }, '/fixture', undefined, current);
-    if (context.snRuntimeFirstSeen) e.firstSeen = context.snRuntimeFirstSeen('/fixture', current, now);
+    if (context.snRuntimeFirstSeen) e.firstSeen = context.snRuntimeFirstSeen('/fixture', current, now, e.state);
     return context.snRuntimeVerdict('child', 'worker', 'parent', e);
   }
   return { context, publishers, evidence, tails, verdict: observe, observe, files, cfg, advance: ms => { now += ms; }, answer: (answer, ts = now) => files.set('/fixture/tracker/answers.ndjson', JSON.stringify({ child: 'child', answer, ts }) + '\n') };
@@ -244,4 +244,63 @@ test('future allowance boundary keeps a valid anchor without rollback', () => {
   f.files.set('/fixture/tracker/runtime-first-seen.json', JSON.stringify({ [key]: { at: 12000, reminders: null, block: true } }));
   f.observe();
   assert.equal(JSON.parse(f.files.get('/fixture/tracker/runtime-first-seen.json'))[key].at, 12000);
+});
+
+// #751: the coordinator answers after a re-escalation but before its own Stop first sees the new generation.
+function reescalated(answerTs) {
+  const f = fixture();
+  const setSent = (sent, reminders) => {
+    f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders } } }));
+    return [{ session: 'parent', child: 'child', name: 'worker', reminders, block: true }];
+  };
+  f.observe(setSent(9500, 3));
+  f.advance(10000);
+  const rows = setSent(19000, 4);
+  f.answer('other', answerTs);
+  return f.observe(rows);
+}
+test('answer after the re-escalation but before the Stop first sees it clears the block', () => {
+  assert.equal(reescalated(19500).retired, true);
+});
+test('answer from before the re-escalation does not clear the new generation', () => {
+  assert.notEqual(reescalated(18000).retired, true);
+});
+test('a block-tier change without a new send does not backdate the anchor', () => {
+  const f = fixture();
+  f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: 9500 } } }));
+  f.observe([{ session: 'parent', child: 'child', name: 'worker', reminders: 3, block: false }]);
+  f.advance(10000); f.answer('other', 15000);
+  assert.notEqual(f.observe([{ session: 'parent', child: 'child', name: 'worker', reminders: 3, block: true }]).retired, true);
+});
+
+test('a stale tracker send from generation N does not backdate generation N+1 (#751 race)', () => {
+  const f = fixture();
+  const track = (sent, reminders) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders } } }));
+  f.observe((track(5000, 2), [{ session: 'parent', child: 'child', name: 'worker', reminders: 2, block: true }]));
+  f.advance(10000);
+  // the tracker saved generation 3 (last_sent 9500) but the row is already generation 4: the send is not this row's
+  track(9500, 3);
+  f.answer('other', 15000);
+  assert.notEqual(f.observe([{ session: 'parent', child: 'child', name: 'worker', reminders: 4, block: true }]).retired, true);
+});
+
+// #751 round 2: a Stop that first sees generation 4 while the tracker is still at 3 anchors provisionally at now;
+// once the tracker catches up the anchor drops to the real send so an answer between the escalation and that Stop clears.
+function lagging(answerTs) {
+  const f = fixture();
+  const track = (sent, reminders) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders } } }));
+  const row = reminders => [{ session: 'parent', child: 'child', name: 'worker', reminders, block: true }];
+  f.observe((track(9500, 3), row(3)));
+  f.advance(10000);
+  f.observe((track(9500, 3), row(4)));
+  f.advance(500);
+  f.answer('other', answerTs);
+  f.observe((track(19000, 4), row(4)));
+  return f.observe(row(4));
+}
+test('a provisional anchor drops to last_sent once the tracker catches up (#751 round 2)', () => {
+  assert.equal(lagging(19500).retired, true);
+});
+test('an answer from before the escalation still does not clear after the anchor is lowered', () => {
+  assert.notEqual(lagging(18000).retired, true);
 });
