@@ -372,3 +372,32 @@ fn closed_roster_does_not_disable_unknown_wake_child_activity() {
     let out = probe(&h, expr, &[]);
     assert_eq!(out, r#"{"calls":1,"closed":"live","unknown":"quiet"}"#);
 }
+
+#[test]
+fn closed_row_with_done_gate_stays_parked_when_enrichment_is_skipped() {
+    // A closed child whose done gate is set holds unread mail and a stale, not-draining liveness verdict.
+    // Skipping enrichment must keep the metadata-only parking proof: no drain nag, parked label.
+    for enabled in [false, true] {
+        let h = Home::new(&format!("closed-done-parked-{enabled}"));
+        h.put(".anti-hall/devswarm/liveness/c1.json", r#"{"status":"stale","notDraining":true}"#);
+        let expr = r#"(function(){
+            ahHost.piRow=function(){return JSON.stringify({marker:false,app:false,closed:false,ignored:false});};
+            ahHost.piSnap=function(){return JSON.stringify({readable:true,file:true,focused:null});};
+            ahHost.piWs=function(){return JSON.stringify({active:false,archived:false});};
+            ahHost.piActivity=function(){return JSON.stringify({idleMs:0,ts:null,dormant:false,idleAlive:false});};
+            ahHost.piFinish=function(){return JSON.stringify({label:null});};
+            ah.mesh.sessionAlive=function(){return false;};
+            ah.mesh.childBusy=function(){return {none:true};};
+            var roster=piRoster({home:spawn.osHome(),key:'k',top:'/repo',primaryId:'primary',now:ah.clock.now(),sid:'s1',newest:{known:true,value:'9.9.9'}},{workspaces:{c1:{worktreePath:'/repo/child',sessionId:'dead',unread:2,directUnread:2,oldestDirectUnreadTs:1,gates:{done:true}}}});
+            return JSON.stringify({attention:roster.attention.map(function(a){return {parked:a.parked,notDraining:a.notDraining,status:a.status};}),skipped:roster.closedRows!==null,label:roster.rows[0].label});
+        })()"#;
+        let out = probe(&h, expr, &[("ANTIHALL_DEVSWARM_SKIP_CLOSED_ENRICHMENT", if enabled { "1" } else { "0" })]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        assert_eq!(v["skipped"], enabled, "{out}");
+        for a in v["attention"].as_array().unwrap() {
+            assert_eq!(a["notDraining"], false, "enabled={enabled}: false drain nag: {out}");
+            assert_eq!(a["parked"], true, "enabled={enabled}: {out}");
+        }
+        assert!(v["label"].as_str().unwrap().to_lowercase().contains("park"), "enabled={enabled}: {out}");
+    }
+}

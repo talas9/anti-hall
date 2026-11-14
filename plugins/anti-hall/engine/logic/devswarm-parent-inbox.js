@@ -155,11 +155,12 @@ function piSetDefault(key) { return typeof ah.cfg(key).default === 'boolean' ? a
 function piLabel(name) { return ah.cfg('devswarm_parent.labels')[name]; }
 
 // Explicit completion/hold facts take precedence; app closure alone never excuses an unread backlog.
-function piRowParked(ctx, id, wt, sid, entry, app, unread) {
+function piRowParked(ctx, id, wt, sid, entry, app, unread, metaOnly) {
   if (!ah.settings.bool('devswarm_parent.sw_parked')) return false;
   var sources = ah.cfg('devswarm_parent.parked_sources');
   if (sources.indexOf('done') >= 0 && entry && (entry.archive_ready === true || (entry.gates && entry.gates.done === true))) return true;
   if (sources.indexOf('held') >= 0 && ah.settings.str('devswarm_parent.set_held').split(',').map(function (v) { return v.trim(); }).indexOf(id) >= 0) return true;
+  if (metaOnly) return false; // enrichment skipped: only the done/held proofs above are free; the rest read transcripts
   var alive = !!(sid && ah.mesh.sessionAlive(sid));
   var b = wt && sid ? ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min')) : null;
   if (b && b.waiting === true) {
@@ -632,7 +633,7 @@ function piRoster(ctx, summary) {
     if (st.unsure) { ah.unable('devswarm-parent-inbox:row_state'); st = { unsure: false, marker: false, app: false }; } // taken as not put away
     var archivedRow = st.marker;
     var appArchivedRow = st.app;
-    var rowParked = enrich && piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unreadKnown ? unread : null);
+    var rowParked = piRowParked(ctx, id, wtPath, sessionId, entry, rowWs, unreadKnown ? unread : null, !enrich);
     if (rowParked) {
       if (stuck || notDraining) waste.note(ctx.sid, 'stale_flag_on_parked', ah.cfg('devswarm_parent.parked_metric_source'), 0);
       stuck = false;

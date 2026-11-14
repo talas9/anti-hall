@@ -5725,13 +5725,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_reason_parked_only` | `DevSwarm Stop gate.` |  |  | The block reason body when only a parked escalation holds the turn (no family, question or truncation). |
 | `devswarm_role.pg_repeat_step` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>`; if it sh...` |  |  | The concrete next step the repeated-block hint adds once to a repeated parent-gate block (repeat.allowed_keys). |
 | `devswarm_role.pg_repos_root_marker` | `/.devswarm/repos/` |  |  | A worktree under this path segment is a DevSwarm-app workspace the supervisor active-list cache can archive (DEVSWARM_REPOS_ROOT_RE). |
-| `devswarm_role.pg_set_busy_fresh` | `5 entries` |  |  | Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default. |
-| `devswarm_role.pg_set_busy_max_age` | `5 entries` |  |  | Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default. |
-| `devswarm_role.pg_set_cap` | `5 entries` |  |  | Setting devswarm.parentGateCap: forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default. |
+| `devswarm_role.pg_set_busy_fresh` | `5 entries` |  |  | minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default. |
+| `devswarm_role.pg_set_busy_max_age` | `5 entries` |  |  | minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default. |
+| `devswarm_role.pg_set_cap` | `5 entries` |  |  | forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_set_drain_ttl` | `5 entries` |  |  | Setting devswarm.drainTtlMs: milliseconds an in-flight drain marker stays fresh. The engine answers only while it is unset, with this default. |
-| `devswarm_role.pg_set_grace` | `5 entries` |  |  | Setting devswarm.parentGateNeglectGraceMin: minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default. |
+| `devswarm_role.pg_set_grace` | `5 entries` |  |  | minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_set_held` | `5 entries` |  |  | Setting devswarm.heldPartitions: owner-held partition ids. The engine answers only while it is unset everywhere (an empty set). |
-| `devswarm_role.pg_set_neglect_min` | `5 entries` |  |  | Setting devswarm.parentGateNeglectMinUnread: unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default. |
+| `devswarm_role.pg_set_neglect_min` | `5 entries` |  |  | unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_short_id_len` | `8` |  |  | Characters of an id in its display name. |
 | `devswarm_role.pg_short_instead` | `resolve the pending workspace duties.` |  |  | Compact guard message text. |
 | `devswarm_role.pg_sig_prefix` | `devswarm-parent:` |  |  | Prefix of the hashed block-kind signature. |
