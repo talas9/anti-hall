@@ -43,11 +43,8 @@ fn agrees_with(store: &ConfigStore) {
 
 #[test]
 fn defaults_reads_follow_the_config_layers_and_reloads() {
-    let dir = testtmp::path(format!(
-        "ah-overlay-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ));
+    let dir =
+        testtmp::path(format!("ah-overlay-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
     let paths = Paths { user: dir.join("config.toml"), settings: Some(dir.join("settings.json")) };
     // SAFETY: this file holds one test, and these are set before any thread reads them. The state dir is set before the first

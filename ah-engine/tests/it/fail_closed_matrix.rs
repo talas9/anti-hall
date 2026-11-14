@@ -843,7 +843,8 @@ fn stop_active_invalid_utf8_fails_open_before_utf8_rejection() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
+            let case =
+                Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
             let row = Row {
                 name: "stop_hook_active with non-UTF-8 stdin",
                 stdin: Stdin::StopActiveNotUtf8,
