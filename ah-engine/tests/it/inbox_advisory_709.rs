@@ -80,16 +80,20 @@ fn the_child_inbox_advisory_speaks_on_a_changed_unread_set_or_after_the_cooldown
     assert!(h.turn(&[]).contains(MARK), "a different message with an unchanged count is a changed set");
     assert!(!h.turn(&[]).contains(MARK));
     // the cooldown: the record's age is pushed past the configured minutes
-    let rec = h.home().join(".anti-hall/devswarm/child-unread-seen/s1.json");
-    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&rec).unwrap()).unwrap();
-    let old = v["at"].as_u64().unwrap() - 11 * 60_000;
-    v["at"] = old.into();
-    std::fs::write(&rec, v.to_string()).unwrap();
+    age_record(&h.home().join(".anti-hall/devswarm/unread-seen.json"), "child:s1");
     assert!(h.turn(&[]).contains(MARK), "an unchanged set speaks again once the cooldown has passed");
     assert!(!h.turn(&[]).contains(MARK), "and the cooldown restarts");
     // the switch off restores the every-prompt advisory
     let off = [("ANTIHALL_DEVSWARM_INBOX_ADVISORY_ON_CHANGE", "0")];
     assert!(h.turn(&off).contains(MARK) && h.turn(&off).contains(MARK), "off: every prompt speaks");
+}
+
+/// Push the record `key` of the unread-advisory store `file` 11 minutes into the past (past the 10-minute default cooldown).
+fn age_record(file: &std::path::Path, key: &str) {
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let old = v["e"][key]["at"].as_u64().unwrap() - 11 * 60_000;
+    v["e"][key]["at"] = old.into();
+    std::fs::write(file, v.to_string()).unwrap();
 }
 
 /// A Primary in a scratch checkout whose summary names `unread` own messages at cursor..total.
@@ -180,13 +184,65 @@ fn the_own_inbox_advisory_speaks_on_a_changed_unread_set_or_after_the_cooldown()
     assert!(!p.turn(&[]).contains(OWN));
     p.summary(1, 3);
     assert!(p.turn(&[]).contains(OWN), "a different unread set with the same total speaks");
-    let rec = p.dir.join(".anti-hall/devswarm/own-unread-seen/s1.json");
-    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&rec).unwrap()).unwrap();
-    let old = v["at"].as_u64().unwrap() - 11 * 60_000;
-    v["at"] = old.into();
-    std::fs::write(&rec, v.to_string()).unwrap();
+    age_record(&p.dir.join(".anti-hall/devswarm/unread-seen.json"), "own:s1");
     assert!(p.turn(&[]).contains(OWN), "an unchanged set speaks again once the cooldown has passed");
     assert!(!p.turn(&[]).contains(OWN));
     let off = [("ANTIHALL_DEVSWARM_INBOX_ADVISORY_ON_CHANGE", "0")];
     assert!(p.turn(&off).contains(OWN) && p.turn(&off).contains(OWN), "off: every prompt speaks");
+}
+
+#[test]
+fn the_unread_advisory_store_stays_bounded_and_drops_old_sessions() {
+    let h = Home::new("bound");
+    h.inbox(&[r#"{"id":"m1","text":"a"}"#]);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let mut e = serde_json::Map::new();
+    for i in 0..250u64 {
+        e.insert(format!("child:old{i}"), serde_json::json!({"sig":"x","at":now - 1000 - i}));
+    }
+    e.insert("child:ancient".into(), serde_json::json!({"sig":"x","at":now - 49 * 3_600_000}));
+    h.put(".anti-hall/devswarm/unread-seen.json", &serde_json::json!({"e": e}).to_string());
+    assert!(h.turn(&[]).contains(MARK), "a first unread message speaks");
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(h.home().join(".anti-hall/devswarm/unread-seen.json")).unwrap()).unwrap();
+    let e = doc["e"].as_object().unwrap();
+    assert_eq!(e.len(), 200, "the store is capped at unread_seen_max entries");
+    assert!(e.contains_key("child:s1"), "the record just made is kept");
+    assert!(!e.contains_key("child:ancient"), "an entry past the age limit is dropped");
+    assert!(!e.contains_key("child:old249"), "the oldest are dropped first");
+    assert!(
+        std::fs::read_dir(h.home().join(".anti-hall/devswarm")).unwrap().all(|f| !f.unwrap().file_name().to_string_lossy().starts_with("child-unread")),
+        "no per-session files"
+    );
+}
+
+#[test]
+fn an_alias_row_mail_acked_and_replaced_at_the_same_count_speaks_at_once() {
+    const OWN: &str = "devswarm-own-inbox";
+    let p = Primary::new("alias");
+    // the app database names the alias row as the primary builder of this very checkout
+    let db = p.dir.join("app.db");
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE builders (id TEXT, repositoryId TEXT, sourceBranch TEXT, branchName TEXT, worktreePath TEXT, terminalId TEXT, label TEXT, createdAt TEXT, lastAccessed TEXT, rank INTEGER, isHidden INTEGER, pullRequestId TEXT, builderType TEXT, isPinned INTEGER, isActive INTEGER, lastSelectedAt TEXT);
+         CREATE TABLE builder_terminals (id TEXT, builderId TEXT, terminalId TEXT, terminalType TEXT, aiAgent TEXT, ai_session_config TEXT, isActive INTEGER, panelStatus TEXT, createdAt TEXT, lastViewedAt TEXT, initialPrompt TEXT, initialPromptDeliveredAt TEXT, initialPromptWithheldAt TEXT);
+         CREATE TABLE pull_requests (id TEXT, repositoryId TEXT, branchName TEXT, number INTEGER, state TEXT, isDraft INTEGER, url TEXT, checkStatus TEXT, reviewStatus TEXT, lastSyncedAt TEXT);
+         CREATE TABLE repositories (id TEXT, path TEXT, name TEXT, defaultBaseBranch TEXT);
+         CREATE TABLE workspace_messages (repositoryId TEXT, toBranch TEXT, createdAt TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO builders (id, worktreePath, builderType, isActive) VALUES ('alias-1', ?1, 'primary', 1)", [p.repo.to_str().unwrap()]).unwrap();
+    drop(c);
+    let env = [("ANTIHALL_DEVSWARM_APP_DB", db.to_str().unwrap())];
+    let alias = |cursor: u64, total: u64| {
+        let s = serde_json::json!({"workspaces":{
+            p.own.clone(): {"unread":0,"cursor":0,"total":0,"status":"working","gates":{}},
+            "alias-1": {"unread":1,"directUnread":1,"cursor":cursor,"total":total,"worktreePath":p.repo,"status":"working","gates":{}}}});
+        p.put(&format!(".anti-hall/devswarm/summaries/{}.json", p.key), &s.to_string());
+    };
+    alias(0, 1);
+    let first = p.turn(&env);
+    assert!(first.contains(OWN), "alias mail speaks: {first}");
+    assert!(!p.turn(&env).contains(OWN), "the same alias mail stays silent");
+    alias(1, 2); // the first was read, a new one arrived: still one unread
+    assert!(p.turn(&env).contains(OWN), "a new alias message at an unchanged count speaks at once");
 }

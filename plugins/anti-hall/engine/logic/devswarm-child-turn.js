@@ -337,10 +337,10 @@ function decide(p, opts) {
     if (meshDirect !== null) segments.push(meshDirect);
     if (plan !== null && (!dedupeOn || dedupe.shouldEmit(planOpts))) segments.push(plan);
     var archiveSegment = false;
-    var unreadSig = null, unreadNow = ah.clock.now();
+    var unreadSig = null;
     if (info !== null) {
-      unreadSig = ah.sha1(info.lines.join('\n')); // the unread set, not just its count (#709)
-      if (!dwUnreadSpeak('devswarm_prompt.dir_child_unread_seen', sid, unreadSig, unreadNow)) { ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'child']); info = null; unreadSig = null; }
+      unreadSig = ah.sha1(JSON.stringify([info.id, info.count, info.lines])); // the unread set (every unread line, the message ids with it), not just its count (#709)
+      if (!dwUnreadDecide('child', sid, unreadSig, ah.clock.now())) { ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'child']); info = null; }
     }
     if (info !== null) {
       segments.push(text.render(ah.cfg('devswarm_prompt.unread_segment'), { count: info.count, cli: cli, id: info.id }));
@@ -353,7 +353,6 @@ function decide(p, opts) {
     // Build the return value before recording an emission: a failed renderer delivered nothing.
     var result = segments.length ? { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_prompt.child_block_joiner'))) } : 'allow';
     if (dedupeOn && staticEmit) dedupe.shouldEmit(staticOpts);
-    if (unreadSig !== null) dwUnreadRecord('devswarm_prompt.dir_child_unread_seen', sid, unreadSig, unreadNow);
     return result;
   })();
 }

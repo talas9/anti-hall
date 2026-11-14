@@ -2133,7 +2133,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.child_summary` | `DevSwarm child prompt hook: answers the silent cases (not a child workspace, ...` |  |  | One-line description of the devswarm-child-turn check in the generated reference. |
 | `devswarm_prompt.defer_log_kind` | `child-turn-defer` |  |  | The event-log kind of the line the child-turn check writes when it hands a turn to the Node hook; the line's text is the cause. |
 | `devswarm_prompt.descriptor_dir` | `devswarm/workspaces` |  |  | The directory, under the anti-hall directory, of the workspace descriptors. |
-| `devswarm_prompt.dir_child_unread_seen` | `child-unread-seen` |  |  | The directory (under the devswarm state dir) of the per-session records of the last child-inbox advisory spoken ({sig, at}). |
 | `devswarm_prompt.escape_marker` | `\u` |  |  | The text that marks a JSON escape sequence; a descriptor the engine's parser rejects and that holds one is left to the Node hook (JavaScript may parse it). |
 | `devswarm_prompt.event` | `UserPromptSubmit` |  |  | The hook event name of the prompt hooks' answer. |
 | `devswarm_prompt.fault_banner` | `⚠️ anti-hall · devswarm-ingest-failing: the ingest daemon is healthy (heartbe...` |  |  | The banner for a live ingest daemon whose app monitor is not answering and that is not a configuration fault (buildMonitorFaultBanner). Placeholders: {beat}, {what}, {err}. |
@@ -2199,6 +2198,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.summary_dir` | `devswarm/summaries` |  |  | The directory, under the anti-hall directory, of the per-project mailbox summaries the registration refreshes and the hook reads. |
 | `devswarm_prompt.sw_unread_on_change` | `6 entries` |  |  | Inbox advisories on change (#709). Switch devswarm.inboxAdvisoryOnChange (default on): the unread-inbox advisory of a child workspace and of a Primary speaks when the unread set changed since the last one spoken in the session, or when the cooldown has passed, instead of on every prompt. A new unread message always speaks at once. Off restores the advisory on every prompt. |
 | `devswarm_prompt.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; under one the service manager is never asked. |
+| `devswarm_prompt.unread_seen_file` | `unread-seen.json` |  |  | The one store file (under the devswarm state dir) of the last unread-inbox advisory spoken per session and kind ({sig, at} each). Bounded by unread_seen_max and unread_seen_ttl_hours; read and written as one step under unread_seen_lock. |
+| `devswarm_prompt.unread_seen_lock` | `unread-seen.lock` |  |  | The lock file (under the devswarm state dir) that makes the check of the unread-advisory store and the recording of what is spoken one step. |
+| `devswarm_prompt.unread_seen_lock_group` | `spawn_reservation` |  |  | The lock timings group of the unread-advisory store lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once. A lock that cannot be taken lets the advisory speak and records nothing. |
+| `devswarm_prompt.unread_seen_max` | `200` |  | count | The most entries (one per session and kind) the unread-advisory store keeps; the oldest are dropped past it. |
+| `devswarm_prompt.unread_seen_ttl_hours` | `48` |  | hours | An unread-advisory store entry older than this many hours is dropped (its session is long over; a dropped entry only means the advisory speaks once more). |
 | `devswarm_prompt.unread_segment` | `⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread paren...` |  |  | The child's unread-parent-mail segment. Placeholders: {count}, {cli}, {id}. |
 | `devswarm_prompt.urgent_levels` | `urgent, high` |  |  | The urgency values (the summary's urgencyMax) that make the mesh-direct nudge loud. |
 | `devswarm_prompt.uuid_full_re` | `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` |  |  | A full UUID (a builder id of this shape is a real id). |
@@ -14232,7 +14236,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.dir_locks` | `locks` |  |  | The lock files directory, under the DevSwarm directory. |
 | `devswarm_parent.dir_notice_cursor` | `maintainer-notice-cursor` |  |  | The per-project maintainer-notice cursors (maintainer-notice-cursor/<repoKey>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_orphans_seen` | `orphans-seen` |  |  | The directory (under the devswarm state dir) of the per-session orphaned-mesh warning records. |
-| `devswarm_parent.dir_own_unread_seen` | `own-unread-seen` |  |  | The directory (under the devswarm state dir) of the per-session records of the last own-inbox advisory spoken ({sig, at}). |
 | `devswarm_parent.dir_reply_state` | `parent-gate` |  |  | The per-project reply records (parent-gate/<repoKey>-replies.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_stray` | `stray` |  |  | The per-plan straying records (stray/<key>.json), under the DevSwarm directory. |
 | `devswarm_parent.dir_token_usage` | `token-usage` |  |  | The per-plan token burn records (token-usage/<key>.json), under the DevSwarm directory. |
