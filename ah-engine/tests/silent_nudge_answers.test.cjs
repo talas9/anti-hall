@@ -272,3 +272,14 @@ test('a block-tier change without a new send does not backdate the anchor', () =
   f.advance(10000); f.answer('other', 15000);
   assert.notEqual(f.observe([{ session: 'parent', child: 'child', name: 'worker', reminders: 3, block: true }]).retired, true);
 });
+
+test('a stale tracker send from generation N does not backdate generation N+1 (#751 race)', () => {
+  const f = fixture();
+  const track = (sent, reminders) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders } } }));
+  f.observe((track(5000, 2), [{ session: 'parent', child: 'child', name: 'worker', reminders: 2, block: true }]));
+  f.advance(10000);
+  // the tracker saved generation 3 (last_sent 9500) but the row is already generation 4: the send is not this row's
+  track(9500, 3);
+  f.answer('other', 15000);
+  assert.notEqual(f.observe([{ session: 'parent', child: 'child', name: 'worker', reminders: 4, block: true }]).retired, true);
+});

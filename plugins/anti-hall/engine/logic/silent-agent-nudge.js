@@ -207,7 +207,8 @@ function snRuntimeRead(path, budget) {
 // no stale-lock takeover can let a delayed writer publish after its successor. Re-read the
 // publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
 // Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
-// Latest tracker last_sent per [session, child] from the already-read tracker state ({} when unavailable).
+// Latest tracker {at: last_sent, reminders} per [session, child] from the already-read tracker state ({} when unavailable).
+// reminders is the generation: the engine publishes the same counter in the escalation row (#752 review).
 function snRuntimeSentTimes(state) {
   var out = {};
   if (!state || !jx.isObj(state.nudges)) return out;
@@ -217,7 +218,7 @@ function snRuntimeSentTimes(state) {
     [n.child, id].forEach(function (c) {
       if (typeof c !== 'string') return;
       var key = JSON.stringify([n.parent, c]);
-      if (!snNum(out[key]) || n.last_sent > out[key]) out[key] = n.last_sent;
+      if (!out[key] || n.last_sent > out[key].at) out[key] = { at: n.last_sent, reminders: snNum(n.reminders) ? n.reminders : null };
     });
   });
   return out;
@@ -254,7 +255,9 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.reminders !== reminders || prior.block !== (r.block === true);
       var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
       if (restart) {
-        var ls = sent[key], floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
+        // The tracker can be saved after the row is published (older state next to a newer row): backdate only when
+        // its send is the SAME generation as this row; a mismatch, or a missing or unparsable count, anchors at now.
+        var se = sent[key], ls = se && reminders !== null && se.reminders === reminders ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
         // Only a send newer than the previous anchor is a real new generation; a block-tier change alone is not.
         if (snNum(ls) && ls > floor && ls <= now && (!valid || ls > prior.at)) at = ls;
       }
