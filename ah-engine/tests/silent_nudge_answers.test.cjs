@@ -321,3 +321,19 @@ test('a returning tracker with unchanged reminders and an old last_sent keeps th
   f.observe(row(true));
   assert.notEqual(f.observe(row(true)).retired, true);
 });
+
+// #751 round 4: a snooze extension advances last_sent without bumping reminders; it is not proof of this generation's send.
+test('a snooze-stamped last_sent never lowers the provisional anchor (#751 round 4)', () => {
+  const f = fixture();
+  const track = (sent, extra) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: Object.assign({ child: 'child', parent: 'parent', last_sent: sent, reminders: 3 }, extra) } }));
+  const row = block => [{ session: 'parent', child: 'child', name: 'worker', reminders: 3, block }];
+  f.observe((track(9500), row(false)));
+  f.advance(10000);
+  f.files.delete('/fixture/tracker/state.json');
+  f.observe(row(true));
+  f.advance(500);
+  f.answer('other', 18000);
+  track(15000, { snoozes: 1, snooze_until: 19000 });
+  f.observe(row(true));
+  assert.notEqual(f.observe(row(true)).retired, true);
+});

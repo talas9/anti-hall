@@ -208,6 +208,8 @@ function snRuntimeRead(path, budget) {
 // publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
 // Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
 // Latest tracker {at: last_sent, reminders} per [session, child] from the already-read tracker state ({} when unavailable).
+// snoozes>0: a snooze extension also advances last_sent without bumping reminders (nudge.rs:1209), so last_sent then
+// cannot prove a send; such a row never lowers an anchor (stays provisional, conservative).
 // reminders is the generation: the engine publishes the same counter in the escalation row (#752 review).
 function snRuntimeSentTimes(state) {
   var out = {};
@@ -218,7 +220,7 @@ function snRuntimeSentTimes(state) {
     [n.child, id].forEach(function (c) {
       if (typeof c !== 'string') return;
       var key = JSON.stringify([n.parent, c]);
-      if (!out[key] || n.last_sent > out[key].at) out[key] = { at: n.last_sent, reminders: snNum(n.reminders) ? n.reminders : null };
+      if (!out[key] || n.last_sent > out[key].at) out[key] = { at: n.last_sent, reminders: snNum(n.reminders) ? n.reminders : null, snoozes: snNum(n.snoozes) ? n.snoozes : 0 };
     });
   });
   return out;
@@ -259,7 +261,7 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       var provisional = false, prev = restart ? (valid ? prior.at : 0) : (valid && snNum(prior.prev) ? prior.prev : 0);
       if (!restart && valid && prior.provisional === true) {
         var te = sent[key];
-        if (te && reminders !== null && te.reminders === reminders) {
+        if (te && reminders !== null && te.reminders === reminders && te.snoozes === 0) {
           // Lower only when the tracker proves THIS generation's send: last_sent strictly newer than the previous anchor
           // (same newer-send rule as the restart path). Unchanged reminders with an old last_sent stay provisional.
           var low = Math.max(te.at, now - cfg.backdate_max_ms, prev);
@@ -270,7 +272,7 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       if (restart) {
         // The tracker can be saved after the row is published (older state next to a newer row): backdate only when
         // its send is the SAME generation as this row; a mismatch, or a missing or unparsable count, anchors at now.
-        var se = sent[key], ls = se && reminders !== null && se.reminders === reminders ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
+        var se = sent[key], ls = se && reminders !== null && se.reminders === reminders && se.snoozes === 0 ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
         // Only a send newer than the previous anchor is a real new generation; a block-tier change alone is not.
         if (snNum(ls) && ls > floor && ls <= now && (!valid || ls > prior.at)) at = ls;
         provisional = ls === null;
