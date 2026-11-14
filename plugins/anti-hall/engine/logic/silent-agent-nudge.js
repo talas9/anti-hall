@@ -254,15 +254,27 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       var reminders = snNum(r.reminders) ? r.reminders : null;
       var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.reminders !== reminders || prior.block !== (r.block === true);
       var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
+      // provisional: the anchor came from the mismatch/fallback path (now), so a tracker that later catches up may lower it once.
+      // prev keeps the previous generation's anchor as the lower bound; old entries without the flag are final.
+      var provisional = false, prev = restart ? (valid ? prior.at : 0) : (valid && snNum(prior.prev) ? prior.prev : 0);
+      if (!restart && valid && prior.provisional === true) {
+        var te = sent[key];
+        if (te && reminders !== null && te.reminders === reminders) {
+          var low = Math.max(te.at, now - cfg.backdate_max_ms, prev);
+          if (snNum(te.at) && te.at <= now && low < at) at = low;
+        } else provisional = true;
+      }
       if (restart) {
         // The tracker can be saved after the row is published (older state next to a newer row): backdate only when
         // its send is the SAME generation as this row; a mismatch, or a missing or unparsable count, anchors at now.
         var se = sent[key], ls = se && reminders !== null && se.reminders === reminders ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
         // Only a send newer than the previous anchor is a real new generation; a block-tier change alone is not.
         if (snNum(ls) && ls > floor && ls <= now && (!valid || ls > prior.at)) at = ls;
+        provisional = ls === null;
       }
       // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
-      seen[key] = { at: at, reminders: reminders, block: r.block === true };
+      seen[key] = { at: at, reminders: reminders, block: r.block === true, prev: prev };
+      if (provisional) seen[key].provisional = true;
       // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
       if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
       anchors[key] = at;

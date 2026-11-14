@@ -283,3 +283,24 @@ test('a stale tracker send from generation N does not backdate generation N+1 (#
   f.answer('other', 15000);
   assert.notEqual(f.observe([{ session: 'parent', child: 'child', name: 'worker', reminders: 4, block: true }]).retired, true);
 });
+
+// #751 round 2: a Stop that first sees generation 4 while the tracker is still at 3 anchors provisionally at now;
+// once the tracker catches up the anchor drops to the real send so an answer between the escalation and that Stop clears.
+function lagging(answerTs) {
+  const f = fixture();
+  const track = (sent, reminders) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders } } }));
+  const row = reminders => [{ session: 'parent', child: 'child', name: 'worker', reminders, block: true }];
+  f.observe((track(9500, 3), row(3)));
+  f.advance(10000);
+  f.observe((track(9500, 3), row(4)));
+  f.advance(500);
+  f.answer('other', answerTs);
+  f.observe((track(19000, 4), row(4)));
+  return f.observe(row(4));
+}
+test('a provisional anchor drops to last_sent once the tracker catches up (#751 round 2)', () => {
+  assert.equal(lagging(19500).retired, true);
+});
+test('an answer from before the escalation still does not clear after the anchor is lowered', () => {
+  assert.notEqual(lagging(18000).retired, true);
+});
