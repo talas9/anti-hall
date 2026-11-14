@@ -458,7 +458,7 @@ wave (D75, wave 4).
 When the binary is installed, the first hook call starts `ah-engine serve` as a detached background process (no launchd or systemd unit).
 It runs per user, listens only on a Unix socket in a private (0700) directory, makes no network connections (only the opt-in `jev` commands do), runs at
 lowered priority, and exits cleanly when it exceeds its memory cap, stalls, is stopped (`ah-engine stop`, SIGTERM) or is
-replaced by a newer build. It stays up when idle unless `daemon.idle_exit_s` is set. It deletes nothing outside its own
+replaced by a newer build. It stays up when idle unless `daemon.idle_exit_s` is set. A daemon whose state directory is under the system temp directory (a test or throwaway run) is capped at `daemon.scratch_idle_exit_s`, so one whose starter was killed ends by itself. It deletes nothing outside its own
 state directory. If it keeps failing it stops respawning (crash-loop stop) and hooks run on the Node implementation.
 
 ## Phase checklist
