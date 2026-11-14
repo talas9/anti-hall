@@ -59,6 +59,21 @@ fn a_missing_jev_key_is_not_a_counted_failure() {
     }
 }
 
+/// Item 6: coordinator-work-guard counts Bash steps only (dispatch matcher `Bash`; classifyBashWork: git/gh mutations and Bash
+/// writes), so its texts must not claim it counts "edits".
+#[test]
+fn coordinator_work_texts_say_what_the_guard_counts() {
+    for key in ["coordinator_work.nudge_what", "coordinator_work.block_what"] {
+        for (d, t) in text_of("small_guards.toml", key) {
+            assert!(t.contains("shell step"), "{d}: {key} must say shell steps: {t}");
+            assert!(!t.contains("edits"), "{d}: {key} must not say edits: {t}");
+        }
+    }
+    for (d, t) in text_of("small_guards.toml", "coordinator_work.block_digest") {
+        assert!(t.contains("shell steps") && !t.contains("after {cfg:coordinator_work.block_setting} edits"), "{d}: digest: {t}");
+    }
+}
+
 /// Item 7: when silent-agent-nudge throws, the error text is kept (one bounded line in its own log) and the error still reaches
 /// the engine's failure policy. The host is a stub whose first call throws, so the test needs no real failure to provoke.
 #[test]
