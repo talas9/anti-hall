@@ -101,6 +101,10 @@ impl Env {
     }
 
     fn run(&self, event: &str, payload: &serde_json::Value, agent: &str) -> String {
+        self.run_with(event, payload, agent, &[])
+    }
+
+    fn run_with(&self, event: &str, payload: &serde_json::Value, agent: &str, extra: &[(&str, &str)]) -> String {
         let map = self.dir.join(format!("map-{event}.json"));
         let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", event).into_iter().map(|x| x.id).collect();
         let m: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.clone(), "true".into())).collect();
@@ -117,6 +121,7 @@ impl Env {
             .env("ANTIHALL_DEVSWARM_SUPERVISOR", "on")
             .env("DEVSWARM_AI_AGENT", agent)
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .envs(extra.iter().copied())
             .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .current_dir(&self.repo)
             .stdin(Stdio::piped())
@@ -588,4 +593,123 @@ fn agent_recovery_then_expiry(sample_recovery: bool) {
             .any(|r| r["signal"] == "monitor_unarmed" && r["ts"].as_u64() == Some(n + cooldown + 5 * minute)),
         "a later expiry must be announced again after cooldown: {rows}"
     );
+}
+
+// #700 / #654: every engine path rendered into an instruction text is one shell word, whatever the home directory holds.
+
+/// Every occurrence of the engine binary path in `out` (a hook's JSON stdout, decoded) as the shell sees it: the word is cut at the
+/// path's start (a leading `'` belongs to it) and read through `sh`, which must accept it and split it into exactly the path plus the
+/// next word (the verb). Returns how many commands were checked.
+fn assert_engine_paths_are_one_word(out: &str, home: &str) -> usize {
+    let bin = format!("{home}/.anti-hall/ah-engine/bin/ah-engine");
+    let escaped = bin.replace('\'', "'\\''"); // how a quoted sh word spells a quote inside it
+    let mut text = out.to_string();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(out.trim()) {
+        if let Some(c) = v.pointer("/hookSpecificOutput/additionalContext").and_then(|c| c.as_str()) {
+            text = c.to_string();
+        } else if let Some(r) = v.get("reason").and_then(|c| c.as_str()) {
+            text = r.to_string();
+        }
+    }
+    let (mut from, mut checked) = (0, 0);
+    while let Some(at) = text[from..].find(&escaped) {
+        let at = from + at;
+        let end = at + escaped.len();
+        assert!(
+            at > 0 && text.as_bytes()[at - 1] == b'\'' && text.as_bytes().get(end) == Some(&b'\''),
+            "the engine path is not wrapped in one pair of quotes for home {home:?}: {:?}",
+            &text[at.saturating_sub(40)..(end + 60).min(text.len())]
+        );
+        // the complete rendered command word, as the agent would paste it: the maximal run around the quoted path that no whitespace
+        // outside the quotes ends (a stray outer `"` or other wrapper therefore stays part of it and is seen by the shell)
+        let b = text.as_bytes();
+        let mut start = at - 1;
+        while start > 0 && !b[start - 1].is_ascii_whitespace() && b[start - 1] != b'`' {
+            start -= 1;
+        }
+        let mut stop = end + 1;
+        while stop < b.len() && !b[stop].is_ascii_whitespace() && b[stop] != b'`' {
+            stop += 1;
+        }
+        let word = &text[start..stop];
+        let verb = text[stop..].split_whitespace().next().unwrap_or("");
+        let cmd = format!("{word} {verb}");
+        let syntax = Command::new("sh").args(["-n", "-c", &cmd]).output().unwrap();
+        assert!(syntax.status.success(), "sh -n rejects {cmd:?}: {}", String::from_utf8_lossy(&syntax.stderr));
+        let split = Command::new("sh").arg("-c").arg(format!("set -- {cmd}; printf '%s\\n' \"$@\"")).output().unwrap();
+        assert!(split.status.success(), "sh cannot split {cmd:?}");
+        let lines: Vec<String> = String::from_utf8_lossy(&split.stdout).lines().map(str::to_string).collect();
+        assert_eq!(lines, vec![bin.clone(), verb.to_string()], "{cmd:?} must split into the engine path and its verb");
+        checked += 1;
+        from = stop;
+    }
+    // no other spelling of the path with this home (an unquoted one, or one with the quote not escaped) may be left in the text
+    let tail = "/.anti-hall/ah-engine/bin/ah-engine";
+    let home_forms = text.matches(tail).filter(|_| true).count() - text.matches(&format!("~{tail}")).count();
+    assert_eq!(home_forms, checked, "every rendering of the engine path under {home:?} is a checked, quoted word: {text:?}");
+    checked
+}
+
+#[test]
+#[should_panic(expected = "must split into the engine path and its verb")]
+fn the_word_check_rejects_a_double_quoted_single_quoted_path() {
+    // the failing spelling of #700 review: an outer "..." around the '...' reaches the shell as the path WITH its single quotes
+    let home = "/h/a b";
+    let text = format!("run \"'{home}/.anti-hall/ah-engine/bin/ah-engine'\" mesh roster");
+    assert_engine_paths_are_one_word(&text, home);
+}
+
+#[test]
+fn the_word_check_accepts_the_single_quoted_path() {
+    let home = "/h/a b";
+    let text = format!("run '{home}/.anti-hall/ah-engine/bin/ah-engine' mesh roster");
+    assert_eq!(assert_engine_paths_are_one_word(&text, home), 1);
+}
+
+fn spaced_quoted_home_env(name: &str) -> (Env, String) {
+    let e = Env::new(name);
+    let home = e.dir.join("home").to_string_lossy().to_string();
+    (e, home)
+}
+
+#[test]
+fn the_wake_watcher_and_cli_in_the_session_start_text_are_one_shell_word_for_a_home_with_a_space_and_a_quote() {
+    let (e, home) = spaced_quoted_home_env("q700 a'b");
+    let out = e.start("s1", "startup", "claude");
+    assert!(home.contains(' ') && home.contains('\''), "the scratch home must hold a space and a quote: {home}");
+    assert!(out.contains("wake-watch --auto"), "the Monitor command is named, got: {out:?}");
+    assert!(assert_engine_paths_are_one_word(&out, &home) >= 3, "the cli verbs and the watcher were all checked");
+}
+
+#[test]
+fn the_rearm_command_in_the_stop_block_is_one_shell_word_for_a_home_with_a_space_and_a_quote() {
+    let (e, home) = spaced_quoted_home_env("q700 stop a'b");
+    e.live_child();
+    e.quiet_mail();
+    let out = e.stop("s1");
+    assert!(out.contains("wake-watch --auto"), "the Stop block names the watcher, got: {out:?}");
+    assert!(assert_engine_paths_are_one_word(&out, &home) >= 1);
+}
+
+#[test]
+fn a_primary_prompt_turn_names_the_cli_as_one_shell_word_for_a_home_with_a_space_and_a_quote() {
+    let (e, home) = spaced_quoted_home_env("q700 inbox a'b");
+    e.live_child();
+    e.quiet_mail();
+    let out = e.turn("s1", "claude");
+    std::fs::write(e.dir.join("turn.txt"), &out).unwrap();
+    let n = assert_engine_paths_are_one_word(&out, &home);
+    assert!(n >= 1 || out.is_empty(), "a rendered engine path was found in {out:?}");
+}
+
+#[test]
+fn a_child_prompt_turn_names_the_cli_as_one_shell_word_for_a_home_with_a_space_and_a_quote() {
+    let (e, home) = spaced_quoted_home_env("q700 child a'b");
+    let out = e.run_with(
+        "UserPromptSubmit",
+        &serde_json::json!({"session_id": "c1", "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": e.repo}),
+        "claude",
+        &[("DEVSWARM_BUILDER_ID", "ws-1"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "b")],
+    );
+    assert!(assert_engine_paths_are_one_word(&out, &home) >= 1, "the child reminder names the cli, got: {out:?}");
 }
