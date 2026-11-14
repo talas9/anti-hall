@@ -680,6 +680,8 @@ pub(crate) fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTre
             out.insert(full, j);
         } else if let toml::Value::Table(sub) = v {
             flatten(path, &full, sub, out)?;
+        } else if defaults::list("config.retired_keys").contains(&full.as_str()) {
+            continue; // a setting a release retired: the file still loads, the key does nothing
         } else {
             return Err(ConfigError::UnknownKey { path: path.to_path_buf(), key: full });
         }
@@ -1418,6 +1420,18 @@ mod tests {
         let s = store.snapshot();
         assert_eq!(s.queue, Config::from_env().queue);
         assert!(s.last_error.as_deref().unwrap().starts_with("parse"));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
+    }
+
+    #[test]
+    fn a_user_file_with_the_retired_engine_cli_and_watcher_keys_still_loads_the_rest() {
+        // #753: those two keys were dropped from the shipped schema once; a user override that still holds them must not discard the file
+        let d = tmp("retired-keys");
+        let paths = Paths { user: d.join("config.toml"), settings: None };
+        std::fs::write(&paths.user, "[daemon]\nqueue = 31\n[devswarm_role]\nengine_cli = \"x mesh\"\nengine_watcher = \"x wake\"\n").unwrap();
+        let s = ConfigStore::load_from(paths).snapshot();
+        assert_eq!(s.queue, 31, "the other settings of the file still apply");
+        assert!(s.last_error.is_none(), "the old keys are not an error: {:?}", s.last_error);
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 

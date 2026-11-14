@@ -59,7 +59,6 @@ function pgPathField(o, k) {
 // A numeric setting of the gate: its value along the settings chain (the shipped default when nothing sets it).
 function pgSetNum(key) { return ah.settings.num(key); }
 
-function pgShQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'"; }
 function pgDq(s) { return '"' + s.replace(/["\\$`]/g, function (c) { return '\\' + c; }) + '"'; }
 
 // ---- the Primary's own unread (readOwnUnread) ------------------------------------------------------------------------
@@ -889,7 +888,7 @@ function pgGate(p, root, l) {
       { unanswered: unanswered, informational: informational, truncated: truncated, qEscalate: qEscalateTimes, waiting: pgWaitingSeg(home, blocking) })
     : ah.cfg('devswarm_role.pg_reason_parked_only');
   var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: pgShQuote(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: ah.cfg('devswarm_role.gate_guard') });
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: ah.cfg('devswarm_role.gate_guard') });
   fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + wake, skip) }) + '\n';
   pgCountFired(escalateTimes !== null || qEscalateTimes !== null ? 'escalation' : 'block');
   return fx;

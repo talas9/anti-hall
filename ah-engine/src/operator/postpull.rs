@@ -28,6 +28,11 @@ use std::time::Instant;
 mod recon;
 mod wake;
 
+/// The by-hand watcher arm text of the wake-monitor stage for `home` (the text the stage answers with when no identity resolves).
+pub fn wake_arm_text(home: &str) -> String {
+    wake::arm_text(home)
+}
+
 fn text(key: &str) -> &'static str {
     defaults::text(key)
 }

@@ -159,12 +159,8 @@ doc = "The monitor-expiry clause when the monitor is also re-armed inline on its
 value = '''
  + re-arm on its final/expired event'''
 
-[devswarm_role.engine_cli]
-doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory."
-value = "{home}/.anti-hall/ah-engine/bin/ah-engine mesh"
-
 [devswarm_role.engine_bin]
-doc = "The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). engine_cli = engine_bin + \" \" + engine_verb (a test asserts it). Placeholder: {home}."
+doc = "The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). The {cli} text is the shell-quoted binary path then engine_verb. Placeholder: {home}."
 value = "{home}/.anti-hall/ah-engine/bin/ah-engine"
 
 [devswarm_role.engine_verb]
@@ -172,12 +168,8 @@ doc = "The verb after the engine binary for every DevSwarm CLI command (the {ver
 value = "mesh"
 
 [devswarm_role.watcher_verb]
-doc = "The verbs after the engine binary for the mailbox watcher (the {wverb} part; engine_watcher = engine_bin + \" \" + watcher_verb, a test asserts it)."
+doc = "The verbs after the engine binary for the mailbox watcher (the {wverb} part; the {watcher} text is the shell-quoted binary path then these verbs)."
 value = "devswarm wake-watch --auto"
-
-[devswarm_role.engine_watcher]
-doc = "The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}."
-value = "{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto"
 
 
 # ---- devswarm-parent-gate past its early exits (checks/devswarm_role/pgate.rs; hooks/devswarm-parent-gate.js main) ----
