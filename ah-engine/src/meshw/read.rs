@@ -123,7 +123,7 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     if !peek {
         common::seat_check(inv)?;
     }
-    let aliases = common::read_aliases(home);
+    let aliases = common::read_aliases(home, &inv.env);
     let mut unseen: Vec<serde_json::Value> = Vec::new();
     st.reader()
         .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {

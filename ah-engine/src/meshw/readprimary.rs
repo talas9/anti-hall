@@ -1801,7 +1801,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let with_broadcasts = a.has(defaults::text("mesh_write.flag_with_broadcasts"));
     let mut broadcasts_merged: Option<usize> = None;
     if peek && with_broadcasts {
-        let aliases = common::read_aliases(&inv.home);
+        let aliases = common::read_aliases(&inv.home, &inv.env);
         let mut found: Vec<Value> = Vec::new();
         o.reader
             .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {

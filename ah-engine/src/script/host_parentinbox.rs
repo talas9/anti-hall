@@ -610,7 +610,7 @@ fn drift_of(home: &Path, worktree: &str, anchor: &str, current: &str, transcript
 fn fold_of(inv: &Inv, id: &str, present: &[String], app_builder: Option<&str>, repo_key: &str) -> R<Value> {
     let w = Windows::new(inv, repo_key);
     let set: HashSet<String> = present.iter().cloned().collect();
-    let aliases = crate::meshw::common::read_aliases(&inv.home);
+    let aliases = crate::meshw::common::read_aliases(&inv.home, &inv.env);
     Ok(json!({"to": w.fold_target(id, &set, &aliases, app_builder)?}))
 }
 

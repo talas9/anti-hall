@@ -60,7 +60,7 @@ fn walk(ctx: &Ctx, h: &rc::Handle, dry: bool, env: &Env, t: &mut Tally) -> R<Wal
             return Ok(Walk::Clean);
         }
     };
-    let aliases: HashSet<String> = read_aliases(home).into_iter().map(|(k, _)| k).collect();
+    let aliases: HashSet<String> = read_aliases(home, env).into_iter().map(|(k, _)| k).collect();
     let wt_of = |d: &serde_json::Value| jv(d, "worktreePath").as_str().filter(|w| !w.is_empty()).map(str::to_string);
     let primary_prefix = text("mesh_write.primary_prefix");
     for r in &registry {

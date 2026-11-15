@@ -191,7 +191,7 @@ fn a_poisoned_primary_alias_from_an_older_build_is_ignored() {
     );
     std::fs::create_dir_all(alias_file.parent().unwrap()).unwrap();
     std::fs::write(&alias_file, &body).unwrap();
-    let kept = crate::meshw::common::read_aliases(&f.inv.home);
+    let kept = crate::meshw::common::read_aliases(&f.inv.home, &f.inv.env);
     assert_eq!(kept, vec![("other-label".to_string(), "child-1".to_string())], "only the poisoned entry is ignored");
     assert_eq!(std::fs::read_to_string(&alias_file).unwrap(), body, "nothing rewritten or deleted");
     let b = send::run(&primary, &argv(&["send", "--broadcast", "--message", "bcast"])).unwrap();
@@ -234,8 +234,51 @@ fn a_child_alias_for_its_own_linked_worktree_survives() {
     let b = send::run(&child, &argv(&["send", "--broadcast", "--message", "from-wt-child"])).unwrap();
     assert_eq!(b.code, 0, "child broadcast: {}", b.stdout);
     let w_label = ident::primary_workspace_id(&w).unwrap();
-    let kept = crate::meshw::common::read_aliases(&f.inv.home);
+    let kept = crate::meshw::common::read_aliases(&f.inv.home, &f.inv.env);
     assert!(kept.contains(&(w_label.clone(), "child-1".to_string())), "the child's own-worktree alias was dropped: {kept:?}");
     // and the Primary's own root label is still never aliased
     assert!(!kept.iter().any(|(k, _)| *k == f.primary), "{kept:?}");
+    // the child's broadcast reads back attributed to the child
+    let read = crate::meshw::read::run(&f.inv, &argv(&["read", "--peek"]), false).unwrap().stdout;
+    assert!(read.contains("\"from\":\"child-1\",\"message\":\"from-wt-child"), "misattributed: {read}");
+}
+
+/// Round 4: the Primary is registered in a LINKED worktree W only through the DevSwarm app database (named by the env, not the
+/// process env). Its checkout is then not the main worktree, so only the app-DB lookup recognises it; `read_aliases` must use the
+/// caller's env so W's root label -> a child registered at W/pkg is rejected.
+#[test]
+fn a_primary_in_a_linked_worktree_known_only_via_the_app_db_has_its_alias_rejected() {
+    let f = fx("appdbprimary");
+    let git = |dir: &str, args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    };
+    git(&f.root, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    let w = format!("{}-wt", f.root);
+    git(&f.root, &["worktree", "add", "-q", "-b", "wt", &w]);
+    let w = std::path::Path::new(&w).canonicalize().unwrap().to_string_lossy().into_owned();
+    let pkg = format!("{w}/pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    descriptor(&f, "child-1", &pkg);
+    let db = f.inv.home.join("devswarm-app.db");
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch("CREATE TABLE builders (id TEXT, isActive INTEGER, isHidden INTEGER, worktreePath TEXT, builderType TEXT, branchName TEXT, repositoryId TEXT, label TEXT, pullRequestId TEXT);").unwrap();
+    c.execute("INSERT INTO builders VALUES ('prim-1', 1, 0, ?1, 'primary', 'wt', 'repo-1', 'Primary', NULL)", [&w]).unwrap();
+    drop(c);
+    let w_label = ident::primary_workspace_id(&w).unwrap();
+    let alias_file = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.alias_file"));
+    std::fs::create_dir_all(alias_file.parent().unwrap()).unwrap();
+    std::fs::write(&alias_file, format!(r#"{{"version":1,"aliases":{{"{w_label}":{{"to":"child-1","worktree":null,"at":1}}}}}}"#)).unwrap();
+    let mut env = f.inv.env.clone();
+    env.insert(defaults::text("mesh_write.env_app_db").to_string(), db.to_string_lossy().into_owned());
+    let kept = crate::meshw::common::read_aliases(&f.inv.home, &env);
+    assert!(kept.is_empty(), "the Primary's root alias survived: {kept:?}");
+    // without the app database the same file reads as a child alias (the env is what tells the two apart)
+    assert_eq!(crate::meshw::common::read_aliases(&f.inv.home, &f.inv.env), vec![(w_label, "child-1".to_string())]);
 }
