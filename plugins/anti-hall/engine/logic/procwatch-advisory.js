@@ -98,6 +98,20 @@ function pwOrphans(r, sid, nowS, st, parts, root) {
   }
 }
 
+// Leaked Codex broker trees: ONE summary per session and cooldown (the subject of each tree is in its line, never in the key).
+function pwAge(sec) { return sec >= 86400 ? Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h' : sec >= 3600 ? Math.floor(sec / 3600) + 'h' : Math.floor(sec / 60) + 'm'; }
+
+function pwBrokers(r, sid, nowS, st, parts) {
+  var b = pwObj(r.broker_leaks), listed = Array.isArray(b.listed) ? b.listed : [];
+  var count = typeof b.count === 'number' ? b.count : listed.length;
+  if (count <= 0 || listed.length === 0 || !pwFire(st, 'brokers:' + sid, nowS, ah.cfgNum('procwatch.broker_cooldown_s'))) return;
+  var items = listed.map(function (l) {
+    return text.render(ah.cfg('procwatch.msg_broker_item'), { pid: l.pid, cwd: l.cwd || '?', children: l.children, mem: l.mem, age: pwAge(typeof l.age_s === 'number' ? l.age_s : 0), cmd: l.stop_cmd });
+  });
+  parts.push(pwMsg('warn', text.render(ah.cfg('procwatch.msg_broker_what'), { n: count, list: items.join('; '), more: pwMore(count, listed.length) }),
+    text.render(ah.cfg('procwatch.msg_broker_why'), { mode: b.mode || '' }), ah.cfg('procwatch.msg_broker_instead')));
+}
+
 function pwResource(r, sid, myPid, st, parts) {
   var key = ah.cfg('procwatch.resource_shown_key') + ':' + sid + ':' + myPid;
   var since = typeof st.last[key] === 'number' ? st.last[key] : 0, newest = since, lines = [];
@@ -217,6 +231,7 @@ function decide(p) {
 
   // ---- orphans, stops and resource warnings from the report ----
   pwOrphans(r, sid, nowS, st, parts, pwProjectRoot(p[ah.cfg('procwatch.f_cwd')] || hookProc.cwd(p)).root);
+  pwBrokers(r, sid, nowS, st, parts);
   pwResource(r, sid, myPid, st, parts);
   pwSave(st, nowS);
   return parts.length > 0 ? { advisory: text.advisoryJson(event, parts.join('\n')) } : 'allow';

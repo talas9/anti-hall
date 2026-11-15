@@ -97,6 +97,7 @@ value = [
   { id = "wide_search.msg", setting = "guards.allowWideSearch", tier = "skill", source = "wide_search.msg_what" },
   { id = "procwatch.orphans", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_orphans_what" },
   { id = "procwatch.stuck", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_stuck_what" },
+  { id = "procwatch.broker_leak", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_broker_what" },
   { id = "idle_sweep.", setting = "guards.idleAgentSweep", tier = "skill", source = "idle_sweep.what" },
   { id = "resource_watch.proc", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_proc_what" },
   { id = "resource_watch.msg", setting = "resourceWatch.enabled", tier = "skill", source = "resource_watch.msg_what" },
