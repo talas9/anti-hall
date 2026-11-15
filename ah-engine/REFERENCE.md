@@ -395,7 +395,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `wide-search-guard` | Keep searches scoped to a project. PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
 | `advisor-guard` | Require advisor consultation where configured. Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). With a non-flagship main (phase 3): nudges, then blocks once per task, a thinking dispatch with no advisor call since the owner's last message (guards.advisorThinking), blocks once a second fix dispatch for one issue with no advisor call since the first (guards.advisorRetry) and one Stop per turn that announced an advisor call that did not follow (guards.advisorSayDo). The review rule lives in model-routing. |
 | `switch-notice` | Report guard switch changes. Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
-| `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
+| `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `afk-mode` | UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse, Stop (Codex): AFK mode. Machine-wide flag (ah-engine afk on\|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file (NEEDS OWNER bullets first), a capped Stop hold of overlong AFK replies, no blocking questions (AskUserQuestion denied with the question ladder, a capped hold of a turn ending on a question), output tokens per turn AFK vs present (afk.*). |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
@@ -5085,6 +5085,28 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch_tier.tier_workspace` | `a large multi-step feature, migration or release spanning several files or co...` |  |  | The description of the workspace tier in the question. |
 | `dispatch_tier.tools` | `TaskCreate, TaskUpdate` |  |  | The task tools whose text changes the hook classifies. |
 
+### task_guards.toml / done_order
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `done_order.dir` | `.anti-hall/done-orders` |  |  | The state directory (under the home directory) of the completed-task records: one file per session holding {ids: {<task id>: {first, count, lastAt}}}. |
+| `done_order.events` | `3 entries` |  |  | Counter events (advisory kind tasklist_hygiene) of the completed-task orders: lingering = one per completed task found in the list past the age; emitted = one per completed task an order was given for; followed = one per task that was ordered and then deleted before the next order. |
+| `done_order.file_prefix` | `done` |  |  | The file name prefix of a completed-task record (<prefix>-<session>.json); stale ones are pruned by that prefix. |
+| `done_order.item` | `#{id}` |  |  | One task id in the order. Placeholder: {id}. |
+| `done_order.key_max` | `80` |  |  | Most characters of the session id kept in a record file name. |
+| `done_order.list_joiner` | ` ` |  |  | Separator between the task ids named in one order. |
+| `done_order.list_max` | `6` |  |  | Most task ids named in one order; the rest are counted. |
+| `done_order.max_entries` | `200` |  |  | Most task records kept in one session's completed-task file; past it the oldest (by last order, else first seen) are dropped on the next write. The file prune by age (7 days) only drops whole stale files. |
+| `done_order.max_orders` | `6` |  |  | Most orders given for one completed task; after that it is left alone. |
+| `done_order.more` | ` +{m} more` |  |  | Appended to the named ids when more tasks are due. Placeholder: {m}. |
+| `done_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (ages are kept in ms, settings in minutes). |
+| `done_order.msg_fresh` | `⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledg...` |  |  | The order given when a task is marked completed (PostToolUse of TaskUpdate). Placeholder: {id} the task id. |
+| `done_order.msg_list` | `⚠️ Do now: {n} completed task(s) still listed: TaskUpdate status=deleted {lis...` |  |  | The order for completed tasks still in the list past the age (UserPromptSubmit; at Stop only as the block reason with handover.taskListEnforce = block). Placeholders: {n} how many are due, {list} their ids. It is one line so the prompt digest keeps all of it. |
+| `done_order.no_session` | `nosession` |  |  | The session part of the record file name when the payload carries no session id. |
+| `done_order.num_after_min` | `5 entries` |  |  | Where the minutes a completed task may stay in the list before the first order are read from (guards.doneOrderAfterMin, default 10). The age counts from the first time the engine saw the task done (the completion itself, or the first prompt or Stop that found it). |
+| `done_order.steps_min` | `10, 30, 60` |  |  | The repeat schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
+| `done_order.sw_enabled` | `4 entries` |  |  | Claude only (Codex has no task tools). Where the on/off switch of the completed-task orders is read from (guards.doneOrder, default on). Off: the completion line stays the one-shot tip and no order is given for a completed task left in the list. |
+
 ### task_guards.toml / idle_rule
 
 | Key | Default | Env override | Unit | What it is |
@@ -5414,7 +5436,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry.` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
-| `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, tell...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
+| `tasklist_hygiene.order_joiner` | `\n` |  |  | Separator between the completion order and the budget tip in one PostToolUse line. |
+| `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, orde...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
 | `tasklist_hygiene.update_tool` | `TaskUpdate` |  |  | The tool that changes a task (status, subject). |
 
 ### task_guards.toml / taskstate
@@ -6454,7 +6477,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `455 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `457 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8913,7 +8936,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `467 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `469 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -15594,7 +15617,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `snapshot_lock` | counter | takes | kind, result | Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written). On the file and fallback kinds busy also covers a lock file that cannot be made (a directory or link in its place, an unwritable directory) and failed a lock call that raised: nothing is written either way. A write happens only under a lock that is positively held. |
 | `snapshot_overlaid` | counter | tasks |  | Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them. |
 | `snapshot_written` | counter | files |  | Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail. |
-| `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
+| `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown, and the done_order events completed_lingering, order_emitted and followed), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
 | `taskstate_rows_skipped` | counter | rows |  | Transcript rows the task model skipped because their type is in taskstate.skipped_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon. |
