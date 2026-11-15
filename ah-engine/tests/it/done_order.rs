@@ -240,6 +240,11 @@ impl Scratch {
         }
     }
 
+    fn task_update_env(&self, tr: &Path, env: &[(&str, &str)]) -> String {
+        let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+        self.check("tasklist-hygiene", &p, env)
+    }
+
     fn prompt_env(&self, tr: &Path, env: &[(&str, &str)]) -> String {
         let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "prompt": "continue"});
         self.check("task-tracker", &p, env)
@@ -279,6 +284,48 @@ fn a_named_list_id_with_no_store_directory_is_ambiguous_and_orders_nothing() {
     s.seed("1", 30, 0, 0);
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "no-such-list")]);
     assert!(!out.contains("Do now"), "which list the harness writes is unknown: no order: {out}");
+}
+
+#[test]
+fn the_completion_line_in_a_shared_list_skips_a_task_another_owner_holds() {
+    let s = Scratch::new("do-fresh-foreign");
+    s.named_list("team-a", &[("completed", "mate")]);
+    let tr = s.transcript("completed");
+    let out = s.task_update_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(!out.contains("status=deleted"), "a teammate's task is never ordered deleted at completion: {out}");
+    assert!(!s.record_path().exists(), "no record is started for it");
+}
+
+#[test]
+fn the_completion_line_in_a_shared_list_orders_an_unowned_task() {
+    let s = Scratch::new("do-fresh-unowned");
+    s.named_list("team-a", &[("completed", "")]);
+    let tr = s.transcript("completed");
+    let out = s.task_update_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(out.contains("TaskUpdate status=deleted #1"), "an unowned task of the shared list is ordered: {out}");
+}
+
+#[test]
+fn the_completion_line_with_an_ambiguous_list_orders_nothing() {
+    let s = Scratch::new("do-fresh-ambiguous");
+    s.store(&["completed"]);
+    let tr = s.transcript("completed");
+    let out = s.task_update_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "no-such-list")]);
+    assert!(!out.contains("status=deleted"), "the named list has no directory: which list is written is unknown: {out}");
+}
+
+#[test]
+fn an_unreadable_file_in_the_named_list_orders_nothing_and_never_falls_back_to_the_transcript() {
+    let s = Scratch::new("do-unreadable");
+    s.named_list("team-a", &[]);
+    std::fs::write(s.home().join(".claude/tasks/team-a/1.json"), "{not json").unwrap();
+    let tr = s.transcript("completed"); // the transcript alone would name #1 as completed and unowned
+    let now = now_ms();
+    let rec = json!({"ids": {"team-a/1": {"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0}}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(!out.contains("Do now"), "an unreadable list file: the list is unknown, no order from the transcript: {out}");
 }
 
 #[test]

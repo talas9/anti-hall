@@ -41,6 +41,27 @@ var dord = {
     var set = typeof id === 'string' && new RegExp(ah.cfg('taskstate.list_id_re')).test(id);
     return { list: '', shared: false, ambiguous: set };
   },
+  // Owner by id of the NAMED list's tasks, read from the store exactly: null when it cannot be (no session id, no files, any file unreadable),
+  // and then nothing in the shared list is ordered. Every path that gives an order goes through this gate (`foreign`).
+  owners: function (sid) {
+    var gaps = { bad: 0 }, st = tk.storeTasks(ah.home(), sid, gaps);
+    if (st === null || gaps.bad > 0) return null;
+    var m = {};
+    st.forEach(function (t) { m[t.id] = t.owner; });
+    return m;
+  },
+  // True when the task must not be ordered deleted: the list is ambiguous, or it is shared and the task's owner is not exactly known to be
+  // nobody (`owners` is `dord.owners(sid)` when the list is shared).
+  foreign: function (c, owners, id) {
+    if (c.ambiguous) return true;
+    if (!c.shared) return false;
+    return owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id)) || owners[String(id)] !== '';
+  },
+  // May this task be ordered deleted now (the gate `fresh` and `plan` share)?
+  orderable: function (sid, id) {
+    var c = dord.ctx();
+    return !dord.foreign(c, c.shared ? dord.owners(sid) : null, id);
+  },
   key: function (c, id) { return c.list === '' ? String(id) : c.list + '/' + id; },
   num: function (v) { return typeof v === 'number' && isFinite(v) && v >= 0 ? v : 0; },
   // `tasks`: the session's task list (a read that is exact). Returns {rel, due: [ids], lingering, followed, next, changed}; nothing is written.
@@ -48,12 +69,12 @@ var dord = {
     var rel = dord.rel(sid), prev = dord.read(rel), next = {}, due = [], lingering = 0;
     var after = ah.settings.num('done_order.num_after_min') * ah.cfgNum('done_order.ms_per_minute');
     var steps = ah.cfg('done_order.steps_min'), max = ah.cfgNum('done_order.max_orders'), perMin = ah.cfgNum('done_order.ms_per_minute');
-    var present = {}, c = dord.ctx();
+    var present = {}, c = dord.ctx(), owners = c.shared ? dord.owners(sid) : null;
     tasks.forEach(function (t) { present[dord.key(c, t.id)] = true; });
     tasks.filter(tk.isDone).forEach(function (t) {
       var id = dord.key(c, t.id), rec = prev[id] && typeof prev[id] === 'object' ? prev[id] : {};
       // fail safe: in a shared list a task another owner holds is never ordered deleted, nor is any task when the list is ambiguous
-      var foreign = c.ambiguous || (c.shared && typeof t.owner === 'string' && t.owner !== '');
+      var foreign = dord.foreign(c, owners, t.id);
       var first = rec.first > 0 ? rec.first : now, count = dord.num(rec.count), last = dord.num(rec.lastAt);
       next[id] = { first: first, count: count, lastAt: last };
       if (foreign) return;
@@ -87,6 +108,7 @@ var dord = {
   // A task was just marked completed: the record starts at its first order (the line is given now). Returns the order, or '' when the
   // record cannot be saved.
   fresh: function (sid, id, now) {
+    if (!dord.orderable(sid, id)) return '';
     var rel = dord.rel(sid), ids = dord.read(rel);
     ids[dord.key(dord.ctx(), id)] = { first: now, count: 1, lastAt: now };
     if (!dord.write(rel, ids)) return '';

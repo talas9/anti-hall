@@ -19,7 +19,9 @@ var tk = {
   // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
   tasksOf: function (home, sid, path, variant) {
-    var st = tk.storeTasks(home, sid);
+    var gaps = { bad: 0 }, st = tk.storeTasks(home, sid, gaps);
+    // the named list is THE list: when any of its files cannot be read exactly the list is unknown (unsure), never rebuilt from the transcript
+    if (gaps.bad > 0 && tk.namedList(home) !== null) return { tasks: st === null ? [] : tk.withStore([], st), unsure: true, unreadable: false, store: true };
     if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
@@ -49,7 +51,10 @@ var tk = {
   // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
   // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
-  storeTasks: function (home, sid) {
+  // `gaps` (optional object): `gaps.bad` counts what could not be read exactly (a file unreadable, over the cap or not a task record, the
+  // named list's directory unreadable, too many files), so a caller can tell a complete list from a partial one.
+  storeTasks: function (home, sid, gaps) {
+    var gap = function () { if (gaps !== null && typeof gaps === 'object') gaps.bad = (gaps.bad || 0) + 1; };
     if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
@@ -61,16 +66,16 @@ var tk = {
     for (var i = 0; i < dirs.length; i++) {
       var dir = dirs[i];
       var files = ah.fs.readdir(dir);
-      if (files === null) continue;
+      if (files === null) { if (named !== null) gap(); continue; }
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
-      if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+      if (files.length > maxFiles) { ah.unable('tasks:store_big'); gap(); return null; }
       var out = [];
       for (var k = 0; k < files.length; k++) {
         var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
-        if (raw === null) continue;
+        if (raw === null) { gap(); continue; }
         var rec;
-        try { rec = JSON.parse(raw); } catch (e) { continue; }
-        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+        try { rec = JSON.parse(raw); } catch (e) { gap(); continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') { gap(); continue; }
         out.push({
           id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
           description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
