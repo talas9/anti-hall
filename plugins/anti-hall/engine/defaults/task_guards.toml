@@ -1399,7 +1399,7 @@ value = "verify the handover and record the result."
 
 [tasklist_hygiene.summary]
 doc = "One-line description of the tasklist-hygiene check in the generated reference."
-value = "Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+value = "Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
 [tasklist_hygiene.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1446,8 +1446,12 @@ doc = "The TaskUpdate statuses that count as deleting a task."
 value = ["deleted"]
 
 [metric.tasklist_hygiene]
-doc = "Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>."
+doc = "Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown, and the done_order events completed_lingering, order_emitted and followed), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>."
 value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "tasklist_hygiene" }
+
+[tasklist_hygiene.order_joiner]
+doc = "Separator between the completion order and the budget tip in one PostToolUse line."
+value = "\n"
 
 [tasklist_hygiene.msg_subject]
 doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."
@@ -1468,6 +1472,77 @@ value = "keep subjects as `T-<n> [P] title`, details in the history ledger; dele
 [tasklist_hygiene.instead_block]
 doc = "What to do, in the block message."
 value = "shorten the subject and delete finished tasks first; put details in the history ledger."
+
+# ---- done-order: completed tasks still listed are ordered deleted (GH #762) ----------------------------------------------------
+
+[done_order.sw_enabled]
+doc = "Claude only (Codex has no task tools). Where the on/off switch of the completed-task orders is read from (guards.doneOrder, default on). Off: the completion line stays the one-shot tip and no order is given for a completed task left in the list."
+value = { section = "guards", key = "doneOrder", env = "ANTIHALL_DONE_ORDER", default = true }
+
+[done_order.num_after_min]
+doc = "Where the minutes a completed task may stay in the list before the first order are read from (guards.doneOrderAfterMin, default 10). The age counts from the first time the engine saw the task done (the completion itself, or the first prompt or Stop that found it)."
+value = { section = "guards", key = "doneOrderAfterMin", env = "ANTIHALL_DONE_ORDER_AFTER_MIN", default = 10, min = 1 }
+
+[done_order.steps_min]
+doc = "The repeat schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn."
+value = [10, 30, 60]
+
+[done_order.max_orders]
+doc = "Most orders given for one completed task; after that it is left alone."
+value = 6
+
+[done_order.dir]
+doc = "The state directory (under the home directory) of the completed-task records: one file per session holding {ids: {<task id>: {first, count, lastAt}}}."
+value = ".anti-hall/done-orders"
+
+[done_order.max_entries]
+doc = "Most task records kept in one session's completed-task file; past it the oldest (by last order, else first seen) are dropped on the next write. The file prune by age (7 days) only drops whole stale files."
+value = 200
+min = 1
+
+[done_order.file_prefix]
+doc = "The file name prefix of a completed-task record (<prefix>-<session>.json); stale ones are pruned by that prefix."
+value = "done"
+
+[done_order.no_session]
+doc = "The session part of the record file name when the payload carries no session id."
+value = "nosession"
+
+[done_order.key_max]
+doc = "Most characters of the session id kept in a record file name."
+value = 80
+
+[done_order.ms_per_minute]
+doc = "Milliseconds in a minute (ages are kept in ms, settings in minutes)."
+value = 60000
+
+[done_order.list_max]
+doc = "Most task ids named in one order; the rest are counted."
+value = 6
+
+[done_order.list_joiner]
+doc = "Separator between the task ids named in one order."
+value = " "
+
+[done_order.item]
+doc = "One task id in the order. Placeholder: {id}."
+value = "#{id}"
+
+[done_order.more]
+doc = "Appended to the named ids when more tasks are due. Placeholder: {m}."
+value = " +{m} more"
+
+[done_order.msg_list]
+doc = "The order for completed tasks still in the list past the age (UserPromptSubmit; at Stop only as the block reason with handover.taskListEnforce = block). Placeholders: {n} how many are due, {list} their ids. It is one line so the prompt digest keeps all of it."
+value = "⚠️ Do now: {n} completed task(s) still listed: TaskUpdate status=deleted {list}. Log each outcome in the history ledger first."
+
+[done_order.msg_fresh]
+doc = "The order given when a task is marked completed (PostToolUse of TaskUpdate). Placeholder: {id} the task id."
+value = "⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledger (delegate it), then TaskUpdate status=deleted #{id}."
+
+[done_order.events]
+doc = "Counter events (advisory kind tasklist_hygiene) of the completed-task orders: lingering = one per completed task found in the list past the age; emitted = one per completed task an order was given for; followed = one per task that was ordered and then deleted before the next order."
+value = { lingering = "completed_lingering", emitted = "order_emitted", followed = "followed" }
 
 # ---- task-list enforcement at Stop: capped prune block + P0-P3 priority slot ----
 

@@ -20,6 +20,8 @@ Task-list, task-lifecycle and dispatch guards.
 ## Switches
 
 - `guards.taskGuardOwnerBlockedMarker` = true: Owner-blocked marker switch
+- `guards.doneOrderAfterMin` = 10: Where the minutes a completed task may stay in the list before the first order are read from...
+- `guards.doneOrder` = true: Claude only (Codex has no task tools)
 - `guards.dispatchDemand` = true: Whether running agents are counted per task from this session's transcript...
 - `guards.taskGuard` = true: Where the on/off switch is read from (guards.taskGuard, default on)
 - `maintenance.taskLifecycleLog` = true: Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)

@@ -658,6 +658,14 @@ function decide(p) {
   });
   var shownDemand = gDemand !== null && gDemand.emit && delivered && plan !== null ? plan.demandShown : 0;
   if ((emit || primaryBlock !== '') && shownDemand > 0) ttRecordDemand(home, sessionRaw, shownDemand);
+  // GH #762: completed tasks that stayed in the list past the age are ordered deleted, on the escalating schedule, never every prompt
+  if (fresh !== null && dord.on() && ah.settings.enum('ctxbudget.set_h_task_enforce') !== 'off') {
+    var dpl = dord.plan(sessionRaw !== '' ? sessionRaw : session, fresh.tasks, now);
+    if (dpl.changed || dpl.lingering > 0) {
+      ah.commit();
+      if (dord.apply(dpl) && dpl.due.length > 0) finalText = dord.order(dpl.due) + (finalText === '' ? '' : ttT('segment_joiner') + finalText);
+    }
+  }
   var wNow = waste.warning(session);
   if (wNow !== '') finalText = finalText === '' ? wNow : finalText + ttT('segment_joiner') + wNow;
   return finalText !== '' ? { advisory: text.advisoryJson(ttT('event'), finalText) } : 'allow';
