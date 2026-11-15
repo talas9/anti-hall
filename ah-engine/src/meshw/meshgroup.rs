@@ -36,7 +36,7 @@ pub struct Group {
 pub fn resolve(rows: &[Row], id: &str, wt: Option<&str>) -> R<Group> {
     let single = Group { ids: vec![id.to_string()], active: false };
     let Some(mesh) = (match wt.filter(|w| !w.is_empty()) {
-        Some(w) => ident::canonical_mesh_id(w)?,
+        Some(w) => ident::registry_mesh_id(rows, w)?,
         None => None,
     }) else {
         return Ok(single);

@@ -646,7 +646,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let rows = registry(st)?;
     let archived = archive_complete_ids(home);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
-    let aliases = crate::meshw::common::read_aliases(home);
+    let aliases = crate::meshw::common::read_aliases(home, &inv.env);
     let mut resolver = Resolver { rows: &rows, aliases: aliases.clone(), pwid: HashMap::new() };
     let mut cur = Cursors::new(home);
     let marker = defaults::text("mesh_write.archive_request_marker");
