@@ -47,7 +47,7 @@ var dord = {
     var gaps = { n: 0 }, st = tk.storeTasks(ah.home(), sid, gaps);
     if (st === null || gaps.n > 0) return null;
     var m = {};
-    st.forEach(function (t) { m[t.id] = t.owner; });
+    st.forEach(function (t) { m[t.id] = t.ownerUnknown ? null : t.owner; });
     return m;
   },
   // True when the task must not be ordered deleted: the list is ambiguous, or it is shared and the task's owner is not exactly known to be
@@ -55,7 +55,7 @@ var dord = {
   foreign: function (c, owners, id) {
     if (c.ambiguous) return true;
     if (!c.shared) return false;
-    return owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id)) || owners[String(id)] !== '';
+    return owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id)) || owners[String(id)] !== '';  // null (an owner that could not be read) is not '' either
   },
   // May this task be ordered deleted now (the gate `fresh` and `plan` share)?
   orderable: function (sid, id) {

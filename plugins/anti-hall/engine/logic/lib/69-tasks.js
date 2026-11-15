@@ -91,6 +91,8 @@ var tk = {
           id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
           description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
           owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
+          // only a missing owner is "nobody": any other non-string value (a number, null, an object) is an owner that cannot be read
+          ownerUnknown: rec.owner !== undefined && typeof rec.owner !== 'string',
           blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
           blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
         });
@@ -106,7 +108,7 @@ var tk = {
     tasks.forEach(function (t) { byId[t.id] = t; });
     return store.map(function (s) {
       var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
-      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy;
+      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.ownerUnknown = s.ownerUnknown; t.blockedBy = s.blockedBy;
       if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
       t.unknown = null; t.blockUnknown = false;
       return t;

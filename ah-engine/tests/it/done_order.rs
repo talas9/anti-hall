@@ -277,6 +277,31 @@ fn in_a_shared_list_a_completed_task_another_owner_holds_is_not_ordered_but_an_u
 }
 
 #[test]
+fn in_a_shared_list_a_completed_task_whose_owner_is_not_a_string_is_not_ordered_but_an_absent_owner_is() {
+    let s = Scratch::new("do-shared-owner-kind");
+    s.named_list("team-a", &[("completed", ""), ("completed", ""), ("completed", "")]);
+    // #1 owner 7 (a number), #2 owner null, #3 no owner key: only a missing owner is "nobody"
+    let dir = s.home().join(".claude/tasks/team-a");
+    for (n, owner) in [(1, Some(json!(7))), (2, Some(json!(null))), (3, None)] {
+        let mut rec =
+            json!({"id": n.to_string(), "subject": format!("shared task {n}"), "description": "d", "status": "completed", "blocks": [], "blockedBy": []});
+        if let Some(o) = owner {
+            rec["owner"] = o;
+        }
+        std::fs::write(dir.join(format!("{n}.json")), rec.to_string()).unwrap();
+    }
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let first = |_: u32| json!({"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    let rec = json!({"ids": {"team-a/1": first(1), "team-a/2": first(2), "team-a/3": first(3)}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #3"), "only the owner-less #3 is ordered: {out}");
+    assert!(!out.contains("#1") && !out.contains("#2"), "a task whose owner cannot be read is never ordered: {out}");
+}
+
+#[test]
 fn a_named_list_id_with_no_store_directory_is_ambiguous_and_orders_nothing() {
     let s = Scratch::new("do-ambiguous");
     s.store(&["completed"]);
