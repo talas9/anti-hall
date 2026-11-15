@@ -52,6 +52,9 @@ pub fn record(trigger: &str) {
     let crashes = defaults::list("health.start_crash_kinds");
     let recovered =
         health::events().iter().rev().find(|e| e.ts >= last_start && lifecycle.contains(&e.kind.as_str())).is_some_and(|e| crashes.contains(&e.kind.as_str()));
+    if recovered {
+        health::exits::record_unclean();
+    }
     let mut row = Map::new();
     row.insert(field("timestamp").into(), Value::from(health::now_ms()));
     row.insert(field("pid").into(), Value::from(std::process::id()));
