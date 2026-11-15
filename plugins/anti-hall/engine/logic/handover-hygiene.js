@@ -877,7 +877,7 @@ function opAdvisory(payload) {
   var lines = c.problems.filter(function (p) { return p.severity === 'error' || p.severity === 'warn'; }), max = ah.cfgNum('handovers.advisory_max_lines');
   var extra = lines.slice(0, max).map(hhProblemLine);
   if (lines.length > max) extra.push(hhTpl('handovers.msg_more', { n: lines.length - max }));
-  var t = text.message('tip', ah.cfg('handovers.guard_name'), {
+  var t = text.message('order', ah.cfg('handovers.guard_name'), {
     what: hhTpl('handovers.msg_advisory_what', { count: n, days: c.staleDays, project: hh.root }),
     why: ah.cfg('handovers.msg_advisory_why'),
     instead: hhTpl('handovers.msg_advisory_instead', { cmd: ah.cfg('handovers.cmd_index') }),

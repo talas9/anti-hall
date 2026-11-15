@@ -18,8 +18,14 @@ var tk = {
   },
   // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
-  tasksOf: function (home, sid, path, variant) {
-    var st = tk.storeTasks(home, sid);
+  // `strict` (GH #744, callers that ORDER something from the list): a store with a file the read dropped (unreadable, over the size cap,
+  // unparsable, or of an unmodelled shape) or one too big to list is an unknown state, `{unsure: true, unreadable: true}`, never a
+  // partial list read as the whole one. Every other caller keeps the lenient read, except that the NAMED list (GH #762) is THE list:
+  // when any of its files cannot be read exactly the list is unknown (unsure), never rebuilt from the transcript.
+  tasksOf: function (home, sid, path, variant, strict) {
+    var gaps = { n: 0, strict: !!strict }, st = tk.storeTasks(home, sid, gaps);
+    if (strict && gaps.n > 0) return { tasks: [], unsure: true, unreadable: true, store: true };
+    if (gaps.n > 0 && tk.namedList(home) !== null) return { tasks: st === null ? [] : tk.withStore([], st), unsure: true, unreadable: false, store: true };
     if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
@@ -39,35 +45,66 @@ var tk = {
     });
     return { openTaskIds: ids, inProgressCount: inProg };
   },
-  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
-  // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
+  // The named task list id (taskstate.list_id_env holds a valid id whose store directory exists), else null.
+  namedList: function (home) {
+    if (!home) return null;
+    var id = ah.env.get(ah.cfg('taskstate.list_id_env'));
+    if (typeof id !== 'string' || !new RegExp(ah.cfg('taskstate.list_id_re')).test(id)) return null;
+    return ah.fs.isDir(home + '/' + ah.cfg('taskstate.store_base').join('/') + '/' + id) ? id : null;
+  },
+  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`): [] for a store directory that lists
+  // but holds no readable task (authoritative, no tasks: callers must not fall back to the transcript), or null when there is none or it
+  // cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
-  storeTasks: function (home, sid) {
+  // `gaps` (optional `{n, strict}`): `gaps.n` counts what could not be read exactly (a file unreadable, over the cap or not a task record,
+  // a directory that exists and cannot be listed, too many files), so a caller can tell a complete list from a partial one; `gaps.strict`
+  // makes an unlistable directory end the read (null) instead of trying the next directory.
+  storeTasks: function (home, sid, gaps) {
+    var bad = 0; // files of the directory in hand that could not be read as a task (local: `gaps` is optional)
+    var gap = function () { bad++; if (gaps !== null && typeof gaps === 'object') gaps.n = (gaps.n || 0) + 1; };
     if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
-    for (var i = 0; i < names.length; i++) {
-      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+    // the NAMED list (taskstate.list_id_env) is where Claude Code writes the session's tasks when it is set and its directory exists: it is
+    // THE list, and the session's own `session-<8>` directory is then stale or empty (a read of it would name another list's ids)
+    var named = tk.namedList(home), dirs = [];
+    if (named !== null) dirs.push(base + named);
+    else for (var j = 0; j < names.length; j++) dirs.push(base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) }));
+    for (var i = 0; i < dirs.length; i++) {
+      var dir = dirs[i];
       var files = ah.fs.readdir(dir);
-      if (files === null) continue;
+      if (files === null) {
+        // null is "absent" and also "present but unlistable" (unreadable, not a directory, or over the host's listing cap): a caller that
+        // counts gaps must tell them apart, so a directory that exists and cannot be listed (or the named list's) is a gap, never a store
+        // the session lacks.
+        if (gaps && (named !== null || ah.fs.realpathEx(dir).error !== 'NotFound')) { ah.unable('tasks:store_unlistable'); gap(); if (gaps.strict) return null; }
+        continue;
+      }
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
-      if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+      if (files.length > maxFiles) { ah.unable('tasks:store_big'); gap(); return null; }
       var out = [];
+      bad = 0;
       for (var k = 0; k < files.length; k++) {
         var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
-        if (raw === null) continue;
+        if (raw === null) { gap(); continue; }
         var rec;
-        try { rec = JSON.parse(raw); } catch (e) { continue; }
-        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+        try { rec = JSON.parse(raw); } catch (e) { gap(); continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') { gap(); continue; }
         out.push({
           id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
           description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
           owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
+          // only a missing owner is "nobody": any other non-string value (a number, null, an object) is an owner that cannot be read
+          ownerUnknown: rec.owner !== undefined && typeof rec.owner !== 'string',
           blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
           blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
         });
       }
-      if (out.length > 0) return out;
+      // a listable store directory is THE store, even with no task in it: never fall through to another alias's directory. But a directory
+      // whose every file was unreadable is not a proven empty list (an open task may sit in a file the read dropped): absent, so the
+      // transcript still answers; a caller that counts gaps sees them.
+      if (out.length === 0 && bad > 0) return null;
+      return out;
     }
     return null;
   },
@@ -78,7 +115,7 @@ var tk = {
     tasks.forEach(function (t) { byId[t.id] = t; });
     return store.map(function (s) {
       var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
-      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy;
+      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.ownerUnknown = s.ownerUnknown; t.blockedBy = s.blockedBy;
       if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
       t.unknown = null; t.blockUnknown = false;
       return t;

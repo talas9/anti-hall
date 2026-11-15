@@ -4,7 +4,7 @@ git.setting_git_guard	- No AI co-author or credit line in commits or PRs: remove
 edit_guard.setting	- The coordinator and orchestrator never edit files: hand the change to a worker.
 api_guard.setting	- Verify API names against the installed runtime before writing calls to them.
 speculation_guard.setting	- No unverified claims: verify with a tool or label the claim unverified.
-coordinator_work.command_guard_setting	- Main thread: delegate heavy commands (builds, tests) from the first call; after 7 edits, hand the rest to a subagent.
+coordinator_work.command_guard_setting	- Main thread: delegate heavy commands (builds, tests) from the first call; after 7 shell steps that change files or repo state (git, gh, Bash writes; Edit and Write are edit-guard's), hand the rest to a subagent.
 model_routing.mode_setting	- Route routine work to haiku (sonnet if it writes code); keep opus for design.
 spawn_usage.setting	- At the usage-limit cap start no agents: finish running work or wait for reset.
 !nested_spawn.setting	- Workers never spawn agents: do the task yourself and report back.
@@ -115,7 +115,7 @@ resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
 	- ship_it.adv: ... is missing from the plan phase file list.
 	- scan_throttle.group: a grouped command contains a heavy project scan.
 	- scan_throttle.first: a heavy project scan needs throttling.
-	- coordinator_work.nudge: ... file-changing steps in the main thread within ... min.
+	- coordinator_work.nudge: ... shell steps that change files or repo state (git, gh, Bash writes) in the main thread within ... min.
 	- model_routing.update: a subagent spawn that runs the anti-hall update is blocked.
 	- model_routing.handover: this spawn looks like it writes a session handover.
 	- model_routing.deploy_omitted: deploy/migration/secret-shaped spawn sets no explicit model.
@@ -162,7 +162,7 @@ roles.sw_note_short	- roles.note_short: a subagent is told its role and where th
 - edit_guard.msg: ... is not allowed: the ... does not edit files directly.
 - api_guard_v1.msg: this edit references APIs missing from the installed runtime. These attributes are absent from the real module/object; they look like fabrications. verify the API names and correct the references.
 - speculation_guard.msg: your reply makes an unverified claim ("..."). Unverified claims read as facts. verify the claim or label it unverified.
-- coordinator_work.block: this step was stopped after repeated main-thread edits. Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about ... min. hand the remaining work to a helper agent.
+- coordinator_work.block: this step was stopped after repeated main-thread shell steps that change files or repo state. Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about ... min. hand the remaining work to a helper agent.
 - model_routing.row1: routine execution was assigned to a flagship model. This hook cannot see the parent model; execution-only work needs an explicit cheap model. respawn with model:'haiku' (or 'sonnet' if it authors code).
 - spawn_usage.block: new agents can't start: the ... usage limit is at ...% (stop at ...%, ...). Another spawn could use up the limit and stop all work, including agents already running. wait for the usage limit to reset.
 - nested_spawn.msg: this agent is a worker and can't start agents of its own. Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes). report back to the coordinator if more agents are needed.

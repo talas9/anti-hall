@@ -102,7 +102,7 @@ resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
 	- ship_it.adv: ... is missing from the plan phase file list.
 	- scan_throttle.group: a grouped command contains a heavy project scan.
 	- scan_throttle.first: a heavy project scan needs throttling.
-	- coordinator_work.nudge: ... file-changing steps in the main thread within ... min.
+	- coordinator_work.nudge: ... shell steps that change files or repo state (git, gh, Bash writes) in the main thread within ... min.
 	- failure_nudge.msg: this command failed....
 	- merge_gate.msg: the merge is paused while recent work remains unverified.
 	- edit_guard.launcher: an edit to the managed launcher folder was stopped.

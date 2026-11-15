@@ -33,7 +33,7 @@ function ttShort() { return text.message('tip', ttT('guard_name'), { what: ttT('
 // plan list where the Claude text names the task tool.
 function ttFull(codex) {
   var fullLevel = ah.settings.enum('orch_state.protocol_setting') === ttT('full_level');
-  var m = text.message('tip', ttT('guard_name'), { what: ttT('what_full'), instead: ttT('instead_head') + (fullLevel ? ttT('non_blocking') : '') + ttT('instead_tail') });
+  var m = text.message('order', ttT('guard_name'), { what: ttT('what_full'), instead: ttT('instead_head') + (fullLevel ? ttT('non_blocking') : '') + ttT('instead_tail') });
   return codex ? m.replace(ttT('codex_from'), ttT('codex_to')) : m;
 }
 
@@ -600,7 +600,7 @@ function decide(p) {
     return r;
   }
 
-  var primaryText = text.message('tip', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
+  var primaryText = text.message('order', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
   var primaryOpts = function () { return { sessionId: dsid, key: ttT('primary_key'), content: primaryText, transcriptPath: tp, keepaliveTurns: keepalive, normalize: function (x) { return x; } }; };
 
   // ---- effects, in Node's order ----
@@ -658,6 +658,14 @@ function decide(p) {
   });
   var shownDemand = gDemand !== null && gDemand.emit && delivered && plan !== null ? plan.demandShown : 0;
   if ((emit || primaryBlock !== '') && shownDemand > 0) ttRecordDemand(home, sessionRaw, shownDemand);
+  // GH #762: completed tasks that stayed in the list past the age are ordered deleted, on the escalating schedule, never every prompt
+  if (fresh !== null && dord.on() && ah.settings.enum('ctxbudget.set_h_task_enforce') !== 'off') {
+    var dpl = dord.plan(sessionRaw !== '' ? sessionRaw : session, fresh.tasks, now);
+    if (dpl.changed || dpl.lingering > 0) {
+      ah.commit();
+      if (dord.apply(dpl) && dpl.due.length > 0) finalText = dord.order(dpl.due) + (finalText === '' ? '' : ttT('segment_joiner') + finalText);
+    }
+  }
   var wNow = waste.warning(session);
   if (wNow !== '') finalText = finalText === '' ? wNow : finalText + ttT('segment_joiner') + wNow;
   return finalText !== '' ? { advisory: text.advisoryJson(ttT('event'), finalText) } : 'allow';

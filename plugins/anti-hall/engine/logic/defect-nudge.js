@@ -101,7 +101,7 @@ function decide(p) {
     if (active.length > 0) {
       var oldest = 0;
       active.forEach(function (s) { oldest = Math.max(oldest, dnDaysAgo(s.firstSeen, now)); });
-      line = text.message('tip', guard, {
+      line = text.message('order', guard, {
         what: text.render(ah.cfg('session.defect_maintainer_what'), { active: active.length, regressed: regressed, oldest: oldest }),
         instead: ah.cfg('session.defect_maintainer_instead'),
       });
@@ -117,7 +117,7 @@ function decide(p) {
       if (lines.some(function (l, i) { return i > lastOwn && l.t === ah.cfg('session.defect_ruling'); })) count++;
     });
     if (count > 0) {
-      line = text.message('tip', guard, { what: text.render(ah.cfg('session.defect_reporter_what'), { count: count }), instead: ah.cfg('session.defect_reporter_instead') });
+      line = text.message('order', guard, { what: text.render(ah.cfg('session.defect_reporter_what'), { count: count }), instead: ah.cfg('session.defect_reporter_instead') });
     }
   }
   return line === '' ? 'allow' : sess.advisory(line);

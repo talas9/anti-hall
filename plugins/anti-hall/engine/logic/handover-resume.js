@@ -83,7 +83,7 @@ function hrBuild(cand, outcome, prefix, freshness, codex, writer) {
 }
 
 function hrNegative(event) {
-  return { advisory: text.advisoryJson(event, text.message('tip', hrC('codex_handover.resume_guard'), { what: hrC('codex_handover.neg_what'), why: hrC('codex_handover.neg_why'), instead: hrC('codex_handover.neg_instead') })) };
+  return { advisory: text.advisoryJson(event, text.message('order', hrC('codex_handover.resume_guard'), { what: hrC('codex_handover.neg_what'), why: hrC('codex_handover.neg_why'), instead: hrC('codex_handover.neg_instead') })) };
 }
 
 function decide(p) {
@@ -111,7 +111,7 @@ function decide(p) {
   var found = ho.newestHandover(root, want);
   if (!found || (now - found.mtimeMs) > maxAge) {
     if (snap) {
-      return { advisory: text.advisoryJson(event, text.message('tip', hrC('codex_handover.resume_guard'), {
+      return { advisory: text.advisoryJson(event, text.message('order', hrC('codex_handover.resume_guard'), {
         what: hrR('codex_handover.snaponly_what', { path: snap.filePath, written: new Date(snap.mtimeMs).toISOString() }), why: hrC('codex_handover.snaponly_why'), instead: hrC('codex_handover.snaponly_instead'), details: true, extra: [snap.filePath],
       })) };
     }
