@@ -3283,7 +3283,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.subagent_full` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The full protocol a spawned subagent receives when context.protocolLevel is full (CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE). |
 | `verify_first.summary_full` | `Deliver session verify-first rules. SessionStart context: injects the verify-...` |  |  | One-line description of the verify-first-full check in the generated reference. |
 | `verify_first.summary_subagent` | `Deliver the verify-first protocol to subagents. SubagentStart context: inject...` |  |  | One-line description of the verify-first-subagent check in the generated reference. |
-| `verify_first.worker` | `WORKER: do the task yourself; do not re-delegate unless told to. Your assignm...` |  |  | The WORKER line that follows the compact subagent protocol. |
+| `verify_first.worker` | `WORKER: do the task yourself; do not re-delegate unless told to. Your assignm...` |  |  | The WORKER line that follows the compact subagent protocol. Placeholder: {max} the bounded-wait limit in seconds, rendered from queued_wait.bounded_max_s (the same key queued-wait-guard enforces, so the two never disagree). |
 
 ### guard_rules.toml / guard_rules
 
@@ -3330,7 +3330,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `165 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `167 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -5962,35 +5962,52 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
+| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach word (lane_waste.detach_words). |
+| `lane_waste.detach_words` | `nohup, setsid, coproc, disown` |  |  | Words that detach a command when they are the command word or a wrapper word in front of it (never as a substring of a path or argument): nohup, setsid, coproc, disown. Besides these, a lone `&` ending the list element (not `&&`, `&>`, `>&`, `\|&`, `2>&1`) and a process substitution `<(` `>(` detach. Only the timeout-wrapped segment is judged (and, inside it, the script of a shell -c or eval); a detached command may outlive its `timeout`, so no timeout counts as a bound (fail closed). Quoted text outside such a script (URLs, grep patterns) is inert. |
+| `lane_waste.eval_words` | `eval` |  |  | Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts. |
+| `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; read only so that `coproc NAME { ...; }` finds the command after the coprocess name. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
 | `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
 | `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
 | `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
-| `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
+| `lane_waste.shells` | `sh, bash, zsh, dash, ksh, su` |  |  | Shell interpreters (and su) whose -c argument is itself a script, so a command inside it still counts. |
 | `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |
-| `lane_waste.wrappers` | `16 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
+| `lane_waste.wrappers` | `17 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
 
 ### lane_waste.toml / queued_wait
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `queued_wait.bg_field` | `run_in_background` |  |  | The Bash tool input field that starts the command in the background. |
+| `queued_wait.bounded_max_s` | `540` |  | s | The longest bounded foreground wait or watch a subagent may run (a wait or watch under an explicit `timeout N`, N at most this). 540 s is under the Bash tool's 600 s timeout ceiling, with a minute of margin for the command's own start and exit; an idle subagent is not woken by a completion notification, so a wait it can finish in the foreground is the only one that keeps its path to the result. |
+| `queued_wait.duration_infinity_words` | `inf, infinity` |  |  | Words `sleep` reads as an endless wait (GNU: inf, infinity; case ignored). They parse as an unbounded duration and are blocked. |
 | `queued_wait.duration_unit_s` | `4 entries` |  |  | Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds. |
 | `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
 | `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
+| `queued_wait.kill_after_grace_s` | `10` |  | s | Seconds of `timeout --kill-after` that are margin, not added to the bound of a `timeout` that sends a non-terminating signal (`-s 0 -k 5 540` counts as 540). A larger kill-after counts only its excess: the command lives for the duration plus the kill-after. A kill-after of 0 or one that does not parse adds no escalation, so such a timeout bounds nothing. |
 | `queued_wait.loop_sleep_max_s` | `5` |  | s | A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs. |
 | `queued_wait.msg_instead_bg` | `Run the command in the foreground under the shared lock.` |  |  | What to do instead of a background heavy command. |
-| `queued_wait.msg_instead_sleep` | `End the turn and wait for the completion notification.` |  |  | What to do instead of a long sleep or poll loop. |
+| `queued_wait.msg_instead_detach` | `Run the wait attached: `timeout {max} gh pr checks --watch`, or SendMessage l...` |  |  | What to do instead of a wait that detaches inside a timeout. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline. |
+| `queued_wait.msg_instead_over` | `Use {max}s or less, or SendMessage lead "waiting on <X>; wake me when done", ...` |  |  | What to do instead of a bounded wait above the limit. Placeholders: {max} the limit. |
+| `queued_wait.msg_instead_sleep` | `Run `timeout {max} gh pr checks --watch`, or SendMessage lead "waiting on <X>...` |  |  | What to do instead of a long sleep or poll loop. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification. |
 | `queued_wait.msg_override` | `tell the agent "skip queued-wait-guard"` |  |  | How the user can lift the block (shown on the last line). |
 | `queued_wait.msg_what_bg` | `a helper cannot start this build or test in the background: {cmd}` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
+| `queued_wait.msg_what_detach` | `this wait detaches work, so the timeout around it bounds nothing: {cmd}` |  |  | Heading of the block on a wait that detaches inside a timeout (the timeout does not bound a detached command). Placeholder: {cmd} the command as it was written. |
 | `queued_wait.msg_what_loop` | `this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
+| `queued_wait.msg_what_over` | `this bounded wait is over the limit ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a bounded wait or watch above the limit. Placeholders: {cmd} the command as it was written, {secs} its timeout in seconds, {max} the limit. |
 | `queued_wait.msg_what_sleep` | `this wait is too long ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |
 | `queued_wait.msg_why` | `Repeated checks while waiting use the work budget without making progress.` |  |  | Why background heavy commands and poll loops are blocked. |
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `Block background builds and busy polling. PreToolUse on Bash, subagents only:...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
 | `queued_wait.sw` | `6 entries` |  |  | Off lets a subagent poll background work with sleep loops. |
+| `queued_wait.timeout_commands` | `timeout` |  |  | Wrapper commands that bound the wait of the command after them (`timeout 170 gh pr checks --watch`); their duration word is read as the bound. Flags that take a value are read from lane_waste.wrappers. |
+| `queued_wait.timeout_kill_flags` | `-k, --kill-after` |  |  | The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it. |
+| `queued_wait.timeout_signal_flags` | `-s, --signal` |  |  | The `timeout` flags that choose the signal it sends at the limit (-s, --signal). |
+| `queued_wait.timeout_silent_signals` | `19 items` |  |  | Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS. |
+| `queued_wait.unbounded_label` | `unbounded` |  |  | What the block message shows as the duration when a sleep's duration is unbounded or cannot be read (a variable, a typo, infinity). An unreadable duration is judged as an unbounded wait. |
+| `queued_wait.watch_res` | `^gh\s+pr\s+checks\b.*--watch, ^gh\s+run\s+watch(?:\s\\|$)` |  |  | Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in). |
 
 ### lane_waste.toml / wide_search
 

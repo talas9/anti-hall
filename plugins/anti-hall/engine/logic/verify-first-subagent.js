@@ -11,7 +11,7 @@ function decide(p, opts) {
   } else {
     var root = vf.pluginRoot(opts);
     if (root === null) return null;
-    base = vf.withRoot(ah.cfg('verify_first.compact_subagent'), root) + '\n' + ah.cfg('verify_first.worker');
+    base = vf.withRoot(ah.cfg('verify_first.compact_subagent'), root) + '\n' + text.render(ah.cfg('verify_first.worker'), { max: ah.cfgNum('queued_wait.bounded_max_s') });
   }
   var t = vf.childWorkspace() ? base + '\n' + ah.cfg('verify_first.child_note') : base;
   // A different child has an empty context and must receive its own protocol. Missing identity fails open.
