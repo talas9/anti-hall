@@ -44,8 +44,9 @@ var tk = {
     });
     return { openTaskIds: ids, inProgressCount: inProg };
   },
-  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
-  // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
+  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`): [] for a store directory that lists
+  // but holds no readable task (authoritative, no tasks: callers must not fall back to the transcript), or null when there is none or it
+  // cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
   // `gaps` (optional `{n}`): counts the store files the read dropped or could not list, so a strict caller can tell a partial list.
   storeTasks: function (home, sid, gaps) {
@@ -79,7 +80,7 @@ var tk = {
         });
       }
       // a listable store directory is THE store, even with no readable task in it: never fall through to another alias's directory
-      return out.length > 0 ? out : null;
+      return out;
     }
     return null;
   },

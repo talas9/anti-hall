@@ -39,8 +39,8 @@ function idMessage(list, codex, now) {
 
 // GH #744: the open tasks of this session that have an owner, as {owners: [{owner, subject}], store}, or null when the list cannot be read.
 // `store` is true only when the session's own task store answered. GH #764: a resume order is given from the store alone: tk.tasksOf
-// falls back to the transcript for a store that is empty (it reads an empty store as absent), and the transcript still holds tasks the
-// store has since dropped, so an owner it names is never trusted for an order.
+// reads a listable store, empty or not, as the list; the transcript still holds tasks the store has since dropped, so an owner it
+// names is never trusted for an order.
 function idOpenOwners(p, tp, home) {
   var sid = typeof p.session_id === 'string' ? p.session_id : '';
   var r = tk.tasksOf(home, sid, tp, 'state', true); // strict: a store file the read dropped is an unknown state, no order
