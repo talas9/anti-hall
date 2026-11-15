@@ -208,8 +208,8 @@ function snRuntimeRead(path, budget) {
 // publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
 // Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
 // Latest tracker {at: last_sent, reminders} per [session, child] from the already-read tracker state ({} when unavailable).
-// snoozes>0: a snooze extension also advances last_sent without bumping reminders (nudge.rs:1209), so last_sent then
-// cannot prove a send; such a row never lowers an anchor (stays provisional, conservative).
+// A snooze extension also advances last_sent without bumping reminders (nudge.rs:1209), and snoozes is a lifetime count
+// (nudge.rs:618-630), so only a reminders increment together with a newer last_sent proves a send (see tr below).
 // reminders is the generation: the engine publishes the same counter in the escalation row (#752 review).
 function snRuntimeSentTimes(state) {
   var out = {};
@@ -259,11 +259,13 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       // provisional: the anchor came from the mismatch/fallback path (now), so a tracker that later catches up may lower it once.
       // prev keeps the previous generation's anchor as the lower bound; old entries without the flag are final.
       var provisional = false, prev = restart ? (valid ? prior.at : 0) : (valid && snNum(prior.prev) ? prior.prev : 0);
+      // tr: the tracker's {reminders, last_sent} pair seen while the anchor is provisional. A later pair with a HIGHER reminders
+      // and a newer last_sent is the generation's own send (a snooze moves last_sent only), whatever the lifetime snoozes count.
+      var te = sent[key], tr = te ? { r: te.reminders, s: te.at } : (valid && jx.isObj(prior.tr) ? prior.tr : null);
       if (!restart && valid && prior.provisional === true) {
-        var te = sent[key];
-        if (te && reminders !== null && te.reminders === reminders && te.snoozes === 0) {
-          // Lower only when the tracker proves THIS generation's send: last_sent strictly newer than the previous anchor
-          // (same newer-send rule as the restart path). Unchanged reminders with an old last_sent stay provisional.
+        var pt = jx.isObj(prior.tr) ? prior.tr : null;
+        if (te && reminders !== null && te.reminders === reminders && pt && snNum(pt.r) && snNum(pt.s) && te.reminders > pt.r && te.at > pt.s) {
+          // Lower only when last_sent is also strictly newer than the previous anchor (same newer-send rule as the restart path).
           var low = Math.max(te.at, now - cfg.backdate_max_ms, prev);
           if (snNum(te.at) && te.at > prev && te.at <= now) { if (low < at) at = low; }
           else provisional = true;
@@ -272,14 +274,14 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       if (restart) {
         // The tracker can be saved after the row is published (older state next to a newer row): backdate only when
         // its send is the SAME generation as this row; a mismatch, or a missing or unparsable count, anchors at now.
-        var se = sent[key], ls = se && reminders !== null && se.reminders === reminders && se.snoozes === 0 ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
+        var se = sent[key], ls = se && reminders !== null && se.reminders === reminders && (se.snoozes === 0 || (valid && prior.reminders !== reminders)) ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
         // Only a send newer than the previous anchor is a real new generation; a block-tier change alone is not.
         if (snNum(ls) && ls > floor && ls <= now && (!valid || ls > prior.at)) at = ls;
         provisional = ls === null;
       }
       // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
       seen[key] = { at: at, reminders: reminders, block: r.block === true, prev: prev };
-      if (provisional) seen[key].provisional = true;
+      if (provisional) { seen[key].provisional = true; if (tr) seen[key].tr = tr; }
       // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
       if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
       anchors[key] = at;

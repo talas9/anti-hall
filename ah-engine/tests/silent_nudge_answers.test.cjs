@@ -337,3 +337,23 @@ test('a snooze-stamped last_sent never lowers the provisional anchor (#751 round
   f.observe(row(true));
   assert.notEqual(f.observe(row(true)).retired, true);
 });
+
+// #751 round 5: snoozes is a lifetime count; a reminders increment with a newer last_sent still proves the new generation.
+function snoozedLater(answerTs) {
+  const f = fixture();
+  const track = (sent, reminders) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: { child: 'child', parent: 'parent', last_sent: sent, reminders, snoozes: 1 } } }));
+  const row = reminders => [{ session: 'parent', child: 'child', name: 'worker', reminders, block: true }];
+  f.observe((track(9500, 3), row(3)));
+  f.advance(10000);
+  f.observe((track(9500, 3), row(4)));
+  f.advance(500);
+  f.answer('other', answerTs);
+  f.observe((track(19000, 4), row(4)));
+  return f.observe(row(4));
+}
+test('a lifetime snooze count does not block lowering on a later generation (#751 round 5)', () => {
+  assert.equal(snoozedLater(19500).retired, true);
+});
+test('an answer from before a snoozed-tracker generation still does not clear (#751 round 5)', () => {
+  assert.notEqual(snoozedLater(18000).retired, true);
+});
