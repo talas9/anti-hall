@@ -74,8 +74,8 @@ fn review_due_peak(home: &Path) -> (u64, String) {
 
 #[test]
 fn review_scan_memory_does_not_grow_with_the_decision_log() {
-    let small = TempDir::at(std::env::temp_dir().join(format!("ah-jrs-small-{}", std::process::id())));
-    let large = TempDir::at(std::env::temp_dir().join(format!("ah-jrs-large-{}", std::process::id())));
+    let small = TempDir::at(crate::common::testtmp::path(format!("ah-jrs-small-{}", std::process::id())));
+    let large = TempDir::at(crate::common::testtmp::path(format!("ah-jrs-large-{}", std::process::id())));
     home_with_rows(&small, 10);
     home_with_rows(&large, 80_000); // ~28 MB of log
     let (base, _) = review_due_peak(&small);

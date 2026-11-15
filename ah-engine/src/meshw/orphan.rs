@@ -342,7 +342,7 @@ mod tests {
     use crate::meshw::store::{RegistryRow, mesh_message_hash, mesh_message_row};
 
     fn home(tag: &str) -> PathBuf {
-        let h = std::env::temp_dir().join(format!("ah-orphan-{tag}-{}", std::process::id()));
+        let h = crate::testtmp::path(format!("ah-orphan-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: a stale directory of an earlier run of this test
         for d in ["mesh_write.dir_workspaces", "mesh_write.dir_archived"] {
             std::fs::create_dir_all(devswarm_root(&h).join(defaults::text(d))).unwrap();

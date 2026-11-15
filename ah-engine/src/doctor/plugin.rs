@@ -288,7 +288,7 @@ mod tests {
 
     fn fixture(tag: &str, reg: &str, settings: &str, manifests: &[(&str, &str)]) -> (Doc, std::path::PathBuf) {
         crate::defaults::init().unwrap();
-        let home = std::env::temp_dir().join(format!("ah-plugin-clash-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-plugin-clash-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a test scratch directory
         std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
         for (dir, name) in manifests {

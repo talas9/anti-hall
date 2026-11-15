@@ -640,7 +640,7 @@ mod shared_count_tests {
     /// One real inbound row after that is still unread and still blocks.
     #[test]
     fn a_cursor_behind_total_that_peek_counts_as_zero_is_zero_and_a_real_unread_still_counts() {
-        let home = std::env::temp_dir().join(format!("ah-pg-shared-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pg-shared-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&home).unwrap();
         let db = home.join("devswarm.db");
@@ -678,7 +678,7 @@ mod shared_count_tests {
     /// never reach this partition's count; each partition leaves out its OWN family's sends only.
     #[test]
     fn a_retired_reader_reads_its_own_position_and_partitions_count_apart() {
-        let home = std::env::temp_dir().join(format!("ah-pg-parts-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pg-parts-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&home).unwrap();
         let db = home.join("devswarm.db");
@@ -734,7 +734,7 @@ mod shared_count_tests {
         assert!(crate::meshw::union::is_wake_row(&json!({"body": body, "mtype": null})));
         assert!(crate::meshw::union::is_wake_row(&json!({"body": body})));
         assert!(!crate::meshw::union::is_wake_row(&json!({"body": body, "mtype": defaults::text("mesh_write.mtype_direct")})));
-        let home = std::env::temp_dir().join(format!("ah-pg-wake-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pg-wake-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&home).unwrap();
         let db = home.join("devswarm.db");
@@ -768,7 +768,7 @@ mod shared_count_tests {
     /// 0 unread and `union_of` (the gate's store-only rows) as an empty list, so a Stop could pass; both must say "unknown" instead.
     #[test]
     fn a_store_position_past_the_message_count_is_unknown_in_the_count_and_the_union() {
-        let home = std::env::temp_dir().join(format!("ah-pg-pastpos-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pg-pastpos-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
         let dir = crate::meshw::union::store_dir(Path::new(&st.home), "k1");
@@ -840,7 +840,7 @@ mod shared_count_tests {
     #[test]
     fn the_noise_provenance_switch_of_the_request_wins_over_the_daemon_environment() {
         let var = "ANTIHALL_DEVSWARM_NOISE_PROVENANCE";
-        let home = std::env::temp_dir().join(format!("ah-pg-reqprov-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pg-reqprov-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&home).unwrap();
         let inbox = home.join("inbox.ndjson");

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-spawnbudget-{tag}-{}", std::process::id()));
+    let d = crate::common::testtmp::path(format!("ah-spawnbudget-{tag}-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     d

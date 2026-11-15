@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn a_descriptor_with_an_odd_id_or_worktree_is_read_as_javascript_stringifies_it() {
         crate::defaults::init().unwrap();
-        let dir = std::env::temp_dir().join(format!("ah-as-plan-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-as-plan-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.json"), r#"{"id":{"x":1},"worktreePath":7}"#).unwrap();

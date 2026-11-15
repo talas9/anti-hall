@@ -393,7 +393,7 @@ mod tests {
     use crate::meshw::common::Inv;
 
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-ret-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-ret-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         d

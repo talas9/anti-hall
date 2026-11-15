@@ -17,7 +17,7 @@ fn result(check: &str, id: &str, l: &golden::Laid) -> HookResult {
 }
 
 fn state_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-ladder-kinds-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-ladder-kinds-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup of a scratch directory
     d
 }

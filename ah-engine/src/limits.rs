@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn private_dir_is_created_0700_tightened_and_refuses_symlinks_and_files() {
-        let base = std::env::temp_dir().join(format!("ah-lim-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-lim-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&base).unwrap();
         let d = base.join("d");

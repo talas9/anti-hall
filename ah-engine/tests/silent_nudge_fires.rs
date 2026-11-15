@@ -3,6 +3,9 @@
 //! one that wrote recently is not. Scratch HOME only.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::path::Path;
@@ -18,7 +21,7 @@ fn age(path: &Path, secs: i64) {
 }
 
 fn fixture(tag: &str, quiet_s: i64) -> (std::path::PathBuf, std::path::PathBuf) {
-    let home = std::env::temp_dir().join(format!("ah-snfire-{tag}-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-snfire-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     let home = std::fs::canonicalize(&home).unwrap();
     let proj = home.join("projects");

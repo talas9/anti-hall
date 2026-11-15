@@ -11,7 +11,7 @@ use ah_engine::{defaults, mem};
 
 /// Settings from a `config.toml` of this test's own (never the user's real files).
 fn settings(toml: &str) {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = common::testtmp::path(format!(
         "ah-latch-{}-{}",
         std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()

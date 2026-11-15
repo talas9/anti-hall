@@ -2148,7 +2148,7 @@ mod tests {
     }
 
     fn scratch_inv(tag: &str) -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-rp-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-rp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale scratch directory of an earlier run
         std::fs::create_dir_all(&home).unwrap();
         Inv {

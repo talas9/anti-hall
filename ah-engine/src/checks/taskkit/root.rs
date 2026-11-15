@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_checkout_encloses_its_subdirectories_and_a_missing_directory_is_its_own_root() {
-        let base = std::env::temp_dir().join(format!("ah-root-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-root-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("repo/src/deep")).unwrap();

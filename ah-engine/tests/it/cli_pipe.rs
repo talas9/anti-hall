@@ -25,7 +25,7 @@ fn engine(home: &Path, state: &Path) -> Command {
 
 #[test]
 fn a_closed_stdout_exits_quietly_and_leaves_the_daemon_health_alone() {
-    let root = std::env::temp_dir().join(format!("ah-cli-pipe-{}", std::process::id()));
+    let root = crate::common::testtmp::path(format!("ah-cli-pipe-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let (home, state) = (root.join("home"), root.join("state"));
     std::fs::create_dir_all(&home).unwrap();

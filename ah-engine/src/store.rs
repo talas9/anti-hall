@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn project_a_cannot_read_project_b() {
-        let base = std::env::temp_dir().join(format!("ah-store-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-store-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         for p in ["A/.git", "A/sub/deep", "B/.git", "A-evil"] {
             std::fs::create_dir_all(base.join(p)).unwrap();

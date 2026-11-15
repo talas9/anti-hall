@@ -655,7 +655,7 @@ mod tests {
     }
 
     fn fx(tag: &str) -> Fx {
-        let base = std::env::temp_dir().join(format!("ah-ct-{tag}-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-ct-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: a stale directory of an earlier run of this test
         let (home, repo) = (base.join("home"), base.join("repo"));
         std::fs::create_dir_all(&home).unwrap();

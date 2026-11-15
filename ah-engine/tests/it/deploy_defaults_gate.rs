@@ -34,7 +34,7 @@ struct Lab {
 const SENTINEL: &[u8] = b"previous install, must stay byte-identical";
 
 fn lab(tag: &str) -> Lab {
-    let top = std::env::temp_dir().join(format!("ah-deploy-gate-{}-{tag}", std::process::id()));
+    let top = crate::common::testtmp::path(format!("ah-deploy-gate-{}-{tag}", std::process::id()));
     std::fs::remove_dir_all(&top).ok();
     let (root, state) = (top.join("root"), top.join("state"));
     for d in ["engine/defaults", "engine/defaults.pristine"] {

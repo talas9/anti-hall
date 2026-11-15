@@ -44,7 +44,7 @@ fn lower(plugin: &Path, dir: &str) {
 
 #[test]
 fn a_daemon_over_the_global_hard_limit_for_too_long_restarts_cleanly_and_says_why() {
-    let root: PathBuf = std::env::temp_dir().join(format!("ahd-memrestart-{}", std::process::id()));
+    let root: PathBuf = crate::common::testtmp::path(format!("ahd-memrestart-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok(); // our own scratch directory from a crashed earlier run
     let plugin = root.join("plugin");
     copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"), &plugin);

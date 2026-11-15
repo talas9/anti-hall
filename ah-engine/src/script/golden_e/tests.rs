@@ -23,7 +23,7 @@ mod claim_ledger_jev {
     use std::path::Path;
 
     fn home(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-cl-jev-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-cl-jev-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
         std::fs::create_dir_all(&d).unwrap();
         d

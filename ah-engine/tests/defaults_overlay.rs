@@ -5,6 +5,9 @@
 //! in order, on scratch files (never the user's real `~/.anti-hall`).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::cfgstore::{ConfigStore, Paths, Reload, Source};
 use ah_engine::defaults;
 use std::path::Path;
@@ -40,11 +43,8 @@ fn agrees_with(store: &ConfigStore) {
 
 #[test]
 fn defaults_reads_follow_the_config_layers_and_reloads() {
-    let dir = std::env::temp_dir().join(format!(
-        "ah-overlay-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ));
+    let dir =
+        testtmp::path(format!("ah-overlay-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&dir).unwrap();
     let paths = Paths { user: dir.join("config.toml"), settings: Some(dir.join("settings.json")) };
     // SAFETY: this file holds one test, and these are set before any thread reads them. The state dir is set before the first

@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn the_shared_breaker_reads_and_writes_the_node_file_shape() {
-        let d = std::env::temp_dir().join(format!("ah-brk-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-brk-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         let p = d.join("cache/jev-breaker.json");
         let clock = Arc::new(ManualClock::default());
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn a_scoped_entry_lives_beside_the_node_vendor_keys_in_the_shared_file() {
-        let d = std::env::temp_dir().join(format!("ah-brk-scope-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-brk-scope-{}", std::process::id()));
         let p = d.join("cache/jev-breaker.json");
         let b = Breakers::shared(p.clone(), Arc::new(ManualClock::default()));
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

@@ -1273,7 +1273,7 @@ mod tests {
     struct Dir(PathBuf);
     impl Dir {
         fn new(tag: &str) -> Dir {
-            let d = std::env::temp_dir().join(format!("ah-store-{tag}-{}", std::process::id()));
+            let d = crate::testtmp::path(format!("ah-store-{tag}-{}", std::process::id()));
             std::fs::create_dir_all(&d).unwrap();
             Dir(d)
         }

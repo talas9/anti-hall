@@ -144,7 +144,7 @@ mod tests {
     use super::*;
 
     fn dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-atomic-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-atomic-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&d).unwrap();
         d

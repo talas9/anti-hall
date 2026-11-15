@@ -27,7 +27,7 @@ const POST_BASH: [&str; 9] = [
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ahd-cfg-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-cfg-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join(".git")).unwrap();

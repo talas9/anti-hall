@@ -516,7 +516,7 @@ mod tests {
 
     fn repo_inv(tag: &str) -> (Inv, String) {
         defaults::init().unwrap();
-        let home = std::env::temp_dir().join(format!("ah-diag-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-diag-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         let repo = home.join("repo");
         std::fs::create_dir_all(&repo).unwrap();

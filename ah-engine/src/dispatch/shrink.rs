@@ -199,7 +199,7 @@ mod tests {
     }
 
     fn env_with(settings: &str) -> RequestEnv {
-        let home = std::env::temp_dir().join(format!("ahd-shrink-{}-{}", std::process::id(), settings.len()));
+        let home = crate::testtmp::path(format!("ahd-shrink-{}-{}", std::process::id(), settings.len()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         std::fs::write(home.join(".anti-hall/settings.json"), settings).unwrap();
         RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string())])

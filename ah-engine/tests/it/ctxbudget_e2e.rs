@@ -13,7 +13,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ahd-ctxb-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-ctxb-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         // These cases exercise the configured 85% threshold, independently of the shipped default.

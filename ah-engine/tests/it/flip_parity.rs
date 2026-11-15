@@ -454,7 +454,7 @@ fn host_index(h: &str) -> usize {
 
 impl Rig {
     fn new(tag: &str) -> Rig {
-        let root = std::env::temp_dir().join(format!("ahd-flip-{tag}-{}", std::process::id()));
+        let root = crate::common::testtmp::path(format!("ahd-flip-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
         for d in ["repo", "specs", "h-old", "h-new", "state"] {
             std::fs::create_dir_all(root.join(d)).unwrap();

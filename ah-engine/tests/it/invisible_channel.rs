@@ -178,7 +178,7 @@ fn observe() -> (BTreeSet<Key>, BTreeSet<(String, String)>) {
     for sc in scenarios() {
         let mut spoke = 0;
         for attempt in 0..3 {
-            let home = TempDir::at(std::env::temp_dir().join(format!("ah-chan-{}-{}-{attempt}", sc.check, std::process::id())));
+            let home = TempDir::at(crate::common::testtmp::path(format!("ah-chan-{}-{}-{attempt}", sc.check, std::process::id())));
             for (rel, body) in &sc.files {
                 let p = home.join(rel);
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();

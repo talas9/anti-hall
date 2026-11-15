@@ -622,7 +622,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     fn home(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-review-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-review-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a scratch dir that may not exist yet
         std::fs::create_dir_all(&d).unwrap();
         d

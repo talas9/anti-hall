@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn a_deferred_checks_staged_writes_are_dropped_and_the_others_kept() {
-        let dir = std::env::temp_dir().join(format!("ah-stage-since-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-stage-since-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (a, b) = (dir.join("a.json"), dir.join("b.json"));
         let style = crate::atomic::Style::default();
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn state_written_during_a_request_lands_only_when_the_reply_is_delivered_in_time() {
         // review P1-2: a stamp written before a reply the client never used silenced the Node fallback that answered instead
-        let dir = std::env::temp_dir().join(format!("ah-p1-2-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-p1-2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("state.json");
         std::fs::write(&f, "old").unwrap();

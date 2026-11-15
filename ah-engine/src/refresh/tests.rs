@@ -48,7 +48,7 @@ fn refresh_request_path_is_under_the_request_dir() {
 
 #[test]
 fn refresh_without_requests_writes_no_cache() {
-    let home = std::env::temp_dir().join(format!("ah-refresh-unit-{}-{}", std::process::id(), crate::health::now_ms()));
+    let home = crate::testtmp::path(format!("ah-refresh-unit-{}-{}", std::process::id(), crate::health::now_ms()));
     std::fs::create_dir_all(&home).unwrap();
     let out = run(&home, false).expect("the run lock is free");
     assert_eq!(out.len(), defaults::list("refresh.probes").len());
@@ -62,7 +62,7 @@ fn refresh_without_requests_writes_no_cache() {
 
 #[test]
 fn pending_refresh_requests_are_detected_before_spawning_the_job() {
-    let home = std::env::temp_dir().join(format!("ah-refresh-pending-{}-{}", std::process::id(), crate::health::now_ms()));
+    let home = crate::testtmp::path(format!("ah-refresh-pending-{}-{}", std::process::id(), crate::health::now_ms()));
     let req_dir = home.join(defaults::text("refresh.request_dir"));
     std::fs::create_dir_all(&req_dir).unwrap();
     assert!(!has_pending(&home));

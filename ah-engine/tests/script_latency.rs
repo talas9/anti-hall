@@ -8,6 +8,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 #[path = "common/scale.rs"]
 mod scale;
 use ah_engine::reqenv::RequestEnv;
@@ -87,7 +90,7 @@ fn sub(v: &Value, home: &str, real: &str) -> Value {
 }
 
 fn lay(case: &Value, seq: usize) -> Laid {
-    let home = std::env::temp_dir().join(format!("ah-latency-{}-{seq}", std::process::id()));
+    let home = testtmp::path(format!("ah-latency-{}-{seq}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let real = std::fs::canonicalize(&home).unwrap().to_string_lossy().into_owned();
     let home = home.to_string_lossy().into_owned();

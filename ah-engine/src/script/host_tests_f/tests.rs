@@ -6,7 +6,7 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 
 fn home(tag: &str) -> String {
-    let d = std::env::temp_dir().join(format!("ah-hostf-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-hostf-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     std::fs::canonicalize(&d).unwrap().to_string_lossy().to_string()

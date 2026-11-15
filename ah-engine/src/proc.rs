@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn a_provided_stdin_reaches_the_child_and_run_still_gives_dev_null() {
-        let f = std::env::temp_dir().join(format!("ah-proc-stdin-{}", std::process::id()));
+        let f = crate::testtmp::path(format!("ah-proc-stdin-{}", std::process::id()));
         std::fs::write(&f, b"payload").unwrap();
         let o = run_with_stdin(sh("cat"), Stdio::from(std::fs::File::open(&f).unwrap()), "test", Duration::from_secs(10), Duration::from_millis(5)).unwrap();
         assert_eq!(o.stdout, b"payload");
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn a_read_only_git_killed_at_its_timeout_never_leaves_index_lock() {
-        let dir = std::env::temp_dir().join(format!("ah-proc-gitlock-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-proc-gitlock-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir));
         let bin = fake_git(&dir);
         let lock = dir.join("index.lock");
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn resolve_in_swaps_only_a_shim_for_an_existing_candidate() {
-        let d = std::env::temp_dir().join(format!("ah-resolve-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-resolve-{}", std::process::id()));
         let (shimdir, realdir) = (d.join("shim"), d.join("real"));
         std::fs::create_dir_all(&shimdir).unwrap();
         std::fs::create_dir_all(&realdir).unwrap();
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn a_timeout_kills_the_whole_group() {
         // review finding 8: a timeout killed only the child; its own children lived on
-        let marker = std::env::temp_dir().join(format!("ah-proc-group-{}", std::process::id()));
+        let marker = crate::testtmp::path(format!("ah-proc-group-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_file(&marker));
         let script = format!("(sleep 1; touch '{}') & sleep 30", marker.display());
         let t = Instant::now();
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn a_leftover_is_killed_while_the_group_is_still_ours() {
-        let marker = std::env::temp_dir().join(format!("ah-proc-left-{}", std::process::id()));
+        let marker = crate::testtmp::path(format!("ah-proc-left-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_file(&marker));
         let r = run(sh(&format!("(sleep 1; touch '{}') & echo x", marker.display())), "test", Duration::from_millis(300), Duration::from_millis(5));
         assert!(matches!(r, Err(Error::Unread)), "{r:?}");

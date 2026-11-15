@@ -664,7 +664,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-migrate-unit-{}-{name}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-migrate-unit-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&d).expect("temp dir");
         d
     }

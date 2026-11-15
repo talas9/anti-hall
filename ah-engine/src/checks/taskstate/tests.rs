@@ -215,7 +215,7 @@ fn the_scan_counts_a_renamed_task_as_it_counts_an_unrenamed_one() {
             call("t2", "TaskUpdate", update),
             result("t2", "Updated task #1"),
         ];
-        let path = std::env::temp_dir().join(format!("ah-scanview-{}-{rename}.jsonl", std::process::id()));
+        let path = crate::testtmp::path(format!("ah-scanview-{}-{rename}.jsonl", std::process::id()));
         std::fs::write(&path, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         let scan = scan_tasks(&path.to_string_lossy(), 1 << 20, 1 << 20).unwrap().unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -237,7 +237,7 @@ mod non_string_status_in_the_scan {
     }
     /// `(open ids, in progress count)` of the scan, or `None` where the pass is not understood (an `Err`).
     fn scan(tag: &str, lines: &[Value], window: u64) -> Option<(Vec<String>, u64, bool)> {
-        let path = std::env::temp_dir().join(format!("ah-nsstatus-{}-{tag}.jsonl", std::process::id()));
+        let path = crate::testtmp::path(format!("ah-nsstatus-{}-{tag}.jsonl", std::process::id()));
         std::fs::write(&path, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         let out = scan_tasks(&path.to_string_lossy(), window, window).ok().map(|s| {
             let s = s.expect("a scan");
@@ -441,7 +441,7 @@ mod blob_rows {
     }
 
     fn scan(tag: &str, rows: &[Value]) -> (Vec<String>, u64, bool) {
-        let path = std::env::temp_dir().join(format!("ah-blobrows-{}-{tag}.jsonl", std::process::id()));
+        let path = crate::testtmp::path(format!("ah-blobrows-{}-{tag}.jsonl", std::process::id()));
         std::fs::write(&path, rows.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
         let s = scan_tasks(&path.to_string_lossy(), 1 << 20, 1 << 20).unwrap().unwrap();
         std::fs::remove_file(&path).unwrap();

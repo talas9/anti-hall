@@ -1322,7 +1322,7 @@ mod tests {
 
     #[test]
     fn the_wait_marker_is_one_plain_empty_file_with_no_temp_file_left() {
-        let dir = std::env::temp_dir().join(format!("ah-client-marker-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-client-marker-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("wait");
         create_marker(&marker).unwrap();
@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     fn only_a_missing_socket_means_no_daemon() {
         // review finding 18: any stat error read as "no daemon" (and started a second one); only ENOENT does now
-        let dir = std::env::temp_dir().join(format!("ah-client-stat-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-client-stat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("not-a-dir");
         std::fs::write(&file, "x").unwrap();
@@ -1351,7 +1351,7 @@ mod tests {
     #[test]
     fn a_reply_written_and_closed_after_the_first_read_timeout_is_still_delivered() {
         // macOS: re-arming SO_RCVTIMEO on a socket the daemon already closed is EINVAL; that must not drop the readable reply
-        let dir = std::env::temp_dir().join(format!("ah-client-late-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-client-late-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("d.sock");
         let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
@@ -1374,7 +1374,7 @@ mod tests {
     static ACK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ah-ack-{tag}-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-ack-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1585,7 +1585,7 @@ mod tests {
     impl KickState {
         fn new(tag: &str) -> KickState {
             let turn = health::STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
-            let dir = std::env::temp_dir().join(format!("ah-kick-{tag}-{}", std::process::id()));
+            let dir = crate::testtmp::path(format!("ah-kick-{tag}-{}", std::process::id()));
             crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run of this test
             std::fs::create_dir_all(&dir).unwrap();
             // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `STATE_TURN` first. A state directory of its

@@ -7,7 +7,7 @@ use crate::checks::jsport::json::J;
 use std::path::{Path, PathBuf};
 
 fn home(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join("test-wakew").join(format!("{tag}-{}", std::process::id()));
+    let d = crate::testtmp::child("test-wakew", format!("{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(&d).unwrap();
     d

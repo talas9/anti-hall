@@ -105,7 +105,7 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Rig {
-        let dir = std::env::temp_dir().join(format!("ahd-scanpeak-{tag}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-scanpeak-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run under this name
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.git")).unwrap();

@@ -314,7 +314,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-currency-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-currency-{tag}-{}", std::process::id()));
         std::fs::remove_dir_all(&d).ok(); // harmless: the scratch dir of this test process
         std::fs::create_dir_all(&d).expect("scratch dir");
         d

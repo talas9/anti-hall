@@ -13,7 +13,7 @@ struct Lab {
 }
 impl Lab {
     fn new(tag: &str) -> Self {
-        let home = std::env::temp_dir().join(format!("ah-quiettick-{}-{tag}", std::process::id()));
+        let home = crate::common::testtmp::path(format!("ah-quiettick-{}-{tag}", std::process::id()));
         let repo = home.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(home.join(".anti-hall/ah-engine")).unwrap();

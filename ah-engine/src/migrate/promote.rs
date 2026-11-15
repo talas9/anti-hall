@@ -195,7 +195,7 @@ mod tests {
     /// stage to Node); the other rows go on.
     #[test]
     fn a_row_whose_store_cannot_be_opened_is_an_error_of_the_row_not_a_handoff() {
-        let home = std::env::temp_dir().join(format!("ah-promote-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-promote-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         let root = devswarm_root(&home);
         let id = "w-one";

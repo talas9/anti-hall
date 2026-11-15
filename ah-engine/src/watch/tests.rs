@@ -52,7 +52,7 @@ struct Tmp(PathBuf);
 impl Tmp {
     fn new(tag: &str) -> Tmp {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let p = std::env::temp_dir().join(format!("ah-watch-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        let p = crate::testtmp::path(format!("ah-watch-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         crate::discard::harmless(fs::remove_dir_all(&p));
         fs::create_dir_all(&p).unwrap();
         Tmp(p)

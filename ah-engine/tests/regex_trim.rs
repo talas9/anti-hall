@@ -115,7 +115,7 @@ fn a_shrink_leaves_alone_a_pattern_that_would_weigh_more_trimmed() {
 }
 
 fn settings(toml: &str) {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = common::testtmp::path(format!(
         "ah-trim-{}-{}",
         std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()

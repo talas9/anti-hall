@@ -25,7 +25,7 @@ fn engine(home: &std::path::Path, args: &[&str], stdin: Option<&str>) -> (i32, S
 }
 
 fn home(tag: &str) -> crate::common::TempDir {
-    let d = crate::common::TempDir::at(std::env::temp_dir().join(format!("ah-settings-overflow-{tag}-{}", std::process::id())));
+    let d = crate::common::TempDir::at(crate::common::testtmp::path(format!("ah-settings-overflow-{tag}-{}", std::process::id())));
     std::fs::create_dir_all(d.join("home/.anti-hall")).unwrap();
     std::fs::create_dir_all(d.join("proj")).unwrap();
     d

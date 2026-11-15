@@ -2,6 +2,9 @@
 //! and the ack moves every partition's cursor; with NO Node and no exit 69. (Node: `resolveMeshPartitionIds` + the sibling fold.)
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::meshw::store::{MeshRow, MeshStore};
 use serde_json::Value;
 use std::fs;
@@ -17,7 +20,7 @@ struct Fx {
 
 impl Fx {
     fn new(tag: &str) -> Fx {
-        let root = std::env::temp_dir().join(format!("ah-group-{tag}-{}", std::process::id()));
+        let root = testtmp::path(format!("ah-group-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(fs::remove_dir_all(&root)); // keep: our own scratch directory
         let (home, repo) = (root.join("home"), root.join("repo"));
         fs::create_dir_all(&home).unwrap();
