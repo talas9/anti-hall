@@ -202,7 +202,10 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         } else {
             let mark = crate::deadline::staged_mark();
             // #763: a check that may be cut gets what the request has left less the time reserved for the cut-eligible checks after it
-            let window = crate::script::cut_at_deadline(check, &meta.event).then(|| crate::deadline::cap_check(budget(&entries[i + 1..], check, &meta.event)));
+            let window = crate::script::cut_at_deadline(check, &meta.event)
+                .then(|| budget(&entries[i + 1..], check, &meta.event))
+                .flatten()
+                .map(crate::deadline::cap_check);
             let a = if check == crate::defaults::text("upfront.check") {
                 // It has a real table row (and honors --only); emit after all blocking guards are known.
                 Answer::Decided(HookResult::quiet(&e.id), Vec::new())
@@ -262,16 +265,18 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
     out
 }
 
-/// How long `check` (on `event`) may run (#763): what the request has left less the time reserved for the checks in `after` that may be
-/// cut at the deadline ([`reserve_ms`] each), never less than its own reserve and never more than what is left. A check that cannot be
-/// cut (fails closed on a guard event, or deadline policy `finish`) is not reserved for: it runs whatever the clock says. Outside a
-/// request nothing is capped ([`crate::deadline::cap_check`] sets no cap), so the value does not matter there.
-fn budget(after: &[Entry], check: &str, event: &str) -> std::time::Duration {
+/// How long `check` (on `event`) may run when that is less than the request has left (#763): what is left less the time reserved for
+/// the checks in `after` that may be cut at the deadline ([`reserve_ms`] each), never less than its own reserve. `None` when nothing
+/// after it needs the time (the check keeps the request's own deadline and its `diagnostics.deadline_grace_ms`, as before), and outside
+/// a request. A check that cannot be cut (fails closed on a guard event, or deadline policy `finish`) is not reserved for: it runs
+/// whatever the clock says.
+fn budget(after: &[Entry], check: &str, event: &str) -> Option<std::time::Duration> {
     let ms = std::time::Duration::from_millis;
-    let Some(left) = crate::deadline::remaining() else { return std::time::Duration::ZERO };
+    let left = crate::deadline::remaining()?;
     let reserved: u64 =
         after.iter().filter_map(|e| e.check.as_deref()).filter(|c| crate::script::cut_at_deadline(c, event)).map(|c| reserve_ms(c, event)).sum();
-    left.saturating_sub(ms(reserved)).max(ms(reserve_ms(check, event))).min(left)
+    let b = left.saturating_sub(ms(reserved)).max(ms(reserve_ms(check, event)));
+    (b < left).then_some(b)
 }
 
 /// The time kept for `check` on `event` while the checks before it run: its `daemon.check_reserve_by_check_ms` row, else the
@@ -904,6 +909,27 @@ mod tests {
         let (got, reasons, _) = run_chain("PreToolUse", &bash_pkill(), &held, ceiling - 1300);
         assert!(!reasons.iter().any(|r| r.starts_with("compact-declaration-guard:")), "the closed check answered: {reasons:?}");
         assert!(got.iter().any(|(id, a)| id == "compact-declaration-guard" && matches!(a, Answer::Decided(..))), "{got:?}");
+    }
+
+    /// #763 review: a check that starts past the hard deadline but inside its `diagnostics.deadline_grace_ms` keeps that grace: no cap
+    /// is set when nothing after it needs the time, so it is not cut on the spot.
+    #[test]
+    fn a_check_inside_its_deadline_grace_is_not_capped_to_nothing() {
+        let grace = crate::script::deadline_grace_ms("silent-agent-nudge");
+        assert!(grace > 200, "the shipped grace of silent-agent-nudge: {grace}");
+        let stop = json!({"session_id": "s-763-grace", "cwd": "/", "hook_event_name": "Stop", "transcript_path": "/nonexistent-763.jsonl"});
+        let ceiling = crate::deadline::ceiling_ms("Stop");
+        let held = [("silent-agent-nudge", std::time::Duration::from_millis(50), Some(r#"{"block":"763 grace"}"#))];
+        let m = Meta { event: "Stop".into(), only: Some(vec!["silent-agent-nudge".into()]), ..meta() };
+        crate::defaults::millis("daemon.reply_slack_ms");
+        crate::script::hold::set(&held);
+        // the request is 50 ms past its hard deadline (ceiling less the reply slack) when the check starts
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_millis(ceiling + 50 - crate::defaults::num("daemon.reply_slack_ms")));
+        crate::deadline::set_event("Stop");
+        let got = evaluate(&m, &stop, &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        crate::script::hold::set(&[]);
+        assert!(blocks(&got, "silent-agent-nudge"), "inside its grace the check still answers: {got:?}");
     }
 
     /// #763: the log names the check that held the clock and the checks it did not leave time for (here the request is already at its
