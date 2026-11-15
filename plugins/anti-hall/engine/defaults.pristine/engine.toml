@@ -336,6 +336,19 @@ min = 0
 max = 100
 unit = "%"
 
+[daemon.check_share_pct]
+doc = "The longest ONE check may run, as a percentage of the request's wall ceiling for its event (daemon.request_hard_ms or its daemon.request_hard_event_ms row), never more than the request has left and never less than daemon.check_share_min_ms. A check that runs past it is cut there exactly as at the hard deadline (a script call is interrupted, a native scan stops, a host call is clamped) and answers by its failure policy (script.failure_mode_by_check), counted at status advisory deadline_cut.<check>.<outcome> and logged as check_share_cut, while the checks after it still run (#763: one 7.5 s task-guard used the whole 8000 ms Stop ceiling and every guard behind it was dropped as hard_deadline: 867 Stop and 125 PreToolUse guard answers). A check that fails closed on a guard event, or whose deadline policy is `finish`, is never cut (script.cut_at_request_deadline). 0 = no share; 100 = the whole ceiling (only the request clock bounds a check)."
+value = 40
+min = 0
+max = 100
+unit = "%"
+
+[daemon.check_share_min_ms]
+doc = "The least time ONE check always has (daemon.check_share_pct of a short ceiling would cut a normal check on a loaded host: the PreToolUse ceiling is 2000 ms). Still never more than the request has left."
+value = 1000
+min = 0
+unit = "ms"
+
 [daemon.request_wall_warn_ms]
 doc = "SOFT wall mark of a request (the hard deadline before #684), measured from its arrival: a check that still answers past it is counted verdicts_saved_by_cpu_budget (it would have been dropped when the wall clock was the deadline); nothing is cut here. The HARD wall ceiling is daemon.request_hard_ms."
 value = 2000

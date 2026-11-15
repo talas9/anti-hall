@@ -348,6 +348,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/deadline.rs", "static EVENT", "a thread-local slot initialised empty (the hook event of the request being served): state, not a tunable"),
     ("src/deadline.rs", "static STAGED", "a thread-local list initialised empty (the state writes a request staged): state, not a tunable"),
     ("src/deadline.rs", "static PEER", "a thread-local slot initialised empty (the connection of the request being served): state, not a tunable"),
+    ("src/deadline.rs", "static CHECK_CAP", "a thread-local slot initialised empty (when the running check must end): state, not a tunable"),
     ("src/deadline.rs", "static GONE_SKIPS", "a thread-local counter initialised to zero (checks skipped for a client that had gone): state, not a tunable"),
     ("src/telemetry/mod.rs", "static STAGE", "a thread-local slot initialised empty (what a request staged): state, not a tunable"),
     ("src/checks/mod.rs", "static ALL", "the check registry: the list of compiled-in checks is code, not configuration"),

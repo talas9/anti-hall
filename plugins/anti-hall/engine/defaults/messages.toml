@@ -165,6 +165,18 @@ value = "{check} ({event}): ran {ran_ms} ms, the client's fail-fast wait ended {
 doc = "Log detail when the client's fail-fast wait (the request's SOFT deadline) had already ended before the first check of the request started, so the request waited {elapsed_ms} ms (queue, connection) before any check ran. {check} is the first check of the request. Nothing is cut."
 value = "{check} ({event}): the client's fail-fast wait had ended {elapsed_ms} ms after the request arrived, before the first check started; the request keeps running to its hard deadline"
 
+[msg.log_deadline_hard]
+doc = "Log detail (kind deadline_hard, once per request) when the request passed its HARD deadline and a check was cut for it (#763). {event} is the hook event, {running} the check that was running when the deadline passed ({ran_ms} ms it had run; msg.log_deadline_cut_queued when none was: the request waited before any check started) and {skipped} the checks from the first cut one on, which take their failure policy."
+value = "{event}: hard deadline passed while {running} was running ({ran_ms} ms); cut: {skipped}"
+
+[msg.log_deadline_cut_queued]
+doc = "Stands for the running check in msg.log_deadline_hard when the hard deadline had already passed before the request's first check started."
+value = "(no check: the request waited before its first check)"
+
+[msg.log_check_share_cut]
+doc = "Log detail (kind check_share_cut) when ONE check used its whole share of the request (daemon.check_share_pct of the event's wall ceiling, not less than daemon.check_share_min_ms) and was cut there, so the checks after it keep their time (#763). {ran_ms} is how long it ran, {share_ms} its share. The check answers by its failure policy."
+value = "{check} ({event}): used its share of the request ({ran_ms} ms of {share_ms} ms) and was cut; the checks after it still run"
+
 [msg.script_soft_overrun]
 doc = "Log detail (code script_soft, rate-limited) of a script call that used more thread CPU than its SOFT limit; it was not cut."
 value = "{check} ({event}) used {used_us} us of cpu, over its soft limit of {soft_ms} ms (hard limit {hard_ms} ms)"

@@ -51,6 +51,8 @@ thread_local! {
     static BEAT: RefCell<Option<(Arc<AtomicU64>, Instant)>> = const { RefCell::new(None) };
     /// The connection of the request being served when its client keeps it open until it has the verdict (an ack-mode client).
     static PEER: Cell<Option<std::os::fd::RawFd>> = const { Cell::new(None) };
+    /// When the check running on this thread must end ([`check_window`]): its share of the request, earlier than the request's hard deadline.
+    static CHECK_CAP: Cell<Option<(Instant, Duration)>> = const { Cell::new(None) };
     /// Checks skipped on this thread because their client had gone, since [`take_client_gone_skips`].
     static GONE_SKIPS: Cell<u64> = const { Cell::new(0) };
 }
@@ -162,7 +164,52 @@ pub fn cut_due() -> bool {
 
 /// When the client of the request this thread serves stops waiting (after the reply slack); `None` outside a request.
 pub fn at() -> Option<Instant> {
-    REQ.with(|r| r.get()).and_then(|r| r.hard)
+    hard_at()
+}
+
+/// The moment the work on this thread is cut: the request's hard deadline, or the running check's share of it ([`check_window`]) when
+/// that ends sooner.
+fn hard_at() -> Option<Instant> {
+    let hard = REQ.with(|r| r.get()).and_then(|r| r.hard)?;
+    Some(CHECK_CAP.with(Cell::get).map_or(hard, |(cap, _)| cap.min(hard)))
+}
+
+/// Ends the running check's share of the request when dropped.
+pub struct CheckWindow(());
+
+impl CheckWindow {
+    /// Whether the share ended the check: its cap passed before the request's own hard deadline did.
+    pub fn share_spent(&self) -> bool {
+        let hard = REQ.with(|r| r.get()).and_then(|r| r.hard);
+        CHECK_CAP.with(Cell::get).zip(hard).is_some_and(|((cap, _), hard)| cap < hard && Instant::now() >= cap)
+    }
+
+    /// The share, in ms (0 when no cap is set).
+    pub fn share_ms(&self) -> u128 {
+        CHECK_CAP.with(Cell::get).map_or_else(Default::default, |(_, share)| share.as_millis())
+    }
+}
+
+impl Drop for CheckWindow {
+    fn drop(&mut self) {
+        CHECK_CAP.with(|c| c.set(None));
+    }
+}
+
+/// The check about to run on this thread may use only its share of the request: `daemon.check_share_pct` of the event's wall ceiling
+/// ([`ceiling_ms`]), not less than `daemon.check_share_min_ms`, from now. Past it the check is cut exactly as at the hard deadline (a
+/// script call is interrupted, a native scan stops at [`cut_due`], a host call is clamped by [`remaining`]) and answers by its failure
+/// policy, so ONE slow check cannot use up the clock the checks after it need (#763: a 7.5 s task-guard cut every guard behind it).
+/// A check that never takes its share is untouched, and the request's own hard deadline still ends everything when it comes first.
+/// Outside a request, or with the share off (0, or 100 = the whole ceiling), nothing is capped. Dropping the returned guard lifts the cap.
+pub fn check_window() -> CheckWindow {
+    let pct = crate::defaults::num("daemon.check_share_pct");
+    if in_request() && pct != 0 {
+        let ceiling = Duration::from_millis(ceiling_ms(&event().unwrap_or_default()));
+        let share = ceiling.mul_f64(pct as f64 / 100.0).max(crate::defaults::millis("daemon.check_share_min_ms"));
+        CHECK_CAP.with(|c| c.set(Some((Instant::now() + share, share))));
+    }
+    CheckWindow(())
 }
 
 /// Time left before the client's fail-fast wait (the soft deadline) ends; `None` outside a request.
@@ -249,6 +296,7 @@ pub fn end() {
     discard_staged();
     EVENT.with(|e| *e.borrow_mut() = None);
     REQ.with(|r| r.set(None));
+    CHECK_CAP.with(|c| c.set(None));
     PEER.with(|p| p.set(None));
 }
 
@@ -284,7 +332,7 @@ pub fn in_time() -> bool {
 
 /// How many milliseconds past the HARD deadline the request is (0 before it, and outside a request).
 pub fn past_hard_ms() -> u64 {
-    REQ.with(|r| r.get()).and_then(|r| r.hard).map_or(0, |at| Instant::now().saturating_duration_since(at).as_millis() as u64)
+    hard_at().map_or(0, |at| Instant::now().saturating_duration_since(at).as_millis() as u64)
 }
 
 /// Hold a staged write (`tmp` already written) until the reply is delivered.
@@ -314,7 +362,7 @@ pub fn discard_staged() {
 
 /// Time left before the client stops waiting, if a request with a deadline is being served on this thread.
 pub fn remaining() -> Option<Duration> {
-    REQ.with(|r| r.get()).and_then(|r| r.hard).map(|at| at.saturating_duration_since(Instant::now()))
+    hard_at().map(|at| at.saturating_duration_since(Instant::now()))
 }
 
 /// `budget`, cut to the time left before the client stops waiting.
