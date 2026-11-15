@@ -5893,6 +5893,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
 | `lane_waste.detach_words` | `nohup, setsid, disown` |  |  | Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it. |
+| `lane_waste.group_closer` | `}` |  |  | The shell word that closes a brace group. |
+| `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; with a following `&` the whole group runs detached, so a `timeout` around the script does not bound what is inside. A parenthesised subshell is read from the parentheses. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
 | `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
@@ -5926,6 +5928,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.summary` | `Block background builds and busy polling. PreToolUse on Bash, subagents only:...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
 | `queued_wait.sw` | `6 entries` |  |  | Off lets a subagent poll background work with sleep loops. |
 | `queued_wait.timeout_commands` | `timeout` |  |  | Wrapper commands that bound the wait of the command after them (`timeout 170 gh pr checks --watch`); their duration word is read as the bound. Flags that take a value are read from lane_waste.wrappers. |
+| `queued_wait.timeout_kill_flags` | `-k, --kill-after` |  |  | The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it. |
+| `queued_wait.timeout_signal_flags` | `-s, --signal` |  |  | The `timeout` flags that choose the signal it sends at the limit (-s, --signal). |
+| `queued_wait.timeout_silent_signals` | `19 items` |  |  | Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS. |
 | `queued_wait.watch_res` | `^gh\s+pr\s+checks\b.*--watch, ^gh\s+run\s+watch(?:\s\\|$)` |  |  | Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in). |
 
 ### lane_waste.toml / wide_search

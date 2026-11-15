@@ -318,11 +318,32 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout 540 bash -c 'nohup sleep 99999'",
         "timeout 540 bash -c 'setsid sleep 99999'",
         "timeout 540 bash -c 'while true; do sleep 60; done &'",
+        "timeout 540 bash -c '( while true; do sleep 60; done ) &'",
+        "timeout 540 bash -c '( sleep 99999 ) &'",
+        "timeout 540 bash -c '{ while true; do sleep 60; done; } &'",
+        "timeout 540 bash -c '{ sleep 99999; } &'",
+        "timeout -s 0 540 sleep 99999",
+        "timeout --signal=0 540 sleep 99999",
+        "timeout --signal 0 540 sleep 99999",
+        "timeout -s CONT 540 sleep 99999",
+        "timeout -s STOP 540 sleep 99999",
+        "timeout -s0 540 sleep 99999",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd} must be blocked: {out}");
     }
-    for cmd in ["timeout 540 bash -c 'while true; do sleep 5; done'", "timeout 9m sleep 100"] {
+    for cmd in [
+        "timeout 540 bash -c 'while true; do sleep 5; done'",
+        "timeout 9m sleep 100",
+        "timeout 540 gh pr checks --watch",
+        "timeout -k 5 540 gh pr checks --watch",
+        "timeout --foreground 540 gh pr checks --watch",
+        "timeout -s KILL 540 sleep 100",
+        "timeout -s 0 -k 5 540 sleep 100",
+        "timeout 540 bash -c '( sleep 100 )'",
+        "timeout 540 bash -c '{ sleep 100; }'",
+        "timeout 540 bash -c '(sleep 100) && echo ok'",
+    ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 0, "{cmd}: {out}");
     }

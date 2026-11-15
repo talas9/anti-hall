@@ -45,6 +45,9 @@ var laneWaste = {
   split: function (cmd) {
     var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = 0, starts = [];
     var openers = ah.cfg('lane_waste.loop_openers'), closer = ah.cfg('lane_waste.loop_closer');
+    var gOpen = ah.cfg('lane_waste.group_opener'), gClose = ah.cfg('lane_waste.group_closer'), groups = [];
+    // a subshell or brace group that is followed by `&` runs detached: every command inside loses the outer bound
+    function detachFrom(from) { for (var q = from; q < segs.length; q++) segs[q].amp = true; }
     function endWord() { if (has) words.push(cur.join('')); cur = []; has = false; }
     function endSeg(amp) {
       endWord();
@@ -54,7 +57,11 @@ var laneWaste = {
         if (first === closer && loops > 0) { loops--; from = starts.pop(); }
         var inLoop = loops > 0;
         if (openers.indexOf(first) >= 0) { loops++; inLoop = true; starts.push(segs.length); }
+        var gFrom = -1;
+        if (first === gOpen) groups.push({ at: segs.length, kind: 'b' });
+        else if (first === gClose && groups.length > 0 && groups[groups.length - 1].kind === 'b') gFrom = groups.pop().at;
         segs.push({ words: words, inLoop: inLoop, amp: amp === true });
+        if (gFrom >= 0 && amp === true) detachFrom(gFrom);
         // `done &` sends the whole loop to the background
         if (from >= 0 && amp === true) for (var q = from; q < segs.length; q++) segs[q].amp = true;
       }
@@ -80,7 +87,16 @@ var laneWaste = {
         cur.push(cmd.slice(i, Math.min(k2 + 1, n))); has = true; i = k2 + 1; continue;
       }
       if (c === '#' && !has) { var nl = cmd.indexOf('\n', i); i = nl < 0 ? n : nl; continue; }
-      if (c === ';' || c === '\n' || c === '(' || c === ')') { endSeg(); i++; continue; }
+      if (c === '(') { endSeg(); groups.push({ at: segs.length, kind: 'p' }); i++; continue; }
+      if (c === ')') {
+        endSeg();
+        var top = groups.length > 0 && groups[groups.length - 1].kind === 'p' ? groups.pop() : null;
+        var nx = i + 1;
+        while (nx < n && (cmd[nx] === ' ' || cmd[nx] === '\t')) nx++;
+        if (top !== null && cmd[nx] === '&' && cmd[nx + 1] !== '&' && cmd[nx + 1] !== '>') detachFrom(top.at);
+        i++; continue;
+      }
+      if (c === ';' || c === '\n') { endSeg(); i++; continue; }
       if (c === '&') {
         if (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>') { cur.push(c); has = true; i++; continue; }
         var dbl = cmd[i + 1] === '&'; endSeg(!dbl); i += dbl ? 2 : 1; continue;

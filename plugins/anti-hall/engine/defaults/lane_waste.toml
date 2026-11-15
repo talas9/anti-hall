@@ -8,7 +8,7 @@
 
 [lane_waste.wrappers]
 doc = "Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...)."
-value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
+value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k", "--signal", "--kill-after"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
 
 [lane_waste.wrapper_positional]
 doc = "Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file)."
@@ -33,6 +33,14 @@ value = ["while", "until", "for"]
 [lane_waste.loop_closer]
 doc = "The shell word that closes a loop."
 value = "done"
+
+[lane_waste.group_opener]
+doc = "The shell word that opens a brace group; with a following `&` the whole group runs detached, so a `timeout` around the script does not bound what is inside. A parenthesised subshell is read from the parentheses."
+value = "{"
+
+[lane_waste.group_closer]
+doc = "The shell word that closes a brace group."
+value = "}"
 
 [lane_waste.detach_words]
 doc = "Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it."
@@ -267,6 +275,18 @@ max = 600
 [queued_wait.timeout_commands]
 doc = "Wrapper commands that bound the wait of the command after them (`timeout 170 gh pr checks --watch`); their duration word is read as the bound. Flags that take a value are read from lane_waste.wrappers."
 value = ["timeout"]
+
+[queued_wait.timeout_signal_flags]
+doc = "The `timeout` flags that choose the signal it sends at the limit (-s, --signal)."
+value = ["-s", "--signal"]
+
+[queued_wait.timeout_kill_flags]
+doc = "The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it."
+value = ["-k", "--kill-after"]
+
+[queued_wait.timeout_silent_signals]
+doc = "Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS."
+value = ["0", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "CHLD", "CLD", "WINCH", "URG", "16", "17", "18", "19", "20", "21", "22", "23", "28"]
 
 [queued_wait.watch_res]
 doc = "Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in)."

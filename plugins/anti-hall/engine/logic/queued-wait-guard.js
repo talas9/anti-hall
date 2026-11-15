@@ -19,14 +19,32 @@ function qwSleepSeconds(args) {
   return seen ? total : null;
 }
 
+// True when the `timeout -s` value names a signal that does not terminate (queued_wait.timeout_silent_signals; SIG prefix and case ignored).
+function qwSilentSignal(v) {
+  var t = String(v).toUpperCase().replace(/^SIG/, ''), list = ah.cfg('queued_wait.timeout_silent_signals');
+  return list.indexOf(t) >= 0;
+}
+
 // The seconds of the tightest `timeout [flags] N` (N above 0) among the wrapper words `pre` that bound a command, or null when none does.
 function qwTimeoutSeconds(pre) {
   var names = ah.cfg('queued_wait.timeout_commands'), valued = ah.cfg('lane_waste.wrappers'), best = null;
   for (var i = 0; i < pre.length; i++) {
     var b = shellScan.basename(pre[i]);
     if (names.indexOf(b) < 0) continue;
-    var vals = Object.prototype.hasOwnProperty.call(valued, b) ? valued[b] : [], j = i + 1;
-    while (j < pre.length && pre[j].charAt(0) === '-' && pre[j].length > 1) j += vals.indexOf(pre[j]) >= 0 ? 2 : 1;
+    var vals = Object.prototype.hasOwnProperty.call(valued, b) ? valued[b] : [], j = i + 1, silent = false, kill = false;
+    var sigFlags = ah.cfg('queued_wait.timeout_signal_flags'), killFlags = ah.cfg('queued_wait.timeout_kill_flags');
+    while (j < pre.length && pre[j].charAt(0) === '-' && pre[j].length > 1) {
+      var fl = pre[j], val = null, eq = fl.indexOf('=');
+      var name = fl.charAt(1) === '-' ? (eq > 0 ? fl.slice(0, eq) : fl) : fl.slice(0, 2);
+      if (fl.charAt(1) === '-' && eq > 0) val = fl.slice(eq + 1);
+      else if (fl.charAt(1) !== '-' && fl.length > 2) val = fl.slice(2);
+      else if (vals.indexOf(fl) >= 0) { val = j + 1 < pre.length ? pre[j + 1] : null; j++; }
+      j++;
+      if (sigFlags.indexOf(name) >= 0 && val !== null && qwSilentSignal(val)) silent = true;
+      if (killFlags.indexOf(name) >= 0) kill = true;
+    }
+    // a signal that does not terminate (0, CONT, STOP, ...) never ends the command; only a --kill-after still bounds it
+    if (silent && !kill) continue;
     var secs = j < pre.length ? qwSleepSeconds([pre[j]]) : null;
     // timeout 0 (or a negative number) disables the limit (GNU), so it bounds nothing
     if (secs !== null && secs > 0 && (best === null || secs < best)) best = secs;
