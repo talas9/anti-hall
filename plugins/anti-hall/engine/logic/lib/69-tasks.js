@@ -78,7 +78,8 @@ var tk = {
           blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
         });
       }
-      if (out.length > 0) return out;
+      // a listable store directory is THE store, even with no readable task in it: never fall through to another alias's directory
+      return out.length > 0 ? out : null;
     }
     return null;
   },
