@@ -328,6 +328,20 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout -s CONT 540 sleep 99999",
         "timeout -s STOP 540 sleep 99999",
         "timeout -s0 540 sleep 99999",
+        "timeout 540 bash -c 'echo <(while true; do sleep 60; done)'",
+        "timeout 540 bash -c 'cat <(sleep 99999)'",
+        "timeout 540 bash -c 'tee >(sleep 99999) </dev/null'",
+        "timeout 540 cat <(sleep 99999)",
+        "timeout 540 bash -c 'coproc sleep 99999'",
+        "timeout 540 bash -c 'coproc { sleep 99999; }'",
+        "timeout 540 bash -c 'coproc NAME { while true; do sleep 60; done; }'",
+        "timeout 540 bash -c 'coproc NAME ( sleep 99999 )'",
+        "timeout -s CONT -k 0 540 sleep 99999",
+        "timeout --signal=0 --kill-after=0 540 sleep 99999",
+        "timeout -s CONT -k 99999 540 sleep 99999",
+        "timeout -s 0 -k abc 540 sleep 99999",
+        "timeout 540 eval 'sleep 99999 &'",
+        "timeout 540 eval 'nohup sleep 99999'",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd} must be blocked: {out}");
@@ -343,6 +357,8 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout 540 bash -c '( sleep 100 )'",
         "timeout 540 bash -c '{ sleep 100; }'",
         "timeout 540 bash -c '(sleep 100) && echo ok'",
+        "timeout -s 0 -k 5 540 gh pr checks --watch",
+        "timeout 540 eval 'sleep 100'",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 0, "{cmd}: {out}");

@@ -5892,17 +5892,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
-| `lane_waste.detach_words` | `nohup, setsid, disown` |  |  | Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it. |
+| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`, `coproc sleep 99`): its body runs in the background, so every command inside is read as detached from the script around it. |
+| `lane_waste.detach_words` | `nohup, setsid, disown, coproc` |  |  | Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it. |
+| `lane_waste.eval_words` | `eval` |  |  | Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts. |
 | `lane_waste.group_closer` | `}` |  |  | The shell word that closes a brace group. |
 | `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; with a following `&` the whole group runs detached, so a `timeout` around the script does not bound what is inside. A parenthesised subshell is read from the parentheses. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
 | `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
 | `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
+| `lane_waste.process_subst_openers` | `<(, >(` |  |  | Process-substitution openers (`<(`, `>(`): the body runs as a background process that outlives the command around it, so its commands are read as detached and no timeout around the script bounds them. |
 | `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
 | `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
 | `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |
-| `lane_waste.wrappers` | `16 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
+| `lane_waste.wrappers` | `17 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
 
 ### lane_waste.toml / queued_wait
 
@@ -5913,6 +5916,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.duration_unit_s` | `4 entries` |  |  | Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds. |
 | `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
 | `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
+| `queued_wait.kill_after_grace_s` | `10` |  | s | Seconds of `timeout --kill-after` that are margin, not added to the bound of a `timeout` that sends a non-terminating signal (`-s 0 -k 5 540` counts as 540). A larger kill-after counts only its excess: the command lives for the duration plus the kill-after. A kill-after of 0 or one that does not parse adds no escalation, so such a timeout bounds nothing. |
 | `queued_wait.loop_sleep_max_s` | `5` |  | s | A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs. |
 | `queued_wait.msg_instead_bg` | `Run the command in the foreground under the shared lock.` |  |  | What to do instead of a background heavy command. |
 | `queued_wait.msg_instead_over` | `Use {max}s or less, or SendMessage lead "waiting on <X>; wake me when done", ...` |  |  | What to do instead of a bounded wait above the limit. Placeholders: {max} the limit. |

@@ -24,6 +24,17 @@ var laneWaste = {
       var ownOk = !segs[s].inLoop;
       var own = { words: words, inLoop: segs[s].inLoop, pre: pre, bound: ownOk ? pre.slice(Math.min(cut + 1, pre.length)) : [], detached: segs[s].amp || cut >= 0 };
       out.push(own);
+      // `eval 'script'` runs its words as a script: read it like `sh -c`, the eval word standing for the shell
+      if (ah.cfg('lane_waste.eval_words').indexOf(shellScan.basename(words[0])) >= 0 && words.length > 1) {
+        var ev = laneWaste.commands(words.slice(1).join(' '), depth + 1);
+        for (var e = 0; e < ev.length; e++) {
+          var evPre = pre.slice(Math.min(cut + 1, pre.length)).concat(words.slice(0, 1));
+          ev[e].bound = !ownOk ? [] : (ev[e].detached ? ev[e].bound : evPre.concat(ev[e].bound));
+          ev[e].inLoop = ev[e].inLoop || segs[s].inLoop;
+          ev[e].pre = pre.concat(words.slice(0, 1), ev[e].pre);
+          out.push(ev[e]);
+        }
+      }
       if (shells.indexOf(shellScan.basename(words[0])) >= 0) {
         for (var a = 1; a + 1 < words.length; a++) {
           if (ah.re.test(flagRe, 'r', words[a])) {
@@ -46,6 +57,8 @@ var laneWaste = {
     var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = 0, starts = [];
     var openers = ah.cfg('lane_waste.loop_openers'), closer = ah.cfg('lane_waste.loop_closer');
     var gOpen = ah.cfg('lane_waste.group_opener'), gClose = ah.cfg('lane_waste.group_closer'), groups = [];
+    var coprocs = ah.cfg('lane_waste.coproc_words'), psOpen = ah.cfg('lane_waste.process_subst_openers');
+    function isCoproc(w) { return typeof w === 'string' && coprocs.indexOf(shellScan.basename(w)) >= 0; }
     // a subshell or brace group that is followed by `&` runs detached: every command inside loses the outer bound
     function detachFrom(from) { for (var q = from; q < segs.length; q++) segs[q].amp = true; }
     function endWord() { if (has) words.push(cur.join('')); cur = []; has = false; }
@@ -58,10 +71,13 @@ var laneWaste = {
         var inLoop = loops > 0;
         if (openers.indexOf(first) >= 0) { loops++; inLoop = true; starts.push(segs.length); }
         var gFrom = -1;
-        if (first === gOpen) groups.push({ at: segs.length, kind: 'b' });
-        else if (first === gClose && groups.length > 0 && groups[groups.length - 1].kind === 'b') gFrom = groups.pop().at;
+        var gDetach = false;
+        // a `coproc [NAME] { ...; }` body runs detached from the script around it
+        if (first === gOpen) groups.push({ at: segs.length, kind: 'b', detach: false });
+        else if (isCoproc(first) && words.indexOf(gOpen) > 0) groups.push({ at: segs.length, kind: 'b', detach: true });
+        else if (first === gClose && groups.length > 0 && groups[groups.length - 1].kind === 'b') { var gp = groups.pop(); gFrom = gp.at; gDetach = gp.detach; }
         segs.push({ words: words, inLoop: inLoop, amp: amp === true });
-        if (gFrom >= 0 && amp === true) detachFrom(gFrom);
+        if (gFrom >= 0 && (amp === true || gDetach)) detachFrom(gFrom);
         // `done &` sends the whole loop to the background
         if (from >= 0 && amp === true) for (var q = from; q < segs.length; q++) segs[q].amp = true;
       }
@@ -86,14 +102,28 @@ var laneWaste = {
         }
         cur.push(cmd.slice(i, Math.min(k2 + 1, n))); has = true; i = k2 + 1; continue;
       }
+      // process substitution <( ... ) / >( ... ): the body runs as a background process that outlives the command around it, so
+      // its commands are read as detached (fail closed: no timeout around the script bounds them)
+      var two = cmd.slice(i, i + 2);
+      if (psOpen.indexOf(two) >= 0) {
+        var pd = 0, k3 = i + 1;
+        while (k3 < n) {
+          if (cmd[k3] === '(') pd++;
+          else if (cmd[k3] === ')') { pd--; if (pd === 0) break; }
+          k3++;
+        }
+        var innerSegs = laneWaste.split(cmd.slice(i + 2, k3));
+        for (var is = 0; is < innerSegs.length; is++) { innerSegs[is].amp = true; segs.push(innerSegs[is]); }
+        cur.push(cmd.slice(i, Math.min(k3 + 1, n))); has = true; i = k3 + 1; continue;
+      }
       if (c === '#' && !has) { var nl = cmd.indexOf('\n', i); i = nl < 0 ? n : nl; continue; }
-      if (c === '(') { endSeg(); groups.push({ at: segs.length, kind: 'p' }); i++; continue; }
+      if (c === '(') { endWord(); var cpGroup = words.length > 0 && isCoproc(words[0]); endSeg(); groups.push({ at: segs.length, kind: 'p', detach: cpGroup }); i++; continue; }
       if (c === ')') {
         endSeg();
         var top = groups.length > 0 && groups[groups.length - 1].kind === 'p' ? groups.pop() : null;
         var nx = i + 1;
         while (nx < n && (cmd[nx] === ' ' || cmd[nx] === '\t')) nx++;
-        if (top !== null && cmd[nx] === '&' && cmd[nx + 1] !== '&' && cmd[nx + 1] !== '>') detachFrom(top.at);
+        if (top !== null && ((cmd[nx] === '&' && cmd[nx + 1] !== '&' && cmd[nx + 1] !== '>') || top.detach)) detachFrom(top.at);
         i++; continue;
       }
       if (c === ';' || c === '\n') { endSeg(); i++; continue; }
@@ -119,6 +149,8 @@ var laneWaste = {
       if (!Object.prototype.hasOwnProperty.call(wr, b)) return i;
       var vals = wr[b], plain = Object.prototype.hasOwnProperty.call(pos, b) ? pos[b] : 0;
       i++;
+      // `coproc NAME { ...; }`: the name is not the command
+      if (ah.cfg('lane_waste.coproc_words').indexOf(b) >= 0 && i + 1 < words.length && words[i + 1] === ah.cfg('lane_waste.group_opener')) i++;
       while (i < words.length) {
         var x = words[i];
         if (x === '--') { i++; break; }

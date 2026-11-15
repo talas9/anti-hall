@@ -8,7 +8,7 @@
 
 [lane_waste.wrappers]
 doc = "Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...)."
-value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k", "--signal", "--kill-after"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
+value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k", "--signal", "--kill-after"], stdbuf = ["-i", "-o", "-e"], setsid = [], coproc = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
 
 [lane_waste.wrapper_positional]
 doc = "Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file)."
@@ -44,7 +44,19 @@ value = "}"
 
 [lane_waste.detach_words]
 doc = "Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it."
-value = ["nohup", "setsid", "disown"]
+value = ["nohup", "setsid", "disown", "coproc"]
+
+[lane_waste.coproc_words]
+doc = "Words that start a coprocess (`coproc NAME { ...; }`, `coproc sleep 99`): its body runs in the background, so every command inside is read as detached from the script around it."
+value = ["coproc"]
+
+[lane_waste.process_subst_openers]
+doc = "Process-substitution openers (`<(`, `>(`): the body runs as a background process that outlives the command around it, so its commands are read as detached and no timeout around the script bounds them."
+value = ["<(", ">("]
+
+[lane_waste.eval_words]
+doc = "Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts."
+value = ["eval"]
 
 [lane_waste.max_depth]
 doc = "How deep the guards follow nested sh -c scripts before they stop looking."
@@ -283,6 +295,13 @@ value = ["-s", "--signal"]
 [queued_wait.timeout_kill_flags]
 doc = "The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it."
 value = ["-k", "--kill-after"]
+
+[queued_wait.kill_after_grace_s]
+doc = "Seconds of `timeout --kill-after` that are margin, not added to the bound of a `timeout` that sends a non-terminating signal (`-s 0 -k 5 540` counts as 540). A larger kill-after counts only its excess: the command lives for the duration plus the kill-after. A kill-after of 0 or one that does not parse adds no escalation, so such a timeout bounds nothing."
+value = 10
+unit = "s"
+min = 0
+max = 60
 
 [queued_wait.timeout_silent_signals]
 doc = "Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS."

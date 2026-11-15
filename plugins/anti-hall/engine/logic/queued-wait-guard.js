@@ -31,7 +31,7 @@ function qwTimeoutSeconds(pre) {
   for (var i = 0; i < pre.length; i++) {
     var b = shellScan.basename(pre[i]);
     if (names.indexOf(b) < 0) continue;
-    var vals = Object.prototype.hasOwnProperty.call(valued, b) ? valued[b] : [], j = i + 1, silent = false, kill = false;
+    var vals = Object.prototype.hasOwnProperty.call(valued, b) ? valued[b] : [], j = i + 1, silent = false, killSecs = 0;
     var sigFlags = ah.cfg('queued_wait.timeout_signal_flags'), killFlags = ah.cfg('queued_wait.timeout_kill_flags');
     while (j < pre.length && pre[j].charAt(0) === '-' && pre[j].length > 1) {
       var fl = pre[j], val = null, eq = fl.indexOf('=');
@@ -41,11 +41,14 @@ function qwTimeoutSeconds(pre) {
       else if (vals.indexOf(fl) >= 0) { val = j + 1 < pre.length ? pre[j + 1] : null; j++; }
       j++;
       if (sigFlags.indexOf(name) >= 0 && val !== null && qwSilentSignal(val)) silent = true;
-      if (killFlags.indexOf(name) >= 0) kill = true;
+      // a kill-after of 0 (GNU: no follow-up kill) or one that does not parse adds no escalation
+      if (killFlags.indexOf(name) >= 0 && val !== null) { var ks = qwSleepSeconds([val]); killSecs = ks !== null && ks > 0 ? ks : 0; }
     }
-    // a signal that does not terminate (0, CONT, STOP, ...) never ends the command; only a --kill-after still bounds it
-    if (silent && !kill) continue;
+    // a signal that does not terminate (0, CONT, STOP, ...) never ends the command; only a positive --kill-after still bounds it, and
+    // then the command lives for the duration plus the kill-after (a kill-after within the grace margin counts as part of the duration)
+    if (silent && killSecs <= 0) continue;
     var secs = j < pre.length ? qwSleepSeconds([pre[j]]) : null;
+    if (secs !== null && silent) secs += Math.max(0, killSecs - ah.cfgNum('queued_wait.kill_after_grace_s'));
     // timeout 0 (or a negative number) disables the limit (GNU), so it bounds nothing
     if (secs !== null && secs > 0 && (best === null || secs < best)) best = secs;
   }
