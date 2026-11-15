@@ -5055,6 +5055,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `done_order.key_max` | `80` |  |  | Most characters of the session id kept in a record file name. |
 | `done_order.list_joiner` | ` ` |  |  | Separator between the task ids named in one order. |
 | `done_order.list_max` | `6` |  |  | Most task ids named in one order; the rest are counted. |
+| `done_order.max_entries` | `200` |  |  | Most task records kept in one session's completed-task file; past it the oldest (by last order, else first seen) are dropped on the next write. The file prune by age (7 days) only drops whole stale files. |
 | `done_order.max_orders` | `6` |  |  | Most orders given for one completed task; after that it is left alone. |
 | `done_order.more` | ` +{m} more` |  |  | Appended to the named ids when more tasks are due. Placeholder: {m}. |
 | `done_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (ages are kept in ms, settings in minutes). |

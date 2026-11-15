@@ -1495,6 +1495,11 @@ value = 6
 doc = "The state directory (under the home directory) of the completed-task records: one file per session holding {ids: {<task id>: {first, count, lastAt}}}."
 value = ".anti-hall/done-orders"
 
+[done_order.max_entries]
+doc = "Most task records kept in one session's completed-task file; past it the oldest (by last order, else first seen) are dropped on the next write. The file prune by age (7 days) only drops whole stale files."
+value = 200
+min = 1
+
 [done_order.file_prefix]
 doc = "The file name prefix of a completed-task record (<prefix>-<session>.json); stale ones are pruned by that prefix."
 value = "done"

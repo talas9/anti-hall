@@ -227,3 +227,74 @@ fn at_stop_the_order_blocks_only_with_the_enforce_switch_on_block() {
     let again = s.check("task-guard", &stop(&s, &tr), &[]);
     assert!(!again.contains("Do now"), "the next Stop inside the interval is not blocked again: {again}");
 }
+
+impl Scratch {
+    /// A named shared list (`CLAUDE_CODE_TASK_LIST_ID`): task `n` of `statuses`, owned by `owner` when it is not empty.
+    fn named_list(&self, list: &str, tasks: &[(&str, &str)]) {
+        let dir = self.home().join(".claude/tasks").join(list);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, (st, owner)) in tasks.iter().enumerate() {
+            let n = i + 1;
+            let rec = json!({"id": n.to_string(), "subject": format!("shared task {n}"), "description": "d", "status": st, "owner": owner, "blocks": [], "blockedBy": []});
+            std::fs::write(dir.join(format!("{n}.json")), rec.to_string()).unwrap();
+        }
+    }
+
+    fn prompt_env(&self, tr: &Path, env: &[(&str, &str)]) -> String {
+        let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "prompt": "continue"});
+        self.check("task-tracker", &p, env)
+    }
+}
+
+#[test]
+fn a_private_completed_id_never_orders_the_delete_of_a_teammates_pending_task_in_the_shared_list() {
+    let s = Scratch::new("do-shared");
+    s.store(&["completed"]); // the session's own session-<8> list: a stale completed #1
+    s.named_list("team-a", &[("pending", "mate")]); // the list the harness writes: a teammate's pending #1
+    let tr = s.transcript("completed");
+    s.seed("1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(!out.contains("Do now"), "#1 of the shared list is pending and another owner's: no delete order: {out}");
+}
+
+#[test]
+fn in_a_shared_list_a_completed_task_another_owner_holds_is_not_ordered_but_an_unowned_one_is() {
+    let s = Scratch::new("do-shared-owner");
+    s.named_list("team-a", &[("completed", "mate"), ("completed", "")]);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let rec = json!({"ids": {"team-a/1": {"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0}, "team-a/2": {"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0}}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #2"), "only the unowned #2 is ordered: {out}");
+    assert!(!out.contains("#1"), "the teammate's #1 is not named: {out}");
+}
+
+#[test]
+fn a_named_list_id_with_no_store_directory_is_ambiguous_and_orders_nothing() {
+    let s = Scratch::new("do-ambiguous");
+    s.store(&["completed"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "no-such-list")]);
+    assert!(!out.contains("Do now"), "which list the harness writes is unknown: no order: {out}");
+}
+
+#[test]
+fn the_record_is_bounded_to_max_entries() {
+    let s = Scratch::new("do-bound");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    let n = 230usize;
+    let statuses = vec!["completed"; n];
+    s.store(&statuses);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let ids: serde_json::Map<String, Value> =
+        (1..=n).map(|i| (i.to_string(), json!({"first": (now - 400 * MIN) as u64, "count": 6, "lastAt": (now - 300 * MIN) as u64 + i as u64}))).collect();
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": ids}).to_string()).unwrap();
+    s.task_update(&tr, "completed"); // a write: #1 is recorded fresh
+    let rec: Value = serde_json::from_str(&std::fs::read_to_string(s.record_path()).unwrap()).unwrap();
+    assert!(rec["ids"].as_object().unwrap().len() <= 200, "the record is capped at done_order.max_entries: {}", rec["ids"].as_object().unwrap().len());
+}

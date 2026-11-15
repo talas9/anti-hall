@@ -39,6 +39,13 @@ var tk = {
     });
     return { openTaskIds: ids, inProgressCount: inProg };
   },
+  // The named task list id (taskstate.list_id_env holds a valid id whose store directory exists), else null.
+  namedList: function (home) {
+    if (!home) return null;
+    var id = ah.env.get(ah.cfg('taskstate.list_id_env'));
+    if (typeof id !== 'string' || !new RegExp(ah.cfg('taskstate.list_id_re')).test(id)) return null;
+    return ah.fs.isDir(home + '/' + ah.cfg('taskstate.store_base').join('/') + '/' + id) ? id : null;
+  },
   // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
   // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
@@ -46,8 +53,13 @@ var tk = {
     if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
-    for (var i = 0; i < names.length; i++) {
-      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+    // the NAMED list (taskstate.list_id_env) is where Claude Code writes the session's tasks when it is set and its directory exists: it is
+    // THE list, and the session's own `session-<8>` directory is then stale or empty (a read of it would name another list's ids)
+    var named = tk.namedList(home), dirs = [];
+    if (named !== null) dirs.push(base + named);
+    else for (var j = 0; j < names.length; j++) dirs.push(base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) }));
+    for (var i = 0; i < dirs.length; i++) {
+      var dir = dirs[i];
       var files = ah.fs.readdir(dir);
       if (files === null) continue;
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
