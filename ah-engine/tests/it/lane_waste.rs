@@ -255,6 +255,15 @@ fn wait_table() -> Vec<(&'static str, bool, Option<&'static str>)> {
         ("sleep 0.5>/dev/null", false, None),
         ("sleep 2>/dev/null 5", false, None),
         ("timeout 100 sleep $N", false, None),
+        // round 7: forms coreutils/BSD sleep accept are not unbounded
+        ("sleep .5", false, None),
+        ("sleep .1", false, None),
+        ("sleep -- 0.5", false, None),
+        ("sleep 5.", false, None),
+        ("sleep 1 2", false, None),
+        ("sleep .1m", false, None),
+        ("sleep 1e1", false, None),
+        ("sleep 1m 1", false, Some("wait is too long (61s")),
     ]
 }
 

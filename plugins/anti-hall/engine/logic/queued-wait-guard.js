@@ -10,9 +10,11 @@
 // when one is not. A caller that judges a sleep treats null as an UNBOUNDED wait (fail closed), never as "not a wait".
 function qwSleepSeconds(args) {
   var units = ah.cfg('queued_wait.duration_unit_s'), inf = ah.cfg('queued_wait.duration_infinity_words'), total = 0, seen = false;
-  for (var i = 0; i < args.length; i++) {
+  var start = args.length > 0 && args[0] === '--' ? 1 : 0; // `--` ends the options: the operands follow
+  for (var i = start; i < args.length; i++) {
     if (inf.indexOf(String(args[i]).toLowerCase()) >= 0) { total = Infinity; seen = true; continue; }
-    var m = /^(\d+(?:\.\d+)?)([a-z]?)$/.exec(args[i]);
+    // a decimal (5, 5., .5, 0.5), optionally with an exponent (1e1), then an optional unit suffix
+    var m = /^(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)([a-z]?)$/.exec(args[i]);
     if (m === null) return null;
     var mult = m[2] === '' ? 1 : (Object.prototype.hasOwnProperty.call(units, m[2]) ? units[m[2]] : null);
     if (mult === null) return null;
