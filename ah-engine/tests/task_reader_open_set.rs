@@ -585,8 +585,15 @@ fn the_reader_keeps_every_open_task_the_base_reader_keeps() {
         ghosts_removed += ghosts.len();
         // XF-D3 (GH 606 shape 3, #762): with the named list selected and readable it IS the list, so the base's open set (read from the
         // session's own, now stale, store and the transcript) is superseded by the named list's own task, never a floor for the new reader
-        let want: BTreeSet<String> =
-            if cell.named == Named::SetWithList { BTreeSet::from(["9".to_string()]) } else { golden_open.difference(&ghosts).cloned().collect() };
+        // #764: a store directory that lists and holds no file is the authoritative empty list (no task, no fall-back to the transcript), so
+        // the base's open set, rebuilt from the transcript, is superseded by it and is never a floor
+        let want: BTreeSet<String> = if cell.named == Named::SetWithList {
+            BTreeSet::from(["9".to_string()])
+        } else if cell.store == Store::Empty {
+            BTreeSet::new()
+        } else {
+            golden_open.difference(&ghosts).cloned().collect()
+        };
         let missing: Vec<&String> = want.difference(&got.open).collect();
         if !missing.is_empty() {
             violations.push(format!("{}: open task(s) {missing:?} kept by the base reader are missing (got {:?})", cell.key(), got.open));
@@ -1276,6 +1283,10 @@ fn decision_json(d: &Decision) -> Value {
 fn excused_ghosts(case: &Case, task_guard_golden: &Value) -> BTreeSet<String> {
     let Some(g) = task_guard_golden["cells"].get(case.key.as_str()) else { return BTreeSet::new() };
     let open: BTreeSet<String> = g["open"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    // #764: the authoritative empty store (a directory that lists and holds no file) supersedes every task the base rebuilt from the transcript
+    if case.cell.store == Store::Empty && case.cell.named != Named::SetWithList {
+        return open;
+    }
     let rows: Vec<String> =
         if case.cell.trans == Trans::Missing { Vec::new() } else { rows_of(case.cell.trans, case.cell.rows).iter().map(|v| v.to_string()).collect() };
     proven_ghosts(&rows, &open)
@@ -1297,8 +1308,10 @@ fn violations(case: &Case, consumer: &str, golden: &Value, got: &Decision, ghost
         return out;
     }
     if gk == Kind::Block && got.kind == Kind::Block {
+        // #764: the authoritative empty store supersedes the tasks the base named from the transcript, so no id is owed (the kind still is)
+        let superseded = case.cell.store == Store::Empty && case.cell.named != Named::SetWithList;
         let missing: Vec<&String> = g_ids.difference(ghosts).filter(|i| !got.ids.contains(*i)).collect();
-        if !missing.is_empty() {
+        if !missing.is_empty() && !superseded {
             out.push(format!("{at}: the block no longer names task(s) {missing:?} (names {:?})", got.ids));
         }
         if got.undecoded {
@@ -1308,6 +1321,8 @@ fn violations(case: &Case, consumer: &str, golden: &Value, got: &Decision, ghost
     if let Some(c) = g_count {
         let floor = c.saturating_sub(ghosts.len() as u64);
         match got.count {
+            // nothing is left to state once every task the base counted is excused
+            _ if floor == 0 => {}
             Some(n) if n >= floor => {}
             other => out.push(format!("{at}: the decision states {other:?} task(s), the base stated {c}")),
         }
