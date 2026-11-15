@@ -531,11 +531,24 @@ pub fn read_aliases(home: &Path) -> Vec<(String, String)> {
             Some(_) => continue,
         };
         if crate::meshw::idlock::is_safe_id(k) && v.truthy() && crate::meshw::idlock::is_safe_id(&to) && &to != k {
+            if poisoned_primary_alias(home, k, &to) {
+                crate::metrics::bump("mesh_alias_poisoned_ignored", &[]);
+                continue;
+            }
             out.retain(|(x, _)| x != k);
             out.push((k.clone(), to));
         }
     }
     out
+}
+
+/// An alias an older build wrote for a child registered in a subdirectory of the Primary's checkout: its source label is the real
+/// ROOT's label (the Primary's) and its target is that child. Read as it stands it makes every reader attribute the Primary's
+/// broadcasts to the child (#767). Idempotent repair: the entry is ignored on read and never deleted from the file.
+fn poisoned_primary_alias(home: &Path, label: &str, to: &str) -> bool {
+    let Some(desc) = ident::read_descriptor(home, to) else { return false };
+    let Some(OVal::Str(wp)) = desc.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy()) else { return false };
+    matches!(ident::strict_subdir_of_root(wp), Ok(Some((_, root))) if ident::mesh_id_for_real_path(&root) == label)
 }
 
 /// The sender alias of a child caller (`senderIdentityDetailed` -> `writeAlias(home, label, child, worktree)`): the worktree label the

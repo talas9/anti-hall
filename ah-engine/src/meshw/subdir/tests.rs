@@ -143,3 +143,59 @@ fn a_child_send_never_aliases_the_primary_and_each_reads_its_own_mail() {
         "misattributed: {primary_read}"
     );
 }
+
+fn registry(f: &Fx, children: &[&str]) -> (Inv, String) {
+    let key = ident::repo_key_for_worktree(&f.root).unwrap().unwrap();
+    crate::meshw::common::init_new_store(&f.inv, &key).unwrap();
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    assert!(st.upsert_registry(&row(&f.primary, &f.root, "sp"), 1, |_, _| true).unwrap());
+    for (i, c) in children.iter().enumerate() {
+        descriptor(f, c, &f.sub);
+        assert!(st.upsert_registry(&row(c, &f.sub, &format!("s{i}")), 2 + i as i64, ident::same_registry_worktree).unwrap());
+    }
+    drop(st);
+    let mut primary = f.inv.clone();
+    primary.cwd = f.root.clone();
+    primary.env.remove(defaults::text("mesh_write.env_builder_id"));
+    (primary, key)
+}
+
+/// P1 of the second review: two children sharing one subdirectory are one mesh group; `read-primary` files the receipt under the
+/// group's lowest id, so `ack-primary` of the OTHER child must look there too (it looked only under its own id: unknown-receipt).
+#[test]
+fn ack_primary_finds_the_receipt_a_group_sibling_filed() {
+    let f = fx("ackgroup");
+    let (primary, _) = registry(&f, &["child-a", "child-b"]);
+    let sent = send::run(&primary, &argv(&["send", "--to", "child-b", "--message", "mail-for-b"])).unwrap();
+    assert_eq!(sent.code, 0, "send: {}", sent.stdout);
+    let mut b = f.inv.clone();
+    b.env.insert(defaults::text("mesh_write.env_builder_id").to_string(), "child-b".into());
+    let owner = defaults::text("mesh_write.flag_ack_as_owner");
+    let read = crate::meshw::readprimary::run(&b, &argv(&["inbox", "read-primary", "child-b", &format!("--{owner}")])).unwrap().stdout;
+    let rid = read.split("\"readReceiptId\":\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or_else(|| panic!("no receipt id: {read}")).to_string();
+    let ack = crate::meshw::inbox::run(&b, &argv(&["inbox", "ack-primary", "child-b", "--receipt", &rid, &format!("--{owner}")])).unwrap();
+    assert!(!ack.stdout.contains("unknown-receipt"), "the receipt is lost: {}", ack.stdout);
+    assert_eq!(ack.code, 0, "ack: {}", ack.stdout);
+}
+
+/// P2 of the second review: an alias an older build wrote (the Primary's root label -> a subdirectory child) is ignored on read, so the
+/// Primary's broadcasts keep the Primary as sender; the file is not rewritten or deleted.
+#[test]
+fn a_poisoned_primary_alias_from_an_older_build_is_ignored() {
+    let f = fx("poison");
+    let (primary, _) = registry(&f, &["child-1"]);
+    let alias_file = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.alias_file"));
+    let body = format!(
+        r#"{{"version":1,"aliases":{{"{}":{{"to":"child-1","worktree":null,"at":1}},"other-label":{{"to":"child-1","worktree":null,"at":1}}}}}}"#,
+        f.primary
+    );
+    std::fs::create_dir_all(alias_file.parent().unwrap()).unwrap();
+    std::fs::write(&alias_file, &body).unwrap();
+    let kept = crate::meshw::common::read_aliases(&f.inv.home);
+    assert_eq!(kept, vec![("other-label".to_string(), "child-1".to_string())], "only the poisoned entry is ignored");
+    assert_eq!(std::fs::read_to_string(&alias_file).unwrap(), body, "nothing rewritten or deleted");
+    let b = send::run(&primary, &argv(&["send", "--broadcast", "--message", "bcast"])).unwrap();
+    assert_eq!(b.code, 0, "{}", b.stdout);
+    let read = crate::meshw::read::run(&f.inv, &argv(&["read", "--peek"]), false).unwrap().stdout;
+    assert!(read.contains(&format!("\"from\":\"{}\",\"message\":\"bcast", f.primary)), "misattributed: {read}");
+}

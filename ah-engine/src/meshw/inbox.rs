@@ -18,7 +18,7 @@ use crate::meshw::cursors::{self, LogRec, Procs};
 use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::readprimary::store_err;
-use crate::meshw::send::{Answer, Effect, mesh_candidates, rehome_is_noop, resolve_mesh_target};
+use crate::meshw::send::{Answer, Effect, rehome_is_noop, resolve_mesh_target};
 use crate::meshw::union;
 use std::path::{Path, PathBuf};
 
@@ -398,18 +398,18 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
     rehome_is_noop(inv, id)?;
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
-    // canonicalReceiptId: the lowest id of the worktree's identity family, else the literal id (any failure is Node's catch)
+    // the directory a receipt is filed under: the SAME meshgroup::resolve result read-primary files it with (lowest id of the group,
+    // grouped by the registry row's worktree, else the descriptor's), else the literal id (any failure falls back to it)
     let dir_id = (|| -> R<String> {
-        if let Some(d) = &desc
-            && let Some(OVal::Str(wt)) = d.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy())
-            && let Some(mesh) = ident::canonical_mesh_id(wt)?
-        {
-            let mut ids: Vec<String> = mesh_candidates(&rows, Some(mesh.as_str()))?.into_iter().map(|r| r.id).collect();
+        let desc_wt = desc.as_ref().and_then(|d| match d.get(defaults::text("mesh_write.field_worktree_path")) {
+            Some(OVal::Str(w)) if !w.is_empty() => Some(w.clone()),
+            _ => None,
+        });
+        let g = crate::meshw::meshgroup::resolve(&rows, id, crate::meshw::meshgroup::worktree_of(&rows, id, desc_wt.as_deref()).as_deref())?;
+        if g.active {
+            let mut ids = g.ids;
             ids.sort();
-            ids.dedup();
-            if ids.len() > 1 && ids.iter().any(|x| x == id) {
-                return Ok(ids.remove(0));
-            }
+            return Ok(ids.remove(0));
         }
         Ok(id.to_string())
     })()
