@@ -97,3 +97,49 @@ fn the_registry_guard_accepts_a_subdirectory_of_the_registered_root() {
     assert!(st.upsert_registry(&row("child-1", &f.sub, "s"), 2, ident::same_registry_worktree).unwrap(), "the guard refused the subdirectory of its own root");
     assert_eq!(st.registry_row("child-1").unwrap().unwrap().worktree_path.as_deref(), Some(f.sub.as_str()));
 }
+
+fn argv(words: &[&str]) -> crate::meshw::args::Args {
+    crate::meshw::args::parse(&words.iter().map(|w| w.to_string()).collect::<Vec<_>>())
+}
+
+/// P1 of the first review: the child's identity carried the Primary's label, so a child send wrote a Primary -> child alias and every
+/// reader then attributed the Primary's broadcasts to the child. End to end: the Primary broadcasts from the root, the child in
+/// `<root>/<subdir>` sends to-primary; each reads only its own mail and no alias names the Primary's label.
+#[test]
+fn a_child_send_never_aliases_the_primary_and_each_reads_its_own_mail() {
+    let f = fx("e2e");
+    descriptor(&f, "child-1", &f.sub);
+    let key = ident::repo_key_for_worktree(&f.root).unwrap().unwrap();
+    crate::meshw::common::init_new_store(&f.inv, &key).unwrap();
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    assert!(st.upsert_registry(&row(&f.primary, &f.root, "sp"), 1, |_, _| true).unwrap());
+    assert!(st.upsert_registry(&row("child-1", &f.sub, "sc"), 2, ident::same_registry_worktree).unwrap());
+    drop(st);
+    let mut primary = f.inv.clone();
+    primary.cwd = f.root.clone();
+    primary.env.remove(defaults::text("mesh_write.env_builder_id"));
+
+    let b = send::run(&primary, &argv(&["send", "--broadcast", "--message", "from-primary-broadcast"])).unwrap();
+    assert_eq!(b.code, 0, "primary broadcast: {}", b.stdout);
+    let c = send::run(&f.inv, &argv(&["send", "--to-primary", "--message", "from-child"])).unwrap();
+    assert_eq!(c.code, 0, "child to-primary: {}", c.stdout);
+
+    // the alias map never names the Primary's label (the root's), only possibly the child's own
+    let alias_file = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.alias_file"));
+    let aliases = std::fs::read_to_string(&alias_file).unwrap_or_default();
+    assert!(!aliases.contains(&f.primary), "a Primary alias was written: {aliases}");
+
+    // the child's inbox holds the Primary's broadcast, attributed to the Primary, and not its own send
+    let child_read = crate::meshw::read::run(&f.inv, &argv(&["read", "--peek"]), false).unwrap().stdout;
+    assert!(child_read.contains("from-primary-broadcast"), "the child lost the Primary's broadcast: {child_read}");
+    assert!(!child_read.contains("from-child"), "the child read its own send: {child_read}");
+    assert!(child_read.contains(&format!("\"from\":\"{}\",\"message\":\"from-primary-broadcast", f.primary)), "broadcast misattributed: {child_read}");
+    assert!(!child_read.contains("\"from\":\"child-1\",\"message\""), "mail attributed to the child: {child_read}");
+    // the Primary's read-primary sees the child's to-primary mail, attributed to the child
+    let primary_read = crate::meshw::readprimary::run_peek(&primary, &argv(&["inbox", "peek-primary", &f.primary])).unwrap().stdout;
+    assert!(primary_read.contains("from-child"), "the Primary missed the child's mail: {primary_read}");
+    assert!(
+        !primary_read.contains("from-primary-broadcast") || !primary_read.contains("\"from\":\"child-1\",\"message\":\"from-primary-broadcast"),
+        "misattributed: {primary_read}"
+    );
+}

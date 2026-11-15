@@ -716,8 +716,6 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().or_else(|e| ident::unavailable("mesh_write.what_registry", &e))?);
     let from_d = ident::sender_identity_detailed(&inv.env, &cwd, &rows, home)?;
-    // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so
-    common::ensure_alias(inv, &from_d, &cwd);
     let from = from_d.identity.clone();
     if let Some(ff) = a.one(defaults::text("mesh_write.flag_from"))
         && ff != from
@@ -880,6 +878,8 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         return Ok(o);
     }
     // ---- commit: everything below writes ----
+    // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so; only once the target is validated (#767)
+    common::ensure_alias(inv, &from_d, &cwd);
     let to_out: Option<String> = if broadcast {
         None
     } else if to_primary {

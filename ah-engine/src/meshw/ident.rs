@@ -642,7 +642,7 @@ pub fn registry_mesh_id(rows: &[Row], p: &str) -> R<Option<String>> {
 /// A child workspace whose worktree is a strict subdirectory of the checkout root the caller stands in: its `DEVSWARM_BUILDER_ID`,
 /// when its descriptor names such a path and the caller's directory is at or under it. The root's own workspace (the Primary) has a
 /// descriptor at the root itself, so it is never taken for this child.
-pub fn subdir_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<String>> {
+pub fn subdir_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<(String, String)>> {
     let Some(bid) = env_nonempty(env, defaults::text("mesh_write.env_builder_id")) else { return Ok(None) };
     if !crate::meshw::idlock::is_safe_id(bid) {
         return Ok(None);
@@ -652,7 +652,7 @@ pub fn subdir_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<String>> {
     let Some((sub, root)) = strict_subdir_of_root(&wp)? else { return Ok(None) };
     let Some(caller_root) = resolve_caller_worktree(cwd)? else { return Ok(None) };
     let cwd_real = worktree_real_path(cwd)?;
-    Ok((caller_root == root && under(&cwd_real, &sub)).then(|| bid.to_string()))
+    Ok((caller_root == root && under(&cwd_real, &sub)).then(|| (bid.to_string(), mesh_id_for_real_path(&sub))))
 }
 
 /// [`caller_identity_detailed`] that knows a child registered at a subdirectory of a checkout: it is the child, not the label of the
@@ -660,9 +660,11 @@ pub fn subdir_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<String>> {
 pub fn caller_identity_for(env: &Env, cwd: &str, home: &Path) -> R<Caller> {
     let d = caller_identity_detailed(env, cwd)?;
     if d.kind == defaults::text("mesh_write.kind_resolved")
-        && let Some(child) = subdir_child_id(env, cwd, home)?
+        && let Some((child, own_label)) = subdir_child_id(env, cwd, home)?
     {
-        return Ok(Caller { identity: child, kind: defaults::text("mesh_write.kind_child").into(), mesh_id: Some(d.identity) });
+        // the child's OWN label (its subdirectory's), never the Primary's: an alias or a self-target check on the Primary's label
+        // would attribute the Primary's mail to the child (#767)
+        return Ok(Caller { identity: child, kind: defaults::text("mesh_write.kind_child").into(), mesh_id: Some(own_label) });
     }
     Ok(d)
 }
