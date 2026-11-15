@@ -350,6 +350,10 @@ value = "Repeated checks while waiting use the work budget without making progre
 doc = "What to do instead of a background heavy command."
 value = "Run the command in the foreground under the shared lock."
 
+[queued_wait.msg_instead_detach]
+doc = "What to do instead of a wait that detaches inside a timeout. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline."
+value = "Run the wait attached: `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\"."
+
 [queued_wait.msg_instead_sleep]
 doc = "What to do instead of a long sleep or poll loop. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification."
 value = "Run `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."

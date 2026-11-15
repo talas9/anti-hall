@@ -93,6 +93,7 @@ value = [
   { id = "queued_wait.sleep", setting = "", tier = "skill", source = "queued_wait.msg_what_sleep" },
   { id = "queued_wait.loop", setting = "", tier = "skill", source = "queued_wait.msg_what_loop" },
   { id = "queued_wait.over", setting = "", tier = "skill", source = "queued_wait.msg_what_over" },
+  { id = "queued_wait.detach", setting = "", tier = "skill", source = "queued_wait.msg_what_detach" },
   { id = "wide_search.msg", setting = "guards.allowWideSearch", tier = "skill", source = "wide_search.msg_what" },
   { id = "procwatch.orphans", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_orphans_what" },
   { id = "procwatch.stuck", setting = "procwatch.enabled", tier = "skill", source = "procwatch.msg_stuck_what" },

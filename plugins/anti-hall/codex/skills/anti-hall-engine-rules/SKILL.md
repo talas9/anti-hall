@@ -103,6 +103,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `queued_wait.sleep` (skill): this wait is too long (...s; limit ...s): ... Instead: Run `timeout ... gh pr checks --watch`, or SendMessage lead "waiting on <X>; wake me when done", then end turn.
 - `queued_wait.loop` (skill): this poll loop waits too long (...s per round; limit ...s): ...
 - `queued_wait.over` (skill): this bounded wait is over the limit (...s; limit ...s): ... Instead: Use ...s or less, or SendMessage lead "waiting on <X>; wake me when done", then end turn.
+- `queued_wait.detach` (skill): this wait detaches work, so the timeout around it bounds nothing: ... Instead: Run the wait attached: `timeout ... gh pr checks --watch`, or SendMessage lead "waiting on <X>; wake me when done".
 - `wide_search.msg` (skill, switch `guards.allowWideSearch`): `...` was stopped: it would scan all of `...`. Why: Scanning a whole disk or home folder takes minutes and can overload this Mac. Instead: search within the project folder.
 - `procwatch.orphans` (skill, switch `procwatch.enabled`): ... processes remain from ended sessions. Why: They keep using ports, CPU and memory after their session ended. Modes: .... Instead: check the process owners before stopping any.
 - `procwatch.stuck` (skill, switch `procwatch.enabled`): ... background agent(s) printed nothing for ...+ minutes: ....... Why: They may be stuck, waiting for input, or finished without reporting, and they keep their slot and context until dealt with. Instead: check each silent agent for progress.

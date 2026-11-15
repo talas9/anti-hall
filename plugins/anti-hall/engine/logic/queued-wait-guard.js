@@ -108,7 +108,7 @@ function decide(p, opts) {
         var dargs = qwStripRedirects(words.slice(1)), dsecs = qwSleepSeconds(dargs);
         if (dargs.length > 0 && (dsecs === null || dsecs > plainMax)) {
           return qwBlock(text.render(ah.cfg('queued_wait.msg_what_detach'), { cmd: laneWaste.shown(words) }),
-            text.render(ah.cfg('queued_wait.msg_instead_sleep'), { max: boundedMax }));
+            text.render(ah.cfg('queued_wait.msg_instead_detach'), { max: boundedMax }));
         }
       }
       if (bound !== null) {
