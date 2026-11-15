@@ -559,7 +559,10 @@ fn teammate_idle_order_needs_a_complete_task_store() {
         let (code, out, err) = e.run(&args, true, &ups("sess0001-x", "go on", Some(&transcript)), &extra);
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)); // so the scratch dir can be removed
+            // so the scratch dir can be removed
+            if let Err(e) = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)) {
+                eprintln!("restore perms: {e}");
+            }
         }
         assert_eq!((code, err.as_str()), (0, ""));
         ctx(&out)
