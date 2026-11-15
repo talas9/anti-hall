@@ -14,7 +14,7 @@ doc = "R-inline. Switch guards.inlineRule (default off, plan v3 L04). On: the Ba
 value = { section = "guards", key = "inlineRule", type = "boolean", env = "ANTIHALL_INLINE_RULE", option = "", default = false }
 
 [inline_rule.window_what]
-doc = "Headline of the coordinator-work-guard window block when guards.inlineRule is on. `{count}` is the number of file-changing steps in the window counting the stopped one, `{minutes}` the window length (guards.coordinatorWorkWindowMinutes) and `{block_at}` the step that is stopped (guards.coordinatorWorkBlockAt). The clearing step stays in the block's why and instead lines."
+doc = "Headline of the coordinator-work-guard window block when guards.inlineRule is on. `{count}` is the number of file-changing shell steps (git, gh, Bash writes; Edit and Write are not counted here) in the window counting the stopped one, `{minutes}` the window length (guards.coordinatorWorkWindowMinutes) and `{block_at}` the step that is stopped (guards.coordinatorWorkBlockAt). The clearing step stays in the block's why and instead lines."
 value = "{count} file-changing steps in the main thread within {minutes} min, this one included; the limit is {block_at}."
 
 [inline_rule.guard_command]

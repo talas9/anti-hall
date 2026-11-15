@@ -337,6 +337,11 @@ function decide(p, opts) {
     if (meshDirect !== null) segments.push(meshDirect);
     if (plan !== null && (!dedupeOn || dedupe.shouldEmit(planOpts))) segments.push(plan);
     var archiveSegment = false;
+    var unreadSig = null;
+    if (info !== null) {
+      unreadSig = ah.sha1(JSON.stringify([info.id, info.count, info.lines])); // the unread set (every unread line, the message ids with it), not just its count (#709)
+      if (!dwUnreadDecide('child', sid, unreadSig, ah.clock.now())) { ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'child']); info = null; }
+    }
     if (info !== null) {
       segments.push(text.render(ah.cfg('devswarm_prompt.unread_segment'), { count: info.count, cli: cli, id: info.id }));
       if (info.lines.some(function (l) { return typeof l === 'string' && l.indexOf(ah.cfg('devswarm_prompt.archive_marker')) >= 0; })) {

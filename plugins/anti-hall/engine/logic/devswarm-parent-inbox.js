@@ -508,7 +508,7 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], ownExtra: 0, ownExtraSig: [], ownExtraUrgency: null, deferral: null, snapUnreadable: false };
   // the DevSwarm app's database, read once
   var focusEnv = ah.env.get(ah.cfg('devswarm_parent.env_focus_ms'));
   var focusRaw = Number(focusEnv === null ? undefined : focusEnv); // Number(undefined) is NaN, Number(null) would be 0
@@ -546,7 +546,7 @@ function piRoster(ctx, summary) {
   if (jx.isObj(ignoreV) && Array.isArray(ignoreV.ids)) ignoreV.ids.forEach(function (x) { if (typeof x === 'string' && x !== '') ignoreIds[x] = true; });
   var present = ids.filter(function (i) { return true; });
   // the ghost rows: a `primary-<hash>` label whose canonical row is also in the summary is that workspace, shown once under it
-  var ghostFoldTo = {}, foldedUnread = {};
+  var ghostFoldTo = {}, foldedUnread = {}, foldedSig = {};
   ids.forEach(function (id) {
     if (!piSafeId(id) || id === ctx.primaryId || !jx.re('devswarm_cli.rr_ghost_label_re').test(id)) return;
     var entry = summaryWorkspaces[id];
@@ -559,7 +559,7 @@ function piRoster(ctx, summary) {
     if (!f.to) return;
     ghostFoldTo[id] = f.to;
     var gu = piFinite(entry.directUnread) ? entry.directUnread : (piFinite(entry.unread) ? entry.unread : 0);
-    if (gu > 0) foldedUnread[f.to] = (foldedUnread[f.to] || 0) + gu;
+    if (gu > 0) { foldedUnread[f.to] = (foldedUnread[f.to] || 0) + gu; (foldedSig[f.to] = foldedSig[f.to] || []).push([id, entry.cursor, entry.total, gu]); } // the folded row's cursor..total names which mail it is
   });
   for (var n = 0; n < ids.length; n++) {
     var id = ids[n];
@@ -580,6 +580,7 @@ function piRoster(ctx, summary) {
           // the app's own builder row of this checkout is the Primary's inbound mail, shown through the own-inbox segment
           var rowUnread = piFinite(entry.directUnread) ? entry.directUnread : (piFinite(entry.unread) ? entry.unread : 0);
           out.ownExtra += rowUnread + (foldedUnread[id] || 0);
+          out.ownExtraSig.push([id, entry.cursor, entry.total, rowUnread, foldedSig[id] || []]); // which mail, not just how many (#709)
           if (!out.ownExtraUrgency) out.ownExtraUrgency = entry.urgencyMax || null;
           continue;
         }
@@ -1487,7 +1488,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1519,6 +1520,7 @@ function piDecide(p, opts) {
           var rd = JSON.parse(ahHost.ctReaders(key, primaryId));
           if (rd.unsure || rd.declared) ah.unable('devswarm-parent-inbox:own_reader'); // the reader-identity correction is not made: the summary count is shown as it is
           ownUnread = own.unread;
+          ownSigBase = String(own.cursor) + '/' + String(own.total);
           ownUrgency = own.urgencyMax || null;
         }
         if (Array.isArray(own.pendingQuestions)) {
@@ -1530,7 +1532,7 @@ function piDecide(p, opts) {
           }
         }
       }
-      if (roster.ownExtra > 0) { ownUnread += roster.ownExtra; if (!ownUrgency) ownUrgency = roster.ownExtraUrgency; }
+      if (roster.ownExtra > 0) { ownSigBase += '+' + JSON.stringify(roster.ownExtraSig); ownUnread += roster.ownExtra; if (!ownUrgency) ownUrgency = roster.ownExtraUrgency; }
       if (Array.isArray(summary.recent) && summary.recent.length && ahHost.piJev()) ah.unable('devswarm-parent-inbox:broadcast_jev'); // Jev may label the feed: shown unlabelled
       if (roster.rows.length) syncNotes = piSyncNotes({ home: home, key: key }, roster.rows, roster.snapUnreadable, jx.isObj(p) ? p.session_id : undefined);
     }
@@ -1640,7 +1642,10 @@ function piDecide(p, opts) {
       var row = summaryForTitle && summaryForTitle.workspaces && summaryForTitle.workspaces[wid];
       return (row && row.label) || piReadName(home, wid);
     };
-    pending.push({ kind: 'plain', rank: 110, text: piOwnSegment(ownUnread, primaryId, ownUrgency, ownUnanswered, ownInfo, titleFor, ownPreviews, cliPath, ah.clock.now()) });
+    var ownSigParts = [ownUnread, ownUrgency, ownSigBase].concat(ownUnanswered.concat(ownInfo).map(function (q) { return q ? [q.seq, q.from, q.ts].join(':') : ''; }));
+    var ownSig = ah.sha1(JSON.stringify(ownSigParts)); // the unread set (cursor..total of the own row and of every alias row, the questions asked), not the minutes they have waited (#709)
+    if (dwUnreadDecide('own', sid, ownSig, now)) pending.push({ kind: 'plain', rank: 110, text: piOwnSegment(ownUnread, primaryId, ownUrgency, ownUnanswered, ownInfo, titleFor, ownPreviews, cliPath, ah.clock.now()) });
+    else ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'own']);
   }
   if (parked !== null) pending.push({ kind: 'plain', rank: 120, text: parked });
   if (urgentList.length) {
