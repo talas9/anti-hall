@@ -1040,7 +1040,7 @@ function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries,
   if (!pgSafeId(ownId)) return false; // wakeCoverage: an id it cannot use is "unknown"
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
   if ((raw === null ? '' : raw.trim().toLowerCase()) !== ah.cfg('devswarm_role.claude_agent')) return false;
-  var ctx = { home: home, now: now };
+  var ctx = { home: home, now: now, key: ah.mesh.repoKey(cwd) };
   var lc = piLiveChildren(ctx, cwd);
   if (!lc.known || !lc.live) return false;
   // only a child that can still send mail needs a wake path: a done (archive-ready) workspace, a waiting-on-human one and an idle one

@@ -18,10 +18,14 @@ var tk = {
   },
   // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
   // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
-  tasksOf: function (home, sid, path, variant) {
-    var gaps = { bad: 0 }, st = tk.storeTasks(home, sid, gaps);
-    // the named list is THE list: when any of its files cannot be read exactly the list is unknown (unsure), never rebuilt from the transcript
-    if (gaps.bad > 0 && tk.namedList(home) !== null) return { tasks: st === null ? [] : tk.withStore([], st), unsure: true, unreadable: false, store: true };
+  // `strict` (GH #744, callers that ORDER something from the list): a store with a file the read dropped (unreadable, over the size cap,
+  // unparsable, or of an unmodelled shape) or one too big to list is an unknown state, `{unsure: true, unreadable: true}`, never a
+  // partial list read as the whole one. Every other caller keeps the lenient read, except that the NAMED list (GH #762) is THE list:
+  // when any of its files cannot be read exactly the list is unknown (unsure), never rebuilt from the transcript.
+  tasksOf: function (home, sid, path, variant, strict) {
+    var gaps = { n: 0, strict: !!strict }, st = tk.storeTasks(home, sid, gaps);
+    if (strict && gaps.n > 0) return { tasks: [], unsure: true, unreadable: true, store: true };
+    if (gaps.n > 0 && tk.namedList(home) !== null) return { tasks: st === null ? [] : tk.withStore([], st), unsure: true, unreadable: false, store: true };
     if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
@@ -51,10 +55,11 @@ var tk = {
   // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
   // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
   // what is done and open; the transcript's tasks only add what the store does not carry.
-  // `gaps` (optional object): `gaps.bad` counts what could not be read exactly (a file unreadable, over the cap or not a task record, the
-  // named list's directory unreadable, too many files), so a caller can tell a complete list from a partial one.
+  // `gaps` (optional `{n, strict}`): `gaps.n` counts what could not be read exactly (a file unreadable, over the cap or not a task record,
+  // a directory that exists and cannot be listed, too many files), so a caller can tell a complete list from a partial one; `gaps.strict`
+  // makes an unlistable directory end the read (null) instead of trying the next directory.
   storeTasks: function (home, sid, gaps) {
-    var gap = function () { if (gaps !== null && typeof gaps === 'object') gaps.bad = (gaps.bad || 0) + 1; };
+    var gap = function () { if (gaps !== null && typeof gaps === 'object') gaps.n = (gaps.n || 0) + 1; };
     if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
     var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
     var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
@@ -66,7 +71,13 @@ var tk = {
     for (var i = 0; i < dirs.length; i++) {
       var dir = dirs[i];
       var files = ah.fs.readdir(dir);
-      if (files === null) { if (named !== null) gap(); continue; }
+      if (files === null) {
+        // null is "absent" and also "present but unlistable" (unreadable, not a directory, or over the host's listing cap): a caller that
+        // counts gaps must tell them apart, so a directory that exists and cannot be listed (or the named list's) is a gap, never a store
+        // the session lacks.
+        if (gaps && (named !== null || ah.fs.realpathEx(dir).error !== 'NotFound')) { ah.unable('tasks:store_unlistable'); gap(); if (gaps.strict) return null; }
+        continue;
+      }
       files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
       if (files.length > maxFiles) { ah.unable('tasks:store_big'); gap(); return null; }
       var out = [];

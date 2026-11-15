@@ -508,7 +508,7 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], ownExtra: 0, ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], ownExtra: 0, ownExtraSig: [], ownExtraUrgency: null, deferral: null, snapUnreadable: false };
   // the DevSwarm app's database, read once
   var focusEnv = ah.env.get(ah.cfg('devswarm_parent.env_focus_ms'));
   var focusRaw = Number(focusEnv === null ? undefined : focusEnv); // Number(undefined) is NaN, Number(null) would be 0
@@ -546,7 +546,7 @@ function piRoster(ctx, summary) {
   if (jx.isObj(ignoreV) && Array.isArray(ignoreV.ids)) ignoreV.ids.forEach(function (x) { if (typeof x === 'string' && x !== '') ignoreIds[x] = true; });
   var present = ids.filter(function (i) { return true; });
   // the ghost rows: a `primary-<hash>` label whose canonical row is also in the summary is that workspace, shown once under it
-  var ghostFoldTo = {}, foldedUnread = {};
+  var ghostFoldTo = {}, foldedUnread = {}, foldedSig = {};
   ids.forEach(function (id) {
     if (!piSafeId(id) || id === ctx.primaryId || !jx.re('devswarm_cli.rr_ghost_label_re').test(id)) return;
     var entry = summaryWorkspaces[id];
@@ -559,7 +559,7 @@ function piRoster(ctx, summary) {
     if (!f.to) return;
     ghostFoldTo[id] = f.to;
     var gu = piFinite(entry.directUnread) ? entry.directUnread : (piFinite(entry.unread) ? entry.unread : 0);
-    if (gu > 0) foldedUnread[f.to] = (foldedUnread[f.to] || 0) + gu;
+    if (gu > 0) { foldedUnread[f.to] = (foldedUnread[f.to] || 0) + gu; (foldedSig[f.to] = foldedSig[f.to] || []).push([id, entry.cursor, entry.total, gu]); } // the folded row's cursor..total names which mail it is
   });
   for (var n = 0; n < ids.length; n++) {
     var id = ids[n];
@@ -580,6 +580,7 @@ function piRoster(ctx, summary) {
           // the app's own builder row of this checkout is the Primary's inbound mail, shown through the own-inbox segment
           var rowUnread = piFinite(entry.directUnread) ? entry.directUnread : (piFinite(entry.unread) ? entry.unread : 0);
           out.ownExtra += rowUnread + (foldedUnread[id] || 0);
+          out.ownExtraSig.push([id, entry.cursor, entry.total, rowUnread, foldedSig[id] || []]); // which mail, not just how many (#709)
           if (!out.ownExtraUrgency) out.ownExtraUrgency = entry.urgencyMax || null;
           continue;
         }
@@ -684,11 +685,31 @@ function piRoster(ctx, summary) {
     if (archiveReadyQuiet && !archivedRow && !archivedSuperseded && ds.label === piLabel('not_draining').label) {
       ds = piDisplayStatus(archiveReady, status, activityTs, now, dormant, false, idleAlive, idleMs);
     }
-    var finishCell = piDoneState(entry, heartbeat);
-    if (enrich && /^working\b/.test(finishCell) && gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) !== false) {
+    var finishCell = piDoneState(entry, heartbeat), planOpen = false;
+    // GH #744: idleness is proven only by a plan state that was actually read: tracking off, or a plan the host could not read, is unknown
+    var planUnknown = gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) === false || !enrich;
+    if (enrich && /^working\b/.test(finishCell) && !planUnknown) {
       var pf = JSON.parse(ahHost.piFinish(id, wtPath, now));
-      if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; }
-      if (pf.label !== null) finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid);
+      if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; planUnknown = true; }
+      if (pf.label !== null) { planOpen = !piPlanDone(pf.label); finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid); }
+    }
+    // GH #744: a live, unarchived child idle past guards.idleOrderAfterMin with no open plan, no unread mail and no done ruling is a candidate for the idle order
+    if (idleOrder.enabled() && !archivedRow && !appArchivedRow && !archivedSuperseded && activityTs !== null && now - activityTs >= idleOrder.afterMs()) {
+      var idleKind = ah.cfg('idle_order.kind_workspace'), idleWhy = '';
+      var doneRuling = !!(entry && ((entry.gates && entry.gates.done === true) || entry.archive_ready === true));
+      if (doneRuling) idleWhy = 'done';
+      else if (rowParked) idleWhy = 'parked';
+      else if (nagIgnored || st.ignored || closedRow) idleWhy = 'done';
+      else if (ownerFocused) idleWhy = 'focused';
+      else if (unread > 0 || !unreadKnown) idleWhy = 'unread';
+      else if (planOpen) idleWhy = 'plan';
+      else if (planUnknown) idleWhy = 'plan_unknown';
+      else if (wtPath && sessionId) {
+        var ib = ah.mesh.childBusy(id, wtPath, sessionId, now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
+        if (ib.none !== true && (ib.busy || ib.waiting)) idleWhy = 'busy';
+      }
+      if (idleWhy !== '') { idleOrder.skip(idleKind, idleWhy); out.idleKeep.push(id); }
+      else out.idleCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - activityTs });
     }
     var appMarks = '';
     if (rowWs) {
@@ -737,6 +758,36 @@ function piDescriptors(home) {
   return out;
 }
 
+// GH #744: the finish label (ah.meshw plan.rs finish_label) is also returned for a plan whose every step is done ("steps N/N done ..."),
+// so a label alone does not mean an open plan: a fully done plan leaves its workspace idle like a taskless one.
+function piPlanDone(label) {
+  return typeof label === 'string' && jx.re('idle_order.re_plan_done').test(label);
+}
+
+// GH #744: ms since the last sign of life of a child (its last outbound mail, heartbeat or session activity, as the roster row reads them),
+// or null when none is known or the repository key is missing.
+function piIdleElapsed(ctx, id, wt, sid) {
+  if (!ctx.key) return null;
+  var dir = piDevswarmDir(ctx.home);
+  var lv = piJson(dir + '/' + ah.cfg('mesh_write.dir_liveness') + '/' + id + '.json');
+  var lastOut = lv && typeof lv === 'object' && piFinite(lv.lastOutboundTs) ? lv.lastOutboundTs : null;
+  var hb = piJson(dir + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
+  var best = Math.max(lastOut !== null ? lastOut : 0, hb && typeof hb === 'object' && piFinite(hb.ts) ? hb.ts : 0);
+  var act = JSON.parse(ahHost.piActivity(id, wt, sid, lastOut, ctx.key, ctx.now));
+  if (act.unsure) { ah.unable('devswarm-parent-inbox:idle_activity'); return null; }
+  if (act.ts !== null && act.ts > best) best = act.ts;
+  return best > 0 ? Math.max(0, ctx.now - best) : null;
+}
+
+// GH #744: a child idle past guards.idleOrderAfterMin with no step plan open sends no mail, so it needs no mailbox wake path.
+function piIdleQuiet(ctx, id, wt, sid, busy) {
+  if (!idleOrder.enabled() || (busy && busy.none !== true && (busy.busy || busy.waiting))) return false;
+  var idle = piIdleElapsed(ctx, id, wt, sid);
+  if (idle === null || idle < idleOrder.afterMs()) return false;
+  var pf = JSON.parse(ahHost.piFinish(id, wt, ctx.now));
+  return !pf.unsure && (pf.label === null || piPlanDone(pf.label));
+}
+
 // The part of `rowEligibility(row, { liveness: true })` the live-child test reads: is the row put away, held, ignored or waiting on a human?
 // 'archived' (put away), 'quiet' (alive, but ignored or waiting on a human with a live session: it needs no wake path now) or 'live'.
 // `marker` and `app` are the archive verdicts the caller asks for; the liveness is read only when nothing else already skips the row.
@@ -753,6 +804,7 @@ function piChildState(ctx, id, wt, sid, marker, appKey) {
   if (id !== '' && sid && wt && !(ctx.closedRows && Object.prototype.hasOwnProperty.call(ctx.closedRows, id))) {
     var b = ah.mesh.childBusy(id, wt, sid, ctx.now, ah.cfg('devswarm_role.pg_set_busy_fresh').default * ah.cfgNum('devswarm_role.pg_ms_per_min'));
     if (b.none !== true && b.waiting && live) return 'quiet';
+    if (piIdleQuiet(ctx, id, wt, sid, b)) return 'quiet';
   }
   return 'live';
 }
@@ -1436,7 +1488,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1468,6 +1520,7 @@ function piDecide(p, opts) {
           var rd = JSON.parse(ahHost.ctReaders(key, primaryId));
           if (rd.unsure || rd.declared) ah.unable('devswarm-parent-inbox:own_reader'); // the reader-identity correction is not made: the summary count is shown as it is
           ownUnread = own.unread;
+          ownSigBase = String(own.cursor) + '/' + String(own.total);
           ownUrgency = own.urgencyMax || null;
         }
         if (Array.isArray(own.pendingQuestions)) {
@@ -1479,7 +1532,7 @@ function piDecide(p, opts) {
           }
         }
       }
-      if (roster.ownExtra > 0) { ownUnread += roster.ownExtra; if (!ownUrgency) ownUrgency = roster.ownExtraUrgency; }
+      if (roster.ownExtra > 0) { ownSigBase += '+' + JSON.stringify(roster.ownExtraSig); ownUnread += roster.ownExtra; if (!ownUrgency) ownUrgency = roster.ownExtraUrgency; }
       if (Array.isArray(summary.recent) && summary.recent.length && ahHost.piJev()) ah.unable('devswarm-parent-inbox:broadcast_jev'); // Jev may label the feed: shown unlabelled
       if (roster.rows.length) syncNotes = piSyncNotes({ home: home, key: key }, roster.rows, roster.snapUnreadable, jx.isObj(p) ? p.session_id : undefined);
     }
@@ -1520,7 +1573,7 @@ function piDecide(p, opts) {
       }
     }
     if (roster !== null && roster.rows.length) banner = piIngest(health, key, now, sid, tp);
-    var wctx = { home: home, primaryId: primaryId, now: now, sid: sid, closedRows: roster && roster.closedRows };
+    var wctx = { home: home, key: key, primaryId: primaryId, now: now, sid: sid, closedRows: roster && roster.closedRows };
     var wlc = piClaudePrimary() ? piLiveChildren(wctx, cwd) : null; // one read of the live children for the wake line and the cron order
     if (wlc !== null) {
       wakeLine = piWakeLine(wctx, cwd, cli, opts, wlc);
@@ -1589,7 +1642,10 @@ function piDecide(p, opts) {
       var row = summaryForTitle && summaryForTitle.workspaces && summaryForTitle.workspaces[wid];
       return (row && row.label) || piReadName(home, wid);
     };
-    pending.push({ kind: 'plain', rank: 110, text: piOwnSegment(ownUnread, primaryId, ownUrgency, ownUnanswered, ownInfo, titleFor, ownPreviews, cliPath, ah.clock.now()) });
+    var ownSigParts = [ownUnread, ownUrgency, ownSigBase].concat(ownUnanswered.concat(ownInfo).map(function (q) { return q ? [q.seq, q.from, q.ts].join(':') : ''; }));
+    var ownSig = ah.sha1(JSON.stringify(ownSigParts)); // the unread set (cursor..total of the own row and of every alias row, the questions asked), not the minutes they have waited (#709)
+    if (dwUnreadDecide('own', sid, ownSig, now)) pending.push({ kind: 'plain', rank: 110, text: piOwnSegment(ownUnread, primaryId, ownUrgency, ownUnanswered, ownInfo, titleFor, ownPreviews, cliPath, ah.clock.now()) });
+    else ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'own']);
   }
   if (parked !== null) pending.push({ kind: 'plain', rank: 120, text: parked });
   if (urgentList.length) {
@@ -1601,6 +1657,14 @@ function piDecide(p, opts) {
     pending.push({ kind: 'dedupe', rank: 140, o: { sessionId: sid, key: 'parent-inbox-nudge', content: ns, transcriptPath: tp, normalize: piNormInbox, keepaliveTurns: ah.cfgNum('devswarm_parent.nudge_keepalive') }, text: ns, suppressedLog: normalList.some(function (w) { return w.notDraining; }) });
   }
   if (archiveList.length) pending.push({ kind: 'plain', rank: 150, text: piArchiveSegment(archiveList, cliPath) });
+  // GH #744: the escalating order for children idle with no task; a record of an order given earlier whose child is no longer idle counts as acted on
+  var idlePlan = null;
+  if (roster !== null && idleOrder.enabled() && key && cliPath !== null) {
+    idlePlan = idleOrder.plan(ah.cfg('idle_order.kind_workspace'), key, roster.idleCands, now, roster.idleKeep);
+    if (idlePlan.due.length) {
+      pending.push({ kind: 'plain', rank: 155, text: text.render(ah.cfg('idle_order.msg_workspace'), { n: idlePlan.due.length, list: idleOrder.list(idlePlan.due, 'idle_order.item_ws'), cli: cliPath, id: idlePlan.due[0].id }) });
+    }
+  }
   // every dedupe record must be decidable before the first write
   var dedupeOn = sid !== null && !dedupe.disabled();
   for (var i = 0; i < pending.length; i++) {
@@ -1632,6 +1696,7 @@ function piDecide(p, opts) {
     var inj = attention.filter(function (w) { return w.unread > 0; }).map(function (w) { return { id: w.id, unread: w.unread, cursor: w.cursor, total: w.total, status: w.status || null }; });
     ah.state.appendFile(piRel(ah.cfg('devswarm_parent.file_log')), JSON.stringify({ ts: Math.floor(ah.clock.now()), event: 'inject', workspaces: inj }) + '\n');
   }
+  if (idlePlan !== null) idleOrder.apply(idlePlan);
   archiveList.forEach(function (id) { ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_archive_nudges') + '/' + id + '.json'), JSON.stringify({ lastNudgedAt: now })); });
   if (!segments.length) return 'allow';
   return { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_parent.segment_joiner'))) };

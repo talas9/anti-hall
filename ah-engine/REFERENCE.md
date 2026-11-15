@@ -2041,7 +2041,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.block_instead` | `hand the remaining work to a helper agent.` |  |  | What to do instead of a blocked work call. {clear_min} is the minutes until the window clears. |
 | `coordinator_work.block_override` | `{skip} (15-min TTL)` |  |  | The override line of the block ({skip} is the skip command). |
 | `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
-| `coordinator_work.block_what` | `this step was stopped after repeated main-thread edits.` |  |  | Block headline; {count} is the number of work calls in the window and {minutes} the window length. |
+| `coordinator_work.block_what` | `this step was stopped after repeated main-thread shell steps that change file...` |  |  | Block headline; {count} is the number of work calls in the window and {minutes} the window length. |
 | `coordinator_work.block_why` | `Too much hands-on work in the main thread. This is not a question for the use...` |  |  | Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed. |
 | `coordinator_work.bookkeeping_cli` | `^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.an...` |  |  | Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh\|agents\|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs}). |
 | `coordinator_work.bookkeeping_devnull` | `[0-9]?>\s*/dev/null` |  |  | Regex source of a redirect into /dev/null, which a bookkeeping call may carry besides the stderr merge. |
@@ -2083,7 +2083,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.nudge_instead` | `hand the rest to a subagent now.` |  |  | Advisory advice without a block threshold. |
 | `coordinator_work.nudge_instead_block` | `hand the rest to a subagent now; step {block_at} in this window will be blocked.` |  |  | Advisory advice with a block threshold; {block_at} is the call that is blocked. |
 | `coordinator_work.nudge_setting` | `5 entries` |  |  | Work calls that trigger the advisory. Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory. |
-| `coordinator_work.nudge_what` | `{count} file-changing steps in the main thread within {minutes} min.` |  |  | Advisory headline; {count} is the number of work calls in the window and {minutes} the window length. |
+| `coordinator_work.nudge_what` | `{count} shell steps that change files or repo state (git, gh, Bash writes) in...` |  |  | Advisory headline; {count} is the number of work calls in the window and {minutes} the window length. |
 | `coordinator_work.plugin_json` | `.claude-plugin/plugin.json` |  |  | Path of the plugin manifest, relative to the plugin root; its version stamps new window files. |
 | `coordinator_work.post_event` | `PostToolUse` |  |  | The event name of the pass that records calls into the window. |
 | `coordinator_work.pre_cap` | `20` |  |  | How many pre-call verdicts (kept until the matching post-call) a window file holds. |
@@ -2185,6 +2185,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.repo_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable whose non-blank value makes the DevSwarm integration active in auto mode. |
 | `devswarm_prompt.seat_dir` | `devswarm/primary-seat` |  |  | The directory, under the anti-hall directory, of the per-session seat-conflict markers the SessionStart hook writes. |
 | `devswarm_prompt.seat_shown_max` | `2` |  |  | A seat-conflict marker is owed a repeat while the number of times it was shown is below this. |
+| `devswarm_prompt.set_unread_cooldown_min` | `7 entries` |  |  | Inbox advisory cooldown, minutes. Setting devswarm.inboxAdvisoryCooldownMin: an unchanged unread set is announced again only after this many minutes since the last announcement. Applies while devswarm.inboxAdvisoryOnChange is on. |
 | `devswarm_prompt.skip_descriptor_surrogate` | `descriptor holds a lone-surrogate escape` |  |  | The cause logged when the child's old descriptor holds a lone-surrogate JSON escape (JavaScript parses it, a Rust string cannot carry it), so rewriting it would change its text; the registration is left for the turn. |
 | `devswarm_prompt.skip_descriptor_unreadable` | `descriptor not merged: ` |  |  | The cause logged when the child's old descriptor cannot be merged because it is no regular file (a FIFO, socket or device a read could block on) or is over the read cap; the registration is left for the turn and retried on the next. The refusal reason follows. |
 | `devswarm_prompt.skip_phantom_lock` | `workspace lock busy` |  |  | Why a truncated-id phantom descriptor is kept this turn: its workspace lock stayed busy. |
@@ -2195,7 +2196,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.stale_doctor` | `Run /anti-hall:doctor to check the DevSwarm ingest daemon. ` |  |  | The stale banner's advice when the daemon's launchd job is not disabled. |
 | `devswarm_prompt.stale_key` | `devswarm-ingest-stale` |  |  | The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it. |
 | `devswarm_prompt.summary_dir` | `devswarm/summaries` |  |  | The directory, under the anti-hall directory, of the per-project mailbox summaries the registration refreshes and the hook reads. |
+| `devswarm_prompt.sw_unread_on_change` | `6 entries` |  |  | Inbox advisories on change (#709). Switch devswarm.inboxAdvisoryOnChange (default on): the unread-inbox advisory of a child workspace and of a Primary speaks when the unread set changed since the last one spoken in the session, or when the cooldown has passed, instead of on every prompt. A new unread message always speaks at once. Off restores the advisory on every prompt. |
 | `devswarm_prompt.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; under one the service manager is never asked. |
+| `devswarm_prompt.unread_seen_file` | `unread-seen.json` |  |  | The one store file (under the devswarm state dir) of the last unread-inbox advisory spoken per session and kind ({sig, at} each). Bounded by unread_seen_max and unread_seen_ttl_hours; read and written as one step under unread_seen_lock. |
+| `devswarm_prompt.unread_seen_lock` | `unread-seen.lock` |  |  | The lock file (under the devswarm state dir) that makes the check of the unread-advisory store and the recording of what is spoken one step. |
+| `devswarm_prompt.unread_seen_lock_group` | `spawn_reservation` |  |  | The lock timings group of the unread-advisory store lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once. A lock that cannot be taken lets the advisory speak and records nothing. |
+| `devswarm_prompt.unread_seen_max` | `200` |  | count | The most entries (one per session and kind) the unread-advisory store keeps; the oldest are dropped past it. |
+| `devswarm_prompt.unread_seen_ttl_hours` | `48` |  | hours | An unread-advisory store entry older than this many hours is dropped (its session is long over; a dropped entry only means the advisory speaks once more). |
 | `devswarm_prompt.unread_segment` | `⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread paren...` |  |  | The child's unread-parent-mail segment. Placeholders: {count}, {cli}, {id}. |
 | `devswarm_prompt.urgent_levels` | `urgent, high` |  |  | The urgency values (the summary's urgencyMax) that make the mesh-direct nudge loud. |
 | `devswarm_prompt.uuid_full_re` | `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` |  |  | A full UUID (a builder id of this shape is a real id). |
@@ -3383,6 +3390,37 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `emit_dedupe.uncounted_origins` | `scheduled` |  |  | The turn origins that do not count toward a keepalive while guards.keepaliveCountsScheduled is off. |
 | `emit_dedupe.window_default_ms` | `15000` |  | ms | The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable. |
 
+### prompt_emit.toml / idle_order
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `idle_order.dir` | `.anti-hall/idle-orders` |  |  | The state directory (under the home directory) of the idle-order records: one file per kind and scope holding {subjects: {<id>: {count, lastAt}}}. |
+| `idle_order.file_prefix` | `idle` |  |  | The file name prefix of an idle-order record (<prefix>-<kind>-<scope>.json); stale ones are pruned by that prefix. |
+| `idle_order.idle_marker` | `idle_notification` |  |  | The type of the notice a teammate sends when its turn ends (read from the transcript). |
+| `idle_order.item_mate` | `{name} ({min}m)` |  |  | One idle teammate in the order. Placeholders: {name}, {min} minutes idle. |
+| `idle_order.item_ws` | `{name} ({min}m)` |  |  | One idle workspace in the order. Placeholders: {name} its title (or id), {min} minutes idle. |
+| `idle_order.key_max` | `80` |  |  | Most characters of a scope or subject id kept in a record file name. |
+| `idle_order.kind_teammate` | `teammate` |  |  | The kind label of a teammate (or Codex agent) in the idle-order counter. |
+| `idle_order.kind_waiting` | `teammate_waiting` |  |  | The kind label of a teammate waiting on background work in the idle-order counter. |
+| `idle_order.kind_workspace` | `workspace` |  |  | The kind label of a child workspace in the idle-order counter. |
+| `idle_order.line_max` | `262144` |  |  | Longest transcript line (characters) the waiting-teammate scan reads; a longer one is skipped. |
+| `idle_order.list_joiner` | `, ` |  |  | Separator between the children named in one order. |
+| `idle_order.list_max` | `5` |  |  | Most children named in one order; the rest are counted. |
+| `idle_order.max_orders` | `6` |  |  | Most orders given for one idle workspace or teammate; after that it is left alone (counted as suppressed, reason cap). |
+| `idle_order.more` | ` +{m} more` |  |  | Appended to the named children when more are idle. Placeholder: {m}. |
+| `idle_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (idle times are kept in ms, settings in minutes). |
+| `idle_order.msg_teammate` | `⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, the...` |  |  | The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. |
+| `idle_order.msg_waiting` | `⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {l...` |  |  | The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check. |
+| `idle_order.msg_workspace` | `⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to repo...` |  |  | The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically). |
+| `idle_order.num_after_min` | `5 entries` |  |  | Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default 30): a child workspace with no activity, no open plan and no unread mail, or a teammate that delivered its report and owns no open task, that long gets the order. A workspace idle this long also needs no mailbox wake path. |
+| `idle_order.re_idle_json` | `\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}` |  |  | The idle_notification object inside a teammate message (JavaScript regex, first match). |
+| `idle_order.re_plan_done` | `^steps (\d+)/\1 done` |  |  | A workspace's step-plan finish label that says every step is done (JavaScript regex; the head of mesh_write.lbl_all_done, 'steps N/N done'). A plan with that label is finished, not open: its workspace is idle like one with no plan. |
+| `idle_order.re_retask` | `"name"\s*:\s*"(?:SendMessage\|TaskStop)"` |  |  | A tool call that re-tasks or ends a teammate (JavaScript regex over a transcript line): a later one naming the teammate means it is no longer idle. |
+| `idle_order.scan_needles` | `SendMessage, TaskStop` |  |  | Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate. |
+| `idle_order.steps_min` | `30, 60, 120` |  |  | The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
+| `idle_order.sw_enabled` | `4 entries` |  |  | Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before. |
+| `idle_order.waiting_after_min` | `15` |  |  | Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner. |
+
 ### prompt_emit.toml / idle_sweep
 
 | Key | Default | Env override | Unit | What it is |
@@ -4407,6 +4445,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.control_re` | `[\x00-\x1f\x7f-\u{9f}]` |  |  | Rust regex source of the control characters turned into spaces in a name the nudge shows. |
 | `silent_nudge.daemon_re` | `\b(daemon\|throttle\|watchdog\|watcher\|keep-?alive\|heartbeat\|server\|listener\|pol...` |  |  | JavaScript regex source (case-insensitive) of the description of a background SHELL that is a long-running daemon: quiet by design, so it is never nudged as silent (an agent is judged by silence alone). |
 | `silent_nudge.ellipsis` | `…` |  |  | Text appended to a name that was cut. |
+| `silent_nudge.err_file` | `.anti-hall/silent-agent-nudge-errors.log` |  |  | JSONL file, relative to the home directory, that keeps the error text of a failed silent-agent-nudge call (#764). The engine's own script_error line is rate-limited across all checks, so most failures lost their text. |
+| `silent_nudge.err_max_bytes` | `262144` |  | bytes | Size at which the silent-agent-nudge error log is rotated to its .1 file. |
+| `silent_nudge.err_text_max` | `2000` |  | chars | Most characters of one error text (message and stack) kept in the silent-agent-nudge error log. |
 | `silent_nudge.ever_key` | `everNudged` |  |  | Field of the state file that holds the once-per-agent records. |
 | `silent_nudge.ever_nudged_ttl_ms` | `2592000000` |  | ms | How long a once-per-agent nudge record is kept (30 days). |
 | `silent_nudge.ever_sep` | `::` |  |  | Separator between session id and agent id in a once-per-agent key. |
@@ -5489,7 +5530,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inline_rule.kind_window` | `window` |  |  | Counter label `kind` of a coordinator-work-guard window block. |
 | `inline_rule.kind_write` | `write` |  |  | Counter label `kind` of a Bash write-parity block (a sed -i, tee, cp, mv, redirect or inline-code write to a project file). |
 | `inline_rule.sw` | `6 entries` |  |  | R-inline. Switch guards.inlineRule (default off, plan v3 L04). On: the Bash write-parity block of command-guard stands down while spawning is stopped (as edit-guard does for Edit/Write), the coordinator-work-guard window block names the step count and the limit, and the blocks of command-guard and coordinator-work-guard are counted. Off: every answer is unchanged and nothing is counted. |
-| `inline_rule.window_what` | `{count} file-changing steps in the main thread within {minutes} min, this one...` |  |  | Headline of the coordinator-work-guard window block when guards.inlineRule is on. `{count}` is the number of file-changing steps in the window counting the stopped one, `{minutes}` the window length (guards.coordinatorWorkWindowMinutes) and `{block_at}` the step that is stopped (guards.coordinatorWorkBlockAt). The clearing step stays in the block's why and instead lines. |
+| `inline_rule.window_what` | `{count} file-changing steps in the main thread within {minutes} min, this one...` |  |  | Headline of the coordinator-work-guard window block when guards.inlineRule is on. `{count}` is the number of file-changing shell steps (git, gh, Bash writes; Edit and Write are not counted here) in the window counting the stopped one, `{minutes}` the window length (guards.coordinatorWorkWindowMinutes) and `{block_at}` the step that is stopped (guards.coordinatorWorkBlockAt). The clearing step stays in the block's why and instead lines. |
 
 ### pair_rule.toml / pair_rule
 
@@ -12863,7 +12904,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.table_header` | `14 items` |  |  | The column headers of the per-integration table. |
 | `jevrep.thr_bad_outcome_re` | `^(user-override\|false-positive\|wrong\|bad\|reverted\|repeat-speculation)` |  |  | Case-insensitive pattern of the outcome names that count as evidence a changed decision was wrong; every other outcome is good. |
 | `jevrep.thr_day_ms` | `86400000` |  | ms | Length of a day, for the windows and the rollups. |
-| `jevrep.thr_failure_reasons` | `timeout, network-error, no-key, parse-error, bad-response, error` |  |  | The reasons of a baseline-only row that count as a real failure (as against off, disabled or not-applicable). |
+| `jevrep.thr_failure_reasons` | `timeout, network-error, parse-error, bad-response, error` |  |  | The reasons of a baseline-only row that count as a real failure (as against off, disabled or not-applicable). `no-key` is not listed (#764): an integration that is on but has no model key is configured off in effect, so it is reported by kind (errorsByKind) and never counted as a failed call that sends the verdict to REVIEW or REMOVE. |
 | `jevrep.thr_http_failure_prefix` | `http-` |  |  | A baseline-only row whose reason starts with this counts as a failure. |
 | `jevrep.thr_keep_changed_rate` | `0.05` |  |  | KEEP needs a changed-decision rate of at least this fraction (a decimal number in a string). |
 | `jevrep.thr_keep_good_outcome_rate` | `0.80` |  |  | KEEP needs a good-outcome rate of at least this fraction (a decimal number in a string). |
@@ -13953,7 +13994,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `diagnostics.profile_on_mode` | `full` |  |  | Mode `ctl profile on` switches to when none is named: sample or full. |
 | `diagnostics.profile_sample_every` | `10` |  |  | In `sample` mode one check call in this many is recorded. |
 | `diagnostics.shed_checks` | `1` |  |  | 1 (shipped) = past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the PURE-ADVICE checks of events that cannot block are not run (their answers are dropped, counted as answers_dropped reason `shed`). Checks listed in diagnostics.shed_never always run, and so do all checks of guard events. 0 = nothing is shed. |
-| `diagnostics.shed_never` | `31 entries` |  |  | Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed. #312: the essential reminders (task tracker, task list, workspace inbox and child gate, verify-first) are listed, and so are the checks whose non-guard half carries an enforcement rule (afk-mode, advisor-guard); `status` delivery.essential_shed counts how many answers of the checks listed here were shed anyway (it must stay 0). |
+| `diagnostics.shed_never` | `36 entries` |  |  | Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed. #312: the essential reminders (task tracker, task list, workspace inbox and child gate, verify-first) are listed, and so are the checks whose non-guard half carries an enforcement rule (afk-mode, advisor-guard); `status` delivery.essential_shed counts how many answers of the checks listed here were shed anyway (it must stay 0). |
 | `diagnostics.shed_session_unknown` | `-` |  |  | Session key of a shed answer whose request named no session, in status budget.shed_by_session. |
 | `diagnostics.shed_sessions_max` | `64` |  |  | Sessions kept in the per-session shed report (status budget.shed_by_session: session -> check -> answers shed); the first-named session is evicted when full. |
 | `diagnostics.shed_tier_by_check` | `8 entries` |  |  | Shed tier per check (#464). Past the HARD CPU limit only a check of tier diagnostics.shed_tier_optional is shed; every other tier (`reminder`, the default) keeps running, so the rule reminders the agent needs are never dropped. The reminders shed most in the 2026-10-30 audit cost almost nothing (switch-notice about 1 us, procwatch-advisory 0.4 ms, limit-conserve-inject 0.6 ms, gh-rt-advisory 1 ms, idle-agent-sweep 7.9 ms mean): shedding them saved no CPU. The optional tier is status and version notices whose loss costs the agent no rule. diagnostics.shed_never still wins. |
@@ -15530,6 +15571,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
+| `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task, unknown_state, plan_unknown, running). |
 | `misfire_suppressed` | counter | suppressions | guard, reason | Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason. |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
 | `ctx_keep_dropped` | counter | contexts | event, check | Model-facing contexts dropped by the per-event budget while ctx_keep.sw_main is on, by event and by the base id of the check. Every check seen here has a priority below dispatch.context_pin_priority. |
@@ -15664,6 +15706,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `engine_currency_check` | counter | checks | result | Engine currency checks (diagnostics.engineCurrency on, a checkout set), by result: ok, behind, files_differ, unreadable. |
 | `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
 | `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
+| `devswarm_inbox_advisory_suppressed` | counter | advisories | kind | Unread-inbox advisories not repeated, by kind (child, own): the unread set was unchanged within the cooldown (#709). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds

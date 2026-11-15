@@ -59,8 +59,8 @@ doc = "A baseline-only row whose reason starts with this counts as a failure."
 value = "http-"
 
 [jevrep.thr_failure_reasons]
-doc = "The reasons of a baseline-only row that count as a real failure (as against off, disabled or not-applicable)."
-value = ["timeout", "network-error", "no-key", "parse-error", "bad-response", "error"]
+doc = "The reasons of a baseline-only row that count as a real failure (as against off, disabled or not-applicable). `no-key` is not listed (#764): an integration that is on but has no model key is configured off in effect, so it is reported by kind (errorsByKind) and never counted as a failed call that sends the verdict to REVIEW or REMOVE."
+value = ["timeout", "network-error", "parse-error", "bad-response", "error"]
 
 [jevrep.thr_over_ms]
 doc = "A fresh call slower than this counts as slow in the overhead figures."

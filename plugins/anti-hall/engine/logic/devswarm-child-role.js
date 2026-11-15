@@ -142,6 +142,45 @@ function dwCronCtlSeed(p) {
   dwCronCtlWrite(sid, { deleted: true, at: ah.clock.now() });
 }
 
+// ---- inbox advisories speak on change or after a cooldown (devswarm.inboxAdvisoryOnChange, #709) ----
+// The unread-inbox advisory of a child and of a Primary used to repeat on every prompt while the same mail sat unread. Now it speaks when the
+// unread SET (a signature of its message identities, never a count alone) differs from the last one spoken in this session, or when the
+// cooldown since that emission has passed. A new unread message always differs, so it speaks at once. The records of every session and kind
+// live in ONE store file ({e: {"<kind>:<sid>": {sig, at}}}), capped in entries and pruned by age; the check and the record of an emission are
+// one step under the store lock (the same lock helper the spawn reservation uses), so two prompts cannot both speak or overwrite each other.
+function dwUnreadStoreRel() { return ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_prompt.unread_seen_file'); }
+function dwUnreadStore() {
+  var raw = ah.state.readText(dwUnreadStoreRel()), doc = null;
+  try { doc = raw === null ? null : JSON.parse(raw); } catch (e) { doc = null; }
+  return doc && typeof doc === 'object' && doc.e && typeof doc.e === 'object' && !Array.isArray(doc.e) ? doc.e : {};
+}
+// true: speak (the emission is recorded in the same step); false: the same unread set was spoken within the cooldown. `kind`: child | own.
+function dwUnreadDecide(kind, sid, sig, now) {
+  if (!sid || ah.settings.bool('devswarm_prompt.sw_unread_on_change') !== true) return true;
+  var lock = null;
+  try { lock = ah.state.lock(ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_prompt.unread_seen_lock'), ah.cfg('devswarm_prompt.unread_seen_lock_group')); } catch (e) { lock = null; }
+  if (lock === null) return true; // the store cannot be held: speak, record nothing (the next turn decides again)
+  try {
+    var store = dwUnreadStore(), k = kind + ':' + String(sid), rec = store[k], speak = true;
+    if (rec && typeof rec === 'object' && rec.sig === sig && typeof rec.at === 'number' && isFinite(rec.at)) {
+      var gap = now - rec.at;
+      speak = gap < 0 || gap >= ah.settings.num('devswarm_prompt.set_unread_cooldown_min') * ah.cfgNum('devswarm_prompt.ms_per_minute');
+    }
+    if (speak) {
+      store[k] = { sig: sig, at: now };
+      var ttl = ah.cfgNum('devswarm_prompt.unread_seen_ttl_hours') * ah.cfgNum('devswarm_parent.ms_per_hour'), max = ah.cfgNum('devswarm_prompt.unread_seen_max');
+      var keys = Object.keys(store).filter(function (x) { var r = store[x]; return r && typeof r === 'object' && typeof r.at === 'number' && isFinite(r.at) && !(now - r.at > ttl); });
+      keys.sort(function (x, y) { return store[y].at - store[x].at; }); // newest first
+      var kept = {};
+      keys.slice(0, max).forEach(function (x) { kept[x] = store[x]; });
+      // staged until the reply is delivered (the dispatcher drops it with an answer it discards, e.g. over the CPU budget): the notice that was never delivered is not recorded as shown
+      var home = ah.env.get(ah.cfg('env.home')), body = JSON.stringify({ e: kept });
+      try { if (!(home && home.charAt(0) === '/' && ah.state.op(home, 'after_reply', dwUnreadStoreRel(), body))) ah.state.writeAtomic(dwUnreadStoreRel(), body); } catch (e) { /* best effort: the next turn speaks again */ }
+    }
+    return speak;
+  } finally { try { ah.state.unlock(lock); } catch (e) { /* the host releases a lock still held when the call ends */ } }
+}
+
 function dwChildContext(cli, watcher, agent, id, cron, tickOnly) {
   return dwContext(true, cli, watcher, agent, id, cron, tickOnly);
 }

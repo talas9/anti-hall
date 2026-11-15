@@ -44,8 +44,8 @@ var dord = {
   // Owner by id of the NAMED list's tasks, read from the store exactly: null when it cannot be (no session id, no files, any file unreadable),
   // and then nothing in the shared list is ordered. Every path that gives an order goes through this gate (`foreign`).
   owners: function (sid) {
-    var gaps = { bad: 0 }, st = tk.storeTasks(ah.home(), sid, gaps);
-    if (st === null || gaps.bad > 0) return null;
+    var gaps = { n: 0 }, st = tk.storeTasks(ah.home(), sid, gaps);
+    if (st === null || gaps.n > 0) return null;
     var m = {};
     st.forEach(function (t) { m[t.id] = t.owner; });
     return m;
