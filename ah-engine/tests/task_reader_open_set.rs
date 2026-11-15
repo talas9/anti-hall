@@ -1309,7 +1309,7 @@ fn violations(case: &Case, consumer: &str, golden: &Value, got: &Decision, ghost
     }
     if gk == Kind::Block && got.kind == Kind::Block {
         // #764: the authoritative empty store supersedes the tasks the base named from the transcript, so no id is owed (the kind still is)
-        let superseded = case.cell.store == Store::Empty && case.cell.named != Named::SetWithList;
+        let superseded = case.cell.store == Store::Empty && case.cell.named != Named::SetWithList && case.store_files.is_empty();
         let missing: Vec<&String> = g_ids.difference(ghosts).filter(|i| !got.ids.contains(*i)).collect();
         if !missing.is_empty() && !superseded {
             out.push(format!("{at}: the block no longer names task(s) {missing:?} (names {:?})", got.ids));
