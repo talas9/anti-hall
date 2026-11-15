@@ -51,8 +51,10 @@ thread_local! {
     static BEAT: RefCell<Option<(Arc<AtomicU64>, Instant)>> = const { RefCell::new(None) };
     /// The connection of the request being served when its client keeps it open until it has the verdict (an ack-mode client).
     static PEER: Cell<Option<std::os::fd::RawFd>> = const { Cell::new(None) };
-    /// When the check running on this thread must end ([`check_window`]): its share of the request, earlier than the request's hard deadline.
-    static CHECK_CAP: Cell<Option<(Instant, Duration)>> = const { Cell::new(None) };
+    /// When the check running on this thread must end ([`cap_check`]): its budget, earlier than the request's hard deadline.
+    static CHECK_CAP: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// Whether the running check was cut at its cap ([`note_cap_cut`]).
+    static CAP_CUT: Cell<bool> = const { Cell::new(false) };
     /// Checks skipped on this thread because their client had gone, since [`take_client_gone_skips`].
     static GONE_SKIPS: Cell<u64> = const { Cell::new(0) };
 }
@@ -157,59 +159,64 @@ pub fn set_cut_armed(on: bool) {
 /// running (a transcript window of many megabytes, which the interpreter cannot interrupt) stops early, and the call fails as
 /// a cut (its check gets no answer and takes its failure policy).
 /// A call armed with a grace ([`set_cut_grace`], the check's `diagnostics.deadline_grace_ms`) is cut only once the request is that far
-/// past its hard deadline, the same moment the interpreter's own request limit trips.
+/// past its hard deadline, the same moment the interpreter's own request limit trips. A check running under a cap ([`cap_check`]) is
+/// also cut when its cap passes (the grace never extends a cap: it is time the checks after it keep).
 pub fn cut_due() -> bool {
-    CUT_GRACE.with(Cell::get).is_some_and(|grace| !in_time() && (grace == 0 || past_hard_ms() > grace))
+    CUT_GRACE.with(Cell::get).is_some_and(|grace| cut_point(grace).is_some_and(|at| Instant::now() >= at))
+}
+
+/// When a call armed with `grace_ms` is cut: the request's hard deadline plus the grace, or the running check's cap when that comes
+/// first; `None` outside a request.
+pub fn cut_point(grace_ms: u64) -> Option<Instant> {
+    let hard = REQ.with(|r| r.get()).and_then(|r| r.hard)? + Duration::from_millis(grace_ms);
+    Some(CHECK_CAP.with(Cell::get).map_or(hard, |cap| cap.min(hard)))
 }
 
 /// When the client of the request this thread serves stops waiting (after the reply slack); `None` outside a request.
 pub fn at() -> Option<Instant> {
-    hard_at()
+    REQ.with(|r| r.get()).and_then(|r| r.hard)
 }
 
-/// The moment the work on this thread is cut: the request's hard deadline, or the running check's share of it ([`check_window`]) when
-/// that ends sooner.
-fn hard_at() -> Option<Instant> {
-    let hard = REQ.with(|r| r.get()).and_then(|r| r.hard)?;
-    Some(CHECK_CAP.with(Cell::get).map_or(hard, |(cap, _)| cap.min(hard)))
-}
-
-/// Ends the running check's share of the request when dropped.
+/// The cap of the running check: lifted, and its cut state cleared, when dropped.
 pub struct CheckWindow(());
 
 impl CheckWindow {
-    /// Whether the share ended the check: its cap passed before the request's own hard deadline did.
-    pub fn share_spent(&self) -> bool {
-        let hard = REQ.with(|r| r.get()).and_then(|r| r.hard);
-        CHECK_CAP.with(Cell::get).zip(hard).is_some_and(|((cap, _), hard)| cap < hard && Instant::now() >= cap)
-    }
-
-    /// The share, in ms (0 when no cap is set).
-    pub fn share_ms(&self) -> u128 {
-        CHECK_CAP.with(Cell::get).map_or_else(Default::default, |(_, share)| share.as_millis())
+    /// Whether the check was cut at its cap: its call was interrupted (or its scan stopped) because the cap passed before the request's
+    /// own hard deadline did ([`note_cap_cut`]).
+    pub fn cut(&self) -> bool {
+        CAP_CUT.with(Cell::get)
     }
 }
 
 impl Drop for CheckWindow {
     fn drop(&mut self) {
         CHECK_CAP.with(|c| c.set(None));
+        CAP_CUT.with(|c| c.set(false));
     }
 }
 
-/// The check about to run on this thread may use only its share of the request: `daemon.check_share_pct` of the event's wall ceiling
-/// ([`ceiling_ms`]), not less than `daemon.check_share_min_ms`, from now. Past it the check is cut exactly as at the hard deadline (a
-/// script call is interrupted, a native scan stops at [`cut_due`], a host call is clamped by [`remaining`]) and answers by its failure
-/// policy, so ONE slow check cannot use up the clock the checks after it need (#763: a 7.5 s task-guard cut every guard behind it).
-/// A check that never takes its share is untouched, and the request's own hard deadline still ends everything when it comes first.
-/// Outside a request, or with the share off (0, or 100 = the whole ceiling), nothing is capped. Dropping the returned guard lifts the cap.
-pub fn check_window() -> CheckWindow {
-    let pct = crate::defaults::num("daemon.check_share_pct");
-    if in_request() && pct != 0 {
-        let ceiling = Duration::from_millis(ceiling_ms(&event().unwrap_or_default()));
-        let share = ceiling.mul_f64(pct as f64 / 100.0).max(crate::defaults::millis("daemon.check_share_min_ms"));
-        CHECK_CAP.with(|c| c.set(Some((Instant::now() + share, share))));
+/// The check about to run on this thread must end `budget` from now (#763): the dispatcher gives it what the request has left less
+/// the time the checks after it are reserved, so ONE slow check cannot use up the clock the guards behind it need. Past the cap the
+/// check is cut exactly as at the hard deadline (a script call is interrupted, a native scan stops at [`cut_due`], a host call is
+/// clamped by [`remaining`]). Set only for a check that may be cut at the deadline (`script::cut_at_deadline`): a check that fails
+/// closed on a guard event, or whose deadline policy is `finish`, gets no cap, so none of its host calls are clamped by one.
+pub fn cap_check(budget: Duration) -> CheckWindow {
+    if in_request() {
+        CHECK_CAP.with(|c| c.set(Some(Instant::now() + budget)));
     }
+    CAP_CUT.with(|c| c.set(false));
     CheckWindow(())
+}
+
+/// Whether the running check's cap, not the request's hard deadline, is what has passed: a cut now is a cut at the cap.
+pub fn cap_passed() -> bool {
+    let hard = at();
+    CHECK_CAP.with(Cell::get).zip(hard).is_some_and(|(cap, hard)| cap < hard && Instant::now() >= cap)
+}
+
+/// The running check was cut at its cap ([`CheckWindow::cut`]).
+pub fn note_cap_cut() {
+    CAP_CUT.with(|c| c.set(true));
 }
 
 /// Time left before the client's fail-fast wait (the soft deadline) ends; `None` outside a request.
@@ -297,6 +304,7 @@ pub fn end() {
     EVENT.with(|e| *e.borrow_mut() = None);
     REQ.with(|r| r.set(None));
     CHECK_CAP.with(|c| c.set(None));
+    CAP_CUT.with(|c| c.set(false));
     PEER.with(|p| p.set(None));
 }
 
@@ -325,14 +333,14 @@ pub fn in_request() -> bool {
     REQ.with(|r| r.get().is_some())
 }
 
-/// Whether the client still waits: no request, or a deadline not yet reached.
+/// Whether the client still waits: no request, or a deadline not yet reached (the request's own deadline, not a running check's cap).
 pub fn in_time() -> bool {
-    remaining() != Some(Duration::ZERO)
+    at().is_none_or(|at| Instant::now() < at)
 }
 
 /// How many milliseconds past the HARD deadline the request is (0 before it, and outside a request).
 pub fn past_hard_ms() -> u64 {
-    hard_at().map_or(0, |at| Instant::now().saturating_duration_since(at).as_millis() as u64)
+    at().map_or(0, |at| Instant::now().saturating_duration_since(at).as_millis() as u64)
 }
 
 /// Hold a staged write (`tmp` already written) until the reply is delivered.
@@ -360,9 +368,11 @@ pub fn discard_staged() {
     }
 }
 
-/// Time left before the client stops waiting, if a request with a deadline is being served on this thread.
+/// Time left before the client stops waiting, if a request with a deadline is being served on this thread; while a check runs under a
+/// cap ([`cap_check`]), the time left before that cap when it comes first (a host call of the check is clamped to it).
 pub fn remaining() -> Option<Duration> {
-    hard_at().map(|at| at.saturating_duration_since(Instant::now()))
+    let end = at().map(|hard| CHECK_CAP.with(Cell::get).map_or(hard, |cap| cap.min(hard)));
+    end.map(|at| at.saturating_duration_since(Instant::now()))
 }
 
 /// `budget`, cut to the time left before the client stops waiting.
@@ -502,6 +512,30 @@ mod tests {
         beat();
         assert!(slot.load(Ordering::Relaxed) > 5000, "the beat records the progress time: {}", slot.load(Ordering::Relaxed));
         BEAT.with(|b| *b.borrow_mut() = None);
+    }
+
+    /// #763: a check's cap ends its calls and scans before the request's deadline, its grace never extends the cap, the request's own
+    /// clock is untouched, and dropping the window lifts the cap.
+    #[test]
+    fn a_check_cap_cuts_before_the_request_deadline_and_is_lifted_after() {
+        begin_now();
+        set_window(60_000, 60_000);
+        let w = cap_check(Duration::ZERO);
+        assert!(remaining().is_some_and(|r| r == Duration::ZERO), "a host call is clamped to the cap");
+        assert!(in_time(), "the request's client still waits");
+        set_cut_grace(Some(400));
+        assert!(cut_due(), "the grace past the request deadline does not extend a cap");
+        assert!(cap_passed(), "it is the cap that passed, not the request deadline");
+        assert!(!w.cut(), "nothing was cut yet");
+        note_cap_cut();
+        assert!(w.cut());
+        drop(w);
+        assert!(!cut_due(), "the cap is lifted with its window");
+        assert!(remaining().is_some_and(|r| r > Duration::from_secs(50)), "the request's own clock is back");
+        set_cut_grace(None);
+        end();
+        let w = cap_check(Duration::ZERO);
+        assert!(remaining().is_none() && !cap_passed() && !w.cut(), "outside a request nothing is capped");
     }
 
     /// Codex P2 (#463): the deadline grace of a check reaches the native scans its script runs, not only the interpreter.

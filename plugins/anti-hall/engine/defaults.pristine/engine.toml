@@ -336,17 +336,20 @@ min = 0
 max = 100
 unit = "%"
 
-[daemon.check_share_pct]
-doc = "The longest ONE check may run, as a percentage of the request's wall ceiling for its event (daemon.request_hard_ms or its daemon.request_hard_event_ms row), never more than the request has left and never less than daemon.check_share_min_ms. A check that runs past it is cut there exactly as at the hard deadline (a script call is interrupted, a native scan stops, a host call is clamped) and answers by its failure policy (script.failure_mode_by_check), counted at status advisory deadline_cut.<check>.<outcome> and logged as check_share_cut, while the checks after it still run (#763: one 7.5 s task-guard used the whole 8000 ms Stop ceiling and every guard behind it was dropped as hard_deadline: 867 Stop and 125 PreToolUse guard answers). A check that fails closed on a guard event, or whose deadline policy is `finish`, is never cut (script.cut_at_request_deadline). 0 = no share; 100 = the whole ceiling (only the request clock bounds a check)."
-value = 40
+[daemon.check_reserve_ms]
+doc = "Time kept for ONE check that may be cut at the deadline (script.cut_at_request_deadline) while the checks before it in the same request run (#763). Before a check starts it may use what the request has left less the sum of these reserves over the cut-eligible checks after it (never less than its own reserve, never more than what is left); past that cap it is cut exactly as at the hard deadline (a script call is interrupted, a native scan stops, a host call is clamped) and its answer is recorded as a drop (diagnostics.drop_reason_check_cut, counted deadline_cut.<check>.unsure), never as an allow. So a slow early check, or several, cannot use up the clock the guards behind it need: before, one 7.5 s task-guard used the whole 8000 ms Stop ceiling and every guard behind it was dropped as hard_deadline (867 Stop and 125 PreToolUse guard answers). A check that fails closed on a guard event, or whose deadline policy is `finish`, is never capped and never reserved for. This is the reserve of an event without a daemon.check_reserve_event_ms row and a check without a daemon.check_reserve_by_check_ms row: 100 ms each: a Bash PreToolUse call runs 17 checks, 11 of them cut-eligible (1100 ms of the 2000 ms ceiling), so the first still has about 850 ms."
+value = 100
 min = 0
-max = 100
-unit = "%"
+unit = "ms"
 
-[daemon.check_share_min_ms]
-doc = "The least time ONE check always has (daemon.check_share_pct of a short ceiling would cut a normal check on a loaded host: the PreToolUse ceiling is 2000 ms). Still never more than the request has left."
-value = 1000
-min = 0
+[daemon.check_reserve_event_ms]
+doc = "Per hook event, the reserve of each cut-eligible check (see daemon.check_reserve_ms). Stop and SubagentStop have the 8000 ms ceiling and about 15 cut-eligible checks: 300 ms each (4500 ms) covers every Stop check run the engine log recorded past the client's fail-fast wait (the slowest after the first check: speculation-guard 279 ms, task-pair-guard 197 ms, devswarm-parent-gate 188 ms) and still leaves the first check (task-guard) about 3450 ms."
+value = { Stop = 300, SubagentStop = 300 }
+unit = "ms"
+
+[daemon.check_reserve_by_check_ms]
+doc = "Per check, its reserve on every event (see daemon.check_reserve_ms), over the event's row. Empty: no check is known to need more than its event's reserve."
+value = {}
 unit = "ms"
 
 [daemon.request_wall_warn_ms]

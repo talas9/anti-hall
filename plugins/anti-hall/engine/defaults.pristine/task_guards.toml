@@ -275,6 +275,11 @@ doc = "How much of the transcript the backfill reads at a time."
 value = 1048576
 min = 4096
 
+[taskstate.cut_check_lines]
+doc = "How many transcript lines the task-state scans (the tail reconstruction, the scan view and the widened task-activity search) read between two looks at their call's cut (the request's client deadline, or the check's cap: daemon.check_reserve_ms); the backfill looks once per chunk (taskstate.backfill_chunk_bytes). A cut scan stops and answers unsure (never a partial list taken as whole, and never kept for the next call), so the call fails as a cut and the checks after it keep their time (#763)."
+value = 256
+min = 1
+
 [taskstate.backfill_exact_bytes]
 doc = "How far back the backfill scans before the engine hands the call to Node: Node's own byte cap (64 MiB). Node also stops after 150 ms of wall clock; the engine scans a fixed number of bytes instead so its answer never depends on machine speed. Where Node's clock would have stopped it short on a slow machine, the engine finds the subjects Node missed (a fuller note, never a missing one); past this bound it defers rather than guess where Node would have stopped."
 value = 67108864
