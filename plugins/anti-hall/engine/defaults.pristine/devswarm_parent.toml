@@ -814,3 +814,7 @@ value = { section = "devswarm", key = "wakeWatchRearmCooldownMs", env = "ANTIHAL
 [devswarm_parent.skip_closed_enrichment]
 doc = "Skip activity, finish and transcript enrichment when every child roster row is explicitly closed or archived and no child session is alive. Unknown rows retain enrichment. Pending mail and escalations still surface. Shared by Claude/OMC and Codex/OMX. Off restores per-prompt enrichment."
 value = { section = "devswarm", key = "skipClosedEnrichment", env = "ANTIHALL_DEVSWARM_SKIP_CLOSED_ENRICHMENT", type = "boolean", default = true }
+
+[metric.devswarm_inbox_advisory_suppressed]
+doc = "Unread-inbox advisories not repeated, by kind (child, own): the unread set was unchanged within the cooldown (#709)."
+value = { kind = "counter", unit = "advisories", labels = ["kind"] }
