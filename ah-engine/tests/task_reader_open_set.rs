@@ -583,7 +583,10 @@ fn the_reader_keeps_every_open_task_the_base_reader_keeps() {
         let rows: Vec<String> = if cell.trans == Trans::Missing { Vec::new() } else { rows_of(cell.trans, cell.rows).iter().map(|v| v.to_string()).collect() };
         let ghosts = proven_ghosts(&rows, &golden_open);
         ghosts_removed += ghosts.len();
-        let want: BTreeSet<String> = golden_open.difference(&ghosts).cloned().collect();
+        // XF-D3 (GH 606 shape 3, #762): with the named list selected and readable it IS the list, so the base's open set (read from the
+        // session's own, now stale, store and the transcript) is superseded by the named list's own task, never a floor for the new reader
+        let want: BTreeSet<String> =
+            if cell.named == Named::SetWithList { BTreeSet::from(["9".to_string()]) } else { golden_open.difference(&ghosts).cloned().collect() };
         let missing: Vec<&String> = want.difference(&got.open).collect();
         if !missing.is_empty() {
             violations.push(format!("{}: open task(s) {missing:?} kept by the base reader are missing (got {:?})", cell.key(), got.open));
@@ -1364,6 +1367,11 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
         for (name, got) in ds {
             let gd = g.get(name).unwrap_or_else(|| panic!("no golden decision {} / {name}", case.key));
             checked += 1;
+            // XF-D3: a readable named list supersedes the base's session-store and transcript reads; its decisions are pinned by the
+            // hand-written `oblig|d3|named_list_pending_task` cell, not held to the base's
+            if case.cell.named == Named::SetWithList {
+                continue;
+            }
             found.extend(violations(case, name, gd, got, &ghosts, &golden_open));
             if got.kind.name() == gd["kind"].as_str().unwrap()
                 && got.ids == gd["ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
