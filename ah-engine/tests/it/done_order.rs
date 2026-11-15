@@ -159,7 +159,7 @@ fn a_completed_task_inside_the_age_is_not_ordered_at_the_prompt() {
     let tr = s.transcript("completed");
     s.seed("1", 2, 0, 0);
     let out = s.prompt(&tr);
-    assert!(!out.contains("Do now"), "a task done 2 min ago is not ordered yet: {out}");
+    assert!(!out.contains("status=deleted"), "a task done 2 min ago is not ordered yet: {out}");
 }
 
 #[test]
@@ -181,10 +181,10 @@ fn after_the_delete_there_is_no_further_order_and_it_counts_as_followed() {
     let tr = s.transcript("completed");
     s.seed("1", 30, 1, 0);
     let out = s.task_update(&tr, "deleted");
-    assert!(!out.contains("Do now"), "the delete itself is not ordered again: {out}");
+    assert!(!out.contains("status=deleted"), "the delete itself is not ordered again: {out}");
     std::fs::remove_file(s.home().join(".claude/tasks/session-0a1b2c3d/1.json")).unwrap();
     let out = s.prompt(&tr);
-    assert!(!out.contains("Do now"), "the task is gone: no order at the next prompt: {out}");
+    assert!(!out.contains("status=deleted"), "the task is gone: no order at the next prompt: {out}");
     let rec = std::fs::read_to_string(s.record_path()).unwrap();
     assert!(!rec.contains("\"1\""), "the record dropped the deleted task: {rec}");
     let adv = s.advisory_counters();
@@ -199,15 +199,15 @@ fn the_order_repeats_only_on_the_schedule() {
     let tr = s.transcript("completed");
     s.seed("1", 40, 1, 1); // ordered once, 1 min ago; the next step is 10 min
     let out = s.prompt(&tr);
-    assert!(!out.contains("Do now"), "inside the interval: no order: {out}");
+    assert!(!out.contains("status=deleted"), "inside the interval: no order: {out}");
     s.seed("1", 40, 1, 11);
     let out = s.prompt(&tr);
     assert!(out.contains(ORDER), "past the interval: the order repeats: {out}");
     let again = s.prompt(&tr);
-    assert!(!again.contains("Do now"), "and not again on the very next prompt: {again}");
+    assert!(!again.contains("status=deleted"), "and not again on the very next prompt: {again}");
     s.seed("1", 400, 6, 600); // at the cap
     let capped = s.prompt(&tr);
-    assert!(!capped.contains("Do now"), "after done_order.max_orders the task is left alone: {capped}");
+    assert!(!capped.contains("status=deleted"), "after done_order.max_orders the task is left alone: {capped}");
     let adv = s.advisory_counters();
     assert_eq!(adv["tasklist_hygiene"]["order_emitted"], 1, "one order was emitted: {adv}");
     assert!(adv["tasklist_hygiene"]["completed_lingering"].as_u64().unwrap_or(0) >= 1, "the lingering task is counted: {adv}");
@@ -220,12 +220,12 @@ fn at_stop_the_order_blocks_only_with_the_enforce_switch_on_block() {
     let tr = s.transcript("completed");
     s.seed("1", 11, 0, 0);
     let out = s.check("task-guard", &stop(&s, &tr), &[]);
-    assert!(!out.contains("Do now"), "default enforce (advisory): the Stop is not blocked for a lingering task: {out}");
+    assert!(!out.contains("status=deleted"), "default enforce (advisory): the Stop is not blocked for a lingering task: {out}");
     s.enforce_block();
     let out = s.check("task-guard", &stop(&s, &tr), &[]);
     assert!(out.contains("\"decision\":\"block\"") && out.contains(ORDER), "enforce = block: the Stop is blocked with the order: {out}");
     let again = s.check("task-guard", &stop(&s, &tr), &[]);
-    assert!(!again.contains("Do now"), "the next Stop inside the interval is not blocked again: {again}");
+    assert!(!again.contains("status=deleted"), "the next Stop inside the interval is not blocked again: {again}");
 }
 
 impl Scratch {
@@ -259,7 +259,7 @@ fn a_private_completed_id_never_orders_the_delete_of_a_teammates_pending_task_in
     let tr = s.transcript("completed");
     s.seed("1", 30, 0, 0);
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
-    assert!(!out.contains("Do now"), "#1 of the shared list is pending and another owner's: no delete order: {out}");
+    assert!(!out.contains("status=deleted"), "#1 of the shared list is pending and another owner's: no delete order: {out}");
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn a_named_list_id_with_no_store_directory_is_ambiguous_and_orders_nothing() {
     let tr = s.transcript("completed");
     s.seed("1", 30, 0, 0);
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "no-such-list")]);
-    assert!(!out.contains("Do now"), "which list the harness writes is unknown: no order: {out}");
+    assert!(!out.contains("status=deleted"), "which list the harness writes is unknown: no order: {out}");
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn an_unreadable_file_in_the_named_list_orders_nothing_and_never_falls_back_to_t
     std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
     std::fs::write(s.record_path(), rec.to_string()).unwrap();
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
-    assert!(!out.contains("Do now"), "an unreadable list file: the list is unknown, no order from the transcript: {out}");
+    assert!(!out.contains("status=deleted"), "an unreadable list file: the list is unknown, no order from the transcript: {out}");
 }
 
 #[test]
