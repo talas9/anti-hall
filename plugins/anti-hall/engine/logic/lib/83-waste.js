@@ -67,7 +67,7 @@ var waste = {
       var top = rose[0];
       ah.metric('waste_warnings_total', ['category', top.cat]);
       var what = text.render(ah.cfg('waste.msg_what'), { tokens: String(top.sum), cat: top.cat, m: String(ah.settings.num('waste.num_window_min')), level: String(top.level), levels: String(mult.length) });
-      return text.message('tip', ah.cfg('waste.guard_name'), { what: what, instead: ah.cfg('waste.msg_instead') });
+      return text.message('order', ah.cfg('waste.guard_name'), { what: what, instead: ah.cfg('waste.msg_instead') });
     } catch (e) { return ''; }
   },
 };

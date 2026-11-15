@@ -182,7 +182,7 @@ function mrHandover(p, corpus) {
   var rel = ah.cfg('model_routing.state_dir') + '/' + ah.cfg('model_routing.handover_state_prefix') + safe + ah.cfg('model_routing.handover_state_suffix');
   if (ah.fs.kind(home + '/' + rel) !== null) return null; // already advised this session
   if (!ah.state.writeAtomic(rel, ah.cfg('model_routing.handover_state_json'))) return null; // cannot persist the cap: stay silent
-  return mrAdvise(text.message('tip', ah.cfg('model_routing.handover_guard'), {
+  return mrAdvise(text.message('order', ah.cfg('model_routing.handover_guard'), {
     what: ah.cfg('model_routing.msg_handover_what'), why: ah.cfg('model_routing.msg_handover_why'), instead: ah.cfg('model_routing.msg_handover_instead'),
   }));
 }

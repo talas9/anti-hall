@@ -104,6 +104,7 @@ mod task_checks_e2e;
 mod task_readers_store;
 mod telemetry;
 mod temp_leaks;
+mod tip_is_not_an_order;
 mod transcript_index;
 mod transcript_scan_peak;
 mod transcript_store;

@@ -705,6 +705,26 @@ value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on backgroun
 doc = "The kind label of a teammate waiting on background work in the idle-order counter."
 value = "teammate_waiting"
 
+[idle_order.kind_open_task]
+doc = "The kind label of an idle teammate that still owns an open task in the idle-order counter and record file name (GH #764)."
+value = "teammate_open_task"
+
+[idle_order.task_max]
+doc = "Most characters of an open task's subject named in the resume order; a longer one is cut with an ellipsis."
+value = 80
+
+[idle_order.item_task]
+doc = "One open task of an idle owner in the resume order. Placeholders: {task} the task subject, {name} the owner, {min} minutes idle."
+value = "task {task}, owner {name}"
+
+[idle_order.task_joiner]
+doc = "Separator between the open tasks named in one resume order."
+value = "; "
+
+[idle_order.msg_open_task]
+doc = "The resume order for a teammate or subagent that is idle past guards.idleOrderAfterMin while it still owns a pending or in_progress task. It repeats on idle_order.steps_min and starts again when the owner worked and went idle again. Placeholders: {n} how many, {list} the tasks and owners, {id} the first owner's name."
+value = "⚠️ Do now: resume or reassign {list}."
+
 [metric.idle_order]
-doc = "Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, open_task, unknown_state, plan_unknown, running)."
+doc = "Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running)."
 value = { kind = "counter", unit = "orders", labels = ["kind", "outcome", "reason"] }

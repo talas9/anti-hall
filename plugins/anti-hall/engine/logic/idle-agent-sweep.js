@@ -30,21 +30,30 @@ function idMessage(list, codex, now) {
   var more = list.length > maxNamed ? text.render(ah.cfg('idle_sweep.more'), { m: list.length - maxNamed }) : '';
   var n = list.length, be = ah.cfg(n === 1 ? 'idle_sweep.be_one' : 'idle_sweep.be_many');
   var call = text.render(ah.cfg(codex ? 'idle_sweep.call_codex' : 'idle_sweep.call_claude'), { id: list[0].id });
-  return text.message('tip', ah.cfg('idle_sweep.guard_name'), {
+  return text.message('order', ah.cfg('idle_sweep.guard_name'), {
     what: text.render(ah.cfg('idle_sweep.what'), { n: n, be: be, past: words.past, shown: shown.join(', '), more: more }),
     why: text.render(ah.cfg('idle_sweep.why'), { why_head: words.why_head, past: words.past }),
     instead: text.render(ah.cfg('idle_sweep.instead'), { verb: words.verb, call: call }),
   });
 }
 
-// GH #744: the open-task owners of this session (names that own an unfinished task), or null when the list cannot be read.
+// GH #744: the open tasks of this session that have an owner, as {owners: [{owner, subject}], store}, or null when the list cannot be read.
+// `store` is true only when the session's own task store answered. GH #764: a resume order is given from the store alone: tk.tasksOf
+// reads a listable store, empty or not, as the list; the transcript still holds tasks the store has since dropped, so an owner it
+// names is never trusted for an order.
 function idOpenOwners(p, tp, home) {
   var sid = typeof p.session_id === 'string' ? p.session_id : '';
   var r = tk.tasksOf(home, sid, tp, 'state', true); // strict: a store file the read dropped is an unknown state, no order
   if (r.unsure || r.unreadable) return null;
   var out = [];
-  (r.tasks || []).forEach(function (t) { if (tk.isOpen(t) && typeof t.owner === 'string' && t.owner !== '') out.push(t.owner); });
-  return out;
+  (r.tasks || []).forEach(function (t) { if (tk.isOpen(t) && typeof t.owner === 'string' && t.owner !== '') out.push({ owner: t.owner, subject: idOneLine(typeof t.content === 'string' ? t.content : '', ah.cfgNum('idle_order.task_max')) }); });
+  return { owners: out, store: r.store === true };
+}
+
+// GH #764: the first open task the named agent owns, or null.
+function idTaskOf(owners, name) {
+  for (var i = 0; i < owners.length; i++) if (owners[i].owner === name) return owners[i];
+  return null;
 }
 
 // GH #744: a teammate that went idle saying it waits on its own background work (an idle_notification with no idleReason), still idle
@@ -80,8 +89,9 @@ function idWaiting(tp, now, finished) {
 }
 
 // GH #744: the orders for agents idle past guards.idleOrderAfterMin, on the escalating schedule. Returns null when orders are not in
-// effect (off, no session to keep a record for, or a Codex session: it has no task source to tell an owned agent from an idle one, so
-// it gets no order and the plain advisory speaks as before). Otherwise {plans, text, handled}: `handled` are the agents the order path
+// effect (off, no session to keep a record for, or a Codex session: Codex has no task-owner concept (no owner field on a plan item
+// or a spawned agent, see codex/README.md), so there is no owned task to resume and no source to tell an owned agent from an idle one;
+// it gets no order of either kind and the plain advisory speaks as before). Otherwise {plans, text, handled}: `handled` are the agents the order path
 // owns (idle past the threshold), so the plain advisory never speaks for them - a suppressed order (open task, inside the interval,
 // cap spent, task state unreadable) is silence, never the unfiltered "stop each finished agent" tip.
 function idOrder(p, tp, agents, codex, now) {
@@ -90,16 +100,18 @@ function idOrder(p, tp, agents, codex, now) {
   if (home === null) return null;
   var kind = ah.cfg('idle_order.kind_teammate'), after = idleOrder.afterMs(), handled = {};
   agents.forEach(function (a) { if (now - a.idleSinceMs >= after) handled[a.id] = true; });
-  var owners = idOpenOwners(p, tp, home);
+  var read = idOpenOwners(p, tp, home), owners = read === null ? null : read.owners;
   if (owners === null) { // unknown task state: no order (an owned agent must never be told to stop)
     ah.unable('idle-agent-sweep:tasks_unknown');
     Object.keys(handled).forEach(function () { idleOrder.skip(kind, 'unknown_state'); });
     return { plans: [], text: '', handled: handled };
   }
-  var cands = [], keep = [];
+  var cands = [], keep = [], oc = [];
   agents.forEach(function (a) {
     if (!handled[a.id]) return;
-    if (owners.indexOf(a.id) >= 0) { idleOrder.skip(kind, 'open_task'); keep.push(a.id); return; }
+    var held = idTaskOf(owners, a.id);
+    if (held !== null && !read.store) { idleOrder.skip(kind, 'unknown_state'); return; } // owner named only by the transcript: no order of any kind
+    if (held !== null) { oc.push({ id: a.id, label: a.id, task: held.subject, idleMs: now - a.idleSinceMs }); return; } // GH #764: idle but owns open work: resume order
     cands.push({ id: a.id, label: idOneLine(a.label, ah.cfgNum('idle_sweep.label_max')), idleMs: now - a.idleSinceMs });
   });
   var plans = [], texts = [];
@@ -111,14 +123,20 @@ function idOrder(p, tp, agents, codex, now) {
   if (waiting.length > 0) {
     var rows = ah.transcript.trackedAgents(p);
     waiting.forEach(function (a) {
-      if (owners.indexOf(a.id) >= 0) { idleOrder.skip(waitKind, 'open_task'); wk.push(a.id); return; }
+      var heldTask = idTaskOf(owners, a.id);
       if (ah.transcript.trackedLiveness(a.id, rows) === true) { idleOrder.skip(waitKind, 'running'); wk.push(a.id); return; }
+      if (heldTask !== null && !read.store) { idleOrder.skip(waitKind, 'unknown_state'); return; }
+      if (heldTask !== null) { oc.push({ id: a.id, label: a.id, task: heldTask.subject, idleMs: now - a.idleSinceMs }); return; } // GH #764
       wc.push({ id: a.id, label: idOneLine(a.label, ah.cfgNum('idle_sweep.label_max')), idleMs: now - a.idleSinceMs });
     });
   }
   var wplan = idleOrder.plan(waitKind, p.session_id, wc, now, wk);
   plans.push(wplan);
   if (wplan.due.length > 0) texts.push(text.render(ah.cfg('idle_order.msg_waiting'), { n: wplan.due.length, list: idleOrder.list(wplan.due, 'idle_order.item_mate'), id: wplan.due[0].id }));
+  // GH #764: agents that are idle past the threshold while they still own an open task: the coordinator is ordered to resume or reassign it
+  var openKind = ah.cfg('idle_order.kind_open_task'), oplan = idleOrder.plan(openKind, p.session_id, oc, now, []);
+  plans.push(oplan);
+  if (oplan.due.length > 0) texts.push(text.render(ah.cfg('idle_order.msg_open_task'), { n: oplan.due.length, list: idleOrder.list(oplan.due, 'idle_order.item_task', 'idle_order.task_joiner'), id: oplan.due[0].id }));
   return { plans: plans, text: texts.join('\n'), handled: handled };
 }
 

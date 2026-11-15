@@ -93,6 +93,10 @@ value = ".anti-hall"
 doc = "Leading icon of a block or advisory message, by kind."
 value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "💡", update = "💡", error = "⛔" }
 
+[guardkit.order_form]
+doc = "The order form: a message that asks the agent for an action, in the single-line shape of the idle orders (idle_order.msg_*): one icon, then `Do now:`. Placeholders: {name} the guard's plain name, {what} the claim, {action} the one action."
+value = "⚠️ Do now: {name}: {what} {action}"
+
 [guardkit.msg_head]
 doc = "Text between the icon and the guard name in every block or advisory message."
 value = " "
