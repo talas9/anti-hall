@@ -6709,7 +6709,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.script_re` | `[\w-]+\.js` |  |  | The name pattern of a hook script in the registry. |
 | `doctor.self_plugin_key` | `anti-hall@anti-hall` |  |  | The enabledPlugins key of anti-hall itself, left out of the scan of other plugins. |
 | `doctor.selftest_home_prefix` | `anti-hall-doctor-` |  |  | The name prefix of the throwaway home the live self-tests run against. |
-| `doctor.selftests` | `27 items` |  |  | The live self-tests. Each runs the named built-in check in-process on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set. |
+| `doctor.selftests` | `27 items` |  |  | The live self-tests. Each runs the named built-in check in-process on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set, except that a row naming `needs` (a program) uses `warn` only when that program is not on PATH and `bad` otherwise. |
 | `doctor.service_exec_re` | `(?m)^ExecStart=(.*)$` |  |  | The command of a systemd unit file. |
 | `doctor.service_ext` | `.service` |  |  | The extension of a systemd unit file. |
 | `doctor.service_quoted_re` | `"((?:[^"\\]\|\\.)*)"` |  |  | A double-quoted word of a systemd command. |

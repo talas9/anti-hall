@@ -1270,16 +1270,19 @@ fn nd_an_engine_on_path_is_a_working_engine_when_the_home_install_is_not_executa
 
 #[test]
 fn nd_the_doctor_never_starts_node() {
-    // a node on PATH that records every start: the engine doctor (live self-tests, statusline render, the DevSwarm hook tests)
-    // must not run it at all, not even for a version probe
+    // a node on PATH that records the first argument of every start: the engine doctor's OWN use of Node (a version probe, a Node
+    // twin of a check, a hook script, the statusline render, the DevSwarm hook tests) must never happen. The one start allowed is
+    // the api-guard canary rows (`needs = "node"`), where api-guard itself runs `node -e <module probe>` to judge a fabricated
+    // API: that is the guard under test using the interpreter, not the doctor requiring Node
     let mut sc = Sc::new();
     sc.own_plugin();
     sc.stub_engine("0.1.0");
     let log = sc.root.join("node-starts.log");
-    sc.programs(&[("node", &format!("echo \"$*\" >> '{}'\necho v22.3.0", log.display()))], &[]);
+    sc.programs(&[("node", &format!("echo \"$1\" >> '{}'\necho v22.3.0", log.display()))], &[]);
     let d = sc.doctor(&[]);
     let starts = fs::read_to_string(&log).unwrap_or_default();
-    assert!(starts.trim().is_empty(), "the doctor started node: {starts:?}\n{}", d.text);
+    let own: Vec<&str> = starts.lines().filter(|a| *a != "-e").collect();
+    assert!(own.is_empty(), "the doctor itself started node (only api-guard's `node -e` module probe is allowed): {own:?}\n{}", d.text);
     d.lacks("Node v22");
 }
 
