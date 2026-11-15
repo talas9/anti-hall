@@ -600,23 +600,23 @@ doc = "Setting devswarm.heldPartitions: owner-held partition ids. The engine ans
 value = { section = "devswarm", key = "heldPartitions", env = "ANTIHALL_DEVSWARM_HELD_PARTITIONS", option = "", default = "" }
 
 [devswarm_role.pg_set_cap]
-doc = "Setting devswarm.parentGateCap: forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default."
+doc = "forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateCap", env = "ANTIHALL_DEVSWARM_PARENT_GATE_CAP", option = "", default = 3 }
 
 [devswarm_role.pg_set_busy_fresh]
-doc = "Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default."
+doc = "minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateBusyFreshMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_FRESH_MIN", option = "", default = 5 }
 
 [devswarm_role.pg_set_busy_max_age]
-doc = "Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default."
+doc = "minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateBusyMaxAgeMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_MAX_AGE_MIN", option = "", default = 60 }
 
 [devswarm_role.pg_set_grace]
-doc = "Setting devswarm.parentGateNeglectGraceMin: minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default."
+doc = "minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateNeglectGraceMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_GRACE_MIN", option = "", default = 1 }
 
 [devswarm_role.pg_set_neglect_min]
-doc = "Setting devswarm.parentGateNeglectMinUnread: unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default."
+doc = "unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateNeglectMinUnread", env = "ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_MIN_UNREAD", option = "", default = 0 }
 
 [devswarm_role.pg_ms_per_min]
