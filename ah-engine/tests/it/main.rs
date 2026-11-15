@@ -55,6 +55,7 @@ mod handover_codex_e2e;
 mod handover_hygiene;
 mod hooks_files;
 mod idle_gate;
+mod idle_orders;
 mod idle_rule_codex_e2e;
 mod idle_waste_a2;
 mod idle_waste_a2b;
