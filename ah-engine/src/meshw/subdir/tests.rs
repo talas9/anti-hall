@@ -13,13 +13,25 @@ struct Fx {
     primary: String,
 }
 
+/// A `git` command isolated from the ambient HOME / global / system config (a malformed `~/.gitconfig` must not break the fixtures).
+fn git_cmd(dir: &std::path::Path, scratch: &std::path::Path) -> std::process::Command {
+    let mut c = std::process::Command::new("git");
+    c.current_dir(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .env("HOME", scratch)
+        .env("XDG_CONFIG_HOME", scratch)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null");
+    c
+}
+
 fn fx(tag: &str) -> Fx {
     defaults::init().unwrap();
     let home = std::env::temp_dir().join(format!("ah-subdir767-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
     let repo = home.join("repo");
     std::fs::create_dir_all(repo.join("pkg/app")).unwrap();
-    let st = std::process::Command::new("git").current_dir(&repo).args(["init", "-q", "-b", "main"]).env("GIT_CONFIG_NOSYSTEM", "1").status().unwrap();
+    let st = git_cmd(&repo, &home).args(["init", "-q", "-b", "main"]).status().unwrap();
     assert!(st.success());
     let root = repo.canonicalize().unwrap().to_string_lossy().into_owned();
     let sub = format!("{root}/pkg/app");
@@ -206,13 +218,7 @@ fn a_poisoned_primary_alias_from_an_older_build_is_ignored() {
 fn a_child_alias_for_its_own_linked_worktree_survives() {
     let f = fx("ownwt");
     let git = |dir: &str, args: &[&str]| {
-        let st = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .unwrap();
+        let st = git_cmd(std::path::Path::new(dir), &f.inv.home).args(args).status().unwrap();
         assert!(st.success(), "git {args:?}");
     };
     git(&f.root, &["commit", "-q", "--allow-empty", "-m", "init"]);
@@ -250,13 +256,7 @@ fn a_child_alias_for_its_own_linked_worktree_survives() {
 fn a_primary_in_a_linked_worktree_known_only_via_the_app_db_has_its_alias_rejected() {
     let f = fx("appdbprimary");
     let git = |dir: &str, args: &[&str]| {
-        let st = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .unwrap();
+        let st = git_cmd(std::path::Path::new(dir), &f.inv.home).args(args).status().unwrap();
         assert!(st.success(), "git {args:?}");
     };
     git(&f.root, &["commit", "-q", "--allow-empty", "-m", "init"]);
