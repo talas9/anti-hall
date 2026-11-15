@@ -1606,7 +1606,7 @@ doc = "The `v` of a read receipt record."
 value = 1
 
 [mesh_write.ack_command]
-doc = "The `ackCommand` of a read-primary result: `{bin}` is the JSON-quoted engine binary path (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id."
+doc = "The `ackCommand` of a read-primary result: `{bin}` is the engine binary path shell-quoted in POSIX single quotes (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id."
 value = "{bin} {verb} inbox ack-primary {id} --receipt {rid}"
 
 [mesh_write.ack_hint]
