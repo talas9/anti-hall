@@ -5892,16 +5892,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
-| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`, `coproc sleep 99`): its body runs in the background, so every command inside is read as detached from the script around it. |
-| `lane_waste.detach_words` | `nohup, setsid, disown, coproc` |  |  | Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it. |
+| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach token (lane_waste.detach_res). |
+| `lane_waste.detach_res` | `(^\\|[^&>\\|])&($\\|[^&>]), coproc, [<>]\(, nohup, setsid, disown` |  |  | Detach tokens, scanned as raw text of the whole command at any nesting depth (inside quoted `bash -c`/`eval` strings too, also with quotes and backslashes removed): a lone `&` (not `&&`, `&>`, `>&`, `\|&`), `coproc`, `<(`, `>(`, `nohup`, `setsid`, `disown`. A command holding one may outlive any `timeout` around it, so no timeout counts as a bound (fail closed: over-blocking a rare legitimate form is accepted, a bypass is not). |
 | `lane_waste.eval_words` | `eval` |  |  | Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts. |
-| `lane_waste.group_closer` | `}` |  |  | The shell word that closes a brace group. |
-| `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; with a following `&` the whole group runs detached, so a `timeout` around the script does not bound what is inside. A parenthesised subshell is read from the parentheses. |
+| `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; read only so that `coproc NAME { ...; }` finds the command after the coprocess name. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
 | `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
 | `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
-| `lane_waste.process_subst_openers` | `<(, >(` |  |  | Process-substitution openers (`<(`, `>(`): the body runs as a background process that outlives the command around it, so its commands are read as detached and no timeout around the script bounds them. |
 | `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
 | `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
 | `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |

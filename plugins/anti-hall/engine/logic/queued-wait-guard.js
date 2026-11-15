@@ -48,6 +48,8 @@ function qwTimeoutSeconds(pre) {
     // then the command lives for the duration plus the kill-after (a kill-after within the grace margin counts as part of the duration)
     if (silent && killSecs <= 0) continue;
     var secs = j < pre.length ? qwSleepSeconds([pre[j]]) : null;
+    // the duration itself must be positive (0 disables the timer, whatever the kill-after says)
+    if (secs === null || secs <= 0) continue;
     if (secs !== null && silent) secs += Math.max(0, killSecs - ah.cfgNum('queued_wait.kill_after_grace_s'));
     // timeout 0 (or a negative number) disables the limit (GNU), so it bounds nothing
     if (secs !== null && secs > 0 && (best === null || secs < best)) best = secs;
@@ -73,13 +75,15 @@ function decide(p, opts) {
   var sleepers = ah.cfg('queued_wait.sleep_commands');
   var watches = ah.cfg('queued_wait.watch_res'), boundedMax = ah.cfgNum('queued_wait.bounded_max_s');
   var plainMax = ah.cfgNum('queued_wait.sleep_max_s'), loopMax = ah.cfgNum('queued_wait.loop_sleep_max_s');
+  // a detach token anywhere in the command text (laneWaste.detaches) means no timeout bounds it: fail closed
+  var detached = laneWaste.detaches(cmd);
   for (var c = 0; c < cmds.length; c++) {
     var words = cmds[c].words, joined = words.join(' ');
     var isSleep = sleepers.indexOf(shellScan.basename(words[0])) >= 0, isWatch = false;
     for (var w = 0; !isSleep && !isWatch && w < watches.length; w++) isWatch = ah.re.test(watches[w], 'r', joined);
     if (isSleep || isWatch) {
       // an explicit `timeout N` bounds the wait: within the limit it is allowed (the agent keeps the result in hand), above it blocked
-      var bound = qwTimeoutSeconds(cmds[c].bound || []);
+      var bound = detached ? null : qwTimeoutSeconds(cmds[c].bound || []);
       if (bound !== null) {
         if (bound <= boundedMax) continue;
         return qwBlock(text.render(ah.cfg('queued_wait.msg_what_over'), { cmd: laneWaste.shown(words), secs: bound, max: boundedMax }),

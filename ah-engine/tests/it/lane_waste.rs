@@ -342,6 +342,20 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout -s 0 -k abc 540 sleep 99999",
         "timeout 540 eval 'sleep 99999 &'",
         "timeout 540 eval 'nohup sleep 99999'",
+        // round 4: fail closed on a detach token anywhere in the text, any nesting depth
+        "timeout 540 bash -c \"sh -c 'sleep 99999' &\"",
+        "timeout 540 bash -c \"bash -c \\\"sh -c 'sleep 99999' &\\\"\"",
+        "timeout 540 eval \"eval 'sleep 99999 &'\"",
+        "timeout -s0 -k30 0 sleep 99999",
+        "timeout -s 0 -k 30 0 sleep 99999",
+        "timeout --signal=0 --kill-after=30 0s sleep 99999",
+        "if true; then coproc sleep 99999; fi; timeout 540 sleep 100",
+        "timeout 540 bash -c 'if true; then coproc sleep 99999; fi'",
+        "timeout 540 bash -c 'cat <(echo \")\"; sleep 99999)'",
+        "timeout 540 bash -c 'echo <(echo \")\" ) ; sleep 99999 &'",
+        "timeout 540 bash -c \"se''tsid sleep 99999\"",
+        "timeout 540 bash -c 'sleep 99999 & wait'",
+        "timeout 540 bash -c 'disown; sleep 100'",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd} must be blocked: {out}");
@@ -359,6 +373,9 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout 540 bash -c '(sleep 100) && echo ok'",
         "timeout -s 0 -k 5 540 gh pr checks --watch",
         "timeout 540 eval 'sleep 100'",
+        "timeout 540 gh pr checks --watch 2>&1",
+        "timeout 540 bash -c 'a=1 && sleep 100'",
+        "timeout 540 bash -c 'sleep 100 2>&1 | cat'",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 0, "{cmd}: {out}");

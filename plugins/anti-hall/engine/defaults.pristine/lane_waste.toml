@@ -35,24 +35,16 @@ doc = "The shell word that closes a loop."
 value = "done"
 
 [lane_waste.group_opener]
-doc = "The shell word that opens a brace group; with a following `&` the whole group runs detached, so a `timeout` around the script does not bound what is inside. A parenthesised subshell is read from the parentheses."
+doc = "The shell word that opens a brace group; read only so that `coproc NAME { ...; }` finds the command after the coprocess name."
 value = "{"
 
-[lane_waste.group_closer]
-doc = "The shell word that closes a brace group."
-value = "}"
-
-[lane_waste.detach_words]
-doc = "Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it."
-value = ["nohup", "setsid", "disown", "coproc"]
-
 [lane_waste.coproc_words]
-doc = "Words that start a coprocess (`coproc NAME { ...; }`, `coproc sleep 99`): its body runs in the background, so every command inside is read as detached from the script around it."
+doc = "Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach token (lane_waste.detach_res)."
 value = ["coproc"]
 
-[lane_waste.process_subst_openers]
-doc = "Process-substitution openers (`<(`, `>(`): the body runs as a background process that outlives the command around it, so its commands are read as detached and no timeout around the script bounds them."
-value = ["<(", ">("]
+[lane_waste.detach_res]
+doc = "Detach tokens, scanned as raw text of the whole command at any nesting depth (inside quoted `bash -c`/`eval` strings too, also with quotes and backslashes removed): a lone `&` (not `&&`, `&>`, `>&`, `|&`), `coproc`, `<(`, `>(`, `nohup`, `setsid`, `disown`. A command holding one may outlive any `timeout` around it, so no timeout counts as a bound (fail closed: over-blocking a rare legitimate form is accepted, a bypass is not)."
+value = ["(^|[^&>|])&($|[^&>])", "coproc", "[<>]\\(", "nohup", "setsid", "disown"]
 
 [lane_waste.eval_words]
 doc = "Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts."
