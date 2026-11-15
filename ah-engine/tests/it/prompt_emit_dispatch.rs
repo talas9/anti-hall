@@ -240,7 +240,8 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let now = t0.to_string();
     // the prompt digest (inject_gate) folds the tracker, sweep and verify-first lines into headlines in importance order, and only when it is
     // shorter than the whole (which the rotating verify-first line decides): this test is about the join order and the request clock, so it is off
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0")];
+    // the idle order (GH #744, on by default) owns teammates idle 30 min and more: this test is about the plain advisory
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_IDLE_ORDER", "0")];
     let (code, out, err) = e.run(&args, true, &p, &extra);
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(out.contains("1 finished agent is idle and not stopped: zed (30m)") && !out.contains("NODE-RAN"), "{out}");
@@ -405,6 +406,7 @@ fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
                 ("ANTIHALL_PROMPT_DIGEST", "0"),
                 ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
                 ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+                ("ANTIHALL_IDLE_ORDER", "0"), // the plain advisory is what the keepalive counts here
             ];
             if counts_scheduled {
                 extra.push(("ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", "1"));
@@ -478,6 +480,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
         ("ANTIHALL_PROMPT_DIGEST", "0"),
         ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
         ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+        ("ANTIHALL_IDLE_ORDER", "0"), // the plain advisory is what the keepalive counts here
     ];
     let mut turn = |origin: &str, first: bool| -> String {
         std::thread::sleep(std::time::Duration::from_millis(30));
@@ -517,4 +520,70 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
         assert_eq!(turn("scheduled", false), "", "scheduled tick {i} stays quiet");
         assert_eq!(count(&e), i, "tick {i}: one more saved repeat");
     }
+}
+
+/// GH #744 (review round 2): the teammate idle order is given only from a COMPLETE read of the session's task store. A readable completed
+/// sibling must not license a stop when another task file (possibly the teammate's own open task) was dropped as unreadable.
+#[test]
+fn teammate_idle_order_needs_a_complete_task_store() {
+    let order_for = |name: &str, extra_file: Option<&str>, after: &dyn Fn(&std::path::Path)| -> String {
+        let e = Env::new(name);
+        let t0 = 1_790_000_000_000u64;
+        let iso = |ms: u64| {
+            let s = ms / 1000;
+            let (days, sod) = (s / 86400, s % 86400);
+            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+        };
+        let (spawn_at, idle_at) = (t0 - 3_600_000, t0 - 1_800_000);
+        let transcript = e.dir.join("t.jsonl");
+        let lines = [
+            serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}),
+        ];
+        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        // the session's task store: one readable completed task, plus (optionally) a file the read cannot use
+        let store = e.home().join(".claude/tasks/session-sess0001");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("1.json"), r#"{"id":"1","subject":"done","status":"completed","owner":"other"}"#).unwrap();
+        if let Some(body) = extra_file {
+            std::fs::write(store.join("2.json"), body).unwrap();
+        }
+        after(&store);
+        let map = e.map("UserPromptSubmit", "none");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
+        let now = t0.to_string();
+        let extra =
+            [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+        let (code, out, err) = e.run(&args, true, &ups("sess0001-x", "go on", Some(&transcript)), &extra);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // so the scratch dir can be removed
+            if let Err(e) = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)) {
+                eprintln!("restore perms: {e}");
+            }
+        }
+        assert_eq!((code, err.as_str()), (0, ""));
+        ctx(&out)
+    };
+    let control = order_for("idle-store-ok", None, &|_| {});
+    assert!(control.contains("TaskStop"), "control: a complete store with no open task owned by the teammate gets the order, got: {control}");
+    for (name, body) in [("idle-store-bad-json", "{not json"), ("idle-store-bad-shape", r#"{"id":"2","subject":"mine"}"#)] {
+        let out = order_for(name, Some(body), &|_| {});
+        assert!(!out.contains("TaskStop"), "{name}: a dropped task file makes the state unknown, no order, got: {out}");
+    }
+    // a task directory that exists but cannot be listed (permission denied) is an unknown state, not "this session has no store"
+    let denied = order_for("idle-store-denied", None, &|d| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o000)).unwrap();
+    });
+    assert!(!denied.contains("TaskStop"), "an unlistable task directory is an unknown state, no order, got: {denied}");
+    // a directory over the host's listing cap (script.readdir_max, 10000) is listed as null: the same unknown state
+    let huge = order_for("idle-store-huge", None, &|d| {
+        for i in 0..10_001 {
+            std::fs::write(d.join(format!("{i}.dat")), "").unwrap();
+        }
+    });
+    assert!(!huge.contains("TaskStop"), "a task directory the host refuses to list is an unknown state, no order, got: {huge}");
 }

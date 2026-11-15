@@ -188,7 +188,7 @@ function cxProbe(pathVar) {
 
 function cxContext(codex) {
   if (codex) return cxT('avail_context_codex');
-  return text.message('tip', cxT('avail_guard'), { what: cxT('avail_what'), why: cxT('avail_why'), instead: cxT('avail_instead') });
+  return text.message('order', cxT('avail_guard'), { what: cxT('avail_what'), why: cxT('avail_why'), instead: cxT('avail_instead') });
 }
 
 // `quotaNote`: a warning line while a recorded outage is live, else ''; null when unsure.

@@ -86,7 +86,7 @@ function decide(p) {
   }
   var parts = [];
   if (mode === 'advise') {
-    parts.push(text.message('tip', guard, { what: ah.cfg('ask_guard.advise_what'), instead: ah.cfg('ask_guard.advise_instead'), extra: [suffix] }));
+    parts.push(text.message('order', guard, { what: ah.cfg('ask_guard.advise_what'), instead: ah.cfg('ask_guard.advise_instead'), extra: [suffix] }));
   }
   var note = askAgentsNote(p);
   if (note !== '') parts.push(note);

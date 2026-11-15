@@ -237,7 +237,33 @@ fn wait_table() -> Vec<(&'static str, bool, Option<&'static str>)> {
         ("echo 'sleep 600'", false, None),
         ("git commit -m 'no sleep 600 here'", false, None),
         ("sleep", false, None),
-        ("sleep abc", false, None),
+        // round 6: an operand that does not parse is an unbounded wait (fail closed); no operand at all is not a wait
+        ("sleep abc", false, Some("wait is too long (unbounded")),
+        ("sleep $N", false, Some("wait is too long (unbounded")),
+        ("sleep infinity", false, Some("wait is too long (unbounded")),
+        ("sleep 60>/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60 >/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60&>/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60<x", false, Some("wait is too long (60s")),
+        ("sleep 1m>/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60 2>&1", false, Some("wait is too long (60s")),
+        ("sleep 60 2>/dev/null", false, Some("wait is too long (60s")),
+        ("while true; do sleep 60>/dev/null; done", false, Some("poll loop waits too long (60s")),
+        ("while true; do sleep $N; done", false, Some("poll loop waits too long (unbounded")),
+        ("sleep 5>/dev/null", false, None),
+        ("sleep 5 >/dev/null 2>&1", false, None),
+        ("sleep 0.5>/dev/null", false, None),
+        ("sleep 2>/dev/null 5", false, None),
+        ("timeout 100 sleep $N", false, None),
+        // round 7: forms coreutils/BSD sleep accept are not unbounded
+        ("sleep .5", false, None),
+        ("sleep .1", false, None),
+        ("sleep -- 0.5", false, None),
+        ("sleep 5.", false, None),
+        ("sleep 1 2", false, None),
+        ("sleep .1m", false, None),
+        ("sleep 1e1", false, None),
+        ("sleep 1m 1", false, Some("wait is too long (61s")),
     ]
 }
 
@@ -276,7 +302,163 @@ fn a_wait_block_names_the_foreground_remedy_and_reaches_both_channels() {
     assert!(reason.contains("Run the command in the foreground under the shared lock."), "{reason}");
     assert_eq!(reason.lines().count(), 2);
     let (_, out, _) = wait_guard("sleep 99", "subagent", false, &[]);
-    assert!(out.contains("End the turn and wait for the completion notification."), "{out}");
+    assert!(out.contains("SendMessage lead"), "{out}");
+    assert!(!out.contains("End the turn and wait"), "an idle helper is not woken by a notification: {out}");
+}
+
+// A subagent that is blocked must keep a path to its result (GH #755): a bounded watch within the limit, or a message to its lead.
+const WATCH_170: &str = "timeout 170 bash -c 'until gh pr checks --required; do sleep 20; done'";
+
+#[test]
+fn a_bounded_watch_within_the_limit_is_allowed_for_a_subagent() {
+    for who in ["subagent", "codex-subagent"] {
+        for cmd in [
+            WATCH_170,
+            "timeout 170 gh pr checks 12 --watch",
+            "gh pr checks 12 --watch",
+            "timeout 540 gh run watch 99",
+            "timeout 3m gh pr checks --watch",
+            "timeout -k 5 170 bash -c 'while ! test -f /tmp/done; do sleep 10; done'",
+            "timeout 100 sleep 100",
+        ] {
+            let (code, out, _) = wait_guard(cmd, who, false, &[]);
+            assert_eq!(code, 0, "{who}: {cmd} must be allowed: {out}");
+        }
+    }
+}
+
+// A timeout bounds a wait only when it wraps the whole wait (PR 760 review): not one iteration of a loop, not a disabled limit,
+// not work detached from the script the timeout wraps.
+#[test]
+fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
+    for cmd in [
+        "while true; do timeout 5 sleep 60; done",
+        "until false; do timeout 5 sleep 60; done",
+        "while true; do timeout 5 bash -c 'sleep 60'; done",
+        "timeout 0 sleep 99999",
+        "timeout 0s sleep 99999",
+        "timeout 0m sleep 99999",
+        "timeout 0.0 sleep 99999",
+        "timeout 1h sleep 100",
+        "timeout 540 bash -c 'sleep 99999 &'",
+        "timeout 540 bash -c 'nohup sleep 99999'",
+        "timeout 540 bash -c 'setsid sleep 99999'",
+        "timeout 540 bash -c 'while true; do sleep 60; done &'",
+        "timeout 540 bash -c '( while true; do sleep 60; done ) &'",
+        "timeout 540 bash -c '( sleep 99999 ) &'",
+        "timeout 540 bash -c '{ while true; do sleep 60; done; } &'",
+        "timeout 540 bash -c '{ sleep 99999; } &'",
+        "timeout -s 0 540 sleep 99999",
+        "timeout --signal=0 540 sleep 99999",
+        "timeout --signal 0 540 sleep 99999",
+        "timeout -s CONT 540 sleep 99999",
+        "timeout -s STOP 540 sleep 99999",
+        "timeout -s0 540 sleep 99999",
+        "timeout 540 bash -c 'echo <(while true; do sleep 60; done)'",
+        "timeout 540 bash -c 'cat <(sleep 99999)'",
+        "timeout 540 bash -c 'tee >(sleep 99999) </dev/null'",
+        "timeout 540 cat <(sleep 99999)",
+        "timeout 540 bash -c 'coproc sleep 99999'",
+        "timeout 540 bash -c 'coproc { sleep 99999; }'",
+        "timeout 540 bash -c 'coproc NAME { while true; do sleep 60; done; }'",
+        "timeout 540 bash -c 'coproc NAME ( sleep 99999 )'",
+        "timeout -s CONT -k 0 540 sleep 99999",
+        "timeout --signal=0 --kill-after=0 540 sleep 99999",
+        "timeout -s CONT -k 99999 540 sleep 99999",
+        "timeout -s 0 -k abc 540 sleep 99999",
+        "timeout 540 eval 'sleep 99999 &'",
+        "timeout 540 eval 'nohup sleep 99999'",
+        // round 4: fail closed on a detach token anywhere in the text, any nesting depth
+        "timeout 540 bash -c \"sh -c 'sleep 99999' &\"",
+        "timeout 540 bash -c \"bash -c \\\"sh -c 'sleep 99999' &\\\"\"",
+        "timeout 540 eval \"eval 'sleep 99999 &'\"",
+        "timeout -s0 -k30 0 sleep 99999",
+        "timeout -s 0 -k 30 0 sleep 99999",
+        "timeout --signal=0 --kill-after=30 0s sleep 99999",
+        "if true; then coproc sleep 99999; fi; timeout 540 sleep 100",
+        "timeout 540 bash -c 'if true; then coproc sleep 99999; fi'",
+        "timeout 540 bash -c 'cat <(echo \")\"; sleep 99999)'",
+        "timeout 540 bash -c 'echo <(echo \")\" ) ; sleep 99999 &'",
+        "timeout 540 bash -c \"se''tsid sleep 99999\"",
+        "timeout 540 bash -c 'sleep 99999 & wait'",
+        "timeout 540 bash -c 'disown; sleep 100'",
+        // round 5: a redirection must not hide the sleep's duration from a detach check
+        "timeout 540 bash -c 'sleep 60 >/dev/null 2>&1 &'",
+        "timeout 540 bash -c 'sleep 60 &>/dev/null &'",
+        "timeout 540 bash -c 'sleep 60 > /dev/null &'",
+        "timeout 540 bash -c 'sleep 5 2>&1 & echo; sleep 60 >/dev/null'",
+        "timeout 540 su -c 'sleep 99999 &' nobody",
+        // round 6: an unreadable duration under a detach is unbounded
+        "timeout 540 bash -c 'sleep $N &'",
+        "timeout 540 bash -c 'sleep 60>/dev/null &'",
+        "timeout 540 bash -c 'sleep infinity &'",
+    ] {
+        let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 2, "{cmd} must be blocked: {out}");
+    }
+    for cmd in [
+        "timeout 540 bash -c 'while true; do sleep 5; done'",
+        "timeout 9m sleep 100",
+        "timeout 540 gh pr checks --watch",
+        "timeout -k 5 540 gh pr checks --watch",
+        "timeout --foreground 540 gh pr checks --watch",
+        "timeout -s KILL 540 sleep 100",
+        "timeout -s 0 -k 5 540 sleep 100",
+        "timeout 540 bash -c '( sleep 100 )'",
+        "timeout 540 bash -c '{ sleep 100; }'",
+        "timeout 540 bash -c '(sleep 100) && echo ok'",
+        "timeout -s 0 -k 5 540 gh pr checks --watch",
+        "timeout 540 eval 'sleep 100'",
+        "timeout 540 gh pr checks --watch 2>&1",
+        "timeout 540 bash -c 'a=1 && sleep 100'",
+        "timeout 540 bash -c 'sleep 100 2>&1 | cat'",
+        // round 5: a detach token outside the timeout-wrapped segment, or quoted text that is no script, is inert
+        "gh api 'x?a=1&b=2' && timeout 540 sleep 60",
+        "timeout 540 sleep 60 && grep 'a&b' f",
+        "timeout 540 gh pr checks --watch | grep 'a & b'",
+        "timeout 540 gh pr checks --watch | jq '.a & .b'",
+        "timeout 540 gh pr checks --watch; cat nohup.out setsid.log",
+        "cat nohup.out && timeout 540 sleep 60",
+        "ls /tmp/setsid-dir/disown.txt && timeout 540 sleep 60",
+        "echo hi & timeout 540 sleep 60",
+        "timeout 540 sleep 60 && nohup true",
+        "timeout 540 grep -r 'nohup|setsid|disown' src",
+        "timeout 540 gh api 'x?a=1&b=2' --jq '.a'",
+    ] {
+        let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 0, "{cmd}: {out}");
+    }
+}
+
+#[test]
+fn an_unbounded_wait_is_blocked_with_a_bounded_watch_or_message_the_lead() {
+    for cmd in ["while true; do sleep 60; done", "until [ -f /tmp/done ]; do sleep 30; done", "sleep 170"] {
+        let (code, out, err) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 2, "{cmd}");
+        assert!(out.contains("timeout 540 gh pr checks --watch"), "{cmd}: {out}");
+        assert!(out.contains("SendMessage lead \\\"waiting on <X>; wake me when done\\\""), "{cmd}: {out}");
+        assert!(!out.contains("End the turn and wait") && !err.contains("End the turn and wait"), "{cmd}: {out}");
+    }
+}
+
+#[test]
+fn an_over_limit_bounded_wait_is_blocked_with_the_message_the_lead_instruction() {
+    for cmd in
+        ["timeout 900 gh pr checks --watch", "timeout 541 gh run watch 1", "timeout 10m bash -c 'until true; do sleep 10; done'", "timeout 600 sleep 600"]
+    {
+        let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 2, "{cmd} must be blocked");
+        assert!(out.contains("over the limit") && out.contains("limit 540s"), "{cmd}: {out}");
+        assert!(out.contains("SendMessage lead"), "{cmd}: {out}");
+        assert!(!out.contains("End the turn and wait"), "{cmd}: {out}");
+    }
+}
+
+#[test]
+fn the_main_session_keeps_its_unbounded_waits() {
+    for cmd in ["timeout 900 gh pr checks --watch", "while true; do sleep 60; done"] {
+        assert_eq!(wait_guard(cmd, "main", false, &[]).0, 0, "{cmd}");
+    }
 }
 
 #[test]
@@ -400,4 +582,20 @@ fn the_depth_bound_is_a_setting() {
     assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[("ANTIHALL_WIDE_SEARCH_DEPTH_BOUND", "0")]).0, 2, "guards.wideSearchDepthBound off");
     assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[]).0, 0, "default on");
     assert_eq!(wide_guard("find ~ -maxdepth 4 -iname x", "main", &[("ANTIHALL_ALLOW_WIDE_SEARCH", "0")]).0, 0);
+}
+
+#[test]
+fn the_worker_text_and_the_wait_guard_share_one_limit() {
+    // Both texts render the limit from queued_wait.bounded_max_s: the WORKER line carries a placeholder, never the number.
+    let toml = std::fs::read_to_string(plugin().join("engine/defaults/verify_first.toml")).unwrap();
+    let worker = toml.split("[verify_first.worker]").nth(1).unwrap().split("\n[").next().unwrap();
+    assert!(worker.contains("{max}") && !worker.contains("540"), "the WORKER text must render the limit, not repeat it: {worker}");
+    let start = json!({"session_id": "s1", "cwd": "/tmp", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"});
+    let (code, out, _) = run(&["check", "verify-first-subagent"], &[], &start.to_string());
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("within 540s") && out.contains("timeout 540 gh pr checks --watch"), "WORKER text: {out}");
+    assert!(out.contains("SendMessage your lead") && out.contains("wake me when done"), "WORKER text: {out}");
+    assert!(!out.contains("run long commands in the foreground or poll"), "the old advice is gone: {out}");
+    let (_, block, _) = wait_guard("while true; do sleep 60; done", "subagent", false, &[]);
+    assert!(block.contains("timeout 540 gh pr checks --watch") && block.contains("wake me when done"), "guard text: {block}");
 }

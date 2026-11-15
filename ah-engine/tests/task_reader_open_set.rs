@@ -583,7 +583,17 @@ fn the_reader_keeps_every_open_task_the_base_reader_keeps() {
         let rows: Vec<String> = if cell.trans == Trans::Missing { Vec::new() } else { rows_of(cell.trans, cell.rows).iter().map(|v| v.to_string()).collect() };
         let ghosts = proven_ghosts(&rows, &golden_open);
         ghosts_removed += ghosts.len();
-        let want: BTreeSet<String> = golden_open.difference(&ghosts).cloned().collect();
+        // XF-D3 (GH 606 shape 3, #762): with the named list selected and readable it IS the list, so the base's open set (read from the
+        // session's own, now stale, store and the transcript) is superseded by the named list's own task, never a floor for the new reader
+        // #764: a store directory that lists and holds no file is the authoritative empty list (no task, no fall-back to the transcript), so
+        // the base's open set, rebuilt from the transcript, is superseded by it and is never a floor
+        let want: BTreeSet<String> = if cell.named == Named::SetWithList {
+            BTreeSet::from(["9".to_string()])
+        } else if cell.store == Store::Empty {
+            BTreeSet::new()
+        } else {
+            golden_open.difference(&ghosts).cloned().collect()
+        };
         let missing: Vec<&String> = want.difference(&got.open).collect();
         if !missing.is_empty() {
             violations.push(format!("{}: open task(s) {missing:?} kept by the base reader are missing (got {:?})", cell.key(), got.open));
@@ -1273,6 +1283,10 @@ fn decision_json(d: &Decision) -> Value {
 fn excused_ghosts(case: &Case, task_guard_golden: &Value) -> BTreeSet<String> {
     let Some(g) = task_guard_golden["cells"].get(case.key.as_str()) else { return BTreeSet::new() };
     let open: BTreeSet<String> = g["open"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    // #764: the authoritative empty store (a directory that lists and holds no file) supersedes every task the base rebuilt from the transcript
+    if case.cell.store == Store::Empty && case.cell.named != Named::SetWithList && case.store_files.is_empty() {
+        return open;
+    }
     let rows: Vec<String> =
         if case.cell.trans == Trans::Missing { Vec::new() } else { rows_of(case.cell.trans, case.cell.rows).iter().map(|v| v.to_string()).collect() };
     proven_ghosts(&rows, &open)
@@ -1294,8 +1308,10 @@ fn violations(case: &Case, consumer: &str, golden: &Value, got: &Decision, ghost
         return out;
     }
     if gk == Kind::Block && got.kind == Kind::Block {
+        // #764: the authoritative empty store supersedes the tasks the base named from the transcript, so no id is owed (the kind still is)
+        let superseded = case.cell.store == Store::Empty && case.cell.named != Named::SetWithList && case.store_files.is_empty();
         let missing: Vec<&String> = g_ids.difference(ghosts).filter(|i| !got.ids.contains(*i)).collect();
-        if !missing.is_empty() {
+        if !missing.is_empty() && !superseded {
             out.push(format!("{at}: the block no longer names task(s) {missing:?} (names {:?})", got.ids));
         }
         if got.undecoded {
@@ -1305,9 +1321,60 @@ fn violations(case: &Case, consumer: &str, golden: &Value, got: &Decision, ghost
     if let Some(c) = g_count {
         let floor = c.saturating_sub(ghosts.len() as u64);
         match got.count {
+            // nothing is left to state once every task the base counted is excused
+            _ if floor == 0 => {}
             Some(n) if n >= floor => {}
             other => out.push(format!("{at}: the decision states {other:?} task(s), the base stated {c}")),
         }
+    }
+    out
+}
+
+/// What the named list's open set {9} requires of a consumer (XF-D3): `Some((kind, ids, count))` for a consumer whose answer that
+/// open set fixes; `None` for one it does not fix (the pairing of other ids, the post nudge, the hygiene count, the compact advice).
+type NamedWant = (Kind, Option<&'static [&'static str]>, Option<u64>);
+
+fn named_list_expectation(consumer: &str) -> Option<NamedWant> {
+    match consumer {
+        "ladder" | "pair_stop" => Some((Kind::Block, None, None)),
+        "tasklist_stop" => Some((Kind::Block, Some(&["9"]), None)),
+        "tracker_prompt" => Some((Kind::Nudge, Some(&["9"]), Some(1))),
+        "pair_pre:9" => Some((Kind::Allow, None, None)),
+        _ => None,
+    }
+}
+
+/// The decisions that still ignore the named list: with no transcript at all the consumers have nothing to read, and the ladder also
+/// answers none for a case with no transcript task over a store with no task. This is the expected failure
+/// `oblig|d3|named_list_pending_task` in the expected-failure list; each such decision is counted as a skipped gap, and the gate fails
+/// if one of them starts to pass (so the gap cannot outlive its fix).
+fn decision_in_xf_d3_gap(case: &Case, consumer: &str) -> bool {
+    case.cell.named == Named::SetWithList
+        && match consumer {
+            "ladder" => {
+                matches!(case.cell.trans, Trans::Missing | Trans::NoTasks)
+                    && matches!(case.cell.store, Store::Absent | Store::Empty | Store::OnlyJunk | Store::UnreadableDir)
+            }
+            "pair_stop" | "tasklist_stop" | "tracker_prompt" => case.cell.trans == Trans::Missing,
+            _ => false,
+        }
+}
+
+fn named_list_violations(case: &Case, consumer: &str, want: &NamedWant, got: &Decision) -> Vec<String> {
+    let mut out = Vec::new();
+    let at = format!("{} / {consumer}", case.key);
+    if got.kind != want.0 {
+        out.push(format!("{at}: the named list's open set {{9}} needs `{}`, got `{}` (\"{}\")", want.0.name(), got.kind.name(), got.reason));
+        return out;
+    }
+    if let Some(ids) = want.1 {
+        let ids: BTreeSet<String> = ids.iter().map(|s| s.to_string()).collect();
+        if got.ids != ids {
+            out.push(format!("{at}: names {:?}, the open set {{9}} needs {ids:?}", got.ids));
+        }
+    }
+    if want.2.is_some() && got.count != want.2 {
+        out.push(format!("{at}: states {:?} task(s), the open set {{9}} needs {:?}", got.count, want.2));
     }
     out
 }
@@ -1354,6 +1421,8 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
     let cells = golden["cells"].as_object().expect("cells");
     let mut found: Vec<String> = Vec::new();
     let (mut checked, mut equal, mut stricter) = (0usize, 0usize, 0usize);
+    let (mut skipped, mut named_checked, mut gap_skipped) = (0usize, 0usize, 0usize);
+    let mut gap_hit: BTreeSet<String> = BTreeSet::new();
     for (case, ds) in &observed {
         let g = cells.get(&case.key).unwrap_or_else(|| panic!("no golden case {}: regenerate on the base commit", case.key));
         let ghosts = excused_ghosts(case, &task_guard_golden);
@@ -1364,6 +1433,26 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
         for (name, got) in ds {
             let gd = g.get(name).unwrap_or_else(|| panic!("no golden decision {} / {name}", case.key));
             checked += 1;
+            // XF-D3: a readable named list supersedes the base's session-store and transcript reads, so the base golden is not the
+            // expectation for these cells; the open set is {9} (the named list's own task) and each consumer that decides on the open
+            // set is held to what that set requires. A consumer whose answer the open set does not fix is skipped, and counted as such.
+            if case.cell.named == Named::SetWithList {
+                match named_list_expectation(name) {
+                    None => skipped += 1,
+                    Some(want) => {
+                        let bad = named_list_violations(case, name, &want, got);
+                        if bad.is_empty() {
+                            named_checked += 1;
+                        } else if decision_in_xf_d3_gap(case, name) {
+                            gap_hit.insert(format!("{} / {name}", case.key));
+                            gap_skipped += 1;
+                        } else {
+                            found.extend(bad);
+                        }
+                    }
+                }
+                continue;
+            }
             found.extend(violations(case, name, gd, got, &ghosts, &golden_open));
             if got.kind.name() == gd["kind"].as_str().unwrap()
                 && got.ids == gd["ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
@@ -1375,12 +1464,19 @@ fn the_consumers_of_the_task_reader_never_decide_less_than_the_base() {
         }
     }
     eprintln!(
-        "task reader consumers gate: {} cases, {checked} decisions ({} consumers), {equal} equal to the golden, {stricter} stricter, {:.1}s",
+        "task reader consumers gate: {} cases, {checked} decisions ({} consumers), {equal} equal to the golden, {stricter} stricter, {named_checked} named-list decisions checked against open set {{9}}, {gap_skipped} skipped as the listed XF-D3 gap, {skipped} skipped (not fixed by the open set), {:.1}s",
         observed.len(),
         observed.iter().flat_map(|(_, d)| d.keys().map(|k| k.split(':').next().unwrap().to_string())).collect::<BTreeSet<_>>().len(),
         t0.elapsed().as_secs_f64()
     );
     assert!(found.is_empty(), "{} violation(s):\n{}", found.len(), found.join("\n"));
+    let gap_decisions: BTreeSet<String> = observed
+        .iter()
+        .flat_map(|(c, ds)| {
+            ds.keys().filter(|n| named_list_expectation(n).is_some() && decision_in_xf_d3_gap(c, n)).map(|n| format!("{} / {n}", c.key)).collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(gap_hit, gap_decisions, "XF-D3 gap decisions that now pass (narrow decision_in_xf_d3_gap) or that were not reached");
     let golden_total: usize = cells.values().map(|c| c.as_object().unwrap().len()).sum();
     assert_eq!(checked, golden_total, "the golden holds decisions the cases no longer produce");
 }

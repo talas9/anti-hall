@@ -1,6 +1,7 @@
 // check = "tasklist-hygiene" (engine-only; PostToolUse and PreToolUse on TaskCreate and TaskUpdate, Claude only: Codex has no task tools
 // and no task hook events). Keeps the session task list small, because the harness re-sends the whole list on every turn:
-// (1) PostToolUse: a task just marked completed gets one line telling the agent to record the outcome in the history ledger and delete it;
+// (1) PostToolUse: a task just marked completed gets an ORDER (done_order.msg_fresh, lib/86-done-order.js) to record the outcome in the history
+// ledger and delete it; a completed task that stays in the list is ordered again at UserPromptSubmit (task-tracker) and, with taskListEnforce = block, at Stop (task-guard);
 // (2) PostToolUse: a created or renamed task whose subject is over handover.taskSubjectMax, or a list with more open tasks than
 // handover.taskListBudget, gets one advisory line with the numbers (a state table of the advisory layer, so an unchanged state is not repeated);
 // (3) PreToolUse: only with handover.taskListEnforce = block, the same two breaches refuse the call instead.
@@ -63,13 +64,24 @@ function decide(p, opts, event) {
     return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
   }
   var whats = [], instead = '', doneNote = false, mk = ah.cfg('metric.tasklist_hygiene').advisory_kind;
-  if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.cfg('tasklist_hygiene.delete_trigger').indexOf(String(inp.status)) >= 0) ah.advisory(mk, ah.cfg('tasklist_hygiene.event_deleted'));
+  var orderOn = dord.on(), orderLine = '', taskId = inp.taskId === undefined || inp.taskId === null ? '' : String(inp.taskId);
+  if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.cfg('tasklist_hygiene.delete_trigger').indexOf(String(inp.status)) >= 0) {
+    ah.advisory(mk, ah.cfg('tasklist_hygiene.event_deleted'));
+    if (orderOn && taskId !== '') dord.forget(sid, taskId); // an ordered task that is deleted: the order was followed
+  }
   if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.settings.bool('ctxbudget.set_h_task_done_note') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0) {
-    var id = inp.taskId === undefined || inp.taskId === null ? '' : String(inp.taskId);
-    whats.push(text.render(ah.cfg('tasklist_hygiene.msg_done'), { id: id }));
-    instead = ah.cfg('tasklist_hygiene.instead_done');
-    doneNote = true;
+    var id = taskId;
     ah.advisory(mk, ah.cfg('tasklist_hygiene.event_nudge'));
+    // the completion line is an order (GH #762), recorded so a task left in the list is ordered again on the schedule; when the record
+    // cannot be saved (or the switch is off) the one-shot tip is what is left
+    if (orderOn && id !== '') orderLine = dord.fresh(sid, id, ah.clock.now());
+    // a task the gate refuses (another owner's, or the list is ambiguous or unreadable) gets neither the order nor the delete tip
+    var refused = orderOn && id !== '' && orderLine === '' && !dord.orderable(sid, id);
+    if (orderLine === '' && !refused) {
+      whats.push(text.render(ah.cfg('tasklist_hygiene.msg_done'), { id: id }));
+      instead = ah.cfg('tasklist_hygiene.instead_done');
+      doneNote = true;
+    }
   }
   if (mode !== 'off') {
     var content = thCompose(thBreach(p, tool, false));
@@ -78,6 +90,7 @@ function decide(p, opts, event) {
       if (d.emit) { ah.commit(); adv.commit(d); whats.push(content); if (instead === '') instead = ah.cfg('tasklist_hygiene.instead_budget'); }
     }
   }
-  if (whats.length === 0) return 'allow';
-  return { advisory: text.advisoryJson('PostToolUse', text.message('tip', guard, { what: whats.join(ah.cfg('tasklist_hygiene.join')), instead: instead, extra: doneNote ? [ah.cfg('tasklist_hygiene.detail_done')] : [], details: doneNote }, sid)) };
+  if (whats.length === 0 && orderLine === '') return 'allow';
+  var tip = whats.length === 0 ? '' : text.message('tip', guard, { what: whats.join(ah.cfg('tasklist_hygiene.join')), instead: instead, extra: doneNote ? [ah.cfg('tasklist_hygiene.detail_done')] : [], details: doneNote }, sid);
+  return { advisory: text.advisoryJson('PostToolUse', [orderLine, tip].filter(function (x) { return x !== ''; }).join(ah.cfg('tasklist_hygiene.order_joiner'))) };
 }

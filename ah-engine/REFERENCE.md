@@ -395,7 +395,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `wide-search-guard` | Keep searches scoped to a project. PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
 | `advisor-guard` | Require advisor consultation where configured. Advisor sessions only: blocks once a plan written with no advisor call this task (guards.advisorPlan) and a second edit of the same file after a failed test or build that followed its first edit, with no advisor call in between (guards.advisorRetry; a passing run clears it). With a non-flagship main (phase 3): nudges, then blocks once per task, a thinking dispatch with no advisor call since the owner's last message (guards.advisorThinking), blocks once a second fix dispatch for one issue with no advisor call since the first (guards.advisorRetry) and one Stop per turn that announced an advisor call that did not follow (guards.advisorSayDo). The review rule lives in model-routing. |
 | `switch-notice` | Report guard switch changes. Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
-| `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, tells the agent in one line to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
+| `tasklist-hygiene` | Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce. |
 | `afk-mode` | UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, UserPromptSubmit, PostToolUse, Stop (Codex): AFK mode. Machine-wide flag (ah-engine afk on\|off, typed afk/back/progress, idle detection), a once-per-session rule and capped reminders, a checklist digest in the session progress file (NEEDS OWNER bullets first), a capped Stop hold of overlong AFK replies, no blocking questions (AskUserQuestion denied with the question ladder, a capped hold of a turn ending on a question), output tokens per turn AFK vs present (afk.*). |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
@@ -2185,6 +2185,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.repo_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable whose non-blank value makes the DevSwarm integration active in auto mode. |
 | `devswarm_prompt.seat_dir` | `devswarm/primary-seat` |  |  | The directory, under the anti-hall directory, of the per-session seat-conflict markers the SessionStart hook writes. |
 | `devswarm_prompt.seat_shown_max` | `2` |  |  | A seat-conflict marker is owed a repeat while the number of times it was shown is below this. |
+| `devswarm_prompt.set_unread_cooldown_min` | `7 entries` |  |  | Inbox advisory cooldown, minutes. Setting devswarm.inboxAdvisoryCooldownMin: an unchanged unread set is announced again only after this many minutes since the last announcement. Applies while devswarm.inboxAdvisoryOnChange is on. |
 | `devswarm_prompt.skip_descriptor_surrogate` | `descriptor holds a lone-surrogate escape` |  |  | The cause logged when the child's old descriptor holds a lone-surrogate JSON escape (JavaScript parses it, a Rust string cannot carry it), so rewriting it would change its text; the registration is left for the turn. |
 | `devswarm_prompt.skip_descriptor_unreadable` | `descriptor not merged: ` |  |  | The cause logged when the child's old descriptor cannot be merged because it is no regular file (a FIFO, socket or device a read could block on) or is over the read cap; the registration is left for the turn and retried on the next. The refusal reason follows. |
 | `devswarm_prompt.skip_phantom_lock` | `workspace lock busy` |  |  | Why a truncated-id phantom descriptor is kept this turn: its workspace lock stayed busy. |
@@ -2195,7 +2196,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_prompt.stale_doctor` | `Run /anti-hall:doctor to check the DevSwarm ingest daemon. ` |  |  | The stale banner's advice when the daemon's launchd job is not disabled. |
 | `devswarm_prompt.stale_key` | `devswarm-ingest-stale` |  |  | The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it. |
 | `devswarm_prompt.summary_dir` | `devswarm/summaries` |  |  | The directory, under the anti-hall directory, of the per-project mailbox summaries the registration refreshes and the hook reads. |
+| `devswarm_prompt.sw_unread_on_change` | `6 entries` |  |  | Inbox advisories on change (#709). Switch devswarm.inboxAdvisoryOnChange (default on): the unread-inbox advisory of a child workspace and of a Primary speaks when the unread set changed since the last one spoken in the session, or when the cooldown has passed, instead of on every prompt. A new unread message always speaks at once. Off restores the advisory on every prompt. |
 | `devswarm_prompt.test_markers` | `NODE_TEST_CONTEXT, ANTIHALL_TEST_ISOLATION` |  |  | Environment variables that mark a test run; under one the service manager is never asked. |
+| `devswarm_prompt.unread_seen_file` | `unread-seen.json` |  |  | The one store file (under the devswarm state dir) of the last unread-inbox advisory spoken per session and kind ({sig, at} each). Bounded by unread_seen_max and unread_seen_ttl_hours; read and written as one step under unread_seen_lock. |
+| `devswarm_prompt.unread_seen_lock` | `unread-seen.lock` |  |  | The lock file (under the devswarm state dir) that makes the check of the unread-advisory store and the recording of what is spoken one step. |
+| `devswarm_prompt.unread_seen_lock_group` | `spawn_reservation` |  |  | The lock timings group of the unread-advisory store lock (<group>.lock_*): its wait, its stale timeout and whether a dead holder is taken over at once. A lock that cannot be taken lets the advisory speak and records nothing. |
+| `devswarm_prompt.unread_seen_max` | `200` |  | count | The most entries (one per session and kind) the unread-advisory store keeps; the oldest are dropped past it. |
+| `devswarm_prompt.unread_seen_ttl_hours` | `48` |  | hours | An unread-advisory store entry older than this many hours is dropped (its session is long over; a dropped entry only means the advisory speaks once more). |
 | `devswarm_prompt.unread_segment` | `⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread paren...` |  |  | The child's unread-parent-mail segment. Placeholders: {count}, {cli}, {id}. |
 | `devswarm_prompt.urgent_levels` | `urgent, high` |  |  | The urgency values (the summary's urgencyMax) that make the mesh-direct nudge loud. |
 | `devswarm_prompt.uuid_full_re` | `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` |  |  | A full UUID (a builder id of this shape is a real id). |
@@ -2284,6 +2291,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guardkit.migration_markers_file` | `.anti-hall/update-sweep-state.json` |  |  | The per-migration marker file, relative to the home directory. |
 | `guardkit.msg_head` | ` ` |  |  | Text between the icon and the guard name in every block or advisory message. |
 | `guardkit.msg_labels` | `5 entries` |  |  | Labels of the optional lines of a block or advisory message. |
+| `guardkit.order_form` | `⚠️ Do now: {name}: {what} {action}` |  |  | The order form: a message that asks the agent for an action, in the single-line shape of the idle orders (idle_order.msg_*): one icon, then `Do now:`. Placeholders: {name} the guard's plain name, {what} the claim, {action} the one action. |
 | `guardkit.override_human` | `tell the agent "skip {guard}"` |  |  | Human consent hint; the id is the skip key. |
 | `guardkit.plain_names` | `46 entries` |  |  | Human names on the first line; unknown guard ids fall back to themselves. |
 | `guardkit.plugin_config_keys` | `anti-hall, anti-hall@anti-hall` |  |  | Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first. |
@@ -3275,7 +3283,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.subagent_full` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The full protocol a spawned subagent receives when context.protocolLevel is full (CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE). |
 | `verify_first.summary_full` | `Deliver session verify-first rules. SessionStart context: injects the verify-...` |  |  | One-line description of the verify-first-full check in the generated reference. |
 | `verify_first.summary_subagent` | `Deliver the verify-first protocol to subagents. SubagentStart context: inject...` |  |  | One-line description of the verify-first-subagent check in the generated reference. |
-| `verify_first.worker` | `WORKER: do the task yourself; do not re-delegate unless told to. Your assignm...` |  |  | The WORKER line that follows the compact subagent protocol. |
+| `verify_first.worker` | `WORKER: do the task yourself; do not re-delegate unless told to. Your assignm...` |  |  | The WORKER line that follows the compact subagent protocol. Placeholder: {max} the bounded-wait limit in seconds, rendered from queued_wait.bounded_max_s (the same key queued-wait-guard enforces, so the two never disagree). |
 
 ### guard_rules.toml / guard_rules
 
@@ -3322,7 +3330,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `165 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `167 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -3382,6 +3390,42 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `emit_dedupe.ts_tolerance_ms` | `1000` |  | ms | How far before a block's own timestamp a transcript attachment may be stamped and still count as its delivery. |
 | `emit_dedupe.uncounted_origins` | `scheduled` |  |  | The turn origins that do not count toward a keepalive while guards.keepaliveCountsScheduled is off. |
 | `emit_dedupe.window_default_ms` | `15000` |  | ms | The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable. |
+
+### prompt_emit.toml / idle_order
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `idle_order.dir` | `.anti-hall/idle-orders` |  |  | The state directory (under the home directory) of the idle-order records: one file per kind and scope holding {subjects: {<id>: {count, lastAt}}}. |
+| `idle_order.file_prefix` | `idle` |  |  | The file name prefix of an idle-order record (<prefix>-<kind>-<scope>.json); stale ones are pruned by that prefix. |
+| `idle_order.idle_marker` | `idle_notification` |  |  | The type of the notice a teammate sends when its turn ends (read from the transcript). |
+| `idle_order.item_mate` | `{name} ({min}m)` |  |  | One idle teammate in the order. Placeholders: {name}, {min} minutes idle. |
+| `idle_order.item_task` | `task {task}, owner {name}` |  |  | One open task of an idle owner in the resume order. Placeholders: {task} the task subject, {name} the owner, {min} minutes idle. |
+| `idle_order.item_ws` | `{name} ({min}m)` |  |  | One idle workspace in the order. Placeholders: {name} its title (or id), {min} minutes idle. |
+| `idle_order.key_max` | `80` |  |  | Most characters of a scope or subject id kept in a record file name. |
+| `idle_order.kind_open_task` | `teammate_open_task` |  |  | The kind label of an idle teammate that still owns an open task in the idle-order counter and record file name (GH #764). |
+| `idle_order.kind_teammate` | `teammate` |  |  | The kind label of a teammate (or Codex agent) in the idle-order counter. |
+| `idle_order.kind_waiting` | `teammate_waiting` |  |  | The kind label of a teammate waiting on background work in the idle-order counter. |
+| `idle_order.kind_workspace` | `workspace` |  |  | The kind label of a child workspace in the idle-order counter. |
+| `idle_order.line_max` | `262144` |  |  | Longest transcript line (characters) the waiting-teammate scan reads; a longer one is skipped. |
+| `idle_order.list_joiner` | `, ` |  |  | Separator between the children named in one order. |
+| `idle_order.list_max` | `5` |  |  | Most children named in one order; the rest are counted. |
+| `idle_order.max_orders` | `6` |  |  | Most orders given for one idle workspace or teammate; after that it is left alone (counted as suppressed, reason cap). |
+| `idle_order.more` | ` +{m} more` |  |  | Appended to the named children when more are idle. Placeholder: {m}. |
+| `idle_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (idle times are kept in ms, settings in minutes). |
+| `idle_order.msg_open_task` | `⚠️ Do now: resume or reassign {list}.` |  |  | The resume order for a teammate or subagent that is idle past guards.idleOrderAfterMin while it still owns a pending or in_progress task. It repeats on idle_order.steps_min and starts again when the owner worked and went idle again. Placeholders: {n} how many, {list} the tasks and owners, {id} the first owner's name. |
+| `idle_order.msg_teammate` | `⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, the...` |  |  | The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. |
+| `idle_order.msg_waiting` | `⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {l...` |  |  | The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check. |
+| `idle_order.msg_workspace` | `⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to repo...` |  |  | The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically). |
+| `idle_order.num_after_min` | `5 entries` |  |  | Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default 30): a child workspace with no activity, no open plan and no unread mail, or a teammate that delivered its report and owns no open task, that long gets the order. A workspace idle this long also needs no mailbox wake path. |
+| `idle_order.re_idle_json` | `\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}` |  |  | The idle_notification object inside a teammate message (JavaScript regex, first match). |
+| `idle_order.re_plan_done` | `^steps (\d+)/\1 done` |  |  | A workspace's step-plan finish label that says every step is done (JavaScript regex; the head of mesh_write.lbl_all_done, 'steps N/N done'). A plan with that label is finished, not open: its workspace is idle like one with no plan. |
+| `idle_order.re_retask` | `"name"\s*:\s*"(?:SendMessage\|TaskStop)"` |  |  | A tool call that re-tasks or ends a teammate (JavaScript regex over a transcript line): a later one naming the teammate means it is no longer idle. |
+| `idle_order.scan_needles` | `SendMessage, TaskStop` |  |  | Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate. |
+| `idle_order.steps_min` | `30, 60, 120` |  |  | The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
+| `idle_order.sw_enabled` | `4 entries` |  |  | Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before. |
+| `idle_order.task_joiner` | `; ` |  |  | Separator between the open tasks named in one resume order. |
+| `idle_order.task_max` | `80` |  |  | Most characters of an open task's subject named in the resume order; a longer one is cut with an ellipsis. |
+| `idle_order.waiting_after_min` | `15` |  |  | Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner. |
 
 ### prompt_emit.toml / idle_sweep
 
@@ -4453,7 +4497,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.rt_block_state_file` | `runtime-block-stops.json` |  |  | Per-session count of the block-tier runtime Stop blocks given, under the engine state directory. |
 | `silent_nudge.rt_dur_hours` | `{h} h {m} min` |  |  | The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes. |
 | `silent_nudge.rt_dur_minutes` | `{m} min` |  |  | The runtime format under one hour; {m} minutes. |
-| `silent_nudge.rt_first_seen` | `7 entries` |  |  | Bounded plugin-owned publisher observation clocks under the tracker directory, keyed by session and child, shared by Claude/OMC and Codex/OMX. The kernel flock uses stop_reblock.lock timings and suffix, on this independent file; locked authoritative publisher re-reads prevent stale snapshots pruning or rolling back newer anchors. Keep at most max_rows and max_bytes UTF-8 bytes; prune absent rows and replace anchors after ttl_ms or a reminder counter or block-tier change. Ordinary dur_ms tick changes preserve the generation. The publisher exposes no nudge identity, so an unobserved disappearance cannot be distinguished. Anchors beyond now plus future_allowance_ms are invalid and re-anchor at now rather than preserving a future maximum; valid anchors never roll back. Overflow, unavailable locks or failed writes cannot release a block. Answers must be at least first_seen; legacy skew_ms and initial_window_ms are ignored because clock tolerance must never admit older answers. An unseen row starts now, never at zero. Stop/acted answers expire at their timestamp plus the smaller of rt_repair.ttl_ms and agent_nudge.limits.window_ms; evaluation never renews them. |
+| `silent_nudge.rt_first_seen` | `8 entries` |  |  | Bounded plugin-owned publisher observation clocks under the tracker directory, keyed by session and child, shared by Claude/OMC and Codex/OMX. The kernel flock uses stop_reblock.lock timings and suffix, on this independent file; locked authoritative publisher re-reads prevent stale snapshots pruning or rolling back newer anchors. Keep at most max_rows and max_bytes UTF-8 bytes; prune absent rows and replace anchors after ttl_ms or a reminder counter or block-tier change. Ordinary dur_ms tick changes preserve the generation. The publisher exposes no nudge identity, so an unobserved disappearance cannot be distinguished. Anchors beyond now plus future_allowance_ms are invalid and re-anchor at now rather than preserving a future maximum; valid anchors never roll back. Overflow, unavailable locks or failed writes cannot release a block. Answers must be at least first_seen; legacy skew_ms and initial_window_ms are ignored because clock tolerance must never admit older answers. A new generation (first sight or a reminder/send newer than the previous anchor) anchors at the tracker's last_sent for that child only when readable and the tracker's reminder count equals the row's (a stale tracker save is another generation; otherwise it anchors at now), never earlier than the previous anchor or now minus backdate_max_ms, so an answer given between the escalation and the Stop's first sight counts while an answer from before it never does (#751). Otherwise an unseen row starts now, never at zero. Stop/acted answers expire at their timestamp plus the smaller of rt_repair.ttl_ms and agent_nudge.limits.window_ms; evaluation never renews them. |
 | `silent_nudge.rt_reconcile_bytes` | `262144` |  | bytes | Combined input byte budget for runtime Stop tracker state and session overlay, shared by Claude/OMC and Codex/OMX. Check metadata before reading and cap each read, including growth races; never parse a truncated document. Unavailable tracker state is counted but independent owner answers and live tracked agents still reconcile the publisher rows. 256 KiB leaves room for parse expansion within the 16 MiB QuickJS call heap; this is independent of the much larger tracker state budget. |
 | `silent_nudge.rt_reconcile_setting` | `6 entries` |  |  | Reconcile stale runtime Stop snapshots. Reconcile runtime escalation snapshots against current agent completion and all recorded owner actions at Stop; keep verdicts in a separate session overlay without writing the publisher snapshot (guards.runtimeStopReconcile, default on). Both hosts share this logic. |
 | `silent_nudge.rt_repair` | `4 entries` |  |  | Logic-owned per-session runtime Stop overlay under paths.state_dir, written atomically without changing publisher rows. All audit rows are retained; verdicts expire after ttl_ms (milliseconds), live evidence overrides completion. Owner verbs/windows come from agent_nudge.answers/limits. Both Claude/OMC and Codex/OMX share the overlay logic. |
@@ -5047,6 +5091,28 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch_tier.tier_workspace` | `a large multi-step feature, migration or release spanning several files or co...` |  |  | The description of the workspace tier in the question. |
 | `dispatch_tier.tools` | `TaskCreate, TaskUpdate` |  |  | The task tools whose text changes the hook classifies. |
 
+### task_guards.toml / done_order
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `done_order.dir` | `.anti-hall/done-orders` |  |  | The state directory (under the home directory) of the completed-task records: one file per session holding {ids: {<task id>: {first, count, lastAt}}}. |
+| `done_order.events` | `3 entries` |  |  | Counter events (advisory kind tasklist_hygiene) of the completed-task orders: lingering = one per completed task found in the list past the age; emitted = one per completed task an order was given for; followed = one per task that was ordered and then deleted before the next order. |
+| `done_order.file_prefix` | `done` |  |  | The file name prefix of a completed-task record (<prefix>-<session>.json); stale ones are pruned by that prefix. |
+| `done_order.item` | `#{id}` |  |  | One task id in the order. Placeholder: {id}. |
+| `done_order.key_max` | `80` |  |  | Most characters of the session id kept in a record file name. |
+| `done_order.list_joiner` | ` ` |  |  | Separator between the task ids named in one order. |
+| `done_order.list_max` | `6` |  |  | Most task ids named in one order; the rest are counted. |
+| `done_order.max_entries` | `200` |  |  | Most task records kept in one session's completed-task file; past it the oldest (by last order, else first seen) are dropped on the next write. The file prune by age (7 days) only drops whole stale files. |
+| `done_order.max_orders` | `6` |  |  | Most orders given for one completed task; after that it is left alone. |
+| `done_order.more` | ` +{m} more` |  |  | Appended to the named ids when more tasks are due. Placeholder: {m}. |
+| `done_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (ages are kept in ms, settings in minutes). |
+| `done_order.msg_fresh` | `⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledg...` |  |  | The order given when a task is marked completed (PostToolUse of TaskUpdate). Placeholder: {id} the task id. |
+| `done_order.msg_list` | `⚠️ Do now: {n} completed task(s) still listed: TaskUpdate status=deleted {lis...` |  |  | The order for completed tasks still in the list past the age (UserPromptSubmit; at Stop only as the block reason with handover.taskListEnforce = block). Placeholders: {n} how many are due, {list} their ids. It is one line so the prompt digest keeps all of it. |
+| `done_order.no_session` | `nosession` |  |  | The session part of the record file name when the payload carries no session id. |
+| `done_order.num_after_min` | `5 entries` |  |  | Where the minutes a completed task may stay in the list before the first order are read from (guards.doneOrderAfterMin, default 10). The age counts from the first time the engine saw the task done (the completion itself, or the first prompt or Stop that found it). |
+| `done_order.steps_min` | `10, 30, 60` |  |  | The repeat schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
+| `done_order.sw_enabled` | `4 entries` |  |  | Claude only (Codex has no task tools). Where the on/off switch of the completed-task orders is read from (guards.doneOrder, default on). Off: the completion line stays the one-shot tip and no order is given for a completed task left in the list. |
+
 ### task_guards.toml / idle_rule
 
 | Key | Default | Env override | Unit | What it is |
@@ -5376,7 +5442,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry.` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
-| `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, tell...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
+| `tasklist_hygiene.order_joiner` | `\n` |  |  | Separator between the completion order and the budget tip in one PostToolUse line. |
+| `tasklist_hygiene.summary` | `Claude only (Codex has no task tools). After a task is marked completed, orde...` |  |  | One-line description of the tasklist-hygiene check in the generated reference. |
 | `tasklist_hygiene.update_tool` | `TaskUpdate` |  |  | The tool that changes a task (status, subject). |
 
 ### task_guards.toml / taskstate
@@ -5895,35 +5962,52 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
+| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach word (lane_waste.detach_words). |
+| `lane_waste.detach_words` | `nohup, setsid, coproc, disown` |  |  | Words that detach a command when they are the command word or a wrapper word in front of it (never as a substring of a path or argument): nohup, setsid, coproc, disown. Besides these, a lone `&` ending the list element (not `&&`, `&>`, `>&`, `\|&`, `2>&1`) and a process substitution `<(` `>(` detach. Only the timeout-wrapped segment is judged (and, inside it, the script of a shell -c or eval); a detached command may outlive its `timeout`, so no timeout counts as a bound (fail closed). Quoted text outside such a script (URLs, grep patterns) is inert. |
+| `lane_waste.eval_words` | `eval` |  |  | Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts. |
+| `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; read only so that `coproc NAME { ...; }` finds the command after the coprocess name. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
 | `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
 | `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
 | `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
-| `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
+| `lane_waste.shells` | `sh, bash, zsh, dash, ksh, su` |  |  | Shell interpreters (and su) whose -c argument is itself a script, so a command inside it still counts. |
 | `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |
-| `lane_waste.wrappers` | `16 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
+| `lane_waste.wrappers` | `17 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
 
 ### lane_waste.toml / queued_wait
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `queued_wait.bg_field` | `run_in_background` |  |  | The Bash tool input field that starts the command in the background. |
+| `queued_wait.bounded_max_s` | `540` |  | s | The longest bounded foreground wait or watch a subagent may run (a wait or watch under an explicit `timeout N`, N at most this). 540 s is under the Bash tool's 600 s timeout ceiling, with a minute of margin for the command's own start and exit; an idle subagent is not woken by a completion notification, so a wait it can finish in the foreground is the only one that keeps its path to the result. |
+| `queued_wait.duration_infinity_words` | `inf, infinity` |  |  | Words `sleep` reads as an endless wait (GNU: inf, infinity; case ignored). They parse as an unbounded duration and are blocked. |
 | `queued_wait.duration_unit_s` | `4 entries` |  |  | Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds. |
 | `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
 | `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
+| `queued_wait.kill_after_grace_s` | `10` |  | s | Seconds of `timeout --kill-after` that are margin, not added to the bound of a `timeout` that sends a non-terminating signal (`-s 0 -k 5 540` counts as 540). A larger kill-after counts only its excess: the command lives for the duration plus the kill-after. A kill-after of 0 or one that does not parse adds no escalation, so such a timeout bounds nothing. |
 | `queued_wait.loop_sleep_max_s` | `5` |  | s | A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs. |
 | `queued_wait.msg_instead_bg` | `Run the command in the foreground under the shared lock.` |  |  | What to do instead of a background heavy command. |
-| `queued_wait.msg_instead_sleep` | `End the turn and wait for the completion notification.` |  |  | What to do instead of a long sleep or poll loop. |
+| `queued_wait.msg_instead_detach` | `Run the wait attached: `timeout {max} gh pr checks --watch`, or SendMessage l...` |  |  | What to do instead of a wait that detaches inside a timeout. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline. |
+| `queued_wait.msg_instead_over` | `Use {max}s or less, or SendMessage lead "waiting on <X>; wake me when done", ...` |  |  | What to do instead of a bounded wait above the limit. Placeholders: {max} the limit. |
+| `queued_wait.msg_instead_sleep` | `Run `timeout {max} gh pr checks --watch`, or SendMessage lead "waiting on <X>...` |  |  | What to do instead of a long sleep or poll loop. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification. |
 | `queued_wait.msg_override` | `tell the agent "skip queued-wait-guard"` |  |  | How the user can lift the block (shown on the last line). |
 | `queued_wait.msg_what_bg` | `a helper cannot start this build or test in the background: {cmd}` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
+| `queued_wait.msg_what_detach` | `this wait detaches work, so the timeout around it bounds nothing: {cmd}` |  |  | Heading of the block on a wait that detaches inside a timeout (the timeout does not bound a detached command). Placeholder: {cmd} the command as it was written. |
 | `queued_wait.msg_what_loop` | `this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
+| `queued_wait.msg_what_over` | `this bounded wait is over the limit ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a bounded wait or watch above the limit. Placeholders: {cmd} the command as it was written, {secs} its timeout in seconds, {max} the limit. |
 | `queued_wait.msg_what_sleep` | `this wait is too long ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |
 | `queued_wait.msg_why` | `Repeated checks while waiting use the work budget without making progress.` |  |  | Why background heavy commands and poll loops are blocked. |
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `Block background builds and busy polling. PreToolUse on Bash, subagents only:...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
 | `queued_wait.sw` | `6 entries` |  |  | Off lets a subagent poll background work with sleep loops. |
+| `queued_wait.timeout_commands` | `timeout` |  |  | Wrapper commands that bound the wait of the command after them (`timeout 170 gh pr checks --watch`); their duration word is read as the bound. Flags that take a value are read from lane_waste.wrappers. |
+| `queued_wait.timeout_kill_flags` | `-k, --kill-after` |  |  | The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it. |
+| `queued_wait.timeout_signal_flags` | `-s, --signal` |  |  | The `timeout` flags that choose the signal it sends at the limit (-s, --signal). |
+| `queued_wait.timeout_silent_signals` | `19 items` |  |  | Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS. |
+| `queued_wait.unbounded_label` | `unbounded` |  |  | What the block message shows as the duration when a sleep's duration is unbounded or cannot be read (a variable, a typo, infinity). An unreadable duration is judged as an unbounded wait. |
+| `queued_wait.watch_res` | `^gh\s+pr\s+checks\b.*--watch, ^gh\s+run\s+watch(?:\s\\|$)` |  |  | Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in). |
 
 ### lane_waste.toml / wide_search
 
@@ -6416,7 +6500,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `453 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `457 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8875,7 +8959,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `465 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `469 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -15510,6 +15594,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
+| `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running). |
 | `misfire_suppressed` | counter | suppressions | guard, reason | Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason. |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
 | `ctx_keep_dropped` | counter | contexts | event, check | Model-facing contexts dropped by the per-event budget while ctx_keep.sw_main is on, by event and by the base id of the check. Every check seen here has a priority below dispatch.context_pin_priority. |
@@ -15555,7 +15640,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `snapshot_lock` | counter | takes | kind, result | Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written). On the file and fallback kinds busy also covers a lock file that cannot be made (a directory or link in its place, an unwritable directory) and failed a lock call that raised: nothing is written either way. A write happens only under a lock that is positively held. |
 | `snapshot_overlaid` | counter | tasks |  | Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them. |
 | `snapshot_written` | counter | files |  | Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail. |
-| `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
+| `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown, and the done_order events completed_lingering, order_emitted and followed), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
 | `taskstate_rows_skipped` | counter | rows |  | Transcript rows the task model skipped because their type is in taskstate.skipped_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon. |
@@ -15644,6 +15729,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `engine_currency_check` | counter | checks | result | Engine currency checks (diagnostics.engineCurrency on, a checkout set), by result: ok, behind, files_differ, unreadable. |
 | `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
 | `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
+| `devswarm_inbox_advisory_suppressed` | counter | advisories | kind | Unread-inbox advisories not repeated, by kind (child, own): the unread set was unchanged within the cooldown (#709). |
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 
 ## Impact kinds

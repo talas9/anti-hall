@@ -261,10 +261,10 @@ var cb = {
     });
   },
   milestone: function (pct, p) {
-    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_nag_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_nag_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_nag_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_nag_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
   },
   soft: function (pct) {
-    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_soft_what', { pct: Math.round(pct) }), why: cb.c('ctxbudget.ah_soft_why'), instead: cb.r('ctxbudget.ah_soft_instead', { bloat: cb.c('ctxbudget.ah_bloat') }) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_soft_what', { pct: Math.round(pct) }), why: cb.c('ctxbudget.ah_soft_why'), instead: cb.r('ctxbudget.ah_soft_instead', { bloat: cb.c('ctxbudget.ah_bloat') }) });
   },
   budgetLabel: function (b, max) {
     var tokK = isFinite(max) && max > 0 ? Math.round((max * b) / 100 / 1000) : null;
@@ -287,7 +287,7 @@ var cb = {
   },
   // ---- the pause nag and the decisive prompt (hooks/auto-handover-pause-nag.js, hooks/lib/handover-freshness.js) ----
   pause: function (pct, p) {
-    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_pause_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_pause_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_pause_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_pause_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
   },
   // `relativeHandoverPath(payload, filePath)`: the path relative to the working directory when it lies under it.
   relativeHandoverPath: function (p, file) {
