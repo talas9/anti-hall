@@ -64,7 +64,7 @@ mod tests {
     const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
 
     fn settings(env: &[(&str, &str)]) -> JevSettings {
-        let home = crate::testtmp::path("ah-doctor-jev-nohome");
+        let home = crate::testtmp::path(format!("ah-doctor-jev-nohome-{}", std::process::id()));
         JevSettings::resolve(&home, Sources::with_files(Default::default(), Env::from_pairs(env.iter().copied())))
     }
 

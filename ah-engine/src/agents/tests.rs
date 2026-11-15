@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 const MIN: u64 = 60_000;
 
 fn home(tag: &str) -> PathBuf {
-    let d = crate::testtmp::path("ah-test-agents").join(format!("{tag}-{}", std::process::id()));
+    let d = crate::testtmp::child("ah-test-agents", format!("{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join(".claude/projects/p")).unwrap();
     d
@@ -3203,7 +3203,7 @@ fn r5c_a_curl_to_a_fresh_tmp_file_each_run_pauses_pr472r5() {
         if !repo {
             std::fs::remove_dir_all(h.join("w/.git")).unwrap();
         }
-        let tmp = crate::testtmp::path("ah-test-agents").join(format!("{tag}-out-{}", std::process::id()));
+        let tmp = crate::testtmp::child("ah-test-agents", format!("{tag}-out-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         for k in 0..20u64 {
             let t = n + (6 * k + 1) * MIN;
@@ -3323,7 +3323,7 @@ fn r5e_a_shell_write_earns_hard_only_when_it_changes_the_repo_pr472r5() {
 /// still earns HARD once, an edit re-arms a passing test, an unchanged repeat earns none, every call stays bounded (no wedge).
 #[test]
 fn r5f_git_unavailable_or_timing_out_falls_back_to_the_verified_write_rule_pr472r5() {
-    let hang = crate::testtmp::path("ah-test-agents").join(format!("r5f-hang-git-{}.sh", std::process::id()));
+    let hang = crate::testtmp::child("ah-test-agents", format!("r5f-hang-git-{}.sh", std::process::id()));
     std::fs::create_dir_all(hang.parent().unwrap()).unwrap();
     std::fs::write(&hang, "#!/bin/sh\nsleep 5\n").unwrap();
     std::fs::set_permissions(&hang, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();

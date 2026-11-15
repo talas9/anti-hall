@@ -479,7 +479,7 @@ fn zz_store_parity_real() {
                 };
                 eprintln!("PARITY {p} tail {tail} ignore {ignore}: {verdict} ({} bytes, {:?})", b.len(), t0.elapsed());
                 if verdict == "DIFF" {
-                    let dump = crate::testtmp::path("ah-parity-diff");
+                    let dump = crate::testtmp::path(format!("ah-parity-diff-{}", std::process::id()));
                     std::fs::create_dir_all(&dump).ok();
                     std::fs::write(dump.join("store.txt"), a.unwrap_or_default()).ok();
                     std::fs::write(dump.join("fresh.txt"), &b).ok();

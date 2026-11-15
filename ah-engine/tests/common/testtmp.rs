@@ -32,9 +32,9 @@ extern "C" fn sweep() {
     }
 }
 
-/// `temp_dir().join(name)`, removed when the test process exits. The dir is not created: the caller does that, as before.
-pub fn path(name: impl AsRef<Path>) -> PathBuf {
-    let p = std::env::temp_dir().join(name);
+/// Registers exactly `p` for the exit sweep. Only a path that is unique to this process may be registered: a shared parent
+/// (`ah-test-<area>`) deleted by one exiting process would delete the fixtures of another live test process (#757).
+fn register(p: &Path) {
     HOOK.call_once(|| {
         // SAFETY: `sweep` is an `extern "C" fn()` with no captured state, which is what atexit needs.
         unsafe {
@@ -45,8 +45,31 @@ pub fn path(name: impl AsRef<Path>) -> PathBuf {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if !paths.contains(&p) {
-        paths.push(p.clone());
+    if !paths.iter().any(|q| q == p) {
+        paths.push(p.to_path_buf());
     }
+}
+
+/// `temp_dir().join(name)`, removed when the test process exits. The dir is not created: the caller does that, as before.
+/// `name` must be unique to this process (carry the pid): the whole path is swept, so never pass a name another process shares.
+pub fn path(name: impl AsRef<Path>) -> PathBuf {
+    let p = std::env::temp_dir().join(name);
+    register(&p);
     p
+}
+
+/// `temp_dir()/<shared_parent>/<leaf>` with only the leaf registered: the shared parent stays for every other process, so
+/// `leaf` carries the pid. The parent is never registered, so it is never swept (an empty parent is left behind).
+pub fn child(shared_parent: impl AsRef<Path>, leaf: impl AsRef<Path>) -> PathBuf {
+    let p = std::env::temp_dir().join(shared_parent).join(leaf);
+    register(&p);
+    p
+}
+
+/// The paths registered so far (for the registry's own test).
+pub fn registered() -> Vec<PathBuf> {
+    match PATHS.lock() {
+        Ok(g) => g.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
 }

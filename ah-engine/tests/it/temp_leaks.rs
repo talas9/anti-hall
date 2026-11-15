@@ -34,6 +34,48 @@ fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// Count of scratch paths built from the bare temp dir in `text`: `temp_dir().join(..)`, and a `let x = ..temp_dir();` binding
+/// that is later joined (`x.join(..)`). A bare `temp_dir()` that is only read or passed along is not a scratch dir and is fine.
+fn bare_temp_dir_uses(text: &str) -> usize {
+    let code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+    let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut n = squeezed.matches("temp_dir().join(").count();
+    let lines: Vec<&str> = code.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix("let ") else { continue };
+        let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+        let Some((name, init)) = rest.split_once('=') else { continue };
+        let name = name.trim();
+        let ident = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+        // the binding's own scope: the lines after it up to the next `fn `
+        let scope: String = lines[i + 1..].iter().take_while(|x| !x.contains("fn ")).copied().collect::<Vec<_>>().join("");
+        let scope: String = scope.chars().filter(|c| !c.is_whitespace()).collect();
+        if ident && init.trim_end().ends_with("temp_dir();") && scope.contains(&format!("{name}.join(")) {
+            n += 1;
+        }
+    }
+    n
+}
+
+#[test]
+fn the_guard_catches_a_temp_dir_bound_to_a_variable_then_joined() {
+    assert_eq!(bare_temp_dir_uses("let base = std::env::temp_dir();\nlet d = base.join(\"x\");"), 1);
+    assert_eq!(bare_temp_dir_uses("let base = std::env::temp_dir();\nrun(&base.to_string_lossy());"), 0);
+    assert_eq!(bare_temp_dir_uses("let d = std::env::temp_dir().join(\"x\");"), 1);
+    assert_eq!(bare_temp_dir_uses("// temp_dir() in a comment\nlet d = testtmp::path(\"x\");"), 0);
+}
+
+#[test]
+fn a_shared_parent_is_never_registered_for_the_exit_sweep() {
+    let parent = format!("ah-registry-test-{}", std::process::id());
+    let leaf = crate::common::testtmp::child(&parent, format!("leaf-{}", std::process::id()));
+    let shared = std::env::temp_dir().join(&parent);
+    let reg = crate::common::testtmp::registered();
+    assert!(reg.contains(&leaf), "the per-process leaf is registered");
+    assert!(!reg.contains(&shared), "the shared parent {} must never be registered", shared.display());
+}
+
 #[test]
 fn no_test_builds_a_scratch_path_from_the_bare_temp_dir() {
     // A test scratch dir built as `temp_dir().join(..)` is never removed (#757: 60 GB of `ah-<tag>-<pid>` dirs). Test code takes
@@ -52,8 +94,7 @@ fn no_test_builds_a_scratch_path_from_the_bare_temp_dir() {
         let in_test_file = rel.starts_with("tests/") || rel.contains("tests") || rel.ends_with("testkit.rs");
         // In a production src file only the part from its first `#[cfg(test)]` on is test code.
         let scanned = if in_test_file { text.as_str() } else { text.find("#[cfg(test)]").map_or("", |i| &text[i..]) };
-        let squeezed: String = scanned.chars().filter(|c| !c.is_whitespace()).collect();
-        let n = squeezed.matches("temp_dir().join(").count();
+        let n = bare_temp_dir_uses(scanned);
         if n > 0 {
             bad.push(format!("{rel}: {n}"));
         }

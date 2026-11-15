@@ -140,7 +140,7 @@ struct Fx {
 
 impl Fx {
     fn new(name: &str) -> Fx {
-        let dir = crate::testtmp::path("ghrt-test").join(format!("{name}-{}", std::process::id()));
+        let dir = crate::testtmp::child("ghrt-test", format!("{name}-{}", std::process::id()));
         if dir.exists() {
             std::fs::remove_dir_all(&dir).unwrap();
         }
