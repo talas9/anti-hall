@@ -281,7 +281,14 @@ function snRuntimeFirstSeen(home, rows, now, state) {
       }
       // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
       seen[key] = { at: at, reminders: reminders, block: r.block === true, prev: prev };
-      if (provisional) { seen[key].provisional = true; if (tr) seen[key].tr = tr; }
+      if (provisional) {
+        seen[key].provisional = true;
+        // No tracker pair at anchor time (unreadable tracker): baseline = the previous generation's count and anchor, so a restored
+        // tracker at this generation with a newer last_sent proves it; a snooze (reminders unchanged) or a stale tracker never does.
+        // A block-tier-only change keeps the generation (prior.reminders === reminders): no increment can then prove a send.
+        if (!tr && restart && reminders !== null) tr = { r: valid && prior.reminders === reminders ? reminders : reminders - 1, s: prev };
+        if (tr) seen[key].tr = tr;
+      }
       // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
       if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
       anchors[key] = at;

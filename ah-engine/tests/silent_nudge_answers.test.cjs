@@ -357,3 +357,30 @@ test('a lifetime snooze count does not block lowering on a later generation (#75
 test('an answer from before a snoozed-tracker generation still does not clear (#751 round 5)', () => {
   assert.notEqual(snoozedLater(18000).retired, true);
 });
+
+// #751 round 6: a generation change observed while the tracker is unreadable has no tracker pair to seed; the baseline is the
+// previous generation, so a restored tracker at this generation with a newer last_sent proves the send.
+function unreadableThenRestored(answerTs, restored) {
+  const f = fixture();
+  const track = (sent, reminders, extra) => f.files.set('/fixture/tracker/state.json', JSON.stringify({ nudges: { n1: Object.assign({ child: 'child', parent: 'parent', last_sent: sent, reminders }, extra) } }));
+  const row = reminders => [{ session: 'parent', child: 'child', name: 'worker', reminders, block: true }];
+  f.observe((track(9500, 3), row(3)));
+  f.advance(10000);
+  f.files.delete('/fixture/tracker/state.json');
+  f.observe(row(4));
+  f.advance(500);
+  f.answer('other', answerTs);
+  restored(track);
+  f.observe(row(4));
+  f.observe(row(4));
+  return f.observe(row(4));
+}
+test('a restored tracker at the new generation lowers an anchor stored while it was unreadable (#751 round 6)', () => {
+  assert.equal(unreadableThenRestored(19500, track => track(19000, 4)).retired, true);
+});
+test('an answer from before the restored generation send still does not clear (#751 round 6)', () => {
+  assert.notEqual(unreadableThenRestored(18000, track => track(19000, 4)).retired, true);
+});
+test('a snooze-only restored tracker (reminders unchanged) never lowers (#751 round 6)', () => {
+  assert.notEqual(unreadableThenRestored(19500, track => track(19000, 3, { snoozes: 1 })).retired, true);
+});
