@@ -5892,6 +5892,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
+| `lane_waste.detach_words` | `nohup, setsid, disown` |  |  | Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
 | `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |

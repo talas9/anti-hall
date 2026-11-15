@@ -34,6 +34,10 @@ value = ["while", "until", "for"]
 doc = "The shell word that closes a loop."
 value = "done"
 
+[lane_waste.detach_words]
+doc = "Wrapper commands that detach what they run (nohup, setsid, disown): the work outlives a `timeout` that stands before them or around the script holding them, so that timeout does not bound it."
+value = ["nohup", "setsid", "disown"]
+
 [lane_waste.max_depth]
 doc = "How deep the guards follow nested sh -c scripts before they stop looking."
 value = 4

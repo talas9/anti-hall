@@ -16,12 +16,25 @@ var laneWaste = {
       var at = laneWaste.commandAt(segs[s].words);
       if (at < 0) continue;
       var words = segs[s].words.slice(at), pre = segs[s].words.slice(0, at);
-      out.push({ words: words, inLoop: segs[s].inLoop, pre: pre });
+      // `bound`: the wrapper words whose `timeout` really limits this command. A wrapper inside a loop bounds one iteration only, so
+      // it does not count; a detach word (nohup, setsid, disown) hides what stands before it; `detached` says the command outlives
+      // the script around it (a trailing `&` or a detach word), so a timeout around that script does not bound it either.
+      var detachWords = ah.cfg('lane_waste.detach_words'), cut = -1;
+      for (var d = 0; d < segs[s].words.length; d++) if (detachWords.indexOf(shellScan.basename(segs[s].words[d])) >= 0) cut = d;
+      var ownOk = !segs[s].inLoop;
+      var own = { words: words, inLoop: segs[s].inLoop, pre: pre, bound: ownOk ? pre.slice(Math.min(cut + 1, pre.length)) : [], detached: segs[s].amp || cut >= 0 };
+      out.push(own);
       if (shells.indexOf(shellScan.basename(words[0])) >= 0) {
         for (var a = 1; a + 1 < words.length; a++) {
           if (ah.re.test(flagRe, 'r', words[a])) {
             var inner = laneWaste.commands(words[a + 1], depth + 1);
-            for (var k = 0; k < inner.length; k++) { inner[k].inLoop = inner[k].inLoop || segs[s].inLoop; inner[k].pre = pre.concat(words.slice(0, a + 1), inner[k].pre); out.push(inner[k]); }
+            for (var k = 0; k < inner.length; k++) {
+              var outerPre = pre.slice(Math.min(cut + 1, pre.length)).concat(words.slice(0, a + 1));
+              inner[k].bound = !ownOk ? [] : (inner[k].detached ? inner[k].bound : outerPre.concat(inner[k].bound));
+              inner[k].inLoop = inner[k].inLoop || segs[s].inLoop;
+              inner[k].pre = pre.concat(words.slice(0, a + 1), inner[k].pre);
+              out.push(inner[k]);
+            }
           }
         }
       }
@@ -30,17 +43,20 @@ var laneWaste = {
   },
   // `cmd` cut at ; & | newline and braces into { words, inLoop }. A word keeps its quotes removed; a $( ... ) stays in its word.
   split: function (cmd) {
-    var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = 0;
+    var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = 0, starts = [];
     var openers = ah.cfg('lane_waste.loop_openers'), closer = ah.cfg('lane_waste.loop_closer');
     function endWord() { if (has) words.push(cur.join('')); cur = []; has = false; }
-    function endSeg() {
+    function endSeg(amp) {
       endWord();
       if (words.length > 0) {
         var first = words[0];
-        if (first === closer && loops > 0) loops--;
+        var from = -1;
+        if (first === closer && loops > 0) { loops--; from = starts.pop(); }
         var inLoop = loops > 0;
-        if (openers.indexOf(first) >= 0) { loops++; inLoop = true; }
-        segs.push({ words: words, inLoop: inLoop });
+        if (openers.indexOf(first) >= 0) { loops++; inLoop = true; starts.push(segs.length); }
+        segs.push({ words: words, inLoop: inLoop, amp: amp === true });
+        // `done &` sends the whole loop to the background
+        if (from >= 0 && amp === true) for (var q = from; q < segs.length; q++) segs[q].amp = true;
       }
       words = [];
     }
@@ -67,7 +83,7 @@ var laneWaste = {
       if (c === ';' || c === '\n' || c === '(' || c === ')') { endSeg(); i++; continue; }
       if (c === '&') {
         if (cmd[i - 1] === '>' || cmd[i - 1] === '<' || cmd[i + 1] === '>') { cur.push(c); has = true; i++; continue; }
-        endSeg(); i += cmd[i + 1] === '&' ? 2 : 1; continue;
+        var dbl = cmd[i + 1] === '&'; endSeg(!dbl); i += dbl ? 2 : 1; continue;
       }
       if (c === '|') { endSeg(); i += cmd[i + 1] === '|' || cmd[i + 1] === '&' ? 2 : 1; continue; }
       if (c === ' ' || c === '\t' || c === '\r') { endWord(); i++; continue; }

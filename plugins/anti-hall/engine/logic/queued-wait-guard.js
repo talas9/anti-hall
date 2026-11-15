@@ -19,7 +19,7 @@ function qwSleepSeconds(args) {
   return seen ? total : null;
 }
 
-// The seconds of the tightest `timeout [flags] N` among the wrapper words `pre` of a command, or null when none bounds it.
+// The seconds of the tightest `timeout [flags] N` (N above 0) among the wrapper words `pre` that bound a command, or null when none does.
 function qwTimeoutSeconds(pre) {
   var names = ah.cfg('queued_wait.timeout_commands'), valued = ah.cfg('lane_waste.wrappers'), best = null;
   for (var i = 0; i < pre.length; i++) {
@@ -28,7 +28,8 @@ function qwTimeoutSeconds(pre) {
     var vals = Object.prototype.hasOwnProperty.call(valued, b) ? valued[b] : [], j = i + 1;
     while (j < pre.length && pre[j].charAt(0) === '-' && pre[j].length > 1) j += vals.indexOf(pre[j]) >= 0 ? 2 : 1;
     var secs = j < pre.length ? qwSleepSeconds([pre[j]]) : null;
-    if (secs !== null && (best === null || secs < best)) best = secs;
+    // timeout 0 (or a negative number) disables the limit (GNU), so it bounds nothing
+    if (secs !== null && secs > 0 && (best === null || secs < best)) best = secs;
   }
   return best;
 }
@@ -57,7 +58,7 @@ function decide(p, opts) {
     for (var w = 0; !isSleep && !isWatch && w < watches.length; w++) isWatch = ah.re.test(watches[w], 'r', joined);
     if (isSleep || isWatch) {
       // an explicit `timeout N` bounds the wait: within the limit it is allowed (the agent keeps the result in hand), above it blocked
-      var bound = qwTimeoutSeconds(cmds[c].pre || []);
+      var bound = qwTimeoutSeconds(cmds[c].bound || []);
       if (bound !== null) {
         if (bound <= boundedMax) continue;
         return qwBlock(text.render(ah.cfg('queued_wait.msg_what_over'), { cmd: laneWaste.shown(words), secs: bound, max: boundedMax }),

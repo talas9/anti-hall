@@ -301,6 +301,33 @@ fn a_bounded_watch_within_the_limit_is_allowed_for_a_subagent() {
     }
 }
 
+// A timeout bounds a wait only when it wraps the whole wait (PR 760 review): not one iteration of a loop, not a disabled limit,
+// not work detached from the script the timeout wraps.
+#[test]
+fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
+    for cmd in [
+        "while true; do timeout 5 sleep 60; done",
+        "until false; do timeout 5 sleep 60; done",
+        "while true; do timeout 5 bash -c 'sleep 60'; done",
+        "timeout 0 sleep 99999",
+        "timeout 0s sleep 99999",
+        "timeout 0m sleep 99999",
+        "timeout 0.0 sleep 99999",
+        "timeout 1h sleep 100",
+        "timeout 540 bash -c 'sleep 99999 &'",
+        "timeout 540 bash -c 'nohup sleep 99999'",
+        "timeout 540 bash -c 'setsid sleep 99999'",
+        "timeout 540 bash -c 'while true; do sleep 60; done &'",
+    ] {
+        let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 2, "{cmd} must be blocked: {out}");
+    }
+    for cmd in ["timeout 540 bash -c 'while true; do sleep 5; done'", "timeout 9m sleep 100"] {
+        let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
+        assert_eq!(code, 0, "{cmd}: {out}");
+    }
+}
+
 #[test]
 fn an_unbounded_wait_is_blocked_with_a_bounded_watch_or_message_the_lead() {
     for cmd in ["while true; do sleep 60; done", "until [ -f /tmp/done ]; do sleep 30; done", "sleep 170"] {
@@ -314,12 +341,9 @@ fn an_unbounded_wait_is_blocked_with_a_bounded_watch_or_message_the_lead() {
 
 #[test]
 fn an_over_limit_bounded_wait_is_blocked_with_the_message_the_lead_instruction() {
-    for cmd in [
-        "timeout 900 gh pr checks --watch",
-        "timeout 541 gh run watch 1",
-        "timeout 10m bash -c 'until true; do sleep 10; done'",
-        "timeout 600 sleep 600",
-    ] {
+    for cmd in
+        ["timeout 900 gh pr checks --watch", "timeout 541 gh run watch 1", "timeout 10m bash -c 'until true; do sleep 10; done'", "timeout 600 sleep 600"]
+    {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd} must be blocked");
         assert!(out.contains("over the limit") && out.contains("limit 540s"), "{cmd}: {out}");
