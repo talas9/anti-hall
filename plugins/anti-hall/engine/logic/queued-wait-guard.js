@@ -6,10 +6,12 @@
 // text is in lane_waste.toml. A failure of this script allows (script.failure_mode_by_check): the guard never blocks by breaking.
 'use strict';
 
-// The seconds a `sleep` argument list spells (each argument a number with an optional s/m/h/d suffix), or null when one is not.
+// The seconds a `sleep` argument list spells (each argument a number with an optional s/m/h/d suffix, or an infinity word), or null
+// when one is not. A caller that judges a sleep treats null as an UNBOUNDED wait (fail closed), never as "not a wait".
 function qwSleepSeconds(args) {
-  var units = ah.cfg('queued_wait.duration_unit_s'), total = 0, seen = false;
+  var units = ah.cfg('queued_wait.duration_unit_s'), inf = ah.cfg('queued_wait.duration_infinity_words'), total = 0, seen = false;
   for (var i = 0; i < args.length; i++) {
+    if (inf.indexOf(String(args[i]).toLowerCase()) >= 0) { total = Infinity; seen = true; continue; }
     var m = /^(\d+(?:\.\d+)?)([a-z]?)$/.exec(args[i]);
     if (m === null) return null;
     var mult = m[2] === '' ? 1 : (Object.prototype.hasOwnProperty.call(units, m[2]) ? units[m[2]] : null);
@@ -19,13 +21,18 @@ function qwSleepSeconds(args) {
   return seen ? total : null;
 }
 
-// The words of `args` without shell redirections (`>/dev/null`, `2>&1`, `&>f`, and a bare `>` with the file after it).
+// The words of `args` without shell redirections (`>/dev/null`, `2>&1`, `&>f`, a bare `>` with the file after it, and a redirection
+// attached to a word: `60>/dev/null`, `60&>x`, `60<x` keep the `60`).
 function qwStripRedirects(args) {
   var out = [];
   for (var i = 0; i < args.length; i++) {
-    if (/^(\d*|&)[<>]+$/.test(args[i])) { i++; continue; }
-    if (/^(\d*|&)[<>]/.test(args[i])) continue;
-    out.push(args[i]);
+    var a = String(args[i]), at = a.search(/[<>]/);
+    if (at < 0) { out.push(a); continue; }
+    var head = a.slice(0, at).replace(/&$/, '');
+    // a lone 0/1/2 before the operator is the shell's fd number (`2>&1`), not a duration; any other attached word is kept
+    if (/^[012]$/.test(head)) head = '';
+    if (head !== '') out.push(head);
+    if (/^[^<>]*[<>]+&?$/.test(a)) i++;
   }
   return out;
 }
@@ -96,8 +103,8 @@ function decide(p, opts) {
       var timed = qwTimeoutSeconds(cmds[c].bound || []);
       var bound = cmds[c].det ? null : timed;
       if (cmds[c].det && timed !== null && isSleep) {
-        var dsecs = qwSleepSeconds(qwStripRedirects(words.slice(1)));
-        if (dsecs === null || dsecs > plainMax) {
+        var dargs = qwStripRedirects(words.slice(1)), dsecs = qwSleepSeconds(dargs);
+        if (dargs.length > 0 && (dsecs === null || dsecs > plainMax)) {
           return qwBlock(text.render(ah.cfg('queued_wait.msg_what_detach'), { cmd: laneWaste.shown(words) }),
             text.render(ah.cfg('queued_wait.msg_instead_sleep'), { max: boundedMax }));
         }
@@ -111,9 +118,11 @@ function decide(p, opts) {
     if (isSleep) {
       var secs = qwSleepSeconds(qwStripRedirects(words.slice(1)));
       var max = cmds[c].inLoop ? loopMax : plainMax;
-      if (secs !== null && secs > max) {
+      var sargs = qwStripRedirects(words.slice(1));
+      // an operand that does not parse (a variable, a typo, `infinity`) is an unbounded wait: fail closed; no operand at all is no wait
+      if (sargs.length > 0 && (secs === null || secs > max)) {
         return qwBlock(text.render(ah.cfg(cmds[c].inLoop ? 'queued_wait.msg_what_loop' : 'queued_wait.msg_what_sleep'),
-          { cmd: laneWaste.shown(words), secs: secs, max: max }),
+          { cmd: laneWaste.shown(words), secs: secs === null || secs === Infinity ? ah.cfg('queued_wait.unbounded_label') : secs, max: max }),
           text.render(ah.cfg('queued_wait.msg_instead_sleep'), { max: boundedMax }));
       }
       continue;

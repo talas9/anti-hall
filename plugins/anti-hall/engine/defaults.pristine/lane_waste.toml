@@ -269,6 +269,14 @@ max = 3600
 doc = "Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds."
 value = { s = 1, m = 60, h = 3600, d = 86400 }
 
+[queued_wait.duration_infinity_words]
+doc = "Words `sleep` reads as an endless wait (GNU: inf, infinity; case ignored). They parse as an unbounded duration and are blocked."
+value = ["inf", "infinity"]
+
+[queued_wait.unbounded_label]
+doc = "What the block message shows as the duration when a sleep's duration is unbounded or cannot be read (a variable, a typo, infinity). An unreadable duration is judged as an unbounded wait."
+value = "unbounded"
+
 [queued_wait.bounded_max_s]
 doc = "The longest bounded foreground wait or watch a subagent may run (a wait or watch under an explicit `timeout N`, N at most this). 540 s is under the Bash tool's 600 s timeout ceiling, with a minute of margin for the command's own start and exit; an idle subagent is not woken by a completion notification, so a wait it can finish in the foreground is the only one that keeps its path to the result."
 value = 540

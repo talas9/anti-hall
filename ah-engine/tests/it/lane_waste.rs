@@ -237,7 +237,24 @@ fn wait_table() -> Vec<(&'static str, bool, Option<&'static str>)> {
         ("echo 'sleep 600'", false, None),
         ("git commit -m 'no sleep 600 here'", false, None),
         ("sleep", false, None),
-        ("sleep abc", false, None),
+        // round 6: an operand that does not parse is an unbounded wait (fail closed); no operand at all is not a wait
+        ("sleep abc", false, Some("wait is too long (unbounded")),
+        ("sleep $N", false, Some("wait is too long (unbounded")),
+        ("sleep infinity", false, Some("wait is too long (unbounded")),
+        ("sleep 60>/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60 >/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60&>/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60<x", false, Some("wait is too long (60s")),
+        ("sleep 1m>/dev/null", false, Some("wait is too long (60s")),
+        ("sleep 60 2>&1", false, Some("wait is too long (60s")),
+        ("sleep 60 2>/dev/null", false, Some("wait is too long (60s")),
+        ("while true; do sleep 60>/dev/null; done", false, Some("poll loop waits too long (60s")),
+        ("while true; do sleep $N; done", false, Some("poll loop waits too long (unbounded")),
+        ("sleep 5>/dev/null", false, None),
+        ("sleep 5 >/dev/null 2>&1", false, None),
+        ("sleep 0.5>/dev/null", false, None),
+        ("sleep 2>/dev/null 5", false, None),
+        ("timeout 100 sleep $N", false, None),
     ]
 }
 
@@ -362,6 +379,10 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout 540 bash -c 'sleep 60 > /dev/null &'",
         "timeout 540 bash -c 'sleep 5 2>&1 & echo; sleep 60 >/dev/null'",
         "timeout 540 su -c 'sleep 99999 &' nobody",
+        // round 6: an unreadable duration under a detach is unbounded
+        "timeout 540 bash -c 'sleep $N &'",
+        "timeout 540 bash -c 'sleep 60>/dev/null &'",
+        "timeout 540 bash -c 'sleep infinity &'",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd} must be blocked: {out}");

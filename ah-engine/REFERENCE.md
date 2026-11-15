@@ -5911,6 +5911,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `queued_wait.bg_field` | `run_in_background` |  |  | The Bash tool input field that starts the command in the background. |
 | `queued_wait.bounded_max_s` | `540` |  | s | The longest bounded foreground wait or watch a subagent may run (a wait or watch under an explicit `timeout N`, N at most this). 540 s is under the Bash tool's 600 s timeout ceiling, with a minute of margin for the command's own start and exit; an idle subagent is not woken by a completion notification, so a wait it can finish in the foreground is the only one that keeps its path to the result. |
+| `queued_wait.duration_infinity_words` | `inf, infinity` |  |  | Words `sleep` reads as an endless wait (GNU: inf, infinity; case ignored). They parse as an unbounded duration and are blocked. |
 | `queued_wait.duration_unit_s` | `4 entries` |  |  | Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds. |
 | `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
 | `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
@@ -5934,6 +5935,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.timeout_kill_flags` | `-k, --kill-after` |  |  | The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it. |
 | `queued_wait.timeout_signal_flags` | `-s, --signal` |  |  | The `timeout` flags that choose the signal it sends at the limit (-s, --signal). |
 | `queued_wait.timeout_silent_signals` | `19 items` |  |  | Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS. |
+| `queued_wait.unbounded_label` | `unbounded` |  |  | What the block message shows as the duration when a sleep's duration is unbounded or cannot be read (a variable, a typo, infinity). An unreadable duration is judged as an unbounded wait. |
 | `queued_wait.watch_res` | `^gh\s+pr\s+checks\b.*--watch, ^gh\s+run\s+watch(?:\s\\|$)` |  |  | Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in). |
 
 ### lane_waste.toml / wide_search
