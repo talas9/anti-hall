@@ -34,24 +34,31 @@ fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// Count of scratch paths built from the bare temp dir in `text`: `temp_dir().join(..)`, and a `let x = ..temp_dir();` binding
-/// that is later joined (`x.join(..)`). A bare `temp_dir()` that is only read or passed along is not a scratch dir and is fine.
+/// Count of scratch paths built from the bare temp dir in `text`: `temp_dir().join(..)`, and a `let x[: T] = ..temp_dir();` binding
+/// (typed, multiline, or on the same line as its join) whose name is later joined (`x.join(..)`) before the next `fn `. A bare
+/// `temp_dir()` that is only read or passed along is not a scratch dir and is fine.
 fn bare_temp_dir_uses(text: &str) -> usize {
     let code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
     let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
     let mut n = squeezed.matches("temp_dir().join(").count();
-    let lines: Vec<&str> = code.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        let l = line.trim();
-        let Some(rest) = l.strip_prefix("let ") else { continue };
-        let rest = rest.strip_prefix("mut ").unwrap_or(rest);
-        let Some((name, init)) = rest.split_once('=') else { continue };
-        let name = name.trim();
-        let ident = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-        // the binding's own scope: the lines after it up to the next `fn `
-        let scope: String = lines[i + 1..].iter().take_while(|x| !x.contains("fn ")).copied().collect::<Vec<_>>().join("");
+    // statements, not lines: a binding may span lines or share one with its join
+    let mut at = 0;
+    while let Some(end) = code[at..].find(';') {
+        let stmt = &code[at..at + end];
+        let after = &code[at + end + 1..];
+        at += end + 1;
+        let sq: String = stmt.chars().filter(|c| !c.is_whitespace()).collect();
+        let Some(i) = sq.rfind("let") else { continue };
+        let rest = &sq[i + 3..];
+        let rest = rest.strip_prefix("mut").unwrap_or(rest);
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        let Some((_, init)) = rest.split_once('=') else { continue };
+        if name.is_empty() || !init.ends_with("temp_dir()") {
+            continue;
+        }
+        let scope = after.split("fn ").next().unwrap_or("");
         let scope: String = scope.chars().filter(|c| !c.is_whitespace()).collect();
-        if ident && init.trim_end().ends_with("temp_dir();") && scope.contains(&format!("{name}.join(")) {
+        if scope.contains(&format!("{name}.join(")) {
             n += 1;
         }
     }
@@ -63,6 +70,12 @@ fn the_guard_catches_a_temp_dir_bound_to_a_variable_then_joined() {
     assert_eq!(bare_temp_dir_uses("let base = std::env::temp_dir();\nlet d = base.join(\"x\");"), 1);
     assert_eq!(bare_temp_dir_uses("let base = std::env::temp_dir();\nrun(&base.to_string_lossy());"), 0);
     assert_eq!(bare_temp_dir_uses("let d = std::env::temp_dir().join(\"x\");"), 1);
+    // the forms the first guard missed: a typed binding, a multiline initializer, a binding and its join on one line
+    assert_eq!(bare_temp_dir_uses("let base: PathBuf = std::env::temp_dir();\nlet d = base.join(\"x\");"), 1);
+    assert_eq!(bare_temp_dir_uses("let base: std::path::PathBuf =\n    std::env::temp_dir();\nlet d = base.join(\"x\");"), 1);
+    assert_eq!(bare_temp_dir_uses("let mut base = std::env::\n    temp_dir();\nbase.join(\"x\");"), 1);
+    assert_eq!(bare_temp_dir_uses("let base = std::env::temp_dir(); let d = base.join(\"x\");"), 1);
+    assert_eq!(bare_temp_dir_uses("let base: PathBuf = std::env::temp_dir();\nfn other() { base.join(\"x\"); }"), 0);
     assert_eq!(bare_temp_dir_uses("// temp_dir() in a comment\nlet d = testtmp::path(\"x\");"), 0);
 }
 
