@@ -3349,7 +3349,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guard_rules.problem_stale_allow` | `{id}: has an instead text now, remove it from guard_rules.no_step_allow` |  |  | Registry problem: an id in guard_rules.no_step_allow now has an instead text. Placeholder: {id}. |
 | `guard_rules.problem_tier` | `{id}: tier {tier} is not one of {tiers}` |  |  | Registry problem: a tier that is not in guard_rules.tiers. Placeholders: {id}, {tier}, {tiers}. |
 | `guard_rules.problem_unregistered` | `{key}: a block text with no rule row (add it to guard_rules.rules with a tier...` |  |  | Registry problem: a block text has no rule row. Placeholder: {key}. |
-| `guard_rules.rules` | `167 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
+| `guard_rules.rules` | `168 items` |  |  | Every rule the engine enforces, one row each: id, setting (the settings key, section.key, of the switch that turns the rule off, or empty; several joined by guard_rules.setting_sep must all be on; inverted = true: the rule is enforced while that switch is off), hosts (the hosts that run the rule; absent: every digest host), tier (essential: in the session-start digest; skill: in the engine-guards skill only; off: not shown to agents) and source (the defaults key of its what text; its why and instead are the sibling keys with the word what replaced, or the same inline table). An essential rule's digest text is composed from its source entry (guard_rules.digest_entry); there is no separate copy. A block text in the defaults that is neither a row here nor in guard_rules.exempt fails a test. |
 | `guard_rules.sessions_keep` | `50` |  |  | How many sessions the session list keeps (the newest by start time). |
 | `guard_rules.sessions_key` | `sessions` |  |  | State key of the session list (a JSON array of [session, start_ms]). |
 | `guard_rules.sessions_ns` | `guard-rules` |  |  | State namespace of the session list the banner and the summary keep: each session's first-seen start time, so the previous session is known even when it recorded no block. |
@@ -10065,6 +10065,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `procwatch.advisory_events` | `SessionStart, UserPromptSubmit, PreToolUse` |  |  | The hook events the procwatch-advisory script answers. |
+| `procwatch.broker_active_statuses` | `queued, running` |  |  | Job statuses that mean the broker is in use. |
+| `procwatch.broker_cooldown_s` | `3600` |  | s | Least time between two leaked-broker advisories to the same session. |
+| `procwatch.broker_cwd_re` | `--cwd\s+(\S+)` |  |  | Regular expression whose first group is the workspace directory in a broker's command line (`--cwd <dir>`); the broker's own working directory is used when it does not match. |
+| `procwatch.broker_f_jobs` | `jobs` |  |  | The state file field that holds the job list. |
+| `procwatch.broker_f_status` | `status` |  |  | The job field that holds its status. |
+| `procwatch.broker_f_workspace` | `workspaceRoot` |  |  | The job field that holds its workspace directory. |
+| `procwatch.broker_kill_cmd` | `kill {pids}` |  |  | The command an owner can run to stop one leaked tree; {pids} is the space-separated pid list, descendants first. |
+| `procwatch.broker_max_kills_per_run` | `1000` |  |  | The most pids one sweep stops in the broker check (one tree has held 350 descendants). |
+| `procwatch.broker_max_listed` | `10` |  |  | The most leaked trees one report lists (the count is kept exactly). |
+| `procwatch.broker_max_pids` | `2000` |  |  | The most pids one stop command names; a longer tree is cut and flagged. |
+| `procwatch.broker_min_age_s` | `21600` |  | s | An orphaned broker older than this is a leak even when its tree is small. |
+| `procwatch.broker_min_children` | `20` |  |  | A broker tree with MORE descendants than this is a leak. |
+| `procwatch.broker_min_mem_mb` | `1024` |  | MB | A broker tree using MORE memory than this, in MB (broker and descendants together), is a leak. |
+| `procwatch.broker_re` | `(?i)app-server-broker\.mjs\s+serve\b` |  |  | Regular expression (Rust syntax, case-insensitive) of the command line of a Codex companion broker process. |
+| `procwatch.broker_state_dir_re` | `^codex-` |  |  | Regular expression of the names of the plugin data directories that hold Codex companion job state. |
+| `procwatch.broker_state_file` | `state.json` |  |  | The name of the job state file inside a workspace's folder. |
+| `procwatch.broker_state_folder` | `state` |  |  | The folder under a Codex plugin data directory that holds one folder per workspace. |
+| `procwatch.broker_state_parent` | `.claude/plugins/data` |  |  | The directory, relative to the home, that holds the Codex companion's plugin data directories. |
 | `procwatch.classes` | `6 entries, 6 entries, 6 entries, 6 entries, 6 entries, 6 entries` |  |  | Orphan classes, first match wins. name: report name; mode_key: the defaults key of its mode setting (off \| report \| kill); cmd_re: matches the command line; exclude_re: a match is skipped ('' = none); min_age_s: how old a process must be; children: also list its descendants (they die with it). |
 | `procwatch.cmd_chars` | `160` |  |  | A command line in a report or advisory is cut to this many characters. |
 | `procwatch.extra_classes_file` | `procwatch-classes.toml` |  |  | The owner's own orphan classes: a TOML file with `[[classes]]` tables (name, mode = off \| report \| kill, cmd_re, exclude_re, min_age_s, children) in the engine state directory. Its classes are tried before the shipped ones. Example: engine/examples/procwatch-dev.toml. |
@@ -10080,6 +10098,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.marker_var` | `CLAUDECODE` |  |  | The environment variable Claude Code sets in every child process; a process without it is never an orphan candidate. |
 | `procwatch.max_kills_per_run` | `8` |  |  | The most processes one sweep signals, in any class. |
 | `procwatch.max_listed` | `50` |  |  | The most orphan candidates one report lists (the count is kept exactly). |
+| `procwatch.mode_broker_leak` | `7 entries` |  |  | Mode of the leaked Codex broker tree check: off \| report \| kill. Report lists each leaked tree with the exact command that stops it; kill stops exactly the listed pids of a tree (descendants first, then the broker), one pid at a time, never by pattern and never a broker whose workspace has a queued or running job. |
 | `procwatch.mode_build_daemon` | `7 entries` |  |  | Mode of the build_daemon class (build tool daemons): off \| report \| kill. |
 | `procwatch.mode_dev_server` | `7 entries` |  |  | Mode of the dev_server class (dev servers and watchers an agent started): off \| report \| kill. Report lists them; kill terminates one at a time. |
 | `procwatch.mode_mcp_server` | `7 entries` |  |  | Mode of the mcp_server class (MCP servers of ended sessions): off \| report \| kill. The SessionEnd MCP reaper (maintenance.sessionEndReaper) is a separate switch. |
@@ -10087,6 +10106,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.mode_shell_task` | `7 entries` |  |  | Mode of the shell_task class (background shell commands of ended sessions): off \| report \| kill. |
 | `procwatch.mode_test_runner` | `7 entries` |  |  | Mode of the test_runner class (test runners and their children): off \| report \| kill. |
 | `procwatch.msg_bad_config` | `process watch configuration is invalid (a pattern does not compile)` |  |  | The sweep's error when its configuration does not compile. |
+| `procwatch.msg_broker_cut` | ` (list cut at {max} pids; run again for the rest)` |  |  | Appended to a stop command whose pid list was cut at the bound. |
+| `procwatch.msg_broker_instead` | `check that no Codex job runs in that workspace, then run the listed stop comm...` |  |  | What to do about a leaked broker tree. |
+| `procwatch.msg_broker_item` | `broker pid {pid} in {cwd}: {children} child processes, {mem}, up {age}. Stop ...` |  |  | One leaked tree in the summary; {pid} the broker, {cwd} its workspace, {children} descendants, {mem} memory, {age} age, {cmd} the stop command. |
+| `procwatch.msg_broker_what` | `{n} leaked Codex broker tree(s): {list}{more}.` |  |  | Leaked-broker summary line; {n} trees, {list} the named ones, {more} the remainder note. |
+| `procwatch.msg_broker_why` | `The tree stays up after its Codex job ended and holds memory and swap. Mode: ...` |  |  | Why a leaked broker tree matters; {mode} is the broker check's mode. |
 | `procwatch.msg_killed` | `Stopped {n} leftover process(es) (their class is set to kill): {list}.` |  |  | Line added when a sweep stopped orphans; {n} count, {list} the stopped ones. |
 | `procwatch.msg_more` | ` and {m} more` |  |  | Remainder note; {m} more. |
 | `procwatch.msg_orphans_instead` | `check the process owners before stopping any.` |  |  | What to do about orphans. |
