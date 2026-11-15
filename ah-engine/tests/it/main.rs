@@ -99,6 +99,7 @@ mod spool;
 mod stop_channel_e2e;
 mod stop_scripts_guardrail;
 mod swarm_guard_cost;
+mod tip_is_not_an_order;
 mod task_checks_e2e;
 mod task_readers_store;
 mod telemetry;

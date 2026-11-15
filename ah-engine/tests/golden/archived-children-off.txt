@@ -1,8 +1,8 @@
-💡 task tracker: requests need tracking before work starts.
-Do instead: track each request as a priority-sorted task.
+⚠️ task tracker: requests need tracking before work starts.
+Do now: track each request as a priority-sorted task.
 
-💡 task tracker: workspace-sized work needs a child workspace.
-Do instead: assign the feature, fix or deploy to a child workspace.
+⚠️ task tracker: workspace-sized work needs a child workspace.
+Do now: assign the feature, fix or deploy to a child workspace.
 
 💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.
 

@@ -33,7 +33,7 @@ function ttShort() { return text.message('tip', ttT('guard_name'), { what: ttT('
 // plan list where the Claude text names the task tool.
 function ttFull(codex) {
   var fullLevel = ah.settings.enum('orch_state.protocol_setting') === ttT('full_level');
-  var m = text.message('tip', ttT('guard_name'), { what: ttT('what_full'), instead: ttT('instead_head') + (fullLevel ? ttT('non_blocking') : '') + ttT('instead_tail') });
+  var m = text.message('order', ttT('guard_name'), { what: ttT('what_full'), instead: ttT('instead_head') + (fullLevel ? ttT('non_blocking') : '') + ttT('instead_tail') });
   return codex ? m.replace(ttT('codex_from'), ttT('codex_to')) : m;
 }
 
@@ -600,7 +600,7 @@ function decide(p) {
     return r;
   }
 
-  var primaryText = text.message('tip', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
+  var primaryText = text.message('order', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
   var primaryOpts = function () { return { sessionId: dsid, key: ttT('primary_key'), content: primaryText, transcriptPath: tp, keepaliveTurns: keepalive, normalize: function (x) { return x; } }; };
 
   // ---- effects, in Node's order ----

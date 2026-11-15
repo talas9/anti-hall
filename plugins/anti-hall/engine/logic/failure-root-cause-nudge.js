@@ -144,7 +144,7 @@ function decide(p) {
   var one = cmd.replace(/\s+/g, ' ').trim(), max = ah.cfgNum('failure_nudge.max_cmd_len');
   var shown = one.length <= max ? one : one.slice(0, max) + ah.cfg('failure_nudge.ellipsis');
   var part = shown ? ah.cfg('failure_nudge.cmd_open') + shown + ah.cfg('failure_nudge.cmd_close') : '';
-  var t = text.message('tip', ah.cfg('failure_nudge.message_guard'), {
+  var t = text.message('order', ah.cfg('failure_nudge.message_guard'), {
     what: text.render(ah.cfg('failure_nudge.msg_what'), { cmd: part }), instead: ah.cfg('failure_nudge.msg_instead'),
   });
   return { advisory: text.advisoryJson(ah.cfg('failure_nudge.event'), t) };

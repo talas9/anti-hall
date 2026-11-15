@@ -24,6 +24,8 @@ var idleOrder = {
     var steps = ah.cfg('idle_order.steps_min'), max = ah.cfgNum('idle_order.max_orders'), perMin = ah.cfgNum('idle_order.ms_per_minute');
     cands.forEach(function (c) {
       var rec = prev[c.id], count = rec && isFinite(rec.count) ? rec.count : 0, last = rec && isFinite(rec.lastAt) ? rec.lastAt : 0;
+      // GH #764: an idle spell that began after the last order is a new one (the child worked in between): re-arm, so a snooze never hides it
+      if (count > 0 && isFinite(c.idleMs) && now - c.idleMs > last) { rec = undefined; count = 0; last = 0; }
       if (count >= max) { next[c.id] = rec; held.push('cap'); return; }
       var gap = count > 0 ? steps[Math.min(count, steps.length) - 1] * perMin : 0;
       if (count > 0 && now - last < gap) { next[c.id] = rec; held.push('interval'); return; }
@@ -44,9 +46,9 @@ var idleOrder = {
     gk.pruneStale(ah.cfg('idle_order.dir'), ah.cfg('idle_order.file_prefix'));
   },
   // The named list: "a (42m), b (31m) +2 more".
-  list: function (items, itemKey) {
+  list: function (items, itemKey, joinerKey) {
     var max = ah.cfgNum('idle_order.list_max');
-    var shown = items.slice(0, max).map(function (c) { return text.render(ah.cfg(itemKey), { name: c.label, min: Math.floor(c.idleMs / ah.cfgNum('idle_order.ms_per_minute')) }); });
-    return shown.join(ah.cfg('idle_order.list_joiner')) + (items.length > max ? text.render(ah.cfg('idle_order.more'), { m: items.length - max }) : '');
+    var shown = items.slice(0, max).map(function (c) { return text.render(ah.cfg(itemKey), { name: c.label, task: c.task || '', min: Math.floor(c.idleMs / ah.cfgNum('idle_order.ms_per_minute')) }); });
+    return shown.join(ah.cfg(joinerKey || 'idle_order.list_joiner')) + (items.length > max ? text.render(ah.cfg('idle_order.more'), { m: items.length - max }) : '');
   },
 };

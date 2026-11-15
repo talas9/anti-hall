@@ -42,12 +42,12 @@ var text = {
     if (action.length > 115) action = path ? 'follow the saved instructions.' : 'restore access to the details folder and retry.';
     if (needsDetails && !path) action = 'restore access to the details folder and retry.';
     if (needsDetails && path) action += ' (details: ' + path + ')';
-    var second = action ? '\n' + labels.instead + action : '';
+    var second = action ? '\n' + (kind === 'order' ? labels.order : labels.instead) + action : '';
     // Bound dynamic claims, lists and names without cutting executable instructions or file paths.
     var room = 250 - prefix.length - second.length;
     if (room < 20) {
       action = path ? 'follow the saved instructions. (details: ' + path + ')' : 'restore access to the details folder and retry.';
-      second = '\n' + labels.instead + action;
+      second = '\n' + (kind === 'order' ? labels.order : labels.instead) + action;
       room = 250 - prefix.length - second.length;
     }
     return prefix + text.short(what, Math.min(115, room)) + second;

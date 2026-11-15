@@ -110,12 +110,12 @@ function decide(p) {
   var at = leadingAssignments(command), leading = command.slice(0, at), rest = command.slice(at);
   var guard = ah.cfg('scan_throttle.guard_name'), t;
   if (matchIndex === 0 && !unsafeInsertionPoint(rest)) {
-    t = text.message('tip', guard, {
+    t = text.message('order', guard, {
       what: ah.cfg('scan_throttle.msg_first_what'), why: ah.cfg('scan_throttle.msg_first_why'),
       instead: text.render(ah.cfg('scan_throttle.msg_first_instead'), { throttled: leading + prefix + rest }),
     });
   } else {
-    t = text.message('tip', guard, {
+    t = text.message('order', guard, {
       what: ah.cfg('scan_throttle.msg_group_what'), instead: text.render(ah.cfg('scan_throttle.msg_group_instead'), { prefix: prefix.trim() }),
     });
   }
