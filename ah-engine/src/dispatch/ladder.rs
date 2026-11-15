@@ -920,7 +920,7 @@ mod tests {
         vec![HookResult::quiet("h")]
     }
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-ladder-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-ladder-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         d
     }

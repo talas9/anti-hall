@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn the_journal_is_appended_without_being_created_and_folded_past_its_cap() {
-        let dir = std::env::temp_dir().join(format!("ah-obs-counters-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-obs-counters-{}", std::process::id()));
         let missing = dir.join("nope").join("j.log");
         append_to(&missing, "x\n", 1).unwrap();
         assert!(!missing.exists() && !missing.parent().unwrap().exists(), "a missing state dir is left alone");

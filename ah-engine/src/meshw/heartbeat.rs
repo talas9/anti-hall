@@ -1022,7 +1022,7 @@ mod tests {
 
     fn scratch_inv(tag: &str) -> Inv {
         defaults::init().unwrap();
-        let home = std::env::temp_dir().join(format!("ah-hb-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-hb-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&home).unwrap();
         let cwd = home.join("plain");

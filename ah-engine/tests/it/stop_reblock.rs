@@ -8,7 +8,7 @@ struct World {
 }
 impl World {
     fn new(tag: &str) -> Self {
-        let home = std::env::temp_dir().join(format!("ah-reblock-{tag}-{}", std::process::id()));
+        let home = crate::common::testtmp::path(format!("ah-reblock-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall/agent-tracker")).unwrap();
         Self { home }
     }

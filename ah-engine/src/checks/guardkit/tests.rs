@@ -8,7 +8,7 @@ use crate::defaults;
 use std::collections::HashMap;
 
 fn home(tag: &str) -> String {
-    let d = std::env::temp_dir().join(format!("ah-gk-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-gk-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     std::fs::create_dir_all(d.join(".claude")).unwrap();
@@ -174,7 +174,7 @@ fn an_old_file_of_a_family_is_pruned_once_per_window_and_the_live_one_is_kept() 
 
 fn num_settings(files: &[(&str, &str)], env: &[(&str, &str)]) -> Settings {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let d = std::env::temp_dir().join(format!("ah-num-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let d = crate::testtmp::path(format!("ah-num-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     crate::discard::harmless(std::fs::remove_dir_all(&d));
     for (rel, body) in files {
         let p = d.join(rel);
@@ -232,7 +232,7 @@ mod nodelock_tests {
     use crate::checks::guardkit::nodelock::{Params, acquire};
 
     fn dir(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ah-lock-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-lock-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         d.to_string_lossy().to_string()

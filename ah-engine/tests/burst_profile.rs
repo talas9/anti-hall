@@ -62,7 +62,7 @@ fn cfg() -> Config {
 #[test]
 fn a_burst_writes_one_dump_naming_the_allocating_function() {
     let _one = serial();
-    let dir = std::env::temp_dir().join(format!("ah-burst-test-{}", std::process::id()));
+    let dir = common::testtmp::path(format!("ah-burst-test-{}", std::process::id()));
     burst::set_dump_dir(Some(dir.clone()));
     burst::forget_dumps();
     burst::configure(&Config { on: false, ..cfg() });
@@ -133,7 +133,7 @@ fn the_hook_costs_little_per_allocation() {
 #[test]
 fn the_first_request_after_switch_on_does_not_count_the_existing_heap_as_growth() {
     let _one = serial();
-    let dir = std::env::temp_dir().join(format!("ah-burst-first-{}", std::process::id()));
+    let dir = common::testtmp::path(format!("ah-burst-first-{}", std::process::id()));
     burst::set_dump_dir(Some(dir.clone()));
     burst::configure(&Config { on: false, ..cfg() });
     burst::forget_window(); // a fresh process's window: nothing left over from the tests that ran before
@@ -151,7 +151,7 @@ fn the_first_request_after_switch_on_does_not_count_the_existing_heap_as_growth(
 #[test]
 fn slow_growth_over_an_idle_gap_is_not_a_burst() {
     let _one = serial();
-    let dir = std::env::temp_dir().join(format!("ah-burst-idle-{}", std::process::id()));
+    let dir = common::testtmp::path(format!("ah-burst-idle-{}", std::process::id()));
     burst::set_dump_dir(Some(dir.clone()));
     burst::configure(&Config { on: false, ..cfg() });
     burst::forget_window(); // a fresh process's window: start 0, so it is older than the maximum
@@ -171,7 +171,7 @@ fn slow_growth_over_an_idle_gap_is_not_a_burst() {
 fn a_begin_does_not_roll_the_window_away_from_a_burst_in_flight() {
     let _one = serial();
     let scenario = |window_max_ms: u64| -> bool {
-        let dir = std::env::temp_dir().join(format!("ah-burst-inflight-{}-{window_max_ms}", std::process::id()));
+        let dir = common::testtmp::path(format!("ah-burst-inflight-{}-{window_max_ms}", std::process::id()));
         burst::set_dump_dir(Some(dir.clone()));
         burst::forget_dumps();
         let c = Config { window_ms: 100, window_max_ms, max_per_hour: 5, ..cfg() };
@@ -213,7 +213,7 @@ fn a_dump_of_a_stripped_binary_is_named_from_its_symbol_file() {
     let _one = serial();
     let exe = std::env::current_exe().unwrap();
     // the symbol file is made in the test's own scratch directory: cargo's own `<exe>.dSYM` beside the binary is never overwritten
-    let dir = std::env::temp_dir().join(format!("ah-burst-sym-{}", std::process::id()));
+    let dir = common::testtmp::path(format!("ah-burst-sym-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sym = dir.join("test.dSYM");
     let beside = std::path::PathBuf::from(format!("{}.dSYM", exe.display()));
@@ -325,7 +325,7 @@ fn a_stripped_linux_binary_is_named_from_its_kept_debug_file() {
     }
     let _one = serial();
     let scripts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
-    let dir = std::env::temp_dir().join(format!("ah-burst-linux-{}", std::process::id()));
+    let dir = common::testtmp::path(format!("ah-burst-linux-{}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok(); // keep: the test's own scratch directory, from an earlier run with this pid
     std::fs::create_dir_all(&dir).unwrap();
     let (src, fx) = (dir.join("fixture.rs"), dir.join("fx"));
@@ -395,7 +395,7 @@ fn a_stripped_linux_binary_is_named_from_its_kept_debug_file() {
 #[test]
 fn a_dump_is_named_from_the_configured_extension_and_listed_by_it() {
     let _one = serial();
-    let dir = std::env::temp_dir().join(format!("ah-burst-ext-{}", std::process::id()));
+    let dir = common::testtmp::path(format!("ah-burst-ext-{}", std::process::id()));
     burst::set_dump_dir(Some(dir.clone()));
     burst::forget_dumps();
     ah_engine::defaults::set_overlay(&[("diagnostics.burst_dump_ext", serde_json::json!("dmp"))]);

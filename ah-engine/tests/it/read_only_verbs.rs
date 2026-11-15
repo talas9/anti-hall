@@ -87,7 +87,7 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
 
 #[test]
 fn read_only_verbs_create_no_state_beyond_the_documented_process_audit() {
-    let root = std::env::temp_dir().join(format!("ah-readonly-{}", std::process::id()));
+    let root = crate::common::testtmp::path(format!("ah-readonly-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let home = root.join("home");
     let scratch = root.join("scratch");

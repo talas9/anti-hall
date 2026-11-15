@@ -4,6 +4,9 @@
 //! freshest live one in Node, then widens the read to the whole mesh group: that union read is not ported, it defers `mesh-group`.)
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +21,7 @@ struct Fx {
 
 impl Fx {
     fn new(tag: &str) -> Fx {
-        let root = std::env::temp_dir().join(format!("ah-rp-hops-{tag}-{}", std::process::id()));
+        let root = testtmp::path(format!("ah-rp-hops-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(fs::remove_dir_all(&root)); // keep: our own scratch directory
         let (home, repo) = (root.join("home"), root.join("repo"));
         fs::create_dir_all(&home).unwrap();

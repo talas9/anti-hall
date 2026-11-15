@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn the_settings_resolve_from_the_users_settings_file_then_the_default() {
-        let d = std::env::temp_dir().join(format!("ah-line-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-line-{}", std::process::id()));
         std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
         let st = |home: &std::path::Path| Settings { home: home.to_string_lossy().into_owned(), env: Default::default() };
         assert_eq!(LineCfg::read(&st(&d)), cfg(), "no file: the shipped defaults (on)");

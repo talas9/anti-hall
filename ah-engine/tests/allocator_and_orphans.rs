@@ -30,7 +30,7 @@ fn plugin_root() -> PathBuf {
 }
 
 fn scratch(label: &str) -> (common::TempDir, PathBuf) {
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-engine-{label}-{}-{}", std::process::id(), nanos())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-engine-{label}-{}-{}", std::process::id(), nanos())));
     let state = root.join("state");
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(&state).unwrap();

@@ -393,7 +393,7 @@ mod api_tests {
     use std::collections::HashMap;
 
     fn ctx(haiku_only: bool, env: &[(&str, &str)]) -> (Ctx, Settings) {
-        let home = std::env::temp_dir().join(format!("ah-triage-api-{}-{}", std::process::id(), haiku_only));
+        let home = crate::testtmp::path(format!("ah-triage-api-{}-{}", std::process::id(), haiku_only));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let envm: HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let st = Settings { home: home.to_string_lossy().into_owned(), env: envm };

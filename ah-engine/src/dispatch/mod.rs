@@ -1247,7 +1247,7 @@ mod tests {
         assert_eq!(finish_then_fail("PreToolUse", None, Vec::new(), none.clone(), &shadow, false, "slow").code, 2, "nothing ran yet: the budget mode answers");
         let o = finish_then_fail("PreToolUse", None, Vec::new(), none.clone(), &shadow, true, "slow");
         assert_eq!(o.code, 2, "a built-in check already answered: fail closed: {o:?}");
-        let dir = std::env::temp_dir().join(format!("ah-p1-1-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-p1-1-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mark = dir.join("ran");
         let started = vec![(0, node::start(&entry("a", &format!("echo x >> '{}'", mark.display())), b"{}"))];

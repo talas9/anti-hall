@@ -20,6 +20,9 @@
 //! point at the new code and must keep the property green.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -534,7 +537,7 @@ fn obs_json(o: &Observed) -> Value {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah442-{tag}-{}", std::process::id()));
+    let d = testtmp::path(format!("ah442-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&d).ok();
     std::fs::create_dir_all(&d).unwrap();
     std::fs::canonicalize(&d).unwrap()

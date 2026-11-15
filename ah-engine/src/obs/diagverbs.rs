@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn a_lock_file_is_described_from_its_contents_without_being_locked() {
-        let dir = std::env::temp_dir().join(format!("ah-obs-diag-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-obs-diag-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("x.lock");
         std::fs::write(&f, format!("{} held\n", std::process::id())).unwrap();

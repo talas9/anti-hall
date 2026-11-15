@@ -156,7 +156,7 @@ mod tests {
     }
 
     fn home() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-jev-cred-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let d = crate::testtmp::path(format!("ah-jev-cred-{}-{:?}", std::process::id(), std::thread::current().id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join(".config/vercel")).unwrap();
         std::fs::create_dir_all(d.join(".config/typesafe")).unwrap();
@@ -216,7 +216,7 @@ mod tests {
         assert!(read_key_file(&f, &h).unwrap_err().contains("larger than 4096"));
         std::fs::write(&f, "  \n").unwrap();
         assert_eq!(read_key_file(&f, &h), Ok(None));
-        let outside = std::env::temp_dir().join(format!("ah-jev-outside-{}", std::process::id()));
+        let outside = crate::testtmp::path(format!("ah-jev-outside-{}", std::process::id()));
         std::fs::write(&outside, "k").unwrap();
         assert!(read_key_file(&outside, &h).unwrap_err().contains("outside"));
         let link = h.join(".config/vercel/link");

@@ -533,7 +533,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ah-union-bounded-{}-{tag}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-union-bounded-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -590,7 +590,7 @@ mod tests {
 
     /// A scratch inbox (one `_h` line per hash), a cursor file and a store holding one row per hash.
     fn fixture(tag: &str, hashes: &[&str], cursor: usize) -> (std::path::PathBuf, MeshReader, String, String) {
-        let dir = std::env::temp_dir().join(format!("ah-union-twin-{}-{tag}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-union-twin-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let inbox = dir.join("inbox.ndjson");
@@ -641,7 +641,7 @@ mod tests {
     /// A store partition "w" holding one row per sender (`None` = NULL sender) and `#floor` rows at `floor`, plus extra reader rows
     /// `(reader, store position)`. No NDJSON inbox.
     fn senders_fixture(tag: &str, senders: &[Option<&str>], floor: i64, readers: &[(&str, i64, i64)]) -> (std::path::PathBuf, MeshReader) {
-        let dir = std::env::temp_dir().join(format!("ah-union-for-{}-{tag}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-union-for-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("devswarm.db");

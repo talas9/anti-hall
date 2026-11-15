@@ -47,7 +47,7 @@ fn two_asks(path: &str, window: u64) -> (u64, u64, bool) {
 
 #[test]
 fn a_failed_backfill_leaves_the_task_facts_uncomputed_for_the_next_check() {
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-stopbf-{}", std::process::id())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-stopbf-{}", std::process::id())));
     std::fs::create_dir_all(&*root).unwrap();
     let ok = root.join("ok.jsonl");
     let bad = root.join("bad.jsonl");

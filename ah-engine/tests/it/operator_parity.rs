@@ -27,7 +27,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> R<Scratch> {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("ah-ops-parity-{}-{n}-{tag}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ah-ops-parity-{}-{n}-{tag}", std::process::id()));
         if dir.exists() {
             fs::remove_dir_all(&dir)?;
         }

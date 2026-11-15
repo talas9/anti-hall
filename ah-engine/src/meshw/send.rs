@@ -1141,7 +1141,7 @@ mod tests {
     /// #203: a live descriptor id by prefix is found (the engine then hands the send to Node's alias step); other prefixes are not.
     #[test]
     fn a_live_descriptor_id_prefix_is_found() {
-        let home = std::env::temp_dir().join(format!("ah-descprefix-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-descprefix-{}", std::process::id()));
         let dir = crate::meshw::idlock::devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::File::create(dir.join(format!("c5dbd3c3-1e53{}", defaults::text("mesh_write.json_suffix")))).unwrap();
@@ -1172,7 +1172,7 @@ mod label_tests {
     }
 
     fn scratch_inv(tag: &str) -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-pick-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pick-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&home).unwrap();
         Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1_000_000, stdin: None, store_override: None }

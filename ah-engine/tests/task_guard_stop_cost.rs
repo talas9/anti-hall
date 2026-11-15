@@ -3,6 +3,9 @@
 //! `cargo test --release --test task_guard_stop_cost -- --nocapture`
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::io::Write;
@@ -53,7 +56,7 @@ fn pct(v: &mut [u128], p: usize) -> u128 {
 
 #[test]
 fn stop_on_a_growing_transcript_is_measured() {
-    let home = std::env::temp_dir().join(format!("ah-tgcost-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-tgcost-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();
     let tp = real.join("t.jsonl");

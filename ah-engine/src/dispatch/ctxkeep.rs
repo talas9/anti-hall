@@ -111,7 +111,7 @@ mod tests {
     }
 
     fn env_with(on: bool) -> RequestEnv {
-        let home = std::env::temp_dir().join(format!("ahd-ctxkeep-{}-{}", std::process::id(), on));
+        let home = crate::testtmp::path(format!("ahd-ctxkeep-{}-{}", std::process::id(), on));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         std::fs::write(home.join(".anti-hall/settings.json"), format!(r#"{{"context":{{"injectGateNoSpill":{on}}}}}"#)).unwrap();
         RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string())])

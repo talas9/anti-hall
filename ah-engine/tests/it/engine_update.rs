@@ -17,7 +17,7 @@ fn launcher_bin() -> std::path::PathBuf {
 }
 
 fn scratch_root(name: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("ah-engine-update-it-{}-{name}", std::process::id()));
+    let root = crate::common::testtmp::path(format!("ah-engine-update-it-{}-{name}", std::process::id()));
     std::fs::create_dir_all(root.join("hooks")).unwrap();
     // the engine reads its defaults from the plugin root: link the real ones
     let engine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine");
@@ -99,7 +99,7 @@ fn an_unknown_command_names_it_and_prints_the_usage_hint() {
 
 /// The updater runs `ah-hook --selftest --engine <new>` before it swaps anything in, and a rejection aborts the update (#199).
 fn selftest_run(tag: &str, launcher_body: &str) -> (i32, String, std::path::PathBuf) {
-    let root = std::env::temp_dir().join(format!("ah-update-selftest-{}-{tag}", std::process::id()));
+    let root = crate::common::testtmp::path(format!("ah-update-selftest-{}-{tag}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall").canonicalize().unwrap();
     let home = root.join("home");

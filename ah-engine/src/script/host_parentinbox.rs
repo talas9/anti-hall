@@ -724,7 +724,7 @@ mod tests {
     /// A transcript whose recorded `cwd` holds a lone-surrogate escape parses in JavaScript; the session still counts.
     #[test]
     fn a_transcript_cwd_with_a_lone_surrogate_escape_still_reads() {
-        let dir = std::env::temp_dir().join(format!("ah-pi-cwd-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-pi-cwd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("t.jsonl");
         std::fs::write(&f, "{\"type\":\"user\",\"cwd\":\"/w/\\ud800x\"}\n").unwrap();
@@ -736,7 +736,7 @@ mod tests {
     /// A project whose store is journal-backed (a backend only a Node older than 22.5 writes) has nothing the engine refreshes: no text.
     #[test]
     fn a_journal_only_store_has_no_refresh_text_instead_of_a_handoff() {
-        let home = std::env::temp_dir().join(format!("ah-pi-derive-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pi-derive-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         let proj = "proj-a";
         let dir = crate::meshw::union::store_dir(&home, proj);
@@ -751,7 +751,7 @@ mod tests {
     /// closes; the switch off, or no marker, never does.
     #[test]
     fn archived_closed_truth_table() {
-        let home = std::env::temp_dir().join(format!("ah-pi-closed-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pi-closed-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         let root = devswarm_root(&home);
         let (arch, ws) = (root.join(defaults::text("mesh_write.dir_archived")), root.join(defaults::text("mesh_write.dir_workspaces")));

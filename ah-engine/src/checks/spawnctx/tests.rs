@@ -25,7 +25,7 @@ impl Drop for Scratch {
 fn settings(pairs: &[(&str, &str)]) -> Scratch {
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let home = std::env::temp_dir().join(format!("ah-spawnctx-unit-{}-{n}", std::process::id()));
+    let home = crate::testtmp::path(format!("ah-spawnctx-unit-{}-{n}", std::process::id()));
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     let mut e = env(pairs);
     e.insert("HOME".into(), home.to_string_lossy().to_string());

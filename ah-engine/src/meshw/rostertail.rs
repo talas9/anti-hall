@@ -877,7 +877,7 @@ mod tests {
     use super::*;
 
     fn transcript(tag: &str, lines: &[&str]) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-tail-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-tail-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("t.jsonl");

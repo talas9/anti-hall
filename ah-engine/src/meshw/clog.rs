@@ -235,7 +235,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-clog-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-clog-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap_or_default();
         d

@@ -82,7 +82,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn home(tag: &str) -> PathBuf {
-        let h = std::env::temp_dir().join(format!("ah-store-{tag}-{}", std::process::id()));
+        let h = crate::testtmp::path(format!("ah-store-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&h));
         std::fs::create_dir_all(&h).unwrap();
         h

@@ -4,6 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::checks::{Check, Verdict, run_env_guarded};
 use ah_engine::reqenv::RequestEnv;
 use ah_engine::rules::Subject;
@@ -35,7 +38,7 @@ impl Check for Hog {
 }
 
 fn run_hog_and_observe(t: &telemetry::Telemetry) {
-    let home = std::env::temp_dir().join(format!("ah-check-mem-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-check-mem-{}", std::process::id()));
     let env = RequestEnv::from(BTreeMap::from([("HOME".to_string(), home.display().to_string())]));
     let subject = Subject { event: "PreToolUse", tool: Some("Bash"), cwd: None, tool_input: &Value::Null, prompt: None };
     let v = run_env_guarded(&Hog, &subject, &json!({}), &json!({}), &env);
@@ -95,7 +98,7 @@ impl Check for Small {
 /// bound is the 5 ms per-call CPU bar divided by a thousand, so only a gross regression fails).
 #[test]
 fn measuring_a_check_adds_nothing_measurable_to_its_call() {
-    let home = std::env::temp_dir().join(format!("ah-check-mem-cost-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-check-mem-cost-{}", std::process::id()));
     let env = RequestEnv::from(BTreeMap::from([("HOME".to_string(), home.display().to_string())]));
     let subject = Subject { event: "PreToolUse", tool: Some("Bash"), cwd: None, tool_input: &Value::Null, prompt: None };
     let (payload, opts) = (json!({}), json!({}));

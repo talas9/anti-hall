@@ -23,7 +23,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("aha-arch-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("aha-arch-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();

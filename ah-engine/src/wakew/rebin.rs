@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn a_replaced_file_is_a_change_and_an_untouched_one_is_not() {
-        let dir = std::env::temp_dir().join(format!("rebin-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("rebin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("bin");
         std::fs::write(&bin, b"one").unwrap();

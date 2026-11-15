@@ -1113,7 +1113,7 @@ mod tests {
                 }
             }
         }
-        let base = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-defaults-load-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base));
         let root = base.join("plugin");
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");

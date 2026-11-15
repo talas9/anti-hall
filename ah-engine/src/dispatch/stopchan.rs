@@ -583,7 +583,7 @@ mod tests {
 
     /// A scratch HOME with the switch on and a transcript holding `lines`; the payload of a Stop whose gates all pass.
     fn rig(tag: &str, lines: &[String]) -> (std::path::PathBuf, RequestEnv, Value) {
-        let dir = std::env::temp_dir().join(format!("ut-stopchan-{tag}-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ut-stopchan-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run
         std::fs::create_dir_all(dir.join(".anti-hall")).unwrap();
         std::fs::write(dir.join(".anti-hall/settings.json"), r#"{"context":{"stopAdditionalContext":true}}"#).unwrap();

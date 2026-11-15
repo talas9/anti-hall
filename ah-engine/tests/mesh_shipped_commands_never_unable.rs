@@ -3,6 +3,9 @@
 //! cannot do this verb"), whatever the answer otherwise is (an error about a workspace that does not exist is a normal answer).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -120,7 +123,7 @@ fn git(dir: &Path, args: &[&str]) {
 fn no_command_the_shipped_texts_name_exits_unable_without_node() {
     let cmds = shipped_commands();
     assert!(cmds.len() > 15, "the scan found too few commands: {cmds:?}");
-    let scratch = std::env::temp_dir().join(format!("ah-shipped-cmds-{}", std::process::id()));
+    let scratch = testtmp::path(format!("ah-shipped-cmds-{}", std::process::id()));
     ah_engine::discard::harmless(fs::remove_dir_all(&scratch)); // keep: our own scratch directory
     let (home, repo) = (scratch.join("home"), scratch.join("repo"));
     fs::create_dir_all(&home).unwrap();

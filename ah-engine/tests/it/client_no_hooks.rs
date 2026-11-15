@@ -19,7 +19,7 @@ struct Env {
 impl Env {
     /// `script` is a would-be fallback hook; it must never run (it records a marker if it does).
     fn new(tag: &str, script: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ah-fb-{tag}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ah-fb-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::write(dir.join("fb.sh"), script).unwrap();

@@ -32,7 +32,7 @@ pub(crate) fn while_turn_is_held<R>(f: impl FnOnce() -> R) -> R {
 }
 
 fn file(tag: &str, bytes: &[u8]) -> String {
-    let p = std::env::temp_dir().join(format!("ah-scan-{tag}-{}", std::process::id()));
+    let p = crate::testtmp::path(format!("ah-scan-{tag}-{}", std::process::id()));
     std::fs::write(&p, bytes).unwrap();
     p.to_string_lossy().into_owned()
 }

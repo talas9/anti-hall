@@ -4,6 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -46,7 +49,7 @@ struct Setup<'a> {
 /// (`known_marketplaces.json`, `installed_plugins.json`, `settings.json`). The newer builds carry no Node watcher script
 /// unless the test adds one.
 fn scratch(tag: &str, c: &Setup) -> Scratch {
-    let root = std::env::temp_dir().join(format!("ah-wwnative-{tag}-{}", std::process::id()));
+    let root = testtmp::path(format!("ah-wwnative-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let home = root.join("home");
     let cwd = root.join("work");

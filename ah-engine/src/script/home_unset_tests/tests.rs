@@ -10,7 +10,7 @@ use serde_json::json;
 
 #[test]
 fn the_task_speculation_and_tasklist_guards_look_up_the_passwd_home_when_home_is_unset() {
-    let tr = std::env::temp_dir().join(format!("ah-home-unset-{}.jsonl", std::process::id()));
+    let tr = crate::testtmp::path(format!("ah-home-unset-{}.jsonl", std::process::id()));
     std::fs::write(&tr, "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"probably x\"}]}}\n").unwrap();
     let env = RequestEnv::from_pairs([("ANTIHALL_TEST_ISOLATION", "1")]);
     let payload = json!({"session_id": "s1", "hook_event_name": "Stop", "stop_hook_active": false, "cwd": "/tmp", "transcript_path": tr});

@@ -27,7 +27,7 @@ struct World {
 }
 impl World {
     fn new() -> Self {
-        let home = std::env::temp_dir().join(format!("ah-w2-{}-{}-{}", std::process::id(), now(), ID.fetch_add(1, Ordering::Relaxed)));
+        let home = crate::common::testtmp::path(format!("ah-w2-{}-{}-{}", std::process::id(), now(), ID.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(home.join("proj/.git")).unwrap();
         Self { home: home.canonicalize().unwrap() }
     }

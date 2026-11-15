@@ -12,7 +12,7 @@ struct Home {
 
 impl Home {
     fn new(name: &str) -> Home {
-        let dir = std::env::temp_dir().join(format!("aha-iw-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("aha-iw-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall/ah-engine")).unwrap();
         Home { dir }

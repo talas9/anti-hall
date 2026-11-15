@@ -875,7 +875,7 @@ mod tests {
     /// #216: the registry version is the ENABLED install's, not the `anti-hall@anti-hall` pin's. A scratch home only.
     #[test]
     fn the_registered_version_is_the_enabled_installs() {
-        let dir = std::env::temp_dir().join(format!("ah-update-enabled-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-update-enabled-{}", std::process::id()));
         let plugins = dir.join(".claude/plugins");
         std::fs::create_dir_all(&plugins).unwrap();
         let reg = plugins.join("installed_plugins.json");
