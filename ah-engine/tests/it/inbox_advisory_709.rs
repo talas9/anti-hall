@@ -246,3 +246,35 @@ fn an_alias_row_mail_acked_and_replaced_at_the_same_count_speaks_at_once() {
     alias(1, 2); // the first was read, a new one arrived: still one unread
     assert!(p.turn(&env).contains(OWN), "a new alias message at an unchanged count speaks at once");
 }
+
+/// A check answer the dispatcher discards (over the CPU budget) must leave no "already shown" record: the notice was never delivered,
+/// so the next prompt speaks it again instead of staying silent for the cooldown.
+#[test]
+fn a_discarded_child_advisory_leaves_no_suppression_record() {
+    let h = Home::new("discard");
+    h.inbox(&[r#"{"id":"m1","text":"a"}"#]);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    let mut pairs: Vec<(String, String)> = CHILD_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    pairs.push(("HOME".into(), h.home().to_string_lossy().to_string()));
+    let meta: ah_engine::dispatch::native::Meta = serde_json::from_value(serde_json::json!({
+        "host": "claude", "event": "UserPromptSubmit", "root": root, "only": ["devswarm-child-turn"]
+    }))
+    .unwrap();
+    let meta = ah_engine::dispatch::native::Meta { env: ah_engine::reqenv::RequestEnv::from_pairs(pairs), ..meta };
+    let p = serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":h.home(),"transcript_path":h.dir.join("t.jsonl")});
+    let store = h.home().join(".anti-hall/devswarm/unread-seen.json");
+    let run = |over: bool| {
+        ah_engine::deadline::begin(std::time::Instant::now());
+        let got = ah_engine::dispatch::native::evaluate(&meta, &p, &|_| over, &|_, _, _| {});
+        ah_engine::deadline::settle_staged(true); // the reply is delivered: what the check staged lands unless it was dropped
+        ah_engine::deadline::end();
+        got
+    };
+    let got = run(true);
+    assert!(!got.is_empty() && got.iter().all(|(_, a)| matches!(a, ah_engine::dispatch::native::Answer::Defer)), "control: the answer is discarded: {got:?}");
+    assert!(!store.exists(), "a discarded answer leaves no suppression record");
+    let got = run(false);
+    let spoke = got.iter().any(|(_, a)| matches!(a, ah_engine::dispatch::native::Answer::Decided(r, _) if r.out.contains(MARK)));
+    assert!(spoke, "the next prompt speaks the notice again: {got:?}");
+    assert!(store.exists(), "a delivered answer records it");
+}

@@ -173,7 +173,9 @@ function dwUnreadDecide(kind, sid, sig, now) {
       keys.sort(function (x, y) { return store[y].at - store[x].at; }); // newest first
       var kept = {};
       keys.slice(0, max).forEach(function (x) { kept[x] = store[x]; });
-      try { ah.state.writeAtomic(dwUnreadStoreRel(), JSON.stringify({ e: kept })); } catch (e) { /* best effort: the next turn speaks again */ }
+      // staged until the reply is delivered (the dispatcher drops it with an answer it discards, e.g. over the CPU budget): the notice that was never delivered is not recorded as shown
+      var home = ah.env.get(ah.cfg('env.home')), body = JSON.stringify({ e: kept });
+      try { if (!(home && home.charAt(0) === '/' && ah.state.op(home, 'after_reply', dwUnreadStoreRel(), body))) ah.state.writeAtomic(dwUnreadStoreRel(), body); } catch (e) { /* best effort: the next turn speaks again */ }
     }
     return speak;
   } finally { try { ah.state.unlock(lock); } catch (e) { /* the host releases a lock still held when the call ends */ } }
