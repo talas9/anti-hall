@@ -399,7 +399,7 @@ fn an_edited_first_line_of_the_directive_is_printed_with_the_switch_on_and_off()
     // the reported input: ANTIHALL_TASK_TRACKER_TERSE=0 printed the stock first line instead of the edited one
     for sw in ["0", "1"] {
         let out = directive("tt-full", "task_tracker.what_full", "requests need tracking before work starts.", "custom tracking directive.", sw, "claude");
-        assert!(out.contains("⚠️ task tracker: custom tracking directive."), "switch {sw}: {out}");
+        assert!(out.contains("⚠️ Do now: task tracker: custom tracking directive."), "switch {sw}: {out}");
         assert!(!out.contains("requests need tracking") && !out.contains("so none is lost"), "switch {sw}: {out}");
     }
 }
@@ -472,7 +472,7 @@ fn the_unedited_directive_has_the_stock_wording_when_off_and_the_terse_wording_w
     assert!(new.contains("task tracker: each user request is tracked as a priority-sorted task before work starts, so none is lost."), "{new}");
     // the tracker's own block: from its header to the next blank line (other guards speak in the same context)
     let block = new.split("task tracker:").nth(1).unwrap_or("").split("\n\n").next().unwrap_or("").replace("Do now:", "");
-    assert!(!block.is_empty() && block.lines().count() <= 2 && !block.chars().any(char::is_uppercase), "no capitals, at most two lines: {block:?}");
+    assert!(!block.is_empty() && block.lines().count() <= 1 && !block.chars().any(char::is_uppercase), "no capitals, one line: {block:?}");
 }
 
 /// A second prompt of the same session, once the task list holds an in-progress and a pending task (the list changed, so the short reminder
@@ -557,7 +557,7 @@ fn an_edited_first_line_is_printed_with_the_switch_unset_too() {
     let p = Plug::new("tt-unset", &[("task_tracker.toml", "task_tracker.what_full", "requests need tracking before work starts.", "custom unset directive.")]);
     let home = p.home("h0");
     let out = p.hook_in("h0", "UserPromptSubmit", "claude", &prompt_of("edited", &home, "do the thing"), &QUIET);
-    assert!(out.contains("⚠️ task tracker: custom unset directive.") && !out.contains("so none is lost"), "{out}");
+    assert!(out.contains("⚠️ Do now: task tracker: custom unset directive.") && !out.contains("so none is lost"), "{out}");
     // unedited with the switch unset: the shipped default is the terse wording
     let q = Plug::new("tt-unset-stock", &[]);
     let plain = q.hook_in("h0", "UserPromptSubmit", "claude", &prompt_of("edited", &q.home("h0"), "do the thing"), &QUIET);

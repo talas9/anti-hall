@@ -2283,14 +2283,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guardkit.details_ext` | `.md` |  |  | Details file extension. |
 | `guardkit.details_session_default` | `session` |  |  | Details file suffix when a session id is unavailable. |
 | `guardkit.false_tokens` | `0, off, false, no` |  |  | Environment or settings strings that mean off (compared after trimming and lower-casing). |
-| `guardkit.icons` | `7 entries` |  |  | Leading icon of a block or advisory message, by kind. `order` is the order form: a message that asks the agent for an action (same icon as the idle orders, labelled with labels.order). |
+| `guardkit.icons` | `6 entries` |  |  | Leading icon of a block or advisory message, by kind. |
 | `guardkit.jev_legacy_file` | `.anti-hall/jev.json` |  |  | The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory. |
 | `guardkit.js_space` | `\t\n\x0b\x0c\r    -     　﻿` |  |  | Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF). |
 | `guardkit.line_terminators` | `\n\r  ` |  |  | Characters JavaScript's dot excludes, as the body of a regex character class. |
 | `guardkit.long_instructions` | `32 entries` |  |  | Full instructions retained when visible guard text is shortened; placeholders describe the original command fields. Saved only in details files. |
 | `guardkit.migration_markers_file` | `.anti-hall/update-sweep-state.json` |  |  | The per-migration marker file, relative to the home directory. |
 | `guardkit.msg_head` | ` ` |  |  | Text between the icon and the guard name in every block or advisory message. |
-| `guardkit.msg_labels` | `6 entries` |  |  | Labels of the optional lines of a block or advisory message. `order` replaces `instead` in a message of kind order. |
+| `guardkit.msg_labels` | `5 entries` |  |  | Labels of the optional lines of a block or advisory message. |
+| `guardkit.order_form` | `⚠️ Do now: {name}: {what} {action}` |  |  | The order form: a message that asks the agent for an action, in the single-line shape of the idle orders (idle_order.msg_*): one icon, then `Do now:`. Placeholders: {name} the guard's plain name, {what} the claim, {action} the one action. |
 | `guardkit.override_human` | `tell the agent "skip {guard}"` |  |  | Human consent hint; the id is the skip key. |
 | `guardkit.plain_names` | `46 entries` |  |  | Human names on the first line; unknown guard ids fall back to themselves. |
 | `guardkit.plugin_config_keys` | `anti-hall, anti-hall@anti-hall` |  |  | Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first. |

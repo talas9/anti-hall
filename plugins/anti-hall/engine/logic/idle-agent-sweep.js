@@ -37,14 +37,17 @@ function idMessage(list, codex, now) {
   });
 }
 
-// GH #744: the open tasks of this session that have an owner, as [{owner, subject}], or null when the list cannot be read.
+// GH #744: the open tasks of this session that have an owner, as {owners: [{owner, subject}], store}, or null when the list cannot be read.
+// `store` is true only when the session's own task store answered. GH #764: a resume order is given from the store alone: tk.tasksOf
+// falls back to the transcript for a store that is empty (it reads an empty store as absent), and the transcript still holds tasks the
+// store has since dropped, so an owner it names is never trusted for an order.
 function idOpenOwners(p, tp, home) {
   var sid = typeof p.session_id === 'string' ? p.session_id : '';
   var r = tk.tasksOf(home, sid, tp, 'state', true); // strict: a store file the read dropped is an unknown state, no order
   if (r.unsure || r.unreadable) return null;
   var out = [];
   (r.tasks || []).forEach(function (t) { if (tk.isOpen(t) && typeof t.owner === 'string' && t.owner !== '') out.push({ owner: t.owner, subject: idOneLine(typeof t.content === 'string' ? t.content : '', ah.cfgNum('idle_order.task_max')) }); });
-  return out;
+  return { owners: out, store: r.store === true };
 }
 
 // GH #764: the first open task the named agent owns, or null.
@@ -86,8 +89,9 @@ function idWaiting(tp, now, finished) {
 }
 
 // GH #744: the orders for agents idle past guards.idleOrderAfterMin, on the escalating schedule. Returns null when orders are not in
-// effect (off, no session to keep a record for, or a Codex session: it has no task source to tell an owned agent from an idle one, so
-// it gets no order and the plain advisory speaks as before). Otherwise {plans, text, handled}: `handled` are the agents the order path
+// effect (off, no session to keep a record for, or a Codex session: Codex has no task-owner concept (no owner field on a plan item
+// or a spawned agent, see codex/README.md), so there is no owned task to resume and no source to tell an owned agent from an idle one;
+// it gets no order of either kind and the plain advisory speaks as before). Otherwise {plans, text, handled}: `handled` are the agents the order path
 // owns (idle past the threshold), so the plain advisory never speaks for them - a suppressed order (open task, inside the interval,
 // cap spent, task state unreadable) is silence, never the unfiltered "stop each finished agent" tip.
 function idOrder(p, tp, agents, codex, now) {
@@ -96,7 +100,7 @@ function idOrder(p, tp, agents, codex, now) {
   if (home === null) return null;
   var kind = ah.cfg('idle_order.kind_teammate'), after = idleOrder.afterMs(), handled = {};
   agents.forEach(function (a) { if (now - a.idleSinceMs >= after) handled[a.id] = true; });
-  var owners = idOpenOwners(p, tp, home);
+  var read = idOpenOwners(p, tp, home), owners = read === null ? null : read.owners;
   if (owners === null) { // unknown task state: no order (an owned agent must never be told to stop)
     ah.unable('idle-agent-sweep:tasks_unknown');
     Object.keys(handled).forEach(function () { idleOrder.skip(kind, 'unknown_state'); });
@@ -106,6 +110,7 @@ function idOrder(p, tp, agents, codex, now) {
   agents.forEach(function (a) {
     if (!handled[a.id]) return;
     var held = idTaskOf(owners, a.id);
+    if (held !== null && !read.store) { idleOrder.skip(kind, 'unknown_state'); return; } // owner named only by the transcript: no order of any kind
     if (held !== null) { oc.push({ id: a.id, label: a.id, task: held.subject, idleMs: now - a.idleSinceMs }); return; } // GH #764: idle but owns open work: resume order
     cands.push({ id: a.id, label: idOneLine(a.label, ah.cfgNum('idle_sweep.label_max')), idleMs: now - a.idleSinceMs });
   });
@@ -120,6 +125,7 @@ function idOrder(p, tp, agents, codex, now) {
     waiting.forEach(function (a) {
       var heldTask = idTaskOf(owners, a.id);
       if (ah.transcript.trackedLiveness(a.id, rows) === true) { idleOrder.skip(waitKind, 'running'); wk.push(a.id); return; }
+      if (heldTask !== null && !read.store) { idleOrder.skip(waitKind, 'unknown_state'); return; }
       if (heldTask !== null) { oc.push({ id: a.id, label: a.id, task: heldTask.subject, idleMs: now - a.idleSinceMs }); return; } // GH #764
       wc.push({ id: a.id, label: idOneLine(a.label, ah.cfgNum('idle_sweep.label_max')), idleMs: now - a.idleSinceMs });
     });

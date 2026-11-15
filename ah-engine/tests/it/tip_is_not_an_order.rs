@@ -1,5 +1,5 @@
-//! GH #764 item 4: a message that asks the agent for an action (it carries an `instead:` line, rendered "Do instead:") must use the
-//! order form (`text.message('order', ...)`, icon and "Do now:" label from guardkit.icons / guardkit.msg_labels), never the `tip` kind:
+//! GH #764 item 4: a message that asks the agent for an action (it carries an `instead:` property) must use the
+//! order form (`text.message('order', ...)`, the single-line `guardkit.order_form`, the form of the idle orders in prompt_emit.toml), never the `tip` kind:
 //! a tip is ignored about nine times in ten. `tasklist-hygiene` is owned by GH #765 and is the only allowed exception until that lands.
 //! The scan reads the plugin's check scripts; `AH_TIP_SCAN_ROOT` points it at another plugin root (to replay an older tree).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
@@ -67,11 +67,12 @@ fn no_message_that_asks_for_an_action_uses_the_tip_kind() {
 }
 
 #[test]
-fn the_order_kind_has_its_icon_and_label_in_both_default_copies() {
+fn the_order_form_is_one_template_in_both_default_copies() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine");
     for d in ["defaults", "defaults.pristine"] {
         let t = std::fs::read_to_string(root.join(d).join("small_guards.toml")).unwrap();
-        assert!(t.contains("order = \"⚠️\""), "{d}: guardkit.icons has no order icon");
-        assert!(t.contains("\"order\" = \"Do now: \""), "{d}: guardkit.msg_labels has no order label");
+        assert!(t.contains("[guardkit.order_form]") && t.contains("value = \"⚠️ Do now: {name}: {what} {action}\""), "{d}: no single-line order form");
+        // no second order form: the icon and label tables carry no `order` entry
+        assert!(!t.contains("order = \"⚠️\"") && !t.contains("\"order\" = \"Do now: \""), "{d}: a second order form (icon or label) is back");
     }
 }

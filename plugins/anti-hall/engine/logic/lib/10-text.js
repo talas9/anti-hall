@@ -36,18 +36,25 @@ var text = {
     var names = ah.cfg('guardkit.plain_names');
     var name = text.short(text.plain(names[guard] || String(guard).replace(/-/g, ' ')), 40);
     var what = text.plain(p.what || ''), action = text.plain(p.instead || '');
-    var prefix = (icons[kind] || icons.tip) + ' ' + name + ': ';
+    // GH #764: the order form is the one single-line form of the idle orders (prompt_emit.toml idle_order.msg_*): icon, "Do now:" and
+    // the action in one template, guardkit.order_form (placeholders {name}, {what}, {action}).
+    var ordered = kind === 'order', form = ordered ? ah.cfg('guardkit.order_form') : '';
+    var prefix = ordered ? '' : (icons[kind] || icons.tip) + ' ' + name + ': ';
     var needsDetails = !!p.details || action.length > 115 || ah.cfg('guardkit.details_actions').indexOf(action) !== -1;
     var path = p.skipSave ? p.savedDetails : text.saveDetails(guard, p, session);
     if (action.length > 115) action = path ? 'follow the saved instructions.' : 'restore access to the details folder and retry.';
     if (needsDetails && !path) action = 'restore access to the details folder and retry.';
     if (needsDetails && path) action += ' (details: ' + path + ')';
-    var second = action ? '\n' + (kind === 'order' ? labels.order : labels.instead) + action : '';
+    var second = action ? '\n' + labels.instead + action : '';
+    if (ordered) {
+      var over = text.render(form, { name: name, what: '', action: action }).length;
+      return text.render(form, { name: name, what: text.short(what, Math.min(115, Math.max(20, 250 - over))), action: action }).replace(/\s+$/, '');
+    }
     // Bound dynamic claims, lists and names without cutting executable instructions or file paths.
     var room = 250 - prefix.length - second.length;
     if (room < 20) {
       action = path ? 'follow the saved instructions. (details: ' + path + ')' : 'restore access to the details folder and retry.';
-      second = '\n' + (kind === 'order' ? labels.order : labels.instead) + action;
+      second = '\n' + labels.instead + action;
       room = 250 - prefix.length - second.length;
     }
     return prefix + text.short(what, Math.min(115, room)) + second;
