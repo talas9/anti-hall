@@ -1284,7 +1284,7 @@ fn excused_ghosts(case: &Case, task_guard_golden: &Value) -> BTreeSet<String> {
     let Some(g) = task_guard_golden["cells"].get(case.key.as_str()) else { return BTreeSet::new() };
     let open: BTreeSet<String> = g["open"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
     // #764: the authoritative empty store (a directory that lists and holds no file) supersedes every task the base rebuilt from the transcript
-    if case.cell.store == Store::Empty && case.cell.named != Named::SetWithList {
+    if case.cell.store == Store::Empty && case.cell.named != Named::SetWithList && case.store_files.is_empty() {
         return open;
     }
     let rows: Vec<String> =
