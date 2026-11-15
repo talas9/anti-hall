@@ -5892,8 +5892,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
-| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach token (lane_waste.detach_res). |
-| `lane_waste.detach_res` | `(^\\|[^&>\\|])&($\\|[^&>]), coproc, [<>]\(, nohup, setsid, disown` |  |  | Detach tokens, scanned as raw text of the whole command at any nesting depth (inside quoted `bash -c`/`eval` strings too, also with quotes and backslashes removed): a lone `&` (not `&&`, `&>`, `>&`, `\|&`), `coproc`, `<(`, `>(`, `nohup`, `setsid`, `disown`. A command holding one may outlive any `timeout` around it, so no timeout counts as a bound (fail closed: over-blocking a rare legitimate form is accepted, a bypass is not). |
+| `lane_waste.coproc_words` | `coproc` |  |  | Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach word (lane_waste.detach_words). |
+| `lane_waste.detach_words` | `nohup, setsid, coproc, disown` |  |  | Words that detach a command when they are the command word or a wrapper word in front of it (never as a substring of a path or argument): nohup, setsid, coproc, disown. Besides these, a lone `&` ending the list element (not `&&`, `&>`, `>&`, `\|&`, `2>&1`) and a process substitution `<(` `>(` detach. Only the timeout-wrapped segment is judged (and, inside it, the script of a shell -c or eval); a detached command may outlive its `timeout`, so no timeout counts as a bound (fail closed). Quoted text outside such a script (URLs, grep patterns) is inert. |
 | `lane_waste.eval_words` | `eval` |  |  | Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts. |
 | `lane_waste.group_opener` | `{` |  |  | The shell word that opens a brace group; read only so that `coproc NAME { ...; }` finds the command after the coprocess name. |
 | `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
@@ -5901,7 +5901,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
 | `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
 | `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
-| `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
+| `lane_waste.shells` | `sh, bash, zsh, dash, ksh, su` |  |  | Shell interpreters (and su) whose -c argument is itself a script, so a command inside it still counts. |
 | `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |
 | `lane_waste.wrappers` | `17 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
 
@@ -5921,6 +5921,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.msg_instead_sleep` | `Run `timeout {max} gh pr checks --watch`, or SendMessage lead "waiting on <X>...` |  |  | What to do instead of a long sleep or poll loop. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification. |
 | `queued_wait.msg_override` | `tell the agent "skip queued-wait-guard"` |  |  | How the user can lift the block (shown on the last line). |
 | `queued_wait.msg_what_bg` | `a helper cannot start this build or test in the background: {cmd}` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
+| `queued_wait.msg_what_detach` | `this wait detaches work, so the timeout around it bounds nothing: {cmd}` |  |  | Heading of the block on a wait that detaches inside a timeout (the timeout does not bound a detached command). Placeholder: {cmd} the command as it was written. |
 | `queued_wait.msg_what_loop` | `this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
 | `queued_wait.msg_what_over` | `this bounded wait is over the limit ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a bounded wait or watch above the limit. Placeholders: {cmd} the command as it was written, {secs} its timeout in seconds, {max} the limit. |
 | `queued_wait.msg_what_sleep` | `this wait is too long ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |

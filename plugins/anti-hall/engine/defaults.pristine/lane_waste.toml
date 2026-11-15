@@ -19,8 +19,8 @@ doc = "Shell keywords and punctuation that can stand before a command in the sam
 value = ["{", "!", "if", "then", "else", "elif", "do", "while", "until", "time"]
 
 [lane_waste.shells]
-doc = "Shell interpreters whose -c argument is itself a script, so a command inside it still counts."
-value = ["sh", "bash", "zsh", "dash", "ksh"]
+doc = "Shell interpreters (and su) whose -c argument is itself a script, so a command inside it still counts."
+value = ["sh", "bash", "zsh", "dash", "ksh", "su"]
 
 [lane_waste.script_flag_re]
 doc = "The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax)."
@@ -39,12 +39,12 @@ doc = "The shell word that opens a brace group; read only so that `coproc NAME {
 value = "{"
 
 [lane_waste.coproc_words]
-doc = "Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach token (lane_waste.detach_res)."
+doc = "Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach word (lane_waste.detach_words)."
 value = ["coproc"]
 
-[lane_waste.detach_res]
-doc = "Detach tokens, scanned as raw text of the whole command at any nesting depth (inside quoted `bash -c`/`eval` strings too, also with quotes and backslashes removed): a lone `&` (not `&&`, `&>`, `>&`, `|&`), `coproc`, `<(`, `>(`, `nohup`, `setsid`, `disown`. A command holding one may outlive any `timeout` around it, so no timeout counts as a bound (fail closed: over-blocking a rare legitimate form is accepted, a bypass is not)."
-value = ["(^|[^&>|])&($|[^&>])", "coproc", "[<>]\\(", "nohup", "setsid", "disown"]
+[lane_waste.detach_words]
+doc = "Words that detach a command when they are the command word or a wrapper word in front of it (never as a substring of a path or argument): nohup, setsid, coproc, disown. Besides these, a lone `&` ending the list element (not `&&`, `&>`, `>&`, `|&`, `2>&1`) and a process substitution `<(` `>(` detach. Only the timeout-wrapped segment is judged (and, inside it, the script of a shell -c or eval); a detached command may outlive its `timeout`, so no timeout counts as a bound (fail closed). Quoted text outside such a script (URLs, grep patterns) is inert."
+value = ["nohup", "setsid", "coproc", "disown"]
 
 [lane_waste.eval_words]
 doc = "Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts."
@@ -317,6 +317,10 @@ value = "a helper cannot start this build or test in the background: {cmd}"
 [queued_wait.msg_what_sleep]
 doc = "Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit."
 value = "this wait is too long ({secs}s; limit {max}s): {cmd}"
+
+[queued_wait.msg_what_detach]
+doc = "Heading of the block on a wait that detaches inside a timeout (the timeout does not bound a detached command). Placeholder: {cmd} the command as it was written."
+value = "this wait detaches work, so the timeout around it bounds nothing: {cmd}"
 
 [queued_wait.msg_what_loop]
 doc = "Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit."

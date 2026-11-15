@@ -19,6 +19,17 @@ function qwSleepSeconds(args) {
   return seen ? total : null;
 }
 
+// The words of `args` without shell redirections (`>/dev/null`, `2>&1`, `&>f`, and a bare `>` with the file after it).
+function qwStripRedirects(args) {
+  var out = [];
+  for (var i = 0; i < args.length; i++) {
+    if (/^(\d*|&)[<>]+$/.test(args[i])) { i++; continue; }
+    if (/^(\d*|&)[<>]/.test(args[i])) continue;
+    out.push(args[i]);
+  }
+  return out;
+}
+
 // True when the `timeout -s` value names a signal that does not terminate (queued_wait.timeout_silent_signals; SIG prefix and case ignored).
 function qwSilentSignal(v) {
   var t = String(v).toUpperCase().replace(/^SIG/, ''), list = ah.cfg('queued_wait.timeout_silent_signals');
@@ -75,15 +86,22 @@ function decide(p, opts) {
   var sleepers = ah.cfg('queued_wait.sleep_commands');
   var watches = ah.cfg('queued_wait.watch_res'), boundedMax = ah.cfgNum('queued_wait.bounded_max_s');
   var plainMax = ah.cfgNum('queued_wait.sleep_max_s'), loopMax = ah.cfgNum('queued_wait.loop_sleep_max_s');
-  // a detach token anywhere in the command text (laneWaste.detaches) means no timeout bounds it: fail closed
-  var detached = laneWaste.detaches(cmd);
   for (var c = 0; c < cmds.length; c++) {
     var words = cmds[c].words, joined = words.join(' ');
     var isSleep = sleepers.indexOf(shellScan.basename(words[0])) >= 0, isWatch = false;
     for (var w = 0; !isSleep && !isWatch && w < watches.length; w++) isWatch = ah.re.test(watches[w], 'r', joined);
     if (isSleep || isWatch) {
       // an explicit `timeout N` bounds the wait: within the limit it is allowed (the agent keeps the result in hand), above it blocked
-      var bound = detached ? null : qwTimeoutSeconds(cmds[c].bound || []);
+      // a detach token inside the timeout-wrapped segment (cmds[c].det) means no timeout bounds it: fail closed, whatever the duration parses to
+      var timed = qwTimeoutSeconds(cmds[c].bound || []);
+      var bound = cmds[c].det ? null : timed;
+      if (cmds[c].det && timed !== null && isSleep) {
+        var dsecs = qwSleepSeconds(qwStripRedirects(words.slice(1)));
+        if (dsecs === null || dsecs > plainMax) {
+          return qwBlock(text.render(ah.cfg('queued_wait.msg_what_detach'), { cmd: laneWaste.shown(words) }),
+            text.render(ah.cfg('queued_wait.msg_instead_sleep'), { max: boundedMax }));
+        }
+      }
       if (bound !== null) {
         if (bound <= boundedMax) continue;
         return qwBlock(text.render(ah.cfg('queued_wait.msg_what_over'), { cmd: laneWaste.shown(words), secs: bound, max: boundedMax }),
@@ -91,7 +109,7 @@ function decide(p, opts) {
       }
     }
     if (isSleep) {
-      var secs = qwSleepSeconds(words.slice(1));
+      var secs = qwSleepSeconds(qwStripRedirects(words.slice(1)));
       var max = cmds[c].inLoop ? loopMax : plainMax;
       if (secs !== null && secs > max) {
         return qwBlock(text.render(ah.cfg(cmds[c].inLoop ? 'queued_wait.msg_what_loop' : 'queued_wait.msg_what_sleep'),

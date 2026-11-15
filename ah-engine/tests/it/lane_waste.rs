@@ -356,6 +356,12 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout 540 bash -c \"se''tsid sleep 99999\"",
         "timeout 540 bash -c 'sleep 99999 & wait'",
         "timeout 540 bash -c 'disown; sleep 100'",
+        // round 5: a redirection must not hide the sleep's duration from a detach check
+        "timeout 540 bash -c 'sleep 60 >/dev/null 2>&1 &'",
+        "timeout 540 bash -c 'sleep 60 &>/dev/null &'",
+        "timeout 540 bash -c 'sleep 60 > /dev/null &'",
+        "timeout 540 bash -c 'sleep 5 2>&1 & echo; sleep 60 >/dev/null'",
+        "timeout 540 su -c 'sleep 99999 &' nobody",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd} must be blocked: {out}");
@@ -376,6 +382,18 @@ fn a_timeout_that_does_not_bound_the_whole_wait_does_not_allow_it() {
         "timeout 540 gh pr checks --watch 2>&1",
         "timeout 540 bash -c 'a=1 && sleep 100'",
         "timeout 540 bash -c 'sleep 100 2>&1 | cat'",
+        // round 5: a detach token outside the timeout-wrapped segment, or quoted text that is no script, is inert
+        "gh api 'x?a=1&b=2' && timeout 540 sleep 60",
+        "timeout 540 sleep 60 && grep 'a&b' f",
+        "timeout 540 gh pr checks --watch | grep 'a & b'",
+        "timeout 540 gh pr checks --watch | jq '.a & .b'",
+        "timeout 540 gh pr checks --watch; cat nohup.out setsid.log",
+        "cat nohup.out && timeout 540 sleep 60",
+        "ls /tmp/setsid-dir/disown.txt && timeout 540 sleep 60",
+        "echo hi & timeout 540 sleep 60",
+        "timeout 540 sleep 60 && nohup true",
+        "timeout 540 grep -r 'nohup|setsid|disown' src",
+        "timeout 540 gh api 'x?a=1&b=2' --jq '.a'",
     ] {
         let (code, out, _) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 0, "{cmd}: {out}");
