@@ -199,3 +199,43 @@ fn a_poisoned_primary_alias_from_an_older_build_is_ignored() {
     let read = crate::meshw::read::run(&f.inv, &argv(&["read", "--peek"]), false).unwrap().stdout;
     assert!(read.contains(&format!("\"from\":\"{}\",\"message\":\"bcast", f.primary)), "misattributed: {read}");
 }
+
+/// Round 3: a sole child registered at `<W>/pkg`, W being the child's OWN linked worktree with the Primary's checkout elsewhere, writes
+/// the alias W's label -> child. That alias is the child's identity, not the Primary's poisoned one, so it must survive `read_aliases`.
+#[test]
+fn a_child_alias_for_its_own_linked_worktree_survives() {
+    let f = fx("ownwt");
+    let git = |dir: &str, args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    };
+    git(&f.root, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    let w = format!("{}-wt", f.root);
+    git(&f.root, &["worktree", "add", "-q", "-b", "wt", &w]);
+    let w = std::path::Path::new(&w).canonicalize().unwrap().to_string_lossy().into_owned();
+    let pkg = format!("{w}/pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    descriptor(&f, "child-1", &pkg);
+    let key = ident::repo_key_for_worktree(&f.root).unwrap().unwrap();
+    crate::meshw::common::init_new_store(&f.inv, &key).unwrap();
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    assert!(st.upsert_registry(&row(&f.primary, &f.root, "sp"), 1, |_, _| true).unwrap());
+    assert!(st.upsert_registry(&row("child-1", &pkg, "sc"), 2, ident::same_registry_worktree).unwrap());
+    drop(st);
+    let mut child = f.inv.clone();
+    child.cwd = pkg.clone();
+    child.env.remove(defaults::text("mesh_write.env_builder_id"));
+    let b = send::run(&child, &argv(&["send", "--broadcast", "--message", "from-wt-child"])).unwrap();
+    assert_eq!(b.code, 0, "child broadcast: {}", b.stdout);
+    let w_label = ident::primary_workspace_id(&w).unwrap();
+    let kept = crate::meshw::common::read_aliases(&f.inv.home);
+    assert!(kept.contains(&(w_label.clone(), "child-1".to_string())), "the child's own-worktree alias was dropped: {kept:?}");
+    // and the Primary's own root label is still never aliased
+    assert!(!kept.iter().any(|(k, _)| *k == f.primary), "{kept:?}");
+}

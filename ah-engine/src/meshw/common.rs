@@ -548,7 +548,12 @@ pub fn read_aliases(home: &Path) -> Vec<(String, String)> {
 fn poisoned_primary_alias(home: &Path, label: &str, to: &str) -> bool {
     let Some(desc) = ident::read_descriptor(home, to) else { return false };
     let Some(OVal::Str(wp)) = desc.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy()) else { return false };
-    matches!(ident::strict_subdir_of_root(wp), Ok(Some((_, root))) if ident::mesh_id_for_real_path(&root) == label)
+    let Ok(Some((_, root))) = ident::strict_subdir_of_root(wp) else { return false };
+    // only the PRIMARY's checkout root poisons: a child in its own linked worktree W (registered at W/pkg) legitimately aliases W's
+    // label to itself, and W is not the Primary's checkout
+    ident::mesh_id_for_real_path(&root) == label
+        && ident::resolve_context(&root, true)
+            .is_ok_and(|c| ident::is_primary_checkout(&root, c.main_worktree.as_deref(), home, &Default::default()).unwrap_or(false))
 }
 
 /// The sender alias of a child caller (`senderIdentityDetailed` -> `writeAlias(home, label, child, worktree)`): the worktree label the
