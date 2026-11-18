@@ -5611,6 +5611,43 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inline_rule.sw` | `6 entries` |  |  | R-inline. Switch guards.inlineRule (default off, plan v3 L04). On: the Bash write-parity block of command-guard stands down while spawning is stopped (as edit-guard does for Edit/Write), the coordinator-work-guard window block names the step count and the limit, and the blocks of command-guard and coordinator-work-guard are counted. Off: every answer is unchanged and nothing is counted. |
 | `inline_rule.window_what` | `{count} file-changing steps in the main thread within {minutes} min, this one...` |  |  | Headline of the coordinator-work-guard window block when guards.inlineRule is on. `{count}` is the number of file-changing shell steps (git, gh, Bash writes; Edit and Write are not counted here) in the window counting the stopped one, `{minutes}` the window length (guards.coordinatorWorkWindowMinutes) and `{block_at}` the step that is stopped (guards.coordinatorWorkBlockAt). The clearing step stays in the block's why and instead lines. |
 
+### owner_approval.toml / owner_approval
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `owner_approval.approve_re` | `\b(?:yes\|ok\|okay\|go\|approve\|approved\|do it\|run it)\b` |  |  | An approval in the owner's prompt: any of these whole words or phrases (case-insensitive). Only a plain yes: a noun such as 'merge' never approves. The approval binds only to the command the assistant quoted right before the prompt. |
+| `owner_approval.chain_re` | `[;&\|\n\r`]\|\$\(\|<\(\|>\(\|\b(?:bash\|sh\|zsh)\s+-c\b\|\beval\b` |  |  | A command that matches is never eligible: a chain or pipe (&&, \|\|, ;, \|, &), a newline, a command or process substitution ($(, backtick, <(, >(), a shell -c payload or eval. |
+| `owner_approval.command_shape_re` | `^\s*(?:\S+=\S*\s+)*[A-Za-z0-9_./~-]+\s+\S` |  |  | A code span or block that counts as a command: at least two whitespace-separated words (after optional VAR=value prefixes), so a single file or identifier in backticks is not a command. The message must hold exactly ONE of these (two = ambiguous = no approval). |
+| `owner_approval.deny_re` | `\b(?:no\|not\|nope\|don'?t\|dont\|do not\|never\|stop\|wait\|hold\|hold off\|cancel\|abor...` |  |  | A prompt that matches is never an approval, whatever else it says: a negation, a hold, a condition, a question. Case-insensitive. |
+| `owner_approval.kinds` | `2 entries, 2 entries` |  |  | Command shapes the pass can lift. id: the kind; segment_re: the command's ONE shell segment, group 1 captures what it targets (the PR number, the script path); a command whose group 1 is empty (a bare `gh pr merge`) is never eligible. The owner approves the exact command the assistant quoted, so no wording of the owner's prompt names the action. |
+| `owner_approval.line_max_bytes` | `262144` |  |  | A transcript line over this size is skipped when looking for the owner's prompt. |
+| `owner_approval.max_age_ms` | `900000` |  |  | How old (ms) the owner's latest prompt may be and still approve a command: 0 <= now - timestamp <= this. A future timestamp (forged) or an older one (stale) approves nothing. |
+| `owner_approval.max_lines` | `600` |  |  | Most transcript lines examined from the end when looking for the owner's prompt. |
+| `owner_approval.max_prompt_chars` | `400` |  |  | A prompt longer than this is not a short approval (a pasted document or plan is not 'yes, run it'). |
+| `owner_approval.msg_allowed` | `Owner approval: allowed this {kind}; approved by the owner's prompt of {ts}.` |  |  | The one-line notice when the pass lifts a block. {kind} is the command kind, {ts} the timestamp of the approving prompt. |
+| `owner_approval.msg_owner_run` | `or ask the owner to run it themselves: ! {cmd}` |  |  | Part C, appended to the command-guard 'Do instead' text: the owner can run the command themselves. {cmd} is the full command. |
+| `owner_approval.msg_owner_run_long` | `or ask the owner to run it themselves with ! (full command in the details)` |  |  | Part C when the full command is too long (or has several lines) for the short visible text; the full command is in the saved details. |
+| `owner_approval.msg_owner_run_redacted_long` | `or ask the owner to run it with ! after filling in REDACTED (see details)` |  |  | Part C when the command had secrets masked: the owner must fill in the masked value (REDACTED) before running it; the masked command is in the saved details. |
+| `owner_approval.msg_owner_run_saved` | `or ask the owner to run it themselves, pasting this in the prompt: ! {cmd}` |  |  | Part C in the saved details file: the full original command, so it can be pasted. |
+| `owner_approval.msg_owner_run_saved_redacted` | `or ask the owner to run it themselves, pasting this in the prompt after repla...` |  |  | Part C in the saved details file when the command had secrets masked: the masked command; the owner replaces REDACTED with the real value before pasting it. {cmd} is the masked command. |
+| `owner_approval.negation_window_chars` | `60` |  |  | How many characters before and after the quoted command are searched for a negation word. |
+| `owner_approval.negation_words` | `7 items` |  |  | Words that, within negation_window_chars of the quoted command (before or after it), mean the assistant was NOT proposing to run it. Regex fragments, matched as whole words, case-insensitive. |
+| `owner_approval.never_exempt_re` | `\bgit\b[^\\|;&\n]*\bpush\b[^\\|;&\n]*(?:\s--force\S*\\|\s-[A-Za-z]*f[A-Za-z]*(?:...` |  |  | Commands no prompt can lift, tested against the WHOLE command (every chained part): force push, --admin, secrets and credentials, repo delete, a gh api DELETE. Case-insensitive. |
+| `owner_approval.owner_run_max_chars` | `38` |  |  | Longest command (chars) shown in the visible 'Do instead' text, which the guard-text rule cuts at 115 chars in all (the helper hint plus this wording take about 77); a longer or multi-line command is named only in the saved details. |
+| `owner_approval.paragraph_re` | `\n[ \t]*\n` |  |  | Splits the assistant's message into paragraphs (a blank line). The approval binds only to a command quoted in the FINAL paragraph. |
+| `owner_approval.prompt_origin_kind` | `human` |  |  | The value of the transcript entry's origin.kind that the host sets for a prompt the owner typed or queued themselves. |
+| `owner_approval.question_end_re` | `\?[\s*_)"]*$` |  |  | The final paragraph must end like a question to the owner: a question mark, then only whitespace or closing markup. |
+| `owner_approval.quote_fenced_re` | ````[^\n`]*\n([\s\S]*?)```` |  |  | A fenced code block in the assistant's text; group 1 is the quoted command (one block = one command). Also removed from the owner's prompt before it is read. |
+| `owner_approval.quote_inline_re` | ``([^`\n]+)`` |  |  | An inline code span in the assistant's text (read after the fenced blocks are removed); group 1 is the quoted command. |
+| `owner_approval.quote_line_re` | `^\s*>` |  |  | A line of the owner's prompt that only quotes (a markdown quote line). A prompt with nothing left after these lines are dropped is not an approval. |
+| `owner_approval.redact` | `12 items` |  |  | Secrets masked in a command before it appears in a block text or the saved details file (Part C and the named heavy segment). Applied in order with JS String.replace: re is the pattern, flags its flags, rep the replacement ($1.. are its groups); the placeholder REDACTED is plain text that a shell cannot read as a redirect or a command. Masks `VAR=value` assignments, GitHub/OpenAI/Slack/AWS-style tokens, --token/--password/--pass/--secret/--api-key values, a password glued to -p, the password of -u/--user user:pass, a whole -H/--header value whose name holds key/token/secret/auth/cookie/password (Authorization: Bearer X is masked whole), bearer/basic values, credentials and a bare token in a URL, and a 40-character AWS secret key after an aws command word. |
+| `owner_approval.reject_markers` | `<cross-session-message, <teammate-message, <system-reminder, <task-notificati...` |  |  | Text that marks a prompt as relayed, pasted or system-made even when the host tagged it human (pasted relay or content, teammate message, system note): a prompt containing one is not an approval. |
+| `owner_approval.sw` | `6 entries` |  |  | Owner-approval pass-through. Switch guards.ownerApprovalPass (default OFF: it changes a safety guard, the owner turns it on). On: a command-guard main-thread block of an eligible command (owner_approval.kinds) is lifted when the latest genuine owner prompt approves it. Off: every answer is unchanged and nothing is counted. |
+| `owner_approval.used_dir` | `owner-approval-used` |  |  | Directory, under the state root (spawn_ctx.state_root), holding one claim file per approving prompt that already lifted a block: an approval lifts ONE run. |
+| `owner_approval.uuid_re` | `^[A-Za-z0-9-]{8,64}$` |  |  | The shape of an approving prompt's uuid. Anything else is refused (the uuid names the one-shot claim file). |
+| `owner_approval.window_bytes` | `1048576` |  |  | Bytes read from the end of the transcript to find the owner's latest prompt. |
+| `owner_approval.ws_re` | `\s+` |  |  | Whitespace runs collapsed to one space before the executed command is compared with the command the assistant quoted. |
+
 ### pair_rule.toml / pair_rule
 
 | Key | Default | Env override | Unit | What it is |
@@ -6572,7 +6609,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `458 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `459 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9031,7 +9068,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `470 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `471 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -15762,6 +15799,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `taskstate_rows_skipped` | counter | rows |  | Transcript rows the task model skipped because their type is in taskstate.skipped_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon. |
 | `inline_rule_blocked` | counter | blocks | guard, kind | R-inline blocks delivered (guards.inlineRule on), by guard (command-guard, coordinator-work-guard) and kind (command-guard: remote, verb, category for a heavy command, write for a Bash write; coordinator-work-guard: window). |
 | `inline_rule_standdown` | counter | calls | guard | R-inline stand-downs (guards.inlineRule on): calls a block would have stopped but that were allowed because spawning is stopped and there is nobody to hand the work to, by guard (command-edit-parity: the Bash write-parity block of command-guard). |
+| `owner_approval_pass` | counter | calls | result | Owner-approval pass decisions (guards.ownerApprovalPass on) for a command-guard block of an eligible command, by result: allowed (the owner's latest prompt approved it), no_approval (no fresh genuine prompt approved it, or the command is not an eligible kind), never_exempt (the command is on the never-exempt list). |
 | `pair_rule_fired` | counter | calls | event, kind | Answers R-pair delivered (switch on), by hook event and kind (unnamed = a spawn denied, unpaired, agent_without_task, inexact_owner). |
 | `pair_rule_observed` | counter | calls | event, result | Facts the R-pair check computed, by hook event and result (PreToolUse: named, unnamed; with guards.pairRuleByTaskId on an unnamed spawn is counted instead as paired_by_task_id = its description names an open task, unnamed_unverified = it names a number and the task list is unreadable (denied), unnamed_ref_unclear = its leading reference cannot be read exactly (denied), unnamed_other_owner = the task is open but another agent owns it (denied), unnamed_duplicate_task = two store files carry the same task id (denied), unnamed_owner_unverified = the task's owner field is not text (denied), unnamed_closed_task = the task is not open, unnamed_no_task = it names no existing task; PostToolUse: paired, unpaired; Stop: clean, agent_without_task, inexact_owner), counted with the switch on or off. Unnamed-spawn rate = (unnamed + unnamed_no_task + unnamed_ref_unclear + unnamed_closed_task + unnamed_other_owner + unnamed_duplicate_task + unnamed_owner_unverified + unnamed_unverified + paired_by_task_id) / all PreToolUse; unpaired-stop rate = (agent_without_task + inexact_owner) / all Stop. |
 | `pair_rule_suppressed` | counter | calls | reason | Calls R-pair stepped aside on, by reason (subagent, codex, plan_mode, stop_hook_active, omc, no_rows = tasks or agents unreadable, liveness_unknown = an agent whose liveness no source tells; counted per agent). |

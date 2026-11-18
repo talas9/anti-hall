@@ -62,6 +62,8 @@ var text = {
   detailsMessage: function (kind, guard, p, session) {
     var what = ah.cfg('guardkit.brief_what')[guard];
     var instead = ah.cfg('guardkit.brief_instead')[guard];
+    // an addition to the short action (Part C of GH #800): joined to it with a comma, the original text kept whole in the saved details
+    if (instead && typeof p.briefInsteadExtra === 'string' && p.briefInsteadExtra) instead = instead.replace(/[.\s]+$/, '') + ', ' + p.briefInsteadExtra;
     // Save the complete original instructions, even when the short action needs no link.
     var path = text.saveDetails(guard, p, session);
     return text.message(kind, guard, { what: (what || p.what) + (typeof p.briefExtra === 'string' ? p.briefExtra : ''), instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
