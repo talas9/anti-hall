@@ -820,6 +820,24 @@ LIB['./edit-guard.js'] = (function () {
       return allowlistIsHonest(filePath, cwd);
     } catch (e) { if (cmdFatal(e)) throw e; return false; }
   }
+  // GH #783 (triage 208): the host's own configuration folder under the home directory (command.eg_home_allow, globs relative to the home)
+  // is edited directly, as the global rule says; the files in command.eg_home_deny_files (settings and hook config) never are.
+  function isHomeAllowed(filePath, cwd) {
+    try {
+      var globs = ah.cfg('command.eg_home_allow');
+      if (!filePath || !globs.length) return false;
+      var sh = spawn.stateHome();
+      if (sh.unknown || sh.guarded) return false;
+      var home = realpathOrSelf(sh.ok);
+      var base = cwd ? String(cwd) : process.cwd();
+      var rel = path.relative(home, realpathOrSelf(path.resolve(base, String(filePath))));
+      if (!rel || rel.indexOf('..') === 0 || path.isAbsolute(rel)) return false;
+      var segs = rel.split('/').map(foldSegment);
+      if (ah.cfg('command.eg_home_deny_files').indexOf(segs[segs.length - 1]) >= 0) return false;
+      if (!globs.some(function (g) { return globToRegExp(g).test(segs.join('/')); })) return false;
+      return allowlistIsHonest(filePath, cwd);
+    } catch (e) { if (cmdFatal(e)) throw e; return false; }
+  }
   function isPlanMode(payload) {
     var m = payload && payload.permission_mode;
     return typeof m === 'string' && m.toLowerCase() === ah.cfg('command.eg_plan_mode');
@@ -831,6 +849,7 @@ LIB['./edit-guard.js'] = (function () {
     var canon = canonicalUnderProjectRoot(filePath, cwd);
     if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return 'allow';
     if (projectEditAllow && isProjectEditAllowed(filePath, cwd)) return 'allow';
+    if (isHomeAllowed(filePath, cwd)) return 'allow';
     if (isHarnessPlanFile(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
     if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) return 'allow';
     if ((isHandoverDoc(filePath) || isLegacyContinueHere(filePath, cwd)) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {

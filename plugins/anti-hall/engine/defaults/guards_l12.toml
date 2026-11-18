@@ -194,3 +194,53 @@ value = "developer"
 [edit_guard.nudge_note]
 doc = "The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live."
 value = "💡 coordinator workload: pending work needs a workspace.\nDo instead: hand the remaining work to a child workspace."
+
+# ---- usage-cap relief (GH #783) ----
+
+[edit_guard.cap_edit_setting]
+doc = "guards.editGuardCapEdit: near the usage cap, edit-guard lets the main thread make a small, bounded edit itself instead of telling it to hand the edit to a helper (default on; off keeps the delegation block)."
+value = { section = "guards", key = "editGuardCapEdit", type = "boolean", env = "ANTIHALL_EDIT_GUARD_CAP_EDIT", aliases = [], option = "", default = true }
+
+[edit_guard.cap_edit_pct]
+doc = "The usage percent (the fullest of the usage-cache buckets, spawn_usage.bucket_pct) from which the small-edit relief applies. Below the spawn hard stop (spawn_usage.block_pct) agents may still start, but the usage rule already asks the main thread to conserve; at the hard stop the delegate-only stand-down allows every edit."
+value = 85
+min = 1
+max = 100
+
+[edit_guard.cap_edit_max_lines]
+doc = "The largest edit, in lines, the main thread may make itself under the relief: the longer of the old and new text of one edit, the sum over the edits of a multi-edit, the lines of a write. A larger edit is blocked with the cap message."
+value = 20
+min = 1
+max = 500
+
+[edit_guard.cap_edit_text_fields]
+doc = "The tool-input fields whose line count is the size of one edit; the largest of them counts."
+value = ["old_string", "new_string", "content", "new_source"]
+
+[edit_guard.cap_edit_list_field]
+doc = "The tool-input field holding a list of edits (each an object with the text fields above); their sizes add up."
+value = "edits"
+
+[edit_guard.cap_edit_patch_prefixes]
+doc = "The first characters of a changed line in a patch text (added, removed); lines starting with a header marker (cap_edit_patch_headers) do not count."
+value = ["+", "-"]
+
+[edit_guard.cap_edit_patch_headers]
+doc = "Patch lines that start with one of these are headers, not changed lines."
+value = ["+++", "---"]
+
+[edit_guard.msg_cap_note]
+doc = "The note said with an edit allowed under the relief ({pct} the fullest usage percent, {lines} the edit size, {max} the limit)."
+value = "usage is at {pct}%: this {lines}-line edit is allowed in the main thread (limit {max} lines)."
+
+[edit_guard.msg_cap_what]
+doc = "Heading of the block on an edit over the relief limit ({tool} the tool name, {lines} its size, {max} the limit, {pct} the usage percent)."
+value = "{tool} of {lines} lines is over the {max}-line limit for the main thread at {pct}% usage."
+
+[edit_guard.msg_cap_why]
+doc = "Why the large edit is blocked at the usage cap."
+value = "Usage is near its limit, so only small edits are made here."
+
+[edit_guard.msg_cap_instead]
+doc = "What to do instead ({max} the limit, {resets} the reset text). It never points at starting an agent."
+value = "split the change into edits of {max} lines or fewer, or wait for the reset ({resets})."

@@ -1410,6 +1410,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.eg_claude_dir` | `.claude` |  |  | The host's configuration directory under the home directory. |
 | `command.eg_default_allow` | `12 items` |  |  | Files and globs edit-guard always allows. |
 | `command.eg_edit_allow_file` | `.anti-hall/edit-allow.json` |  |  | The repository-relative path of the edit allowlist, which no one edits through the guard. |
+| `command.eg_home_allow` | `.claude/**` |  |  | Globs, relative to the home directory, that edit-guard allows from any working directory: the host's own configuration folder, which the global rule lets the main thread write directly (GH #783). Empty = none. |
+| `command.eg_home_deny_files` | `settings.json, settings.local.json, hooks.json` |  |  | File names (lower case) that command.eg_home_allow never reaches: the host's settings and hook configuration. |
 | `command.eg_hooks_file` | `hooks.json` |  |  | A file with this name is never allowed by the per-project edit allowlist. |
 | `command.eg_plan_mode` | `plan` |  |  | The permission mode in which non-source files may be edited. |
 | `command.eg_plans_rel` | `.claude/plans` |  |  | The host's plan directory under the home directory. |
@@ -6500,7 +6502,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `457 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `458 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -8959,7 +8961,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `469 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `470 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -13806,9 +13808,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `edit_guard.builder_id_env` | `DEVSWARM_BUILDER_ID` |  |  | The environment variable that holds a DevSwarm workspace's builder id. |
 | `edit_guard.builder_id_pattern` | `^[A-Za-z0-9._-]+$` |  |  | What a builder id may look like to be looked up as a descriptor file name (a regular expression, JavaScript syntax). |
+| `edit_guard.cap_edit_list_field` | `edits` |  |  | The tool-input field holding a list of edits (each an object with the text fields above); their sizes add up. |
+| `edit_guard.cap_edit_max_lines` | `20` |  |  | The largest edit, in lines, the main thread may make itself under the relief: the longer of the old and new text of one edit, the sum over the edits of a multi-edit, the lines of a write. A larger edit is blocked with the cap message. |
+| `edit_guard.cap_edit_patch_headers` | `+++, ---` |  |  | Patch lines that start with one of these are headers, not changed lines. |
+| `edit_guard.cap_edit_patch_prefixes` | `+, -` |  |  | The first characters of a changed line in a patch text (added, removed); lines starting with a header marker (cap_edit_patch_headers) do not count. |
+| `edit_guard.cap_edit_pct` | `85` |  |  | The usage percent (the fullest of the usage-cache buckets, spawn_usage.bucket_pct) from which the small-edit relief applies. Below the spawn hard stop (spawn_usage.block_pct) agents may still start, but the usage rule already asks the main thread to conserve; at the hard stop the delegate-only stand-down allows every edit. |
+| `edit_guard.cap_edit_setting` | `7 entries` |  |  | guards.editGuardCapEdit: near the usage cap, edit-guard lets the main thread make a small, bounded edit itself instead of telling it to hand the edit to a helper (default on; off keeps the delegation block). |
+| `edit_guard.cap_edit_text_fields` | `old_string, new_string, content, new_source` |  |  | The tool-input fields whose line count is the size of one edit; the largest of them counts. |
 | `edit_guard.descriptor_dir` | `.anti-hall, devswarm, workspaces` |  |  | Where anti-hall's DevSwarm workspace descriptors live under the home directory, as its parts. |
 | `edit_guard.descriptor_ext` | `.json` |  |  | The extension of a workspace descriptor file. |
 | `edit_guard.handover_parts` | `3 entries` |  |  | The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory. |
+| `edit_guard.msg_cap_instead` | `split the change into edits of {max} lines or fewer, or wait for the reset ({...` |  |  | What to do instead ({max} the limit, {resets} the reset text). It never points at starting an agent. |
+| `edit_guard.msg_cap_note` | `usage is at {pct}%: this {lines}-line edit is allowed in the main thread (lim...` |  |  | The note said with an edit allowed under the relief ({pct} the fullest usage percent, {lines} the edit size, {max} the limit). |
+| `edit_guard.msg_cap_what` | `{tool} of {lines} lines is over the {max}-line limit for the main thread at {...` |  |  | Heading of the block on an edit over the relief limit ({tool} the tool name, {lines} its size, {max} the limit, {pct} the usage percent). |
+| `edit_guard.msg_cap_why` | `Usage is near its limit, so only small edits are made here.` |  |  | Why the large edit is blocked at the usage cap. |
 | `edit_guard.msg_digest` | `The {cfg:command.msg_edit_who_coord} and {cfg:command.msg_edit_who_orch} neve...` |  |  | The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry). |
 | `edit_guard.msg_new_allowed` | `.anti-hall/handovers/**.` |  |  | What stays allowed next to a redirected handover document. |
 | `edit_guard.msg_new_instead` | `write it at the session handover path.` |  |  | What to do instead for a new handover document. |

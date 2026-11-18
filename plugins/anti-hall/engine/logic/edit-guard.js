@@ -99,6 +99,36 @@ function egDelegation(tool, cwd, p) {
   return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, p && p.session_id);
 }
 
+// The line count of a text, 0 for no text.
+function egLines(t) { return typeof t === 'string' && t !== '' ? t.split('\n').length : 0; }
+
+// The size in lines of this edit (GH #783): the largest text field of one edit, the sum over a list of edits, the changed lines of a patch.
+// null when the call carries nothing countable (the delegation block then stands).
+function egEditLines(ti, codexPatch) {
+  if (codexPatch) {
+    var pre = ah.cfg('edit_guard.cap_edit_patch_prefixes'), hdr = ah.cfg('edit_guard.cap_edit_patch_headers'), n = 0;
+    String(ti.command || '').split('\n').forEach(function (l) {
+      if (hdr.some(function (h) { return l.indexOf(h) === 0; })) return;
+      if (pre.some(function (c) { return l.indexOf(c) === 0; })) n++;
+    });
+    return n > 0 ? n : null;
+  }
+  var fields = ah.cfg('edit_guard.cap_edit_text_fields');
+  var one = function (o) { var m = 0; if (egIsObj(o)) fields.forEach(function (f) { m = Math.max(m, egLines(o[f])); }); return m; };
+  var list = ti[ah.cfg('edit_guard.cap_edit_list_field')], total = one(ti);
+  if (Array.isArray(list)) total += list.reduce(function (a, e) { return a + one(e); }, 0);
+  return total > 0 ? total : null;
+}
+
+// The fullest usage bucket {name, pct, resetsAt} when it has reached edit_guard.cap_edit_pct and the relief is on, else null.
+function egCapUsage(p) {
+  if (!ah.settings.bool('edit_guard.cap_edit_setting')) return null;
+  var home = hookProc.home(p);
+  if (home === null) return null;
+  var full = swgFullest(swgUsageBuckets(home));
+  return full !== null && full.pct >= ah.cfgNum('edit_guard.cap_edit_pct') ? full : null;
+}
+
 function egBlock(reason, codexPatch) { return { exact: { code: 2, out: text.blockJson(reason), err: codexPatch ? reason + '\n' : '' } }; }
 
 // hooks/lib/inline-work-nudge.js evaluate. Returns null when Node writes nothing, else {st, rel, dir, prune, note}: the counter of this
@@ -219,8 +249,17 @@ function egMain(p) {
   } else if (verdict !== 'allow') {
     // while spawning is stopped there is nobody to delegate to: the edit is allowed inline, with a one-time note
     var stop = sd.applies(p, guard);
-    if (stop === null) reason = egDelegation(tool, cwd, p);
-    else standNote = sd.note(p, stop);
+    if (stop === null) {
+      // near the usage cap a small edit is made here: the delegation block would send the main thread to a helper the usage rule asks it not to start
+      var cap = egCapUsage(p), size = cap === null ? null : egEditLines(ti, codexPatch), lim = ah.cfgNum('edit_guard.cap_edit_max_lines');
+      var pct = cap === null ? 0 : Math.round(cap.pct);
+      if (cap === null || size === null) reason = egDelegation(tool, cwd, p);
+      else if (size <= lim) standNote = text.render(ah.cfg('edit_guard.msg_cap_note'), { pct: pct, lines: size, max: lim });
+      else reason = text.message('block', guard, {
+        what: text.render(ah.cfg('edit_guard.msg_cap_what'), { tool: tool, lines: size, max: lim, pct: pct }), why: ah.cfg('edit_guard.msg_cap_why'),
+        instead: text.render(ah.cfg('edit_guard.msg_cap_instead'), { max: lim, resets: swgResetText(cap) }),
+      });
+    } else standNote = sd.note(p, stop);
   }
   var say = null;
   if (nudge !== null) {
