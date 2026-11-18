@@ -169,10 +169,10 @@ var wd = {
     return saw;
   },
   // ---- the files a command writes (GH #794: the work count names real files, never command strings) ----
-  // The command split into simple commands at `&&`, `||`, `;`, `|`, a newline, a lone `&`, a parenthesis, a backtick or `$(`, cut where the
+  // The command split into simple commands at `&&`, `||`, `;`, `|` (not the `|` of a `>|` clobber redirect), a newline, a lone `&`, a parenthesis, a backtick or `$(`, cut where the
   // quote-blanked copy shows the separator (a separator inside a quoted span is text).
   segments: function (cmd) {
-    var n = wd.neutralize(cmd), out = [], from = 0, re = /&&|\|\||;|\||\n|(?<![<>&])&(?![&>])|\$\(|[()`]/g, m;
+    var n = wd.neutralize(cmd), out = [], from = 0, re = /&&|\|\||;|(?<!>)\||\n|(?<![<>&])&(?![&>])|\$\(|[()`]/g, m;
     while ((m = re.exec(n)) !== null) { out.push(cmd.slice(from, m.index)); from = m.index + m[0].length; }
     out.push(cmd.slice(from));
     return out;

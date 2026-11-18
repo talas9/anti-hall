@@ -39,17 +39,45 @@ doc = "Pattern that cuts a command into path-like words, for the inline-code che
 value = '''[^\s'"`;|&()<>=,]+'''
 
 [transcript_protect.inline_write_res]
-doc = "Patterns (case-insensitive) that say inline code (python, node, perl, ruby, a heredoc) WRITES, tested on the whole command when it names a protected path: a write-mode open, writeFile/appendFile, a write stream, a rename/remove/truncate/copy call. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
+doc = "Patterns (case-insensitive) that say inline code (python, node, perl, ruby, php, a heredoc, awk) WRITES, found in the whole command. Each capture group is the write call's OWN target argument(s): the first argument of a write-mode open or writeFile, the destination of shutil.copy or copyFileSync, every argument of a rename/remove/move, the string an awk `>`/`>>` names. The command is blocked only when a captured argument is a protected path, spelled out or through a variable the command assigns (`T='<transcript>'; open(T,'a')`); reading a transcript and writing elsewhere (`shutil.copy(T,'/tmp/c')`, `open(T).read()` then `open('/tmp/o','w')`) is allowed. A pattern with no capture group falls back to: the command names a protected path anywhere. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
 value = [
-  '''open\s*\([^)]*,\s*['"][^'"]*[wax+]''',
-  '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncateSync|renameSync|unlinkSync|copyFileSync|rmSync)\b',
-  '\bos\.(?:rename|replace|remove|unlink|truncate|system)\b',
-  '\bshutil\.(?:copy|copyfile|move|rmtree)',
-  '''\bPath\([^)]*\)\.(?:write_text|write_bytes|unlink|rename|replace|open\([^)]*['"][wax+])''',
-  '''\bFile\.(?:write|open\([^)]*['"][wax+]|delete|rename)''',
-  '''\bfile_put_contents\b|\bfopen\s*\([^)]*['"][wax+]''',
-  '\bFileUtils\.',
+  '''\bopen\s*\(\s*([^,)]+?)\s*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]''',
+  '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncateSync|unlinkSync|rmSync)\s*\(\s*([^,)]+)',
+  '\b(?:fs|fsp|promises|fsPromises)\.(?:rm|unlink|truncate)\s*\(\s*([^,)]+)',
+  '\b(?:renameSync|rename)\s*\(\s*([^)]*)',
+  '\b(?:copyFileSync|copyFile|cpSync)\s*\(\s*[^,)]+,\s*([^,)]+)',
+  '\bos\.(?:replace|remove|unlink|truncate|system)\s*\(\s*([^)]*)',
+  '\bshutil\.copy\w*\s*\(\s*[^,)]+,\s*([^,)]+)',
+  '\bshutil\.(?:move|rmtree)\s*\(\s*([^)]*)',
+  '''\bPath\(\s*([^)]*)\)\s*\.\s*(?:write_text|write_bytes|unlink|rename|replace|touch|open\([^)]*['"][wax+])''',
+  '\bFile\.(?:write|binwrite|delete|rename|unlink)\s*\(\s*([^)]*)',
+  '''\bFile\.open\s*\(\s*([^,)]+)\s*,\s*['"][wax+]''',
+  '\bfile_put_contents\s*\(\s*([^,)]+)',
+  '''\bfopen\s*\(\s*([^,)]+)\s*,\s*['"][wax+]''',
+  '\bFileUtils\.\w+\s*\(\s*([^)]*)',
+  '''\bg?awk\b[^|]*?>>?\s*\(?\s*"([^"]*)"''',
+  '\bg?awk\b[^\n;|]*\s-i\s*inplace\b([^\n;|]*)',
 ]
+
+[transcript_protect.indirect_arg_re]
+doc = "Pattern (case-insensitive): a write call's target argument (or the value of a variable it names) that reads its path at run time (`sys.argv[1]`, `os.environ[...]`, `process.argv`, `$VAR`, stdin) cannot be tied to a path in the command, so the check falls back to: the command names a protected path anywhere. A bare variable the command never assigns falls back the same way."
+value = '''\bargv\b|\benviron\b|\bgetenv\b|\bprocess\.env\b|\bARGV\b|\bENV\b|\$\w|\bstdin\b|\binput\s*\('''
+
+[transcript_protect.copy_verbs]
+doc = "Commands that copy or move their sources INTO the last argument: when that is a directory (a trailing `/`, `.`, or an existing folder) each source lands there under its own name, so `cp /tmp/s1.jsonl <project folder>/` writes a transcript. The write is tested as `<folder>/<source name>`; a recursive copy (a recursive option, or a source that is a folder's contents: `dir/`, `dir/.`) is blocked when a file could land there as the transcript_protect.probe_name. Being inside a protected folder alone never blocks (a memory `.md` copy stays allowed)."
+value = ["cp", "mv", "rsync", "ditto", "install"]
+
+[transcript_protect.recursive_opt_res]
+doc = "Patterns for an option word that makes a copy recursive (`-r`, `-R`, `-a`, `-avz`, `--recursive`, `--archive`)."
+value = ['^-[A-Za-z]*[rRa][A-Za-z]*$', '^--(?:recursive|archive)$']
+
+[transcript_protect.extract_res]
+doc = "Patterns (case-sensitive) on a command word plus its arguments that EXTRACT an archive into a folder named by the command (`tar -x -C <dir>`, `tar xzf a.tgz -C <dir>`, `unzip -d <dir>`): the contents are unknown, so the write is blocked when a file could land in the folder as the transcript_protect.probe_name."
+value = ['^tar\b.*(?:\s-[A-Za-z]*x|\s--(?:extract|get)\b)', '^tar\s+[A-Za-z]*x', '^unzip\b']
+
+[transcript_protect.probe_name]
+doc = "File name used to ask whether an unknown file could land in a folder as a protected path (`<folder>/<this>` against transcript_protect.globs): a recursive copy or an extraction into a protected folder."
+value = "probe.jsonl"
 
 [transcript_protect.kinds]
 doc = "Counter label `kind` values: bash_write (a named Bash write target), bash_remove (a remove/move of a parent folder), bash_unnamed (a write whose target the parser cannot name, in a part that names a protected folder), bash_inline (inline code that writes a named protected path), edit (an Edit/Write/MultiEdit/NotebookEdit/apply_patch target)."

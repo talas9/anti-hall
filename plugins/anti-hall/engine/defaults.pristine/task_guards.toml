@@ -939,8 +939,8 @@ doc = "File-mutating tools: each call counts as work unless it targets an exclud
 value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
 [workdetect.bash_write_verbs]
-doc = "Shell commands whose file arguments are files the command changes (GH #794: the tasklist work count names real files, not command strings). The value says which arguments: `all` (every non-flag argument), `last` (the destination of cp and ln), `rest` (every argument after the first: the mode of chmod, the owner of chown) and `sed` (only `sed -i`: the file arguments after the script). A redirect target (`>`, `>>`) counts for any command. A command that names no file (git commit, mkdir, a build, an install) changes no file this count can name and counts nothing."
-value = { rm = "all", cp = "last", mv = "all", tee = "all", touch = "all", chmod = "rest", chown = "rest", ln = "last", sed = "sed" }
+doc = "Shell commands whose file arguments are files the command changes (GH #794: the tasklist work count names real files, not command strings). The value says which arguments: `all` (every non-flag argument), `last` (the destination of cp, ditto and ln), `rest` (every argument after the first: the mode of chmod, the owner of chown) and `sed` (only `sed -i`: the file arguments after the script). A redirect target (`>`, `>>`) counts for any command. A command that names no file (git commit, mkdir, a build, an install) changes no file this count can name and counts nothing."
+value = { rm = "all", cp = "last", mv = "all", tee = "all", touch = "all", chmod = "rest", chown = "rest", ln = "last", ditto = "last", ex = "all", vi = "all", vim = "all", sed = "sed" }
 
 [workdetect.git_write_subcommands]
 doc = "The git subcommands that change working-tree files by name, and how the files are named: `all` (every non-flag argument: `git rm`, `git mv`, `git restore`) and `dashes` (`git checkout`: the arguments after `--`, or, with no `--`, the arguments that are existing files, since a branch or ref is not one). Any other git command (commit, merge, rebase, stash, apply, push) names no file and counts nothing."
