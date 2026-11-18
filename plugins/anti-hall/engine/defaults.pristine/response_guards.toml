@@ -159,6 +159,10 @@ value = [
   '''haven'?t checked\b''',
   '\bnot verified\b',
   '\bunverified\b',
+  '\bunconfirmed\b',
+  '\bunproven\b',
+  '\bnot (?:yet )?(?:proven|confirmed)\b',
+  '\b(?:my|an) inference\b',
   '\blet me verify\b',
   '''i'?ll check\b''',
   '\bi will check\b',
@@ -175,7 +179,7 @@ value = ['\b\w+\.\w+:\d+\b']
 
 [speculation_guard.obligation_re]
 doc = "Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess."
-value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run)\b'
+value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated|reproduced|caught|failing)\b'
 
 [speculation_guard.obligation_window]
 doc = "How many UTF-16 units after a must-be or should-be are read for the obligation word."
