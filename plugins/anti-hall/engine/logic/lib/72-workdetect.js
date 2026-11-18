@@ -272,25 +272,60 @@ var wd = {
     }
     if (at < 0 || !Object.prototype.hasOwnProperty.call(table, sub)) return false;
     var want = table[sub], rest = args.slice(at + 1);
+    // a dry run or a check (`git apply --check`, `git clean -n`) changes nothing (workdetect.git_readonly_flag_res)
+    var ro = ah.cfg('workdetect.git_readonly_flag_res');
+    if (Object.prototype.hasOwnProperty.call(ro, sub) && rest.some(function (a) { return ro[sub].some(function (re) { return new RegExp(re).test(a); }); })) return false;
     if (want.indexOf('*') >= 0) return true;
     if (want.indexOf('<none>') >= 0 && rest.filter(function (a) { return a !== '' && a.charAt(0) !== '-'; }).length === 0) return true;
     return rest.some(function (a) { return want.indexOf(a) >= 0; });
   },
   // Whether a simple command (its words from the command word on) writes files it does not name: an indirect runner over a write verb, a
-  // file-changing git subcommand, or a command of workdetect.unknown_write_res.
-  writesUnknown: function (cw) {
+  // file-changing git subcommand, or a command of workdetect.unknown_write_res (matched case-sensitively: `-I` is not `-i`, `-C` is not `-c`),
+  // minus the dry runs and listings of workdetect.unknown_write_readonly_res. Returns null when the command writes nothing unnamed, else
+  // `{targets: [word]}`: the destination words the command does name (workdetect.unknown_write_targets; `[]` when it names none, so the
+  // write counts as one unknown file), judged like any other write target (a device file, a path outside the project).
+  unknownWrite: function (cw) {
     var verb = cw[0].slice(cw[0].lastIndexOf('/') + 1), verbs = ah.cfg('workdetect.bash_write_verbs'), rest = cw.slice(1);
-    if (verb === 'git') return wd.gitUnknown(rest);
+    if (verb === 'git') return wd.gitUnknown(rest) ? { targets: [] } : null;
     if (ah.cfg('workdetect.indirect_verbs').indexOf(verb) >= 0) {
-      return rest.some(function (w) {
-        var v = w.slice(w.lastIndexOf('/') + 1);
-        if (!Object.prototype.hasOwnProperty.call(verbs, v)) return false;
-        return verbs[v] !== 'sed' || rest.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; });
-      });
+      var found = null;
+      for (var k = 0; k < rest.length && found === null; k++) {
+        var v = rest[k].slice(rest[k].lastIndexOf('/') + 1);
+        if (!Object.prototype.hasOwnProperty.call(verbs, v)) continue;
+        if (verbs[v] === 'sed' && !rest.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; })) continue;
+        found = k;
+      }
+      if (found === null) return null;
+      // `find -exec cp {} DEST \;`: the destination of a `last`-mode verb is named by the command that follows the verb
+      var vv = rest[found].slice(rest[found].lastIndexOf('/') + 1), tail = [];
+      if (verbs[vv] === 'last') {
+        var ends = ah.cfg('workdetect.indirect_end_words'), skip = ah.cfg('workdetect.indirect_skip_words');
+        for (var m = found + 1; m < rest.length; m++) {
+          if (ends.indexOf(rest[m]) >= 0) break;
+          if (rest[m] !== '' && rest[m].charAt(0) !== '-' && skip.indexOf(rest[m]) < 0) tail.push(rest[m]);
+        }
+        if (tail.length > 0) return { targets: [tail[tail.length - 1]] };
+      }
+      return { targets: [] };
     }
-    var joined = cw.join(' '), res = ah.cfg('workdetect.unknown_write_res');
-    for (var i = 0; i < res.length; i++) if (new RegExp(res[i], 'i').test(joined)) return true;
-    return false;
+    var joined = cw.join(' '), res = ah.cfg('workdetect.unknown_write_res'), hit = false, i;
+    for (i = 0; i < res.length && !hit; i++) if (new RegExp(res[i]).test(joined)) hit = true;
+    if (!hit) return null;
+    var ro = ah.cfg('workdetect.unknown_write_readonly_res');
+    for (i = 0; i < ro.length; i++) if (new RegExp(ro[i]).test(joined)) return null;
+    var how = ah.cfg('workdetect.unknown_write_targets');
+    if (!Object.prototype.hasOwnProperty.call(how, verb)) return { targets: [] };
+    var spec = how[verb], plain = rest.filter(function (a) { return a !== '' && a.charAt(0) !== '-' && a.indexOf('=') < 0; });
+    for (i = 0; i < spec.length; i++) {
+      var key = spec[i];
+      if (key === 'last') { if (plain.length > 1) return { targets: [plain[plain.length - 1]] }; continue; }
+      if (key.charAt(key.length - 1) === '=') {
+        for (var a = 0; a < rest.length; a++) if (rest[a].indexOf(key) === 0) return { targets: [rest[a].slice(key.length)] };
+        continue;
+      }
+      for (var b = 0; b < rest.length - 1; b++) if (rest[b] === key) return { targets: [rest[b + 1]] };
+    }
+    return { targets: [] };
   },
   // The files one command writes. Returns [{abs, seg, kind}]: `abs` is the absolute path (null for one the count cannot name), `kind` is
   // `redirect` (a `>`/`>>`/`&>` target with output), `redirect_empty` (`: > f`, a bare `> f`), `tee`, `dest` (the destination of `cp`/`mv`) or `verb` (a file argument of a write
@@ -365,7 +400,11 @@ var wd = {
             }
           }
           args = args.filter(function (a) { return a !== '--' && !(a.charAt(0) === '-' && a.length > 1); });
-          if (tdir !== null) args = [tdir];
+          if (tdir !== null) {
+            // each source lands in the directory under its own name: N files are N writes
+            var srcs = args.filter(function (a) { return a !== tdir; }), base = tdir.replace(/\/+$/, '');
+            args = srcs.length > 0 ? srcs.map(function (a) { return base + '/' + a.slice(a.lastIndexOf('/') + 1); }) : [tdir];
+          }
           else if (mode === 'last') args = args.slice(-1);
           else if (mode === 'rest') args = args.slice(1);
         }
@@ -374,7 +413,13 @@ var wd = {
           args.forEach(function (a, idx) { targets.push({ t: a, kind: verb === 'tee' ? 'tee' : destVerb && idx === args.length - 1 ? 'dest' : 'verb' }); });
         }
         else if (verb === 'git') wd.gitWrites(args, dir, vars).forEach(function (a) { targets.push({ t: a, kind: 'verb' }); });
-        else if (nested === null && mode === '' && wd.writesUnknown(words.slice(at))) unknown = true;
+        else if (nested === null && mode === '') {
+          var uw = wd.unknownWrite(words.slice(at));
+          if (uw !== null) {
+            if (uw.targets.length === 0) unknown = true;
+            else uw.targets.forEach(function (a) { targets.push({ t: a, kind: 'verb' }); });
+          }
+        }
         if (verb === 'git' && wd.gitUnknown(args) && targets.length === rw.redirects.length) unknown = true;
       }
       var named = 0;

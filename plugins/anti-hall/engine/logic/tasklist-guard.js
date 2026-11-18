@@ -761,7 +761,7 @@ function decide(p, opts) {
       var dirRel = progressSegs.slice(0, -1).join('/');
       if (ah.state.op(root, 'mkdir', dirRel)) {
         var ps = ah.fs.lstat(progressAbs);
-        if (ps && ps.kind === 'file') { tlIndex(root, progressSegs[progressSegs.length - 2], sid, 'progress'); progressFresh = tlFresh(ps.mtimeMs, scan.lastWork, freshMs, now); }
+        if (ps && ps.kind === 'file') { tlIndex(root, progressSegs[progressSegs.length - 2], sid, 'progress'); progressFresh = ps.size > 0 && tlFresh(ps.mtimeMs, scan.lastWork, freshMs, now); } // an empty file (a `touch`) is no update, however fresh its mtime
         else progressFresh = false;
       }
     }

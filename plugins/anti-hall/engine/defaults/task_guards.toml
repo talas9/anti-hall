@@ -955,8 +955,28 @@ doc = "The git subcommands that change working-tree files WITHOUT naming them (G
 value = { apply = ["*"], am = ["*"], rebase = ["*"], revert = ["*"], clean = ["*"], stash = ["<none>", "pop", "apply", "push", "save"], reset = ["--hard", "--merge", "--keep"], merge = ["--continue"], "cherry-pick" = ["--continue"] }
 
 [workdetect.unknown_write_res]
-doc = "Regex sources (case-insensitive) tested against a simple command from its command word on (quotes removed): a command that writes files whose names the count cannot read from its words counts as one unknown project file when no other file of that command was named (GH #794). `patch`, `install`, `dd of=`, `rsync`, `truncate`, an extracting or creating `tar`, `unzip`, `perl -i`, `awk -i inplace`."
-value = ['^patch\b', '^install\b', '^dd\b.*\bof=', '^rsync\b', '^truncate\b', '^tar\b.*(?:\s-[A-Za-z]*[xc]|\s--(?:extract|create|get)\b)', '^unzip\b', '^perl\b.*\s-[A-Za-z]*i', '^g?awk\b.*\s-i\s*inplace']
+doc = "Regex sources (case-SENSITIVE: `-I` is not `-i`, `-C` is not `-c`) tested against a simple command from its command word on (quotes removed): a command that writes files whose names the count cannot read from its words counts as one unknown project file when no destination can be read from it (workdetect.unknown_write_targets) and it is not a dry run or listing (workdetect.unknown_write_readonly_res) (GH #794). `patch`, `install`, `dd of=`, `rsync`, `truncate`, an extracting or creating `tar`, `unzip`, `perl -i`, `awk -i inplace`."
+value = ['^patch\b', '^install\b', '^dd\b.*\bof=', '^rsync\b', '^truncate\b', '^tar\b.*(?:\s-[A-Za-z]*[xc]|\s--(?:extract|create|get)\b)', '^unzip\b', '^perl\b.*\s-[nalpsw0]*i', '^g?awk\b.*\s-i\s*inplace']
+
+[workdetect.unknown_write_readonly_res]
+doc = "Regex sources (case-sensitive) tested against a command that matched workdetect.unknown_write_res: a dry run, a check or a listing writes nothing, so it counts as no file. `rsync -n`/`--dry-run`/`--list-only`, `patch --dry-run`/`--check`/`-C`, `unzip -l`/`-t`/`-v`/`-p`/`-Z`, `tar -t`/`--list`. A `dd of=/dev/null` is a device file, judged by workdetect.excluded_path_res."
+value = ['^rsync\b.*\s(?:-[A-Za-z]*n[A-Za-z]*|--dry-run|--list-only)(?:\s|$)', '^patch\b.*\s(?:--dry-run|--check|-C)(?:\s|$)', '^unzip\b.*\s-[A-Za-z]*[ltvpZ]', '^tar\b.*(?:\s-[A-Za-z]*t|\s--list\b)']
+
+[workdetect.unknown_write_targets]
+doc = "Where a command of workdetect.unknown_write_res names its destination, by command word: `last` is the last non-option word (when there is more than one), a word ending in `=` is a `key=value` argument (`of=`), any other word is an option whose next word is the destination (`-C`, `-d`). The destination is judged like any written path (a device file or a path outside the project counts nothing; one inside counts as that file); a command with no entry here, or none of whose destinations is found, counts as one unknown project file."
+value = { rsync = ["last"], install = ["last"], dd = ["of="], tar = ["-C", "--directory"], unzip = ["-d"] }
+
+[workdetect.git_readonly_flag_res]
+doc = "Regex sources (case-sensitive) by git subcommand: an argument that matches one makes a subcommand of workdetect.git_unknown_subcommands a dry run or a check that changes no file (`git apply --check`/`--stat`, `git clean -n`/`--dry-run`)."
+value = { apply = ['^--(?:check|stat|numstat|summary)$'], clean = ['^-[A-Za-z]*n[A-Za-z]*$', '^--dry-run$'] }
+
+[workdetect.indirect_end_words]
+doc = "The words that end the command an indirect runner (`find -exec`, `xargs`) runs: a `;` (the `\\;` of `find -exec` reaches the count as a lone `\\`) or a `+`."
+value = ["\\", ";", "+"]
+
+[workdetect.indirect_skip_words]
+doc = "The words of the command an indirect runner runs that are placeholders for the found file (`find -exec cp {} DEST \\;`), not a destination."
+value = ["{}"]
 
 [workdetect.indirect_verbs]
 doc = "Commands that run another command over files they find or read (`xargs sed -i`, `find -exec rm`): when a word after them is a write verb (workdetect.bash_write_verbs; `sed` only with an in-place flag) and no file was named, the command counts as one unknown project file."

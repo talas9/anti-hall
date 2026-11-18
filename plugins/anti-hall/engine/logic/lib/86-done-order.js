@@ -97,8 +97,10 @@ var dord = {
     return set;
   },
   isOwn: function (owner, own) {
-    var lc = owner.trim().toLowerCase();
-    return own['n:' + lc] === true || new RegExp(ah.cfg('task_guard.coordinator_owner_re'), 'i').test(lc);
+    // a coordinator-looking name (`main`) is NOT adopted: in a shared named list another session's coordinator holds tasks under that name too,
+    // so only the agents of this session's own parent chain (`ownNames`) are its own. The session's own unnamed list is never shared (`foreign`
+    // returns false for it before this is asked).
+    return own['n:' + owner.trim().toLowerCase()] === true;
   },
   // May this task be ordered deleted now (the gate `fresh` and `plan` share)?
   orderable: function (sid, id, own) {

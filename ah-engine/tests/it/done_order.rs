@@ -479,7 +479,7 @@ impl Scratch {
 
 /// GH #794 (bug 6): the coordinator's NAMED list (CLAUDE_CODE_TASK_LIST_ID) holds tasks owned by the agents it launched (the pairing rule makes
 /// every owner an agent name). Those are the session's own and are ordered deleted; a task owned by a name the session never launched is
-/// another session's and is left alone.
+/// another session's and is left alone, a coordinator-named owner (`main`) included (another session's coordinator uses that name too).
 #[test]
 fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered_deleted() {
     let s = Scratch::new("do-own-owner");
@@ -492,8 +492,9 @@ fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered
     std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
     std::fs::write(s.record_path(), rec.to_string()).unwrap();
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
-    assert!(out.contains("3 completed task(s) still listed: TaskUpdate status=deleted #1 #3 #4"), "own agent's, the coordinator's and the unowned task: {out}");
+    assert!(out.contains("2 completed task(s) still listed: TaskUpdate status=deleted #1 #4"), "own agent's and the unowned task: {out}");
     assert!(!out.contains("#2"), "an owner this session never launched is not ours: {out}");
+    assert!(!out.contains("#3"), "a task another session's coordinator holds (`main`) is not ours, whatever the name: {out}");
     // switched off: every owned task is left alone again
     let s = Scratch::new("do-own-owner-off");
     s.named_list("anti-hall", &[("completed", "fix-df1")]);
