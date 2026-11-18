@@ -510,7 +510,8 @@ fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered
 #[test]
 fn a_task_owned_by_another_sessions_agent_in_the_same_project_is_never_ordered_deleted() {
     let s = Scratch::new("do-other-session");
-    s.named_list("anti-hall", &[("completed", "executor"), ("completed", "fix-df1")]);
+    // task #1 is the one this session's transcript created (`transcript`); #2 belongs to another session's agent
+    s.named_list("anti-hall", &[("completed", "fix-df1"), ("completed", "executor")]);
     let proj = s.dir.join("proj").to_string_lossy().into_owned();
     s.track_rows(&[("a000000000000001", "executor", "OTHER-SESSION"), ("a000000000000002", "fix-df1", SID)], &proj);
     let tr = s.transcript("completed");
@@ -518,6 +519,23 @@ fn a_task_owned_by_another_sessions_agent_in_the_same_project_is_never_ordered_d
     std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
     std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
-    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #2"), "only this session's own agent's task: {out}");
-    assert!(!out.contains("#1"), "another session's agent's task is not ours: {out}");
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #1"), "only this session's own agent's task: {out}");
+    assert!(!out.contains("#2"), "another session's agent's task is not ours: {out}");
+}
+
+/// GH #794 review r3: a NAME is not ownership. Two sessions share one named list and each has an agent called `worker`; the tracker shows this
+/// session's `worker`, so a name check alone adopts the other session's `worker` task too. Only a task this session's own transcript created
+/// or updated (#1 here; #2 was made by the other session) is adopted.
+#[test]
+fn a_same_named_agent_of_another_session_does_not_make_its_task_ours() {
+    let s = Scratch::new("do-same-name");
+    s.named_list("anti-hall", &[("completed", "worker"), ("completed", "worker")]);
+    s.track_agents(&[("a000000000000001", "worker")]);
+    let tr = s.transcript("completed");
+    let first = json!({"first": (now_ms() - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #1"), "the task this session created: {out}");
+    assert!(!out.contains("#2"), "the other session's same-named agent's task is not ours: {out}");
 }

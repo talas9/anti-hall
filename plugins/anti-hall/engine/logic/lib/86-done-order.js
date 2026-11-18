@@ -60,7 +60,9 @@ var dord = {
     if (o === '') return false;
     // GH #794: a task owned by an agent THIS session launched (or by the coordinator itself) is the session's own, not another session's: the
     // pairing rule makes every task's owner an agent name, so an owner that was never allowed here left every completed task unordered
-    return !(typeof o === 'string' && own !== undefined && own !== null && dord.isOwn(o, own));  // null (an owner that could not be read) is foreign
+    // A name alone is not ownership (another session can hold a same-named agent): the task id must also be one this session's own transcript
+    // created or updated (`own['t:' + id]`, see `ownNames`).
+    return !(typeof o === 'string' && own !== undefined && own !== null && dord.isOwn(o, own) && own['t:' + String(id)] === true);  // null (an owner that could not be read) is foreign
   },
   // The rows of the tracker that are THIS session's own: the session itself, its launched agents (parent = this session id) and theirs, followed
   // down. The tracker's guard rows hold every row of the project's cwd, other sessions' agents included, so a row whose parent is not this
@@ -94,6 +96,14 @@ var dord = {
       if (typeof r.name === 'string' && r.name !== '') set['n:' + r.name.trim().toLowerCase()] = true;
       if (typeof r.id === 'string' && r.id !== '') set['n:' + r.id.toLowerCase()] = true;
     });
+    // the task ids this session's own transcript created or updated (TaskCreate result / TaskUpdate tool use): the only tasks of a shared list
+    // it may adopt by owner name
+    var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
+    if (tp !== '' && ah.fs.size(tp)) {
+      var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, typeof p.session_id === 'string' ? p.session_id : '');
+      if (r && !r.unreadable && Array.isArray(r.tasks)) r.tasks.forEach(function (t) { if (t && t.id !== undefined && t.id !== null) set['t:' + String(t.id)] = true; });
+      if (r && !r.unreadable && Array.isArray(r.created)) r.created.forEach(function (n) { set['t:' + String(n)] = true; });
+    }
     return set;
   },
   isOwn: function (owner, own) {

@@ -233,6 +233,9 @@ var wd = {
     var mode = at >= 0 && Object.prototype.hasOwnProperty.call(table, sub) ? table[sub] : '';
     if (mode === '') return [];
     var rest = args.slice(at + 1), dashes = rest.indexOf('--'), out = [];
+    // an index-only form (`git restore --staged`) changes no working-tree file (workdetect.git_readonly_flag_res)
+    var ro = ah.cfg('workdetect.git_readonly_flag_res');
+    if (Object.prototype.hasOwnProperty.call(ro, sub) && rest.some(function (a) { return ro[sub].some(function (re) { return new RegExp(re).test(a); }); })) return [];
     if (mode === 'dashes' && dashes >= 0) return rest.slice(dashes + 1);
     for (var j = 0; j < rest.length; j++) {
       var a = rest[j];
@@ -279,51 +282,98 @@ var wd = {
     if (want.indexOf('<none>') >= 0 && rest.filter(function (a) { return a !== '' && a.charAt(0) !== '-'; }).length === 0) return true;
     return rest.some(function (a) { return want.indexOf(a) >= 0; });
   },
-  // Whether a simple command (its words from the command word on) writes files it does not name: an indirect runner over a write verb, a
-  // file-changing git subcommand, or a command of workdetect.unknown_write_res (matched case-sensitively: `-I` is not `-i`, `-C` is not `-c`),
-  // minus the dry runs and listings of workdetect.unknown_write_readonly_res. Returns null when the command writes nothing unnamed, else
-  // `{targets: [word]}`: the destination words the command does name (workdetect.unknown_write_targets; `[]` when it names none, so the
-  // write counts as one unknown file), judged like any other write target (a device file, a path outside the project).
-  unknownWrite: function (cw) {
-    var verb = cw[0].slice(cw[0].lastIndexOf('/') + 1), verbs = ah.cfg('workdetect.bash_write_verbs'), rest = cw.slice(1);
-    if (verb === 'git') return wd.gitUnknown(rest) ? { targets: [] } : null;
-    if (ah.cfg('workdetect.indirect_verbs').indexOf(verb) >= 0) {
-      var found = null;
-      for (var k = 0; k < rest.length && found === null; k++) {
-        var v = rest[k].slice(rest[k].lastIndexOf('/') + 1);
-        if (!Object.prototype.hasOwnProperty.call(verbs, v)) continue;
-        if (verbs[v] === 'sed' && !rest.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; })) continue;
-        found = k;
+  // The basename of a command word.
+  base: function (w) { return w.slice(w.lastIndexOf('/') + 1); },
+  has: function (o, k) { return Object.prototype.hasOwnProperty.call(o, k); },
+  // Whether `w` is option `key`: the word itself, or (for a one-letter option `-X`) a cluster of short flags that ends in it (`-czf` is `-f`).
+  optMatch: function (w, key) {
+    if (w === key) return true;
+    return /^-[A-Za-z]$/.test(key) && /^-[A-Za-z]+$/.test(w) && w.charAt(w.length - 1) === key.charAt(1);
+  },
+  // Whether a destination word names another machine (`host:path`, `user@host:path`, `rsync://host/path`): nothing local is written
+  // (workdetect.remote_target_res).
+  remoteTarget: function (t) {
+    var res = ah.cfg('workdetect.remote_target_res');
+    for (var i = 0; i < res.length; i++) if (new RegExp(res[i]).test(t)) return true;
+    return false;
+  },
+  // An indirect runner (`xargs`, `find`, `parallel`, workdetect.indirect_verbs): a write verb is looked for only where a command STARTS, never
+  // among the words that are its arguments or another command's options: the word after the runner's own options (`xargs`, `parallel`), or
+  // the word after `-exec`/`-execdir`/`-ok`/`-okdir` (`find`, workdetect.indirect_exec_words). A command found there is judged by its own
+  // argument list (up to workdetect.indirect_end_words): a write verb of workdetect.bash_write_verbs (`sed` only with an in-place flag among
+  // ITS arguments), else the same tests as a command typed on its own (`xargs perl -pi`, `find -exec tar xzf`). `find -delete` writes files it
+  // does not name. Returns what `unknownWrite` returns.
+  indirectWrite: function (verb, rest) {
+    var verbs = ah.cfg('workdetect.bash_write_verbs'), execs = ah.cfg('workdetect.indirect_exec_words'), flags = ah.cfg('workdetect.indirect_write_flags');
+    var ends = ah.cfg('workdetect.indirect_end_words'), skip = ah.cfg('workdetect.indirect_skip_words'), starts = [], i;
+    if (wd.has(flags, verb) && rest.some(function (a) { return flags[verb].indexOf(a) >= 0; })) return { targets: [] };
+    if (wd.has(execs, verb)) {
+      for (i = 0; i + 1 < rest.length; i++) if (execs[verb].indexOf(rest[i]) >= 0) starts.push(i + 1);
+    } else {
+      var optargs = wd.has(ah.cfg('workdetect.indirect_option_args'), verb) ? ah.cfg('workdetect.indirect_option_args')[verb] : [];
+      i = 0;
+      while (i < rest.length && rest[i].length > 1 && rest[i].charAt(0) === '-') {
+        if (rest[i] === '--') { i++; break; }
+        i += optargs.indexOf(rest[i]) >= 0 ? 2 : 1;
       }
-      if (found === null) return null;
+      if (i < rest.length) starts.push(i);
+    }
+    for (var s = 0; s < starts.length; s++) {
+      var end = starts[s];
+      while (end < rest.length && ends.indexOf(rest[end]) < 0) end++;
+      var sub = rest.slice(starts[s], end), v = wd.base(sub[0]);
+      if (!wd.has(verbs, v)) {
+        var inner = wd.unknownWrite(sub);
+        if (inner !== null) return inner;
+        continue;
+      }
+      var args = sub.slice(1);
+      if (verbs[v] === 'sed' && !args.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; })) continue;
       // `find -exec cp {} DEST \;`: the destination of a `last`-mode verb is named by the command that follows the verb
-      var vv = rest[found].slice(rest[found].lastIndexOf('/') + 1), tail = [];
-      if (verbs[vv] === 'last') {
-        var ends = ah.cfg('workdetect.indirect_end_words'), skip = ah.cfg('workdetect.indirect_skip_words');
-        for (var m = found + 1; m < rest.length; m++) {
-          if (ends.indexOf(rest[m]) >= 0) break;
-          if (rest[m] !== '' && rest[m].charAt(0) !== '-' && skip.indexOf(rest[m]) < 0) tail.push(rest[m]);
-        }
+      if (verbs[v] === 'last') {
+        var tail = args.filter(function (a) { return a !== '' && a.charAt(0) !== '-' && skip.indexOf(a) < 0; });
         if (tail.length > 0) return { targets: [tail[tail.length - 1]] };
       }
       return { targets: [] };
+    }
+    return null;
+  },
+  // Whether a simple command (its words from the command word on) writes files it does not name: an indirect runner over a write verb, a
+  // file-changing git subcommand, or a command of workdetect.unknown_write_res (matched case-sensitively: `-I` is not `-i`, `-C` is not `-c`),
+  // minus the dry runs and listings of workdetect.unknown_write_readonly_res. A command of workdetect.old_style_option_verbs (`tar xzf`) is read
+  // as if its first word had a dash. Returns null when the command writes nothing unnamed, else `{targets: [word]}`: the destination words the
+  // command does name (workdetect.unknown_write_targets, or the first matching rule of workdetect.unknown_write_targets_when; `[]` when it names
+  // none, so the write counts as one unknown file), judged like any other write target (a device file, a path outside the project). A
+  // destination on another machine (workdetect.remote_target_res) writes nothing here: null.
+  unknownWrite: function (cw) {
+    var verb = wd.base(cw[0]), rest = cw.slice(1);
+    if (verb === 'git') return wd.gitUnknown(rest) ? { targets: [] } : null;
+    if (ah.cfg('workdetect.indirect_verbs').indexOf(verb) >= 0) return wd.indirectWrite(verb, rest);
+    if (ah.cfg('workdetect.old_style_option_verbs').indexOf(verb) >= 0 && rest.length > 0 && /^[A-Za-z]+$/.test(rest[0])) {
+      cw = [cw[0], '-' + rest[0]].concat(rest.slice(1));
+      rest = cw.slice(1);
     }
     var joined = cw.join(' '), res = ah.cfg('workdetect.unknown_write_res'), hit = false, i;
     for (i = 0; i < res.length && !hit; i++) if (new RegExp(res[i]).test(joined)) hit = true;
     if (!hit) return null;
     var ro = ah.cfg('workdetect.unknown_write_readonly_res');
     for (i = 0; i < ro.length; i++) if (new RegExp(ro[i]).test(joined)) return null;
-    var how = ah.cfg('workdetect.unknown_write_targets');
-    if (!Object.prototype.hasOwnProperty.call(how, verb)) return { targets: [] };
-    var spec = how[verb], plain = rest.filter(function (a) { return a !== '' && a.charAt(0) !== '-' && a.indexOf('=') < 0; });
+    var how = ah.cfg('workdetect.unknown_write_targets'), when = ah.cfg('workdetect.unknown_write_targets_when'), spec = null;
+    if (wd.has(when, verb)) for (i = 0; i < when[verb].length && spec === null; i++) if (new RegExp(when[verb][i].re).test(joined)) spec = when[verb][i].keys;
+    if (spec === null) {
+      if (!wd.has(how, verb)) return { targets: [] };
+      spec = how[verb];
+    }
+    var plain = rest.filter(function (a) { return a !== '' && a.charAt(0) !== '-' && a.indexOf('=') < 0; });
+    function named(t) { return wd.remoteTarget(t) ? null : { targets: [t] }; }
     for (i = 0; i < spec.length; i++) {
       var key = spec[i];
-      if (key === 'last') { if (plain.length > 1) return { targets: [plain[plain.length - 1]] }; continue; }
+      if (key === 'last') { if (plain.length > 1) return named(plain[plain.length - 1]); continue; }
       if (key.charAt(key.length - 1) === '=') {
-        for (var a = 0; a < rest.length; a++) if (rest[a].indexOf(key) === 0) return { targets: [rest[a].slice(key.length)] };
+        for (var a = 0; a < rest.length; a++) if (rest[a].indexOf(key) === 0) return named(rest[a].slice(key.length));
         continue;
       }
-      for (var b = 0; b < rest.length - 1; b++) if (rest[b] === key) return { targets: [rest[b + 1]] };
+      for (var b = 0; b < rest.length - 1; b++) if (wd.optMatch(rest[b], key)) return named(rest[b + 1]);
     }
     return { targets: [] };
   },
