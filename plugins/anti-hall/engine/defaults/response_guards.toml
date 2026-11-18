@@ -169,13 +169,23 @@ value = [
   '\bthe data shows\b',
 ]
 
+[speculation_guard.ack_local_ci]
+doc = "Regex sources (case-insensitive) matched against the text AFTER a hedge word (GH #486): a label attached to the hedged phrase. After the hedge word come at most 3 plain words (the hedged phrase), then a comma, dash or opening bracket (spaces and tabs only, never a line break), then the label, and the label must END the clause (full stop, closing bracket, ! or ?, or the end of the text). 'probably DNS (unverified)', 'probably DNS - not yet proven.', 'likely the cache, my inference.' A label later in the sentence, after other words ('probably DNS, but the ticket is unconfirmed'), before the hedge, or in another sentence covers nothing. Unlike ack_ci, which covers the whole reply."
+value = [
+  '^(?:[ \t]+[\w\x27/]+){0,3}[ \t]*[,(\[—–-][ \t]*[*_]*(?:(?:and|but|though)[ \t]+)?(?:(?:that|this|it)[ \t]+(?:is|remains|stays)[ \t]+)?(?:not[ \t]+(?:yet[ \t]+)?(?:proven|confirmed)|unproven|unconfirmed|(?:my|an)[ \t]+inference)[*_]*[ \t]*(?:[.)\]!?]|$)',
+]
+
+[speculation_guard.ack_scope_re]
+doc = "Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space or by the next sentence's first letter, bracket or emphasis mark, or a line break."
+value = '[.!?]+(?:\s|[*_)\]]*[A-Z(])|\n+'
+
 [speculation_guard.ack_cs]
 doc = "Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42."
 value = ['\b\w+\.\w+:\d+\b']
 
 [speculation_guard.obligation_re]
 doc = "Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess."
-value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run)\b'
+value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated)\b'
 
 [speculation_guard.obligation_window]
 doc = "How many UTF-16 units after a must-be or should-be are read for the obligation word."

@@ -4091,6 +4091,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `speculation_guard.ack_ci` | `13 items` |  |  | Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. |
 | `speculation_guard.ack_cs` | `\b\w+\.\w+:\d+\b` |  |  | Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42. |
+| `speculation_guard.ack_local_ci` | `^(?:[ \t]+[\w\x27/]+){0,3}[ \t]*[,(\[—–-][ \t]*[*_]*(?:(?:and\\|but\\|though)[ ...` |  |  | Regex sources (case-insensitive) matched against the text AFTER a hedge word (GH #486): a label attached to the hedged phrase. After the hedge word come at most 3 plain words (the hedged phrase), then a comma, dash or opening bracket (spaces and tabs only, never a line break), then the label, and the label must END the clause (full stop, closing bracket, ! or ?, or the end of the text). 'probably DNS (unverified)', 'probably DNS - not yet proven.', 'likely the cache, my inference.' A label later in the sentence, after other words ('probably DNS, but the ticket is unconfirmed'), before the hedge, or in another sentence covers nothing. Unlike ack_ci, which covers the whole reply. |
+| `speculation_guard.ack_scope_re` | `[.!?]+(?:\s\|[*_)\]]*[A-Z(])\|\n+` |  |  | Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space or by the next sentence's first letter, bracket or emphasis mark, or a line break. |
 | `speculation_guard.backtick_re` | ``[^`\n]+`` |  |  | Regex source of an inline code span. |
 | `speculation_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
 | `speculation_guard.cite_min_hits` | `2` |  |  | How many distinct specifics of the reply must appear in the tool output of the same turn for the hedge to count as evidenced (tool results since the last human prompt are the citation). |
@@ -6743,7 +6745,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.script_re` | `[\w-]+\.js` |  |  | The name pattern of a hook script in the registry. |
 | `doctor.self_plugin_key` | `anti-hall@anti-hall` |  |  | The enabledPlugins key of anti-hall itself, left out of the scan of other plugins. |
 | `doctor.selftest_home_prefix` | `anti-hall-doctor-` |  |  | The name prefix of the throwaway home the live self-tests run against. |
-| `doctor.selftests` | `27 items` |  |  | The live self-tests. Each runs the named built-in check in-process on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set. |
+| `doctor.selftests` | `27 items` |  |  | The live self-tests. Each runs the named built-in check in-process on the payload with the given environment (HOME is always the throwaway home) and expects: block (the guard denies: exit 2), allow (it does not), stop-block (a Stop decision of block), or alert-stale (see version-alert). `ok` and `bad` are the findings; `warn` is used instead of `bad` when set, except that a row naming `needs` (a program) uses `warn` only when that program is not on PATH and `bad` otherwise. |
 | `doctor.service_exec_re` | `(?m)^ExecStart=(.*)$` |  |  | The command of a systemd unit file. |
 | `doctor.service_ext` | `.service` |  |  | The extension of a systemd unit file. |
 | `doctor.service_quoted_re` | `"((?:[^"\\]\|\\.)*)"` |  |  | A double-quoted word of a systemd command. |
@@ -9130,7 +9132,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.max_archive_files` | `1000` |  |  | Most files in the archive across all month buckets. |
 | `defect.max_file_bytes` | `65536` |  |  | Most bytes of one defect file. |
 | `defect.max_line_bytes` | `4096` |  |  | Most bytes of one NDJSON line. |
-| `defect.max_open_files` | `200` |  |  | Most open defect files; a new defect past it is refused. |
+| `defect.max_open_files` | `1000` |  |  | Most open defect files; a new defect past it is refused. |
 | `defect.max_report_lines` | `20` |  |  | Most report lines of one defect. |
 | `defect.no_repo` | `no-repo` |  |  | The project of a report filed outside any repository. |
 | `defect.none` | `none` |  |  | Shown under a report section with no rows. |
