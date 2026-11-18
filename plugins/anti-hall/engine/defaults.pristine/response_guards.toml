@@ -170,9 +170,9 @@ value = [
 ]
 
 [speculation_guard.ack_local_ci]
-doc = "Regex sources (case-insensitive) matched against the text AFTER a hedge: a label written as a label, attached to the hedge by punctuation in the same sentence (GH #486). '(not yet proven)', 'DNS - unconfirmed', 'likely the cache, my inference, not yet proven.', 'my guess, unconfirmed: check it', 'likely a stale cache, and that is unproven.'. The label must open with a comma, semicolon, colon, dash or bracket (or 'and/but that is'), end at punctuation or the end of the text, and follow the hedge: a label before the hedge ('The order is not confirmed by the API, so ... probably'), in another sentence, or inside a description of another subject ('The ticket is unconfirmed; ...') covers nothing. Unlike ack_ci, which covers the whole reply."
+doc = "Regex sources (case-insensitive) matched against the text AFTER a hedge word (GH #486): a label attached to the hedged phrase. After the hedge word come at most 3 plain words (the hedged phrase), then a comma, dash or opening bracket, then the label, and the label must END the clause (full stop, closing bracket, ! or ?, or the end of the text). 'probably DNS (unverified)', 'probably DNS - not yet proven.', 'likely the cache, my inference.' A label later in the sentence, after other words ('probably DNS, but the ticket is unconfirmed'), before the hedge, or in another sentence covers nothing. Unlike ack_ci, which covers the whole reply."
 value = [
-  '[,;:(\[\u2014\u2013-]\s*[*_]*(?:(?:and|but|though)\s+)?(?:(?:that|this|it)\s+(?:is|remains|stays)\s+)?(?:not\s+(?:yet\s+)?(?:proven|confirmed)|unproven|unconfirmed|(?:my|an)\s+inference)[*_]*\s*(?:[,;:.)\]!?\u2014\u2013]|$)',
+  '^(?:\s+[\w\x27/]+){0,3}\s*[,(\[—–-]\s*[*_]*(?:(?:and|but|though)\s+)?(?:(?:that|this|it)\s+(?:is|remains|stays)\s+)?(?:not\s+(?:yet\s+)?(?:proven|confirmed)|unproven|unconfirmed|(?:my|an)\s+inference)[*_]*\s*(?:[.)\]!?]|$)',
 ]
 
 [speculation_guard.ack_scope_re]
@@ -185,7 +185,7 @@ value = ['\b\w+\.\w+:\d+\b']
 
 [speculation_guard.obligation_re]
 doc = "Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess."
-value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated|reproduced)\b'
+value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated)\b'
 
 [speculation_guard.obligation_window]
 doc = "How many UTF-16 units after a must-be or should-be are read for the obligation word."
