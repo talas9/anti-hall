@@ -60,7 +60,7 @@ Do instead: hand the command to a helper agent, or ask the owner to run it thems
 
 </div>
 
-If you approve a blocked `gh pr merge` or script run in your own prompt, `guards.ownerApprovalPass` (off by default) lets it through once your latest typed prompt names the action; see the guide for the exact rules and the never-lifted list.
+If you approve a blocked `gh pr merge` or script run in your own prompt, `guards.ownerApprovalPass` (off by default) lets the exact command through once, when you answer a message that quoted it with a plain yes; see the guide for the exact rules and the never-lifted list.
 
 Short checks are still allowed in the main session, such as one or two test files piped
 to `tail`, or a `--check` / `--dry-run` run. Long instructions and skip hints are saved in

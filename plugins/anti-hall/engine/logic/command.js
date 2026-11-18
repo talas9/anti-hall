@@ -4423,79 +4423,111 @@ function guarded(fn) {
 function irBlocked(kind) { ah.metric('inline_rule_blocked', ['guard', ah.cfg('inline_rule.guard_command'), 'kind', ah.cfg(kind)]); } // R-inline (guards.inlineRule)
 
 // GH #800 owner-approval pass-through (switch guards.ownerApprovalPass, default off; config in defaults/owner_approval.toml).
+// The approval is BOUND to the exact command: the assistant message right before the owner's approving prompt must quote the
+// command verbatim (a code span or block), the owner's prompt must be a short plain "yes", and the executed command must equal the
+// quoted one after whitespace normalisation. One approving prompt lifts one run (its uuid is claimed once in the session state).
+function ownerEntryText(e) {
+  const c = e && e.message && e.message.content;
+  if (typeof c === 'string') return c;
+  if (!Array.isArray(c)) return '';
+  return c.filter(function (b) { return b && b.type === 'text' && typeof b.text === 'string'; }).map(function (b) { return b.text; }).join('\n');
+}
+
 // The latest GENUINE owner prompt of the transcript: an entry the host tagged origin.kind = human (never a tool result, a
-// cross-session or teammate message, a system note or a sidechain entry). {text, ts}, or null when none is found or readable.
+// cross-session or teammate message, a system note or a sidechain entry), with the assistant text right before it.
+// {text, ts, uuid, prev}, or null when none is found or readable.
 function ownerLatestPrompt(payload) {
   const tp = payload && payload.transcript_path;
   if (typeof tp !== 'string' || tp === '') return null;
-  const keep = [['type'], ['origin', 'kind'], ['isMeta'], ['isSidechain'], ['timestamp'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'text']];
+  const keep = [['type'], ['uuid'], ['origin', 'kind'], ['isMeta'], ['isSidechain'], ['timestamp'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'text']];
   const r = ah.transcript.tailEntries(tp, ah.cfgNum('owner_approval.window_bytes'), ah.cfgNum('owner_approval.line_max_bytes'), keep, ah.cfgNum('owner_approval.max_lines'));
   if (r === null || !Array.isArray(r.lines)) return null;
   const human = ah.cfg('owner_approval.prompt_origin_kind');
-  for (let i = r.lines.length - 1; i >= 0; i--) {
+  const entry = function (i) {
     let e = r.lines[i][1];
-    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { continue; } }
-    if (!e || typeof e !== 'object' || e.type !== 'user' || e.isMeta || e.isSidechain) continue;
-    if (!e.origin || e.origin.kind !== human) continue;
+    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { return null; } }
+    return e && typeof e === 'object' ? e : null;
+  };
+  const genuine = function (e) {
+    if (!e || e.type !== 'user' || e.isMeta || e.isSidechain || !e.origin || e.origin.kind !== human) return false;
     const c = e.message && e.message.content;
-    let t = '';
-    if (typeof c === 'string') t = c;
-    else if (Array.isArray(c)) {
-      if (c.some(function (b) { return b && b.type === 'tool_result'; })) continue;
-      t = c.filter(function (b) { return b && b.type === 'text' && typeof b.text === 'string'; }).map(function (b) { return b.text; }).join('\n');
-    }
+    return !(Array.isArray(c) && c.some(function (b) { return b && b.type === 'tool_result'; }));
+  };
+  for (let i = r.lines.length - 1; i >= 0; i--) {
+    const e = entry(i);
+    if (!genuine(e)) continue;
+    const t = ownerEntryText(e);
     if (t.trim() === '') continue;
-    return { text: t, ts: typeof e.timestamp === 'string' ? e.timestamp : '' };
+    let prev = '';
+    for (let j = i - 1; j >= 0; j--) {
+      const p = entry(j);
+      if (!p || p.isSidechain) continue;
+      if (genuine(p)) break; // another owner prompt came in between: no assistant text is "right before" this one
+      if (p.type === 'assistant') { const pt = ownerEntryText(p); if (pt.trim() !== '') { prev = pt; break; } }
+    }
+    return { text: t, ts: typeof e.timestamp === 'string' ? e.timestamp : '', uuid: typeof e.uuid === 'string' ? e.uuid : '', prev: prev };
   }
   return null;
 }
 
-// The one eligible kind of a command (owner_approval.kinds), or null: every heavy segment must be of ONE kind and target, and the
-// command may hide nothing (no substitution, shell -c or eval payload).
+function ownerNorm(s) { return String(s).replace(new RegExp(ah.cfg('owner_approval.ws_re'), 'g'), ' ').trim(); }
+
+// The commands an assistant text quotes verbatim: each fenced block and each inline code span, whitespace-normalised.
+function ownerQuoted(t) {
+  const out = [];
+  const take = function (re, str) {
+    const g = new RegExp(re, 'g');
+    let m;
+    while ((m = g.exec(str)) !== null) { out.push(ownerNorm(m[1])); if (m[0] === '') g.lastIndex++; }
+  };
+  take(ah.cfg('owner_approval.quote_fenced_re'), t);
+  take(ah.cfg('owner_approval.quote_inline_re'), t.replace(new RegExp(ah.cfg('owner_approval.quote_fenced_re'), 'g'), ' '));
+  return out;
+}
+
+// The one eligible kind of a command (owner_approval.kinds), or null: ONE shell segment, no chain/pipe/substitution/-c/eval, and a
+// target (the PR number, the script path): a bare `gh pr merge` is never eligible.
 function ownerApprovalKind(command) {
+  if (new RegExp(ah.cfg('owner_approval.chain_re')).test(command)) return null;
   if (extractSubstitutions(command).length) return null;
+  const segs = splitSegments(command).filter(function (x) { return x.trim() !== ''; });
+  if (segs.length !== 1) return null;
+  const seg = segs[0];
+  if (extractShellCPayload(seg) || extractEvalPayload(seg)) return null;
+  if (!isHeavySegment(seg, command)) return null;
   const kinds = ah.cfg('owner_approval.kinds');
-  let found = null;
-  const segs = splitSegments(command);
-  for (let i = 0; i < segs.length; i++) {
-    const seg = segs[i];
-    if (seg.trim() === '') continue;
-    if (extractShellCPayload(seg) || extractEvalPayload(seg)) return null;
-    if (!isHeavySegment(seg, command)) continue;
-    let hit = null;
-    for (let k = 0; k < kinds.length && !hit; k++) {
-      const m = new RegExp(kinds[k].segment_re).exec(seg);
-      if (m) hit = { id: kinds[k].id, refKind: kinds[k].ref_kind, nouns: kinds[k].nouns, target: m[1] || '' };
-    }
-    if (!hit) return null;
-    if (found && (found.id !== hit.id || found.target !== hit.target)) return null;
-    found = hit;
+  for (let k = 0; k < kinds.length; k++) {
+    const m = new RegExp(kinds[k].segment_re).exec(seg);
+    if (m) return m[1] ? { id: kinds[k].id, target: m[1] } : null;
   }
-  return found;
+  return null;
 }
 
-function ownerRegexEsc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-
-// Does the owner's prompt approve this kind+target? An approval word AND a reference to the action, no negation/question/relay marker.
-function ownerPromptApproves(promptText, kind) {
+// Is the owner's prompt a plain short approval? An approval word, no negation/question, no relay/paste marker, not only a quote.
+function ownerPromptApproves(promptText) {
   if (promptText.length > ah.cfgNum('owner_approval.max_prompt_chars')) return false;
+  const low = promptText.toLowerCase();
   const marks = ah.cfg('owner_approval.reject_markers');
-  for (let i = 0; i < marks.length; i++) if (promptText.toLowerCase().indexOf(String(marks[i]).toLowerCase()) !== -1) return false;
-  if (new RegExp(ah.cfg('owner_approval.deny_re'), 'i').test(promptText)) return false;
-  if (!new RegExp(ah.cfg('owner_approval.approve_re'), 'i').test(promptText)) return false;
-  const nouns = (kind.nouns || []).map(ownerRegexEsc);
-  if (nouns.length && new RegExp('\\b(?:' + nouns.join('|') + ')(?:s|d|ed|ing)?\\b', 'i').test(promptText)) return true;
-  if (kind.target === '') return false;
-  if (kind.refKind === 'pr') return new RegExp('(?:^|[^0-9A-Za-z])#?' + ownerRegexEsc(kind.target) + '(?![0-9A-Za-z])').test(promptText);
-  if (kind.refKind === 'script') {
-    const base = kind.target.split('/').pop();
-    const stem = base.replace(/\.[A-Za-z0-9]+$/, '');
-    return new RegExp('(?:^|[^0-9A-Za-z_])(?:' + ownerRegexEsc(base) + '|' + ownerRegexEsc(stem) + ')(?![0-9A-Za-z_])', 'i').test(promptText);
-  }
-  return false;
+  for (let i = 0; i < marks.length; i++) if (low.indexOf(String(marks[i]).toLowerCase()) !== -1) return false;
+  const own = promptText.replace(new RegExp(ah.cfg('owner_approval.quote_fenced_re'), 'g'), ' ').split(/\r?\n/).filter(function (l) { return !new RegExp(ah.cfg('owner_approval.quote_line_re')).test(l); }).join('\n');
+  if (own.trim() === '') return false; // the prompt only quotes
+  if (new RegExp(ah.cfg('owner_approval.deny_re'), 'i').test(own)) return false;
+  return new RegExp(ah.cfg('owner_approval.approve_re'), 'i').test(own);
 }
 
-// The pass: an advisory (the command runs) when the owner's latest genuine prompt approves it, else undefined (the block stands).
+// One approving prompt lifts one run: its uuid is claimed once (an exclusive create) in the session state. False when it was
+// already claimed or the state cannot be written (fail closed: the block stands).
+function ownerClaim(uuid, home) {
+  try {
+    if (!new RegExp(ah.cfg('owner_approval.uuid_re')).test(uuid)) return false;
+    const dir = ah.cfg('spawn_ctx.state_root') + '/' + ah.cfg('owner_approval.used_dir');
+    ah.commit();
+    ah.state.op(home, 'mkdir', dir);
+    return ah.state.op(home, 'create', dir + '/' + spawn.sanitize(uuid), JSON.stringify({ at: ah.clock.now() })) === true;
+  } catch (e) { if (cmdFatal(e)) throw e; return false; }
+}
+
+// The pass: an advisory (the command runs) when the owner's latest genuine prompt approves exactly this command, else undefined (the block stands).
 function ownerApprovalPass(command, payload) {
   if (!ah.settings.bool('owner_approval.sw')) return undefined;
   const count = function (r) { ah.metric('owner_approval_pass', ['result', r]); };
@@ -4505,8 +4537,11 @@ function ownerApprovalPass(command, payload) {
   }
   const kind = ownerApprovalKind(command);
   const prompt = kind ? ownerLatestPrompt(payload) : null;
-  const ts = prompt ? Date.parse(prompt.ts) : NaN;
-  if (!kind || !prompt || !(ah.clock.now() - ts <= ah.cfgNum('owner_approval.max_age_ms')) || !ownerPromptApproves(prompt.text, kind)) { count('no_approval'); return undefined; }
+  const age = prompt ? ah.clock.now() - Date.parse(prompt.ts) : NaN;
+  const sh = spawn.stateHome();
+  const ok = kind && prompt && age >= 0 && age <= ah.cfgNum('owner_approval.max_age_ms') && ownerPromptApproves(prompt.text)
+    && ownerQuoted(prompt.prev).indexOf(ownerNorm(command)) !== -1 && sh.ok !== undefined && ownerClaim(prompt.uuid, sh.ok);
+  if (!ok) { count('no_approval'); return undefined; }
   count('allowed');
   return { advisory: text.advisoryJson('PreToolUse', text.render(ah.cfg('owner_approval.msg_allowed'), { kind: kind.id, ts: prompt.ts })) };
 }

@@ -3,31 +3,61 @@
 # A helper cannot run what the owner approved in the Primary's chat: the approval reaches it only as a relayed message, which a
 # worker rightly refuses. With guards.ownerApprovalPass on, the main-thread block stands down when the LATEST genuine owner prompt
 # (an entry the host marked as typed by a human: not a tool result, not a cross-session or teammate message, not a system note)
-# approves the action. Conservative on purpose: an approval word AND a reference to the action, no negation or question, a short
-# prompt, a fresh prompt, and a never-exempt list that no wording can lift. Part C (the `! <cmd>` wording) is unconditional.
+# approves the action. Conservative on purpose: the assistant message right before the prompt must quote the EXACT command (a code
+# span or block), the prompt is a plain short yes (no negation, question, paste or relay marker), 0 <= age <= max_age_ms, ONE
+# single-segment command, one run per approving prompt, and a never-exempt list that no wording can lift. Part C (the `! <cmd>`
+# wording) is unconditional.
 
 [owner_approval.sw]
 doc = "Owner-approval pass-through. Switch guards.ownerApprovalPass (default OFF: it changes a safety guard, the owner turns it on). On: a command-guard main-thread block of an eligible command (owner_approval.kinds) is lifted when the latest genuine owner prompt approves it. Off: every answer is unchanged and nothing is counted."
 value = { section = "guards", key = "ownerApprovalPass", type = "boolean", env = "ANTIHALL_OWNER_APPROVAL_PASS", option = "", default = false }
 
 [owner_approval.kinds]
-doc = "Command shapes the pass can lift, each with the owner's way of naming it. id: the kind; segment_re: one shell segment of the command (prefix words like `cd` are other segments), group 1 captures what the command targets (the PR number, the script path); ref_kind: pr (the owner may name the number) or script (the owner may name the script, with or without its extension); nouns: action words that count as naming the action, matched as whole words with an optional s/d/ed/ing ending. Every heavy segment of the command must be of ONE kind here, or nothing is lifted."
+doc = "Command shapes the pass can lift. id: the kind; segment_re: the command's ONE shell segment, group 1 captures what it targets (the PR number, the script path); a command whose group 1 is empty (a bare `gh pr merge`) is never eligible. The owner approves the exact command the assistant quoted, so no wording of the owner's prompt names the action."
 value = [
-  { id = "pr_merge", segment_re = '^\s*(?:\S+=\S*\s+)*gh\s+pr\s+merge\b(?:\s+(?:-\S+\s+)*#?([0-9]+))?', ref_kind = "pr", nouns = ["merge"] },
-  { id = "script_run", segment_re = '^\s*(?:\S+=\S*\s+)*(?:python3?|node|ruby|perl|bash|sh|zsh|tsx|ts-node|bun)\s+(?:-[A-Za-z-]+\s+)*(\S+\.(?:py|js|mjs|cjs|ts|rb|sh|pl))\b', ref_kind = "script", nouns = ["import", "create", "apply", "migrate", "backfill", "seed", "load", "upload", "sync", "export", "generate"] },
+  { id = "pr_merge", segment_re = '^\s*(?:\S+=\S*\s+)*gh\s+pr\s+merge\b(?:\s+(?:-\S+\s+)*#?([0-9]+))?' },
+  { id = "script_run", segment_re = '^\s*(?:\S+=\S*\s+)*(?:python3?|node|ruby|perl|bash|sh|zsh|tsx|ts-node|bun)\s+(?:-[A-Za-z-]+\s+)*(\S+\.(?:py|js|mjs|cjs|ts|rb|sh|pl))\b' },
 ]
 
 [owner_approval.approve_re]
-doc = "An approval in the owner's prompt: any of these whole words or phrases (case-insensitive). The approval alone is not enough: the prompt must also name the action (owner_approval.kinds)."
-value = '\b(?:yes|yeah|yep|yup|ok|okay|ofc|of course|sure|go|go ahead|go for it|approve|approved|run it|do it|ship it|proceed|merge|confirmed?)\b'
+doc = "An approval in the owner's prompt: any of these whole words or phrases (case-insensitive). Only a plain yes: a noun such as 'merge' never approves. The approval binds only to the command the assistant quoted right before the prompt."
+value = '\b(?:yes|ok|okay|go|approve|approved|do it|run it)\b'
+
+[owner_approval.chain_re]
+doc = "A command that matches is never eligible: a chain or pipe (&&, ||, ;, |, &), a newline, a command or process substitution ($(, backtick, <(, >(), a shell -c payload or eval."
+value = '[;&|\n\r`]|\$\(|<\(|>\(|\b(?:bash|sh|zsh)\s+-c\b|\beval\b'
+
+[owner_approval.ws_re]
+doc = "Whitespace runs collapsed to one space before the executed command is compared with the command the assistant quoted."
+value = '\s+'
+
+[owner_approval.quote_fenced_re]
+doc = "A fenced code block in the assistant's text; group 1 is the quoted command (one block = one command). Also removed from the owner's prompt before it is read."
+value = '```[^\n`]*\n([\s\S]*?)```'
+
+[owner_approval.quote_inline_re]
+doc = "An inline code span in the assistant's text (read after the fenced blocks are removed); group 1 is the quoted command."
+value = '`([^`\n]+)`'
+
+[owner_approval.quote_line_re]
+doc = "A line of the owner's prompt that only quotes (a markdown quote line). A prompt with nothing left after these lines are dropped is not an approval."
+value = '^\s*>'
+
+[owner_approval.uuid_re]
+doc = "The shape of an approving prompt's uuid. Anything else is refused (the uuid names the one-shot claim file)."
+value = '^[A-Za-z0-9-]{8,64}$'
+
+[owner_approval.used_dir]
+doc = "Directory, under the state root (spawn_ctx.state_root), holding one claim file per approving prompt that already lifted a block: an approval lifts ONE run."
+value = "owner-approval-used"
 
 [owner_approval.deny_re]
 doc = "A prompt that matches is never an approval, whatever else it says: a negation, a hold, a condition, a question. Case-insensitive."
 value = "\\b(?:no|not|nope|don'?t|dont|do not|never|stop|wait|hold|hold off|cancel|abort|skip|shouldn'?t|should|if|when|until|unless|after|before|why|what|how|which|can|could|would|status)\\b|\\?"
 
 [owner_approval.reject_markers]
-doc = "Text that marks a prompt as relayed or system-made even when the host tagged it human (pasted relay, teammate message, system note): a prompt containing one is not an approval."
-value = ["<cross-session-message", "<teammate-message", "<system-reminder", "<task-notification", "Another Claude session"]
+doc = "Text that marks a prompt as relayed, pasted or system-made even when the host tagged it human (pasted relay or content, teammate message, system note): a prompt containing one is not an approval."
+value = ["<cross-session-message", "<teammate-message", "<system-reminder", "<task-notification", "<pasted_content", "Another Claude session"]
 
 [owner_approval.never_exempt_re]
 doc = "Commands no prompt can lift, tested against the WHOLE command (every chained part): force push, --admin, secrets and credentials, repo delete, a gh api DELETE. Case-insensitive."
@@ -45,7 +75,7 @@ doc = "A prompt longer than this is not a short approval (a pasted document or p
 value = 400
 
 [owner_approval.max_age_ms]
-doc = "How old (ms) the owner's latest prompt may be and still approve a command. Older than this: the approval is stale."
+doc = "How old (ms) the owner's latest prompt may be and still approve a command: 0 <= now - timestamp <= this. A future timestamp (forged) or an older one (stale) approves nothing."
 value = 900000
 
 [owner_approval.window_bytes]
