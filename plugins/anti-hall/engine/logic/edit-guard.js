@@ -100,7 +100,7 @@ function egDelegation(tool, cwd, p) {
 }
 
 // The line count of a text, 0 for no text.
-function egLines(t) { return typeof t === 'string' && t !== '' ? t.split('\n').length : 0; }
+function egLines(t) { return typeof t === 'string' && t !== '' ? t.split('\n').length - (t.charAt(t.length - 1) === '\n' ? 1 : 0) : 0; }
 
 // The occurrences of `needle` in the file an Edit targets, or null when they cannot be counted (no path, no file, too big, unreadable,
 // empty needle): the caller then treats the edit as large (fail closed).
@@ -154,17 +154,19 @@ function egCapBuckets(home) {
   if (!egIsObj(parsed) || !egIsObj(parsed.data)) return null;
   var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
   var stale = ts > 0 && (now - ts) > ah.cfgNum('ctxbudget.usage_max_stale_ms'), out = [];
+  var scopedBucket = false;
   var add = function (name, pct, at) {
     if (typeof pct !== 'number') return;
     var rt = typeof at === 'string' && at !== '' ? new Date(at).getTime() : NaN;
     if (typeof at === 'string' && at !== '') {
       if (isFinite(rt) && rt < now) pct = 0; // that window already reset
     } else if (stale) pct = null; // a stale reading with no reset time proves nothing
-    out.push({ name: name, pct: pct, resetsAt: typeof at === 'string' && at !== '' ? at : null });
+    out.push({ name: name, pct: pct, resetsAt: typeof at === 'string' && at !== '' ? at : null, scoped: scopedBucket === true });
   };
   var pcts = ah.cfg('spawn_usage.bucket_pct'), resets = ah.cfg('spawn_usage.bucket_resets'), names = ah.cfg('spawn_usage.bucket_names');
   for (var i = 0; i < pcts.length; i++) add(names[i], d[pcts[i]], d[resets[i]]);
   var scoped = d[ah.cfg('edit_guard.cap_scoped_field')], keys = ah.cfg('edit_guard.cap_scoped_keys');
+  scopedBucket = true;
   if (Array.isArray(scoped)) scoped.forEach(function (o, k) {
     if (egIsObj(o)) add(String(o[keys.name] || o[keys.label] || ('scoped' + k)), o[keys.pct], o[keys.resets]);
   });
@@ -193,20 +195,21 @@ function egCapUsage(p) {
   if (!ah.settings.bool('edit_guard.cap_edit_setting')) return null;
   var home = hookProc.home(p);
   if (home === null) return null;
-  var now = ah.clock.now(), hard = ah.cfgNum('spawn_usage.block_pct');
+  var now = ah.clock.now(), hard = ah.cfgNum('spawn_usage.block_pct'), spawnNames = ah.cfg('spawn_usage.bucket_names');
   var cur = egCapBuckets(home) || [], mem = egCapState(), st = mem.st, dirty = false, seen = {}, cand = [];
   cur.forEach(function (b) {
     if (b.pct === null) return;
     seen[b.name] = true;
     cand.push(b);
-    if (b.pct >= hard) { st[b.name] = { pct: b.pct, resetsAt: b.resetsAt, seen: now }; dirty = true; }
+    if (b.pct >= hard) { st[b.name] = { pct: b.pct, resetsAt: b.resetsAt, seen: now, scoped: b.scoped }; dirty = true; }
     else if (st[b.name] !== undefined) { delete st[b.name]; dirty = true; }
   });
   Object.keys(st).forEach(function (name) {
     if (seen[name]) return;
     var r = st[name], rt = r && typeof r.resetsAt === 'string' ? new Date(r.resetsAt).getTime() : NaN;
-    var live = egIsObj(r) && typeof r.pct === 'number' && (isFinite(rt) ? rt > now : (typeof r.seen === 'number' && now - r.seen < ah.cfgNum('edit_guard.cap_state_max_age_ms')));
-    if (live) cand.push({ name: name, pct: r.pct, resetsAt: r.resetsAt });
+    // a remembered reading is bounded by cap_state_max_age_ms whatever its reset time says (a far-future reset must not outlive the cache)
+    var live = egIsObj(r) && typeof r.pct === 'number' && typeof r.seen === 'number' && now - r.seen < ah.cfgNum('edit_guard.cap_state_max_age_ms') && (!isFinite(rt) || rt > now);
+    if (live) cand.push({ name: name, pct: r.pct, resetsAt: r.resetsAt, scoped: r.scoped === true });
     else { delete st[name]; dirty = true; }
   });
   if (dirty && mem.rel !== null) {
@@ -215,7 +218,11 @@ function egCapUsage(p) {
   }
   var full = swgFullest(cand);
   if (full === null || full.pct < ah.cfgNum('edit_guard.cap_edit_pct')) return null;
-  return { name: full.name, pct: full.pct, resetsAt: full.resetsAt, hard: full.pct >= hard };
+  // spawning is stopped only by the buckets the spawn guard counts (spawn_usage.bucket_names); a model-specific bucket never stops it
+  var stop = swgFullest(cand.filter(function (b) { return b.scoped !== true && spawnNames.indexOf(b.name) >= 0; }));
+  var isHard = stop !== null && stop.pct >= hard;
+  var shown = isHard ? stop : full;
+  return { name: shown.name, pct: shown.pct, resetsAt: shown.resetsAt, hard: isHard };
 }
 
 function egBlock(reason, codexPatch) { return { exact: { code: 2, out: text.blockJson(reason), err: codexPatch ? reason + '\n' : '' } }; }

@@ -887,8 +887,12 @@ doc = "Files and globs edit-guard always allows."
 value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "**/.anti-hall/history/**", "**/.anti-hall/dogfood/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
 
 [command.eg_home_allow]
-doc = "Globs, relative to the home directory, that edit-guard allows from any working directory: the host's own configuration folder, which the global rule lets the main thread write directly (GH #783). Empty = none."
-value = [".claude/**"]
+doc = "Globs, relative to the home directory and written in lower case (paths are folded), that edit-guard allows from any working directory: a narrow named list inside the host's configuration folder (the global instructions file, the memory, the skills and the agents), which the global rule lets the main thread write directly (GH #783). Never the whole folder: plugin code and the usage cache live in it. Empty = none."
+value = [".claude/claude.md", ".claude/projects/*/memory/**", ".claude/skills/**", ".claude/agents/**"]
+
+[command.eg_home_deny_globs]
+doc = "Globs, relative to the home directory, that command.eg_home_allow never reaches, checked first: the installed plugins (their rules, their logic and the usage cache read by the usage relief), and the host's settings and hook configuration under any name."
+value = [".claude/plugins/**", ".claude/settings*.json", ".claude/**/settings*.json", ".claude/hooks.json", ".claude/**/hooks.json"]
 
 [command.eg_home_deny_files]
 doc = "File names (lower case) that command.eg_home_allow never reaches: the host's settings and hook configuration."

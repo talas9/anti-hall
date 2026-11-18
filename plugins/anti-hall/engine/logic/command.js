@@ -833,6 +833,7 @@ LIB['./edit-guard.js'] = (function () {
       var rel = path.relative(home, realpathOrSelf(path.resolve(base, String(filePath))));
       if (!rel || rel.indexOf('..') === 0 || path.isAbsolute(rel)) return false;
       var segs = rel.split('/').map(foldSegment);
+      if (ah.cfg('command.eg_home_deny_globs').some(function (g) { return globToRegExp(g).test(segs.join('/')); })) return false;
       if (ah.cfg('command.eg_home_deny_files').indexOf(segs[segs.length - 1]) >= 0) return false;
       if (!globs.some(function (g) { return globToRegExp(g).test(segs.join('/')); })) return false;
       return allowlistIsHonest(filePath, cwd);

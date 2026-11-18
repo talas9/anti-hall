@@ -1410,8 +1410,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.eg_claude_dir` | `.claude` |  |  | The host's configuration directory under the home directory. |
 | `command.eg_default_allow` | `12 items` |  |  | Files and globs edit-guard always allows. |
 | `command.eg_edit_allow_file` | `.anti-hall/edit-allow.json` |  |  | The repository-relative path of the edit allowlist, which no one edits through the guard. |
-| `command.eg_home_allow` | `.claude/**` |  |  | Globs, relative to the home directory, that edit-guard allows from any working directory: the host's own configuration folder, which the global rule lets the main thread write directly (GH #783). Empty = none. |
+| `command.eg_home_allow` | `.claude/claude.md, .claude/projects/*/memory/**, .claude/skills/**, .claude/a...` |  |  | Globs, relative to the home directory and written in lower case (paths are folded), that edit-guard allows from any working directory: a narrow named list inside the host's configuration folder (the global instructions file, the memory, the skills and the agents), which the global rule lets the main thread write directly (GH #783). Never the whole folder: plugin code and the usage cache live in it. Empty = none. |
 | `command.eg_home_deny_files` | `settings.json, settings.local.json, hooks.json` |  |  | File names (lower case) that command.eg_home_allow never reaches: the host's settings and hook configuration. |
+| `command.eg_home_deny_globs` | `.claude/plugins/**, .claude/settings*.json, .claude/**/settings*.json, .claud...` |  |  | Globs, relative to the home directory, that command.eg_home_allow never reaches, checked first: the installed plugins (their rules, their logic and the usage cache read by the usage relief), and the host's settings and hook configuration under any name. |
 | `command.eg_hooks_file` | `hooks.json` |  |  | A file with this name is never allowed by the per-project edit allowlist. |
 | `command.eg_plan_mode` | `plan` |  |  | The permission mode in which non-source files may be edited. |
 | `command.eg_plans_rel` | `.claude/plans` |  |  | The host's plan directory under the home directory. |
