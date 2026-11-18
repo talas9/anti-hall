@@ -52,20 +52,75 @@ var dord = {
   },
   // True when the task must not be ordered deleted: the list is ambiguous, or it is shared and the task's owner is not exactly known to be
   // nobody (`owners` is `dord.owners(sid)` when the list is shared).
-  foreign: function (c, owners, id) {
+  foreign: function (c, owners, id, own) {
     if (c.ambiguous) return true;
     if (!c.shared) return false;
-    return owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id)) || owners[String(id)] !== '';  // null (an owner that could not be read) is not '' either
+    if (owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id))) return true;
+    var o = owners[String(id)];
+    if (o === '') return false;
+    // GH #794: a task owned by an agent THIS session launched (or by the coordinator itself) is the session's own, not another session's: the
+    // pairing rule makes every task's owner an agent name, so an owner that was never allowed here left every completed task unordered
+    // A name alone is not ownership (another session can hold a same-named agent): the task id must also be one this session's own transcript
+    // created or updated (`own['t:' + id]`, see `ownNames`).
+    return !(typeof o === 'string' && own !== undefined && own !== null && dord.isOwn(o, own) && own['t:' + String(id)] === true);  // null (an owner that could not be read) is foreign
+  },
+  // The rows of the tracker that are THIS session's own: the session itself, its launched agents (parent = this session id) and theirs, followed
+  // down. The tracker's guard rows hold every row of the project's cwd, other sessions' agents included, so a row whose parent is not this
+  // session (or one of its own agents) is never adopted. GH #794 review: ownership is by parent, never by cwd.
+  ownRows: function (p) {
+    var sid = p && typeof p === 'object' && typeof p.session_id === 'string' ? p.session_id : '';
+    if (sid === '') return null;
+    var rows;
+    try { rows = ah.transcript.trackedAgents(p); } catch (e) { return null; }
+    if (!Array.isArray(rows)) return null;
+    var ids = {}, own = [], grew = true;
+    ids[sid] = true;
+    while (grew) {
+      grew = false;
+      rows.forEach(function (r) {
+        var id = typeof r.id === 'string' ? r.id : '';
+        if (id === '' || ids[id] === true) return;
+        if (typeof r.parent === 'string' && ids[r.parent] === true) { ids[id] = true; grew = true; }
+      });
+    }
+    rows.forEach(function (r) { if (typeof r.id === 'string' && ids[r.id] === true) own.push(r); });
+    return own;
+  },
+  // The agents of this session by lower-case name and id (its own tracker rows, `ownRows`); null when it cannot be read.
+  ownNames: function (p) {
+    if (!ah.settings.bool('done_order.sw_own_owners') || !p || typeof p !== 'object') return null;
+    var rows = dord.ownRows(p);
+    if (rows === null) return null;
+    var set = {};
+    rows.forEach(function (r) {
+      if (typeof r.name === 'string' && r.name !== '') set['n:' + r.name.trim().toLowerCase()] = true;
+      if (typeof r.id === 'string' && r.id !== '') set['n:' + r.id.toLowerCase()] = true;
+    });
+    // the task ids this session's own transcript created or updated (TaskCreate result / TaskUpdate tool use): the only tasks of a shared list
+    // it may adopt by owner name
+    var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
+    if (tp !== '' && ah.fs.size(tp)) {
+      var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, typeof p.session_id === 'string' ? p.session_id : '');
+      if (r && !r.unreadable && Array.isArray(r.tasks)) r.tasks.forEach(function (t) { if (t && t.id !== undefined && t.id !== null) set['t:' + String(t.id)] = true; });
+      if (r && !r.unreadable && Array.isArray(r.created)) r.created.forEach(function (n) { set['t:' + String(n)] = true; });
+    }
+    return set;
+  },
+  isOwn: function (owner, own) {
+    // a coordinator-looking name (`main`) is NOT adopted: in a shared named list another session's coordinator holds tasks under that name too,
+    // so only the agents of this session's own parent chain (`ownNames`) are its own. The session's own unnamed list is never shared (`foreign`
+    // returns false for it before this is asked).
+    return own['n:' + owner.trim().toLowerCase()] === true;
   },
   // May this task be ordered deleted now (the gate `fresh` and `plan` share)?
-  orderable: function (sid, id) {
+  orderable: function (sid, id, own) {
     var c = dord.ctx();
-    return !dord.foreign(c, c.shared ? dord.owners(sid) : null, id);
+    return !dord.foreign(c, c.shared ? dord.owners(sid) : null, id, own);
   },
   key: function (c, id) { return c.list === '' ? String(id) : c.list + '/' + id; },
   num: function (v) { return typeof v === 'number' && isFinite(v) && v >= 0 ? v : 0; },
   // `tasks`: the session's task list (a read that is exact). Returns {rel, due: [ids], lingering, followed, next, changed}; nothing is written.
-  plan: function (sid, tasks, now) {
+  plan: function (sid, tasks, now, own) {
     var rel = dord.rel(sid), prev = dord.read(rel), next = {}, due = [], lingering = 0;
     var after = ah.settings.num('done_order.num_after_min') * ah.cfgNum('done_order.ms_per_minute');
     var steps = ah.cfg('done_order.steps_min'), max = ah.cfgNum('done_order.max_orders'), perMin = ah.cfgNum('done_order.ms_per_minute');
@@ -74,7 +129,7 @@ var dord = {
     tasks.filter(tk.isDone).forEach(function (t) {
       var id = dord.key(c, t.id), rec = prev[id] && typeof prev[id] === 'object' ? prev[id] : {};
       // fail safe: in a shared list a task another owner holds is never ordered deleted, nor is any task when the list is ambiguous
-      var foreign = dord.foreign(c, owners, t.id);
+      var foreign = dord.foreign(c, owners, t.id, own);
       var first = rec.first > 0 ? rec.first : now, count = dord.num(rec.count), last = dord.num(rec.lastAt);
       next[id] = { first: first, count: count, lastAt: last };
       if (foreign) return;
@@ -107,13 +162,29 @@ var dord = {
   },
   // A task was just marked completed: the record starts at its first order (the line is given now). Returns the order, or '' when the
   // record cannot be saved.
-  fresh: function (sid, id, now) {
-    if (!dord.orderable(sid, id)) return '';
+  // GH #794: whether the session's history ledger already holds a written entry (not an engine-appended lifecycle row) for the task. false
+  // when it cannot be told (no project, no ledger, one over the read cap).
+  logged: function (p, id) {
+    if (!ah.settings.bool('done_order.sw_skip_logged') || !p || typeof p !== 'object') return false;
+    var cwd = typeof p.cwd === 'string' ? p.cwd : '', sid = typeof p.session_id === 'string' ? p.session_id : '';
+    if (cwd === '' || cwd.charAt(0) !== '/' || sid === '' || ah.home() === '') return false;
+    var root = task.sessionProjectRoot(cwd, ah.home());
+    if (root === null) root = ho.sessionProjectRoot(cwd);
+    if (root === null) return false;
+    var date = new Date(ah.clock.now()).toISOString().slice(0, 10);
+    var abs = root + '/' + ah.cfg('task_lifecycle_log.history_dir').join('/') + '/' + date + '/' + task.sessionPathId(sid) + ah.cfg('task_lifecycle_log.ledger_ext');
+    var size = ah.fs.size(abs);
+    if (size === null || size > ah.cfgNum('script.read_max_bytes')) return false;
+    var t = ah.fs.readText(abs);
+    return t !== null && new RegExp(text.render(ah.cfg('done_order.entry_re'), { id: String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }), 'm').test(t);
+  },
+  fresh: function (sid, id, now, p) {
+    if (!dord.orderable(sid, id, dord.ownNames(p))) return '';
     var rel = dord.rel(sid), ids = dord.read(rel);
     ids[dord.key(dord.ctx(), id)] = { first: now, count: 1, lastAt: now };
     if (!dord.write(rel, ids)) return '';
     dord.count('emitted', 1);
-    return text.render(ah.cfg('done_order.msg_fresh'), { id: id });
+    return text.render(ah.cfg(dord.logged(p, id) ? 'done_order.msg_fresh_logged' : 'done_order.msg_fresh'), { id: id });
   },
   // A task was deleted: if it had been ordered, the order was followed.
   forget: function (sid, id) {
