@@ -4057,6 +4057,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `speculation_guard.ack_ci` | `13 items` |  |  | Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. |
 | `speculation_guard.ack_cs` | `\b\w+\.\w+:\d+\b` |  |  | Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42. |
+| `speculation_guard.ack_local_ci` | `\bnot (?:yet )?(?:proven\\|confirmed)\b, \b(?:unconfirmed\\|unproven)\s*(?:[:;,...` |  |  | Regex sources (case-insensitive) of acknowledgments that label only the sentence they sit in (GH #486): 'not yet proven', 'unproven' or 'unconfirmed' used as a label, 'my inference'. A hedge in another sentence is not covered. Unlike ack_ci, which covers the whole reply. |
+| `speculation_guard.ack_scope_re` | `[.!?]+\s\|\n+` |  |  | Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space, or a line break. |
 | `speculation_guard.backtick_re` | ``[^`\n]+`` |  |  | Regex source of an inline code span. |
 | `speculation_guard.cap_scope` | `owner_turn` |  |  | Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup. |
 | `speculation_guard.cite_min_hits` | `2` |  |  | How many distinct specifics of the reply must appear in the tool output of the same turn for the hedge to count as evidenced (tool results since the last human prompt are the citation). |

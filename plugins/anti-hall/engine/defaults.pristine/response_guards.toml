@@ -159,10 +159,6 @@ value = [
   '''haven'?t checked\b''',
   '\bnot verified\b',
   '\bunverified\b',
-  '\bunconfirmed\b',
-  '\bunproven\b',
-  '\bnot (?:yet )?(?:proven|confirmed)\b',
-  '\b(?:my|an) inference\b',
   '\blet me verify\b',
   '''i'?ll check\b''',
   '\bi will check\b',
@@ -173,13 +169,26 @@ value = [
   '\bthe data shows\b',
 ]
 
+[speculation_guard.ack_local_ci]
+doc = "Regex sources (case-insensitive) of acknowledgments that label only the sentence they sit in (GH #486): 'not yet proven', 'unproven' or 'unconfirmed' used as a label, 'my inference'. A hedge in another sentence is not covered. Unlike ack_ci, which covers the whole reply."
+value = [
+  '\bnot (?:yet )?(?:proven|confirmed)\b',
+  '\b(?:unconfirmed|unproven)\s*(?:[:;,.)!?\u2014-]|$)',
+  '\bmy inference\b',
+  '\bas an inference\b',
+]
+
+[speculation_guard.ack_scope_re]
+doc = "Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space, or a line break."
+value = '[.!?]+\s|\n+'
+
 [speculation_guard.ack_cs]
 doc = "Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42."
 value = ['\b\w+\.\w+:\d+\b']
 
 [speculation_guard.obligation_re]
 doc = "Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess."
-value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated|reproduced|caught|failing)\b'
+value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated|reproduced)\b'
 
 [speculation_guard.obligation_window]
 doc = "How many UTF-16 units after a must-be or should-be are read for the obligation word."

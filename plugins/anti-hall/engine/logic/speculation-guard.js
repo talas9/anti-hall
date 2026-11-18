@@ -20,6 +20,19 @@ function sgHasAck(t) {
   return false;
 }
 
+// An acknowledgment that covers only the sentence it sits in (speculation_guard.ack_local_ci): 'not yet proven', 'my inference' label
+// the hedge in their own sentence, not every hedge of the reply. The sentence cut is speculation_guard.ack_scope_re.
+function sgLocalAck(text, at) {
+  var br = ah.re.findAll(ah.cfg('speculation_guard.ack_scope_re'), '', text), from = 0, to = text.length, i;
+  for (i = 0; i < br.length; i++) {
+    if (br[i][1] <= at) from = br[i][1];
+    else if (br[i][0] >= at) { to = br[i][0]; break; }
+  }
+  var seg = text.slice(from, to), list = ah.cfg('speculation_guard.ack_local_ci');
+  for (i = 0; i < list.length; i++) if (ah.re.test(list[i], 'i', seg)) return true;
+  return false;
+}
+
 // Same-turn tool evidence as citation (dogfood 2026-10-09): a reply that names specifics (paths, versions, numbers, identifiers) found in
 // the output of tool calls made since the last human prompt cites that output, so its hedge is not an unevidenced guess.
 function sgTurnOutputs(lines) {
@@ -83,10 +96,11 @@ function sgHit(text) {
   for (var i = 0; i < markers.length; i++) {
     var all = rp.wordHits(markers[i], 'i', text);
     if (all.length === 0) continue;
-    var first = text.slice(all[0][0], all[0][1]);
-    if (modal.indexOf(first.toLowerCase()) < 0) return { text: first, at: all[0][0] };
+    var first = text.slice(all[0][0], all[0][1]), isModal = modal.indexOf(first.toLowerCase()) >= 0;
     for (var j = 0; j < all.length; j++) {
-      if (!sgObligation(text, all[j][0], all[j][1])) return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
+      if (isModal && sgObligation(text, all[j][0], all[j][1])) continue;
+      if (sgLocalAck(text, all[j][0])) continue; // a hedge its own sentence labels honest is not a guess
+      return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
     }
   }
   return null;
