@@ -89,6 +89,7 @@ What the automatic guards check and how to read a block.
 - `guards.pruneCompletedTasksAfter` = 3: Completed or cancelled tasks kept before the task tracker suggests pruning
 - `guards.inlineRule` = false: R-inline
 - `guards.ownerApprovalPass` = false: Owner-approval pass-through
+- `guards.transcriptProtect` = true: Transcript protection
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
 - `guards.advisorRank` = false: Skips plan/retry blocks for an equal/higher main
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once

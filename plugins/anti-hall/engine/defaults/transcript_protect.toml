@@ -1,0 +1,64 @@
+# ---- Transcript protection (GH #802): no agent writes a session transcript ----
+# Every guard that trusts "the latest human prompt" reads the session transcript. An agent that can append a forged
+# human-looking entry to its own transcript (`printf '{"type":"user","origin":{"kind":"human"}...}' >> <transcript>`, `tee -a`, `cp`,
+# `sed -i`, an Edit/Write of the .jsonl) fools all of them, including the owner-approval pass (guards.ownerApprovalPass). The harness is
+# the only writer of a transcript. command-guard blocks a Bash write to a protected path, in or out of the session project, for every
+# agent and even when the command is otherwise allowed; edit-guard blocks Edit/Write/MultiEdit/NotebookEdit/apply_patch to one. Reading
+# stays allowed (cat, grep, jq, anti-hall's own verbs). Memory notes (`~/.claude/projects/*/memory/*.md`) are not transcripts: not matched.
+
+[transcript_protect.sw]
+doc = "Transcript protection. Switch guards.transcriptProtect (default ON: it only stops agent writes to session transcripts; nothing legitimate writes them from a tool call). On: command-guard and edit-guard block a write to a path of transcript_protect.globs (or the payload's own transcript_path), for every agent. Off: every answer is unchanged and nothing is counted."
+value = { section = "guards", key = "transcriptProtect", type = "boolean", env = "ANTIHALL_TRANSCRIPT_PROTECT", option = "", default = true }
+
+[transcript_protect.globs]
+doc = "Protected paths (`~` is the home directory; `*` is one path part, `**` any depth). Session transcripts and the tool results saved beside them. The payload's own transcript_path is always protected too. A memory note (`.md`) is not matched."
+value = ["~/.claude/projects/**/*.jsonl", "~/.claude/projects/**/tool-results/**", "~/.codex/sessions/**"]
+
+[transcript_protect.case_insensitive]
+doc = "Match protected paths without regard to case (macOS and Windows volumes ignore it, so `.Claude/Projects` is the same folder)."
+value = true
+
+[transcript_protect.anchors]
+doc = "Text that marks a Bash write whose target the parser cannot name (`truncate`, `perl -i`, `find -delete`, a `$(...)` path) as a write to a protected folder: the write is blocked when its command part holds one of these. Plain text, not a pattern."
+value = [".claude/projects", ".codex/sessions"]
+
+[transcript_protect.hints]
+doc = "Text (case-insensitive) a Bash command must hold for the write parse to run: anything that can name a protected path holds one of these (a home-folder spelling, a transcript file name, the word `transcript`). A command with none is not parsed, so a long commit message or script costs nothing. A command that builds the path from pieces (a glob like `.cl*`, a concatenation) is not caught: this guard stops the plain forms, it is not a sandbox."
+value = [".claude", ".codex", ".jsonl", "transcript"]
+
+[transcript_protect.destructive_re]
+doc = "Pattern (case-insensitive) for a command part that removes or moves what it names; for such a part a target that is a PARENT of a protected folder (`rm -r ~/.claude/projects`) is blocked too, since it takes the transcripts with it."
+value = '(?:^|[\s;&|(])(?:rm|mv|unlink|rmdir|trash)(?:\s|$)'
+
+[transcript_protect.link_re]
+doc = "Pattern (case-insensitive) for a command part that makes a link (`ln`): a link whose source is a protected path is blocked, because a later write through the link would reach the transcript (the link does not exist yet when the command is judged)."
+value = '(?:^|[\s;&|(])ln(?:\s|$)'
+
+[transcript_protect.token_re]
+doc = "Pattern that cuts a command into path-like words, for the inline-code check (a path inside a `python -c` or heredoc script)."
+value = '''[^\s'"`;|&()<>=,]+'''
+
+[transcript_protect.inline_write_res]
+doc = "Patterns (case-insensitive) that say inline code (python, node, perl, ruby, a heredoc) WRITES, tested on the whole command when it names a protected path: a write-mode open, writeFile/appendFile, a write stream, a rename/remove/truncate/copy call. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
+value = [
+  '''open\s*\([^)]*,\s*['"][^'"]*[wax+]''',
+  '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncateSync|renameSync|unlinkSync|copyFileSync|rmSync)\b',
+  '\bos\.(?:rename|replace|remove|unlink|truncate|system)\b',
+  '\bshutil\.(?:copy|copyfile|move|rmtree)',
+  '''\bPath\([^)]*\)\.(?:write_text|write_bytes|unlink|rename|replace|open\([^)]*['"][wax+])''',
+  '''\bFile\.(?:write|open\([^)]*['"][wax+]|delete|rename)''',
+  '''\bfile_put_contents\b|\bfopen\s*\([^)]*['"][wax+]''',
+  '\bFileUtils\.',
+]
+
+[transcript_protect.kinds]
+doc = "Counter label `kind` values: bash_write (a named Bash write target), bash_remove (a remove/move of a parent folder), bash_unnamed (a write whose target the parser cannot name, in a part that names a protected folder), bash_inline (inline code that writes a named protected path), edit (an Edit/Write/MultiEdit/NotebookEdit/apply_patch target)."
+value = { write = "bash_write", remove = "bash_remove", unnamed = "bash_unnamed", inline = "bash_inline", edit = "edit" }
+
+[transcript_protect.msg_what]
+doc = "The one-line block text, for a Bash command and for an edit."
+value = "that write to a session transcript was stopped: transcripts are append-only for the harness, never the agent."
+
+[metric.transcript_write_blocked]
+doc = "Writes to a protected transcript path stopped (guards.transcriptProtect on), by kind: bash_write, bash_remove, bash_unnamed, bash_inline (command-guard), edit (edit-guard)."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
