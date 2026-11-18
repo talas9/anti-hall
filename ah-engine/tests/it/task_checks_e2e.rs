@@ -310,15 +310,17 @@ fn task_guard_advisories_never_share_stdout_with_the_answer() {
 
 #[test]
 fn tasklist_guard_advisories_never_share_stdout_with_the_answer() {
+    // the fixture edits are project files, so codex-nudge (its own check, its own block) would answer first: it is switched off for this test
+    const ISOLATE_CODEX_NUDGE: [(&str, &str); 1] = [("ANTIHALL_CODEX_NUDGE", "0")];
     let w = World::new("tasklist-guard-advisory");
     let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
     std::fs::write(w.path("t.jsonl"), format!("{}\n{}\n{}\n", edit(1), edit(2), edit(3))).unwrap();
     // plan mode: the advisory goes to stderr, stdout stays empty
     let payload =
         serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl"), "permission_mode": "plan"})
             .to_string();
-    let (code, out, err) = stop_run_env(&w, "tasklist-guard", &payload, &[]);
+    let (code, out, err) = stop_run_env(&w, "tasklist-guard", &payload, &ISOLATE_CODEX_NUDGE);
     assert_eq!(code, 0, "answered by the engine");
     assert_stdout_is_json_or_empty(&out, "plan mode");
     assert!(err.contains("[tasklist-guard] PLAN MODE"), "the advisory is kept on stderr: {err:?}");
@@ -329,7 +331,7 @@ fn tasklist_guard_advisories_never_share_stdout_with_the_answer() {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     std::fs::write(w.path("proj/.omc/state/team-state.json"), format!("{{\"active\": true, \"started_at\": {}}}", now - 1000)).unwrap();
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl")}).to_string();
-    let (code, out, err) = stop_run_env(&w, "tasklist-guard", &payload, &[]);
+    let (code, out, err) = stop_run_env(&w, "tasklist-guard", &payload, &ISOLATE_CODEX_NUDGE);
     assert_eq!(code, 0, "answered by the engine");
     assert_stdout_is_json_or_empty(&out, "OMC loop");
     assert!(err.contains("[tasklist-guard] OMC autonomous loop active"), "the step-aside line is kept on stderr: {err:?}");
@@ -442,7 +444,7 @@ fn tasklist_guard_answers_a_quiet_stop_with_its_file_effects_and_answers_a_block
     assert!(day.is_dir());
     // three file-changing actions with no task activity: Node blocks, and the native fire path (lane stop) answers that block
     // itself (exit 0 + JSON block) instead of handing the Stop over
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", w.path("proj").display())}}]}});
     std::fs::write(w.path("t2.jsonl"), format!("{}\n{}\n{}\n", edit(1), edit(2), edit(3))).unwrap();
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t2.jsonl")}).to_string();
     let (code, out) = stop_run(&w, "tasklist-guard", &payload);
@@ -465,7 +467,7 @@ fn tasklist_guard_blocks_in_a_repository_nested_inside_another_one() {
     git(&w.path("proj"));
     git(&w.path("proj/inner"));
     let cwd = std::fs::canonicalize(w.path("proj/inner")).unwrap();
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
     // tasks are tracked (all done), so only a stale progress file can block: that is judged in the nested repository's own ledger
     std::fs::write(w.path("t.jsonl"), format!("{}{}\n{}\n{}\n", task_lines("completed"), edit(1), edit(2), edit(3))).unwrap();
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl")}).to_string();
@@ -482,7 +484,7 @@ fn tasklist_guard_blocks_in_a_repository_nested_inside_another_one() {
 fn tasklist_guard_counts_the_work_inside_a_window_smaller_than_the_transcript() {
     let w = World::new("tasklist-guard-window");
     let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
     let filler = serde_json::json!({"type": "user", "message": {"role": "user", "content": "x".repeat(1000)}}).to_string();
     let pad: String = (0..700).map(|_| format!("{filler}\n")).collect(); // ~700 KB, past the 512 KiB window
     assert!(pad.len() > 600_000);
@@ -1674,4 +1676,120 @@ fn with_the_ladder_off_the_two_reminders_then_stop_output_is_the_base_output() {
     two_stall_fires(&base, &empty, &[]);
     assert_eq!(enforce_stop_env(&w, &empty, &off), enforce_stop_env(&base, &empty, &[]), "switch off equals the base output");
     assert!(!w.path("state/nudge-ladder").exists());
+}
+
+// ---- GH #794 review: the stall check counts only a task's OWN owner among this session's own agents ----
+
+const STALL_SID: &str = "0a1b2c3d-1111-2222-3333-444455556666";
+
+/// A project with three edits and two in-progress store tasks owned by `owners` (empty = unowned), and one tracker row `worker` with parent
+/// `parent` in the project's cwd. Returns the Stop answer of the tasklist guard.
+fn stall_stop(tag: &str, owners: [&str; 2], parent: &str, state: &str) -> String {
+    let w = World::new(tag);
+    let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
+    let store = w.path("home/.claude/tasks/session-0a1b2c3d");
+    std::fs::create_dir_all(&store).unwrap();
+    for (i, o) in owners.iter().enumerate() {
+        let n = i + 1;
+        let rec = serde_json::json!({"id": n.to_string(), "subject": format!("task {n}"), "description": "d", "status": "in_progress", "owner": o, "blocks": [], "blockedBy": []});
+        std::fs::write(store.join(format!("{n}.json")), rec.to_string()).unwrap();
+    }
+    let mut st = ah_engine::agents::State::default();
+    let a = ah_engine::agents::Agent {
+        id: "a000000000000001".into(),
+        kind: "subagent".into(),
+        parent: parent.into(),
+        name: "worker".into(),
+        cwd: cwd.to_string_lossy().into_owned(),
+        path: w.path("a1.jsonl").to_string_lossy().into_owned(),
+        running: state == "running",
+        last_output_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+        ..Default::default()
+    };
+    std::fs::write(w.path("a1.jsonl"), "").unwrap();
+    st.agents.insert("a000000000000001".into(), a);
+    std::fs::create_dir_all(w.path("home/.anti-hall/agent-tracker")).unwrap();
+    std::fs::write(w.path("home/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
+    std::fs::write(w.path("t.jsonl"), format!("{}{}\n{}\n{}\n", task_list(&[("a", "in_progress"), ("b", "in_progress")]), edit(1), edit(2), edit(3))).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": STALL_SID, "cwd": cwd, "transcript_path": w.path("t.jsonl")}).to_string();
+    stop_run(&w, "tasklist-guard", &payload).1
+}
+
+#[test]
+fn another_sessions_live_worker_in_the_same_project_does_not_hide_a_stall() {
+    // control: this session's own worker owns both in-progress tasks: not a stall
+    let own = stall_stop("stall-own", ["worker", "worker"], STALL_SID, "running");
+    assert!(!own.contains("no active agent"), "own live owner of every in-progress task excuses the stall: {own}");
+    // another session's worker of the same name and cwd is not this session's
+    let other = stall_stop("stall-other", ["worker", "worker"], "OTHER-SESSION", "running");
+    assert!(other.contains("no active agent"), "another session's worker must not hide the stall: {other}");
+    // an unowned in-progress task is never excused by some other task's live owner
+    let unowned = stall_stop("stall-unowned", ["worker", ""], STALL_SID, "running");
+    assert!(unowned.contains("no active agent"), "an unowned in-progress task is never excused: {unowned}");
+}
+
+// ---- GH #794 review: a progress update the transcript shows counts only while the file exists and holds content ----
+
+fn iso_ago(ms_ago: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
+    ah_engine::checks::agent_scan::iso_utc(now - ms_ago as f64)
+}
+
+/// Three project edits 50 minutes ago, `progress_cmd` (a Bash command; or a Write of the file when None) one minute ago, all tasks done. The
+/// progress file is `file` (None: absent) with a modification time two hours old, so only the transcript can show an update. Returns the
+/// tasklist-guard Stop answer.
+fn progress_stop(tag: &str, progress_cmd: Option<&str>, file: Option<&str>) -> String {
+    let w = World::new(tag);
+    let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
+    std::fs::write(w.path("t0.jsonl"), "").unwrap();
+    let first = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t0.jsonl")}).to_string();
+    assert_eq!(stop_run(&w, "tasklist-guard", &first).0, 0);
+    let day = std::fs::read_dir(w.path("proj/.anti-hall/progress")).unwrap().filter_map(Result::ok).find(|e| e.path().is_dir()).unwrap().path();
+    let progress = std::fs::canonicalize(&day).unwrap().join("s1.md");
+    if let Some(text) = file {
+        std::fs::write(&progress, text).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        std::fs::File::options().write(true).open(&progress).unwrap().set_modified(old).unwrap();
+    }
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": iso_ago(3_000_000 - n as u64 * 1000), "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
+    let use_ = match progress_cmd {
+        Some(c) => serde_json::json!({"name": "Bash", "input": {"command": c.replace("{P}", &progress.to_string_lossy())}}),
+        None => serde_json::json!({"name": "Write", "input": {"file_path": progress.to_string_lossy()}}),
+    };
+    let update = serde_json::json!({"type": "assistant", "timestamp": iso_ago(60_000), "message": {"id": "mp", "role": "assistant", "content": [{"type": "tool_use", "id": "tp", "name": use_["name"], "input": use_["input"]}]}});
+    std::fs::write(w.path("t.jsonl"), format!("{}{}\n{}\n{}\n{}\n", task_lines("completed"), edit(1), edit(2), edit(3), update)).unwrap();
+    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl")}).to_string();
+    stop_run(&w, "tasklist-guard", &payload).1
+}
+
+#[test]
+fn a_progress_update_in_the_transcript_counts_only_while_the_file_exists_with_content() {
+    let stale = "progress is missing or stale";
+    // real updates: the file holds content after the turn
+    assert!(!progress_stop("prog-write", None, Some("done\n")).contains(stale), "a Write of a non-empty file is an update");
+    assert!(!progress_stop("prog-append", Some("echo done >> {P}"), Some("done\n")).contains(stale), "an append is an update");
+    assert!(!progress_stop("prog-tee", Some("echo done | tee -a {P}"), Some("done\n")).contains(stale), "tee is an update");
+    assert!(!progress_stop("prog-cp", Some("cp /x/notes {P}"), Some("done\n")).contains(stale), "a copy INTO the file is an update");
+    // spoofs: no content was written, or the file is gone or empty
+    for (tag, cmd, file) in [
+        ("rm", "rm -f {P}", None),
+        ("mv", "mv {P} /x", None),
+        ("chmod", "chmod 644 {P}", None),
+        ("touch", "touch {P}", None),
+        ("colon", ": > {P}", None),
+        ("colon-empty", ": > {P}", Some("")),
+        ("rm-existing", "rm -f {P}", Some("done\n")),
+        ("mv-away", "mv {P} /x", Some("done\n")),
+        ("write-empty", "echo -n > {P}", Some("")),
+    ] {
+        let out = progress_stop(&format!("prog-spoof-{tag}"), Some(cmd), file);
+        // `rm`/`mv` of an EXISTING file in this fixture leaves the file in place (the command never ran), so only the transcript-shown update
+        // is judged: it must not count for rm/mv/chmod/touch/`: >` whatever the file holds
+        if file != Some("done\n") {
+            assert!(out.contains(stale), "{tag}: no content was written, so it is no update: {out}");
+        } else {
+            assert!(out.contains(stale), "{tag}: a non-writing command shown after real work is no update even if the file exists: {out}");
+        }
+    }
 }

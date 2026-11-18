@@ -18,6 +18,9 @@ struct World {
     by_id_off: std::cell::Cell<bool>,
     /// Set by a test to say the session's named task list (`CLAUDE_CODE_TASK_LIST_ID`) in the hook's environment.
     list_id: std::cell::RefCell<Option<String>>,
+    /// The PostToolUse advisory switch (`guards.pairRulePostAdvisory`, default off, GH #794): the tests that look at the advisory turn it on;
+    /// `None` leaves the setting at its default.
+    post_adv: std::cell::Cell<Option<bool>>,
 }
 
 impl World {
@@ -26,7 +29,7 @@ impl World {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
-        World { dir, by_id_off: std::cell::Cell::new(false), list_id: std::cell::RefCell::new(None) }
+        World { dir, by_id_off: std::cell::Cell::new(false), list_id: std::cell::RefCell::new(None), post_adv: std::cell::Cell::new(Some(true)) }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -69,6 +72,9 @@ impl World {
         }
         if self.by_id_off.get() {
             c.env("ANTIHALL_PAIR_RULE_BY_TASK_ID", "0");
+        }
+        if let Some(on) = self.post_adv.get() {
+            c.env("ANTIHALL_PAIR_RULE_POST_ADVISORY", if on { "1" } else { "0" });
         }
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
@@ -117,9 +123,14 @@ impl World {
 
     /// A PostToolUse payload of an `Agent` call named `name` over the transcript `t` (written first).
     fn post(&self, name: &str, t: &str, on: bool) -> (i32, String, String) {
+        self.post_desc(name, "port the wake", t, on)
+    }
+
+    /// Like [`World::post`] with the spawn's description given.
+    fn post_desc(&self, name: &str, description: &str, t: &str, on: bool) -> (i32, String, String) {
         std::fs::write(self.path("t.jsonl"), t).unwrap();
         let p = serde_json::json!({"hook_event_name": "PostToolUse", "session_id": "s1", "cwd": self.path("proj"), "transcript_path": self.path("t.jsonl"),
-            "tool_name": "Agent", "tool_input": {"description": "port the wake", "prompt": "do it", "name": name, "run_in_background": true},
+            "tool_name": "Agent", "tool_input": {"description": description, "prompt": "do it", "name": name, "run_in_background": true},
             "tool_response": {"status": "async_launched", "agentId": "a000000000000001"}});
         self.hook("PostToolUse", "Agent", "claude", &p, on)
     }
@@ -1019,4 +1030,88 @@ fn by_id_and_post_follow_the_session_list_pointer() {
     let t = transcript(&[task(405, "in_progress", None)], &[("port the wake", Some("wake-worker"))]);
     assert!(!pair_text(&w.post("wake-worker", &t, true)), "the pointed-to list's owner pairs the agent");
     assert!(pair_text(&w.post("other-worker", &t, true)), "an agent that owns nothing there still speaks");
+}
+
+/// GH #794: the PostToolUse advisory fires before a TaskUpdate of the same batch can pair the agent, so it is off by default; the Stop block
+/// (an agent with no task of its name) is the check that speaks once the turn ends unpaired.
+#[test]
+fn post_unpaired_advisory_is_off_by_default_and_the_stop_block_still_speaks() {
+    let w = World::new("post-default-off");
+    w.post_adv.set(None);
+    let t = transcript(&[task(1, "in_progress", None)], &[("port the wake", Some("wake-worker"))]);
+    let o = w.post("wake-worker", &t, true);
+    assert!(!pair_text(&o), "no advisory right after the spawn: {o:?}");
+    w.track(&["port the wake"]);
+    let s = w.stop(&t, true, serde_json::json!({}));
+    assert!(s.1.contains(GUARD) && s.1.contains("agent \\\"wake-worker\\\" owns no task"), "the Stop block still names the unpaired agent: {s:?}");
+}
+
+/// GH #794: the guard's own advice, "start the description with #<open task id>", pairs the agent: the task the description names is the
+/// agent's, whoever the store lists as owner (nobody).
+#[test]
+fn a_named_agent_whose_description_names_an_unowned_open_task_is_paired() {
+    let w = World::new("ref-pairs");
+    let t = transcript(&[task(1, "in_progress", None)], &[("#1 port the wake", Some("wake-worker"))]);
+    let o = w.post_desc("wake-worker", "#1 port the wake", &t, true);
+    assert!(!pair_text(&o), "the description names task 1: paired, no advisory: {o:?}");
+    w.track(&["#1 port the wake"]);
+    let s = w.stop(&t, true, serde_json::json!({}));
+    assert!(!pair_text(&s), "the Stop block agrees: {s:?}");
+    // a reference to a task another agent owns pairs nothing
+    let t2 = transcript(&[task(1, "in_progress", Some("someone-else"))], &[("#1 port the wake", Some("wake-worker"))]);
+    let o2 = w.post_desc("other-worker", "#1 port the wake", &t2, true);
+    assert!(o2.1.contains("is running but no open task names it as owner"), "a task another agent owns is not adopted: {o2:?}");
+    // a later `#1` is prose, and the switch off restores the old reading
+    let o3 = w.post_desc("prose-worker", "port #1 the wake", &t, true);
+    assert!(o3.1.contains("is running but no open task names it as owner"), "only the leading token counts: {o3:?}");
+    w.by_id_off.set(true);
+    let o4 = w.post_desc("switch-worker", "#1 port the wake", &t, true);
+    assert!(o4.1.contains("is running but no open task names it as owner"), "pairRuleByTaskId off: no adoption: {o4:?}");
+}
+
+/// A transcript of five project edits and one TaskCreate (the tasks themselves are in the store), so tasklist-guard has work and task activity.
+fn edit_transcript(w: &World) -> String {
+    use serde_json::json;
+    let mut out = String::new();
+    for i in 0..5 {
+        let e = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("e{i}"), "name": "Edit", "input": {"file_path": w.path(&format!("proj/src/f{i}.js"))}}]}, "timestamp": "2999-01-01T00:00:00.000Z"});
+        out.push_str(&format!("{e}\n"));
+    }
+    out.push_str(&format!(
+        "{}\n{}\n",
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "one"}}]}, "timestamp": "2999-01-01T00:00:00.000Z"}),
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: one"}]}, "timestamp": "2999-01-01T00:00:00.000Z"})
+    ));
+    out
+}
+
+/// The session's task store (`~/.claude/tasks/session-s1`): `(id, subject, status, owner)`.
+fn store(w: &World, tasks: &[(&str, &str, &str, &str)]) {
+    let dir = w.path("home/.claude/tasks/session-s1");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (id, subject, status, owner) in tasks {
+        std::fs::write(dir.join(format!("{id}.json")), serde_json::json!({"id": id, "subject": subject, "status": status, "owner": owner}).to_string()).unwrap();
+    }
+    // a fresh progress file, so the only fact left is the stall
+    let date = String::from_utf8(Command::new("date").args(["-u", "+%F"]).output().unwrap().stdout).unwrap();
+    let progress = w.path(&format!("proj/.anti-hall/progress/{}/s1.md", date.trim()));
+    std::fs::create_dir_all(progress.parent().unwrap()).unwrap();
+    std::fs::write(progress, "x\n").unwrap();
+}
+
+/// GH #794: "tasks in progress with no active agent" is not said while an in-progress task's owner is an agent the tracker has running, and when
+/// it is said its 'Counted:' list names the tasks (id and subject), not the commands of the work count.
+#[test]
+fn in_progress_tasks_are_not_stalled_while_their_owners_run_and_the_block_names_the_tasks() {
+    let w = World::new("tl-stalled");
+    store(&w, &[("1", "port the wake handler", "in_progress", "worker-a"), ("2", "document the switch", "in_progress", "worker-b")]);
+    let t = edit_transcript(&w);
+    let stalled = |o: &(i32, String, String)| o.1.contains("no active agent") || o.2.contains("no active agent");
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(stalled(&o), "no agent runs: the tasks are stalled: {o:?}");
+    assert!(o.1.contains("Counted: #1 port the wake handler; #2 document the switch"), "the block names the tasks: {o:?}");
+    // worker-a runs (the tracker knows it): its task is attended, so the tasks are not a stall
+    w.track(&["worker-a"]);
+    let o2 = w.stop(&t, true, serde_json::json!({}));
+    assert!(!stalled(&o2), "the owner of task 1 is running: {o2:?}");
 }

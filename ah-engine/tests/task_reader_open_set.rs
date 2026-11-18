@@ -938,6 +938,7 @@ fn fixture(case: &Case, root: &Path, extra_rows: &[Value], agents: &[(&str, &str
     let mut pairs = vec![
         ("HOME".to_string(), home.to_string_lossy().into_owned()),
         ("ANTIHALL_PAIR_RULE".to_string(), "1".to_string()),
+        ("ANTIHALL_PAIR_RULE_POST_ADVISORY".to_string(), "1".to_string()), // the PostToolUse advisory is off by default (GH #794)
         ("TMPDIR".to_string(), root.join("tmp").to_string_lossy().into_owned()),
     ];
     if case.cell.named != Named::Unset {
