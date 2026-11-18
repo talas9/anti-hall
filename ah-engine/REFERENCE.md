@@ -2369,7 +2369,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `merge_side_pick.arm_max` | `16` |  |  | The most commands whose conflict note is kept at once (the newest stay), so parallel tool calls each keep their own. |
+| `merge_side_pick.arm_ttl_ms` | `600000` |  |  | How long (milliseconds) a command's 'a conflict existed when it began' note stays valid; a command whose PostToolUse never came cannot arm a later one. |
+| `merge_side_pick.auto_probe_args` | `merge-tree, --write-tree, --no-messages, HEAD^1, HEAD^2` |  |  | git arguments (run in the pick's directory, after the command) that say whether the merge commit it made would have conflicted without the automatic resolution: exit 1 = it would have (the pick resolved a conflict, so it is recorded), exit 0 = it would not (nothing was resolved), any other answer (no merge commit, an old git) cannot be told, which keeps the pick recorded. |
+| `merge_side_pick.auto_probe_timeout_ms` | `3000` |  |  | Milliseconds the automatic-resolution probe may run; a git that does not answer counts as unknown, which keeps the pick recorded. |
+| `merge_side_pick.auto_resolve_re` | `\s(?:-X\s*\|--strategy-option[= ]\|-s\s*ours\b\|--strategy[= ]ours\b)` |  |  | Regex that recognises a pick git settles by itself, leaving no conflict marker and no unmerged path: a strategy option (-X ours/theirs, --strategy-option) or the ours strategy (-s ours, --strategy ours). For these, no conflict at the pick is not proof that nothing was resolved: the merge it made is probed (auto_probe_args). |
 | `merge_side_pick.cmd_keep` | `120` |  |  | How many UTF-16 units of the side-pick command are kept for the advisory. |
+| `merge_side_pick.conflict_markers` | `MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, REBASE_HEAD, rebase-merge, rebase-...` |  |  | Names inside a checkout's git directory whose presence means a merge, cherry-pick, revert or rebase is in progress, i.e. there is a conflict to resolve. A side-pick is recorded only when one exists or the repository has unmerged paths. |
 | `merge_side_pick.dry_run` | `\s(?:--dry-run\|-n)\b` |  |  | Regex that marks a push segment as a dry run, which is not a push. |
 | `merge_side_pick.fallback_cmd` | `a side-pick` |  |  | Text used for the side-pick command when none was recorded. |
 | `merge_side_pick.git_dir_levels` | `64` |  |  | How many directory levels up from the working directory the search for the checkout's .git climbs at most. |
@@ -2383,10 +2389,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_side_pick.head_word` | `HEAD` |  |  | The refspec word that means the current branch. |
 | `merge_side_pick.heads_prefix` | `refs/heads/` |  |  | The prefix of a full local branch ref in a refspec. |
 | `merge_side_pick.heredoc_open` | `<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1` |  |  | JavaScript regex source for the opener of a heredoc (<<TAG, <<-TAG, <<'TAG'; capture 1 = the optional quote, capture 2 = the tag). The lines up to the tag line are text, blanked before a command is split into segments. |
+| `merge_side_pick.meta_ns` | `merge-side-pick-meta` |  |  | Namespace of the side-pick bookkeeping state (when the last pick was recorded; whether a conflict existed when its command began), kept beside the record. |
 | `merge_side_pick.msg_instead` | `verify the conflict resolution before pushing.` |  |  | Advisory advice. |
 | `merge_side_pick.msg_what` | `a push follows a one-sided conflict resolution with no tests.` |  |  | Advisory headline; {pick} is the recorded side-pick command. |
 | `merge_side_pick.msg_why` | `taking --ours/--theirs (or -X ours/theirs) silently drops the other side's ch...` |  |  | Advisory reason. |
 | `merge_side_pick.pick_tails` | `(?:checkout\\|restore)\b[^\n]*?\s--(?:ours\\|theirs)\b, (?:merge\\|pull\\|rebase\...` |  |  | Regex sources, each appended to git_prefix, that recognise taking one side of a conflict wholesale (checkout or restore --ours, -X ours, -s ours). |
+| `merge_side_pick.pick_ttl_ms` | `14400000` |  |  | A recorded side-pick older than this (milliseconds) no longer draws the push advisory; a test run clears it sooner. Default 4 hours. |
 | `merge_side_pick.plain_branch_re` | `^[A-Za-z0-9][A-Za-z0-9._/@-]*$` |  |  | Regex source: a plain local branch name in a refspec (anything else, such as a tag, a sha or a revision, keeps the advisory). |
 | `merge_side_pick.push_tail` | `push\b` |  |  | Regex source appended to git_prefix that recognises a push. |
 | `merge_side_pick.push_unscoped_opts_re` | `^(?:--(?:all\|mirror\|tags\|follow-tags\|prune\|branches\|push-option\|repo\|receive-...` |  |  | Regex source: a push argument that pushes more than the named refs or takes its value as the next word (--all, --mirror, --tags, --follow-tags, --prune, --branches, -o, --push-option, --repo, --receive-pack, --exec). The advisory stays for such a push. |
@@ -2397,6 +2405,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_side_pick.state_ns` | `merge-side-pick` |  |  | Namespace of this check's per-session state in the guard state store. |
 | `merge_side_pick.summary` | `Advisory: a push after a conflict was resolved by taking one side wholesale, ...` |  |  | One-line description of the merge-side-pick check in the generated reference. |
 | `merge_side_pick.test_patterns` | `11 items` |  |  | Regex sources that recognise a test run in a command segment. |
+| `merge_side_pick.unmerged_args` | `ls-files, --unmerged` |  |  | git arguments (run in the pick's directory) that list unmerged paths; any output means a conflict is open. |
+| `merge_side_pick.unmerged_timeout_ms` | `3000` |  |  | Milliseconds the unmerged-paths query may run; a git that does not answer counts as unknown, which keeps the side-pick recorded. |
 
 ### small_guards.toml / messages
 
@@ -5448,7 +5458,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `tasklist_hygiene.create_tool` | `TaskCreate` |  |  | The tool that creates a task. |
 | `tasklist_hygiene.delete_trigger` | `deleted` |  |  | The TaskUpdate statuses that count as deleting a task. |
-| `tasklist_hygiene.detail_done` | `Delegate the ledger entry to a cheap teammate (facts, exact path, format, no ...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
+| `tasklist_hygiene.detail_done` | `Write the ledger entry yourself (Write or Edit tool, no heredoc). Ledger: .an...` |  |  | Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from. |
 | `tasklist_hygiene.done_trigger` | `completed` |  |  | The TaskUpdate status values that count as a task being finished and trigger the delete-it line. |
 | `tasklist_hygiene.event_deleted` | `deleted` |  |  | Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge). |
 | `tasklist_hygiene.event_nudge` | `nudge` |  |  | Counter event: a completed-task note was shown (one per TaskUpdate to a done status). |
@@ -5458,7 +5468,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_hygiene.instead_budget` | `keep subjects as `T-<n> [P] title`, details in the history ledger; delete fin...` |  |  | What to do, in the advisory line. |
 | `tasklist_hygiene.instead_done` | `TaskUpdate status=deleted (own task entries are not user data).` |  |  | What to do, in the done line. |
 | `tasklist_hygiene.join` | ` ` |  |  | Separator between the parts of one line. |
-| `tasklist_hygiene.msg_done` | `task {id} done: delegate its Cause/Fix/Verified ledger entry.` |  |  | What the done line says; {id} is the task id. |
+| `tasklist_hygiene.msg_done` | `task {id} done: write its Cause/Fix/Verified ledger entry yourself.` |  |  | What the done line says; {id} is the task id. |
 | `tasklist_hygiene.msg_open` | `{n} open tasks (budget {max}).` |  |  | The open-count breach; {n} is the open-task count and {max} handover.taskListBudget. |
 | `tasklist_hygiene.msg_subject` | `task subject is {n} chars (max {max}).` |  |  | The subject breach; {n} is the subject length and {max} handover.taskSubjectMax. |
 | `tasklist_hygiene.order_joiner` | `\n` |  |  | Separator between the completion order and the budget tip in one PostToolUse line. |

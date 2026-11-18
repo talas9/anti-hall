@@ -162,20 +162,84 @@ function load(raw) {
   return { seq: o.seq | 0, pickSeq: o.pickSeq | 0, testSeq: o.testSeq | 0, cmd: String(o.cmd || ''), gitdir: String(o.gitdir || ''), branch: String(o.branch || '') };
 }
 
+// ---- is there a real conflict to resolve? ------------------------------------------------------------------------------------------
+// A side-pick only counts as a one-sided conflict resolution when the checkout is mid merge/cherry-pick/revert/rebase (a marker in
+// its git directory) or has unmerged paths. A `-X ours` that merged cleanly, or a stray --ours, resolves nothing. null = cannot tell
+// (no known checkout, git did not answer): the pick is then recorded, as before. The markers and the query are merge_side_pick.*.
+function conflictEvidence(dir, gitdir, auto) {
+  if (gitdir === '') return null;
+  var marks = ah.cfg('merge_side_pick.conflict_markers');
+  for (var i = 0; i < marks.length; i++) if (ah.fs.realpath(ah.path.join(gitdir, marks[i])) !== null) return true;
+  if (dir === '') return null;
+  var r = ah.exec('git', ah.cfg('merge_side_pick.unmerged_args'), { cwd: dir, timeoutMs: ah.cfgNum('merge_side_pick.unmerged_timeout_ms') });
+  if (r === null || r.status !== 0) return null;
+  if (r.stdout.trim() !== '') return true;
+  if (!auto) return false;
+  // an automatic resolution (-X ours/theirs, -s ours) leaves no marker and no unmerged path: ask git whether the merge it just made would have
+  // conflicted (the probe: exit 1 = it would have, 0 = it would not; any other answer, e.g. no merge commit, cannot be told)
+  var q = ah.exec('git', ah.cfg('merge_side_pick.auto_probe_args'), { cwd: dir, timeoutMs: ah.cfgNum('merge_side_pick.auto_probe_timeout_ms') });
+  if (q === null) return null;
+  return q.status === 1 ? true : (q.status === 0 ? false : null);
+}
+function pickScope(s, cwd, cq, moved) {
+  var auto = ah.re.test(ah.cfg('merge_side_pick.auto_resolve_re'), '', s);
+  return moved || cdLike(s) ? { gitdir: '', branch: '', dir: '', auto: auto } : Object.assign({ dir: segDir(s, cwd, cq), auto: auto }, scopeOf(segDir(s, cwd, cq)));
+}
+function evidenceFor(at) { return conflictEvidence(at.dir, at.gitdir, at.auto) !== false; }
+
+// The pick's own bookkeeping lives in a second state file beside the record (merge_side_pick.meta_ns), so the record keeps the shape
+// the Node guard wrote: {at: when the last pick was recorded, arms: {command: when a conflict was seen to exist as that command began}}.
+// An arm belongs to ITS command: another command's PostToolUse (an unrelated test run in a parallel tool call) neither uses nor clears it.
+function parseMeta(raw) {
+  var o = null;
+  if (raw !== null) { try { o = JSON.parse(raw); } catch (e) { o = null; } }
+  var arms = isObj(o) && isObj(o.arms) ? o.arms : {}, kept = {}, now = ah.clock.now(), ttl = ah.cfgNum('merge_side_pick.arm_ttl_ms');
+  Object.keys(arms).forEach(function (k) { if (typeof arms[k] === 'number' && now - arms[k] <= ttl) kept[k] = arms[k]; });
+  return { at: isObj(o) && typeof o.at === 'number' && o.at > 0 ? o.at : 0, arms: kept };
+}
+function loadMeta(ns, key) { return parseMeta(ah.sessionState.get(ns, key)); }
+function updateMeta(key, fn) {
+  ah.sessionState.update(ah.cfg('merge_side_pick.meta_ns'), key, function (cur) {
+    var m = parseMeta(cur);
+    fn(m);
+    var names = Object.keys(m.arms).sort(function (x, y) { return m.arms[y] - m.arms[x]; }).slice(0, ah.cfgNum('merge_side_pick.arm_max')), arms = {};
+    names.forEach(function (k) { arms[k] = m.arms[k]; });
+    return JSON.stringify({ at: m.at, arms: arms });
+  });
+}
+function armKey(cmd) { return keep(cmd) + ':' + cmd.length; }
+function hasEvidenceNow(s, cwd, cq, moved) { var at = pickScope(s, cwd, cq, moved); return conflictEvidence(at.dir, at.gitdir, false) === true; }
+
+// PreToolUse of a command that takes a side: the conflict may be gone by PostToolUse (`checkout --theirs . && add . && commit`),
+// so its presence now is remembered, for this command, for the Post record.
+function arm(key, cmd, cwd) {
+  if (key === '') return;
+  var segs = segments(cmd), cq = quoted(cmd), moved = false, found = false;
+  for (var i = 0; i < segs.length && !found; i++) {
+    if (segPick(segs[i])) found = hasEvidenceNow(segs[i], cwd, cq, moved);
+    if (cdLike(segs[i])) moved = true;
+  }
+  if (found) updateMeta(key, function (m) { m.arms[armKey(cmd)] = ah.clock.now(); });
+}
+
 function record(ns, key, cmd, cwd) {
   if (key === '') return;
   var segs = segments(cmd);
   if (!segs.some(function (s) { return segPick(s) || segTest(s); })) return;
-  var cq = quoted(cmd);
+  var cq = quoted(cmd), mns = ah.cfg('merge_side_pick.meta_ns'), meta = loadMeta(mns, key), picked = false, hadPick = segs.some(segPick);
   ah.sessionState.update(ns, key, function (cur) {
-    var st = load(cur), moved = false;
+    var st = load(cur), moved = false, armed = meta.arms[armKey(cmd)] !== undefined;
     for (var i = 0; i < segs.length; i++) {
       var s = segs[i];
       if (segPick(s)) {
-        st.seq += 1; st.pickSeq = st.seq;
-        st.cmd = keep(s);
-        var at = moved || cdLike(s) ? { gitdir: '', branch: '' } : scopeOf(segDir(s, cwd, cq));
-        st.gitdir = at.gitdir; st.branch = at.branch;
+        var at = pickScope(s, cwd, cq, moved);
+        // no conflict then and none now: nothing was resolved one-sidedly, so nothing is recorded
+        if (armed || evidenceFor(at)) {
+          st.seq += 1; st.pickSeq = st.seq;
+          st.cmd = keep(s);
+          st.gitdir = at.gitdir; st.branch = at.branch;
+          picked = true;
+        }
       } else if (segTest(s)) { st.seq += 1; st.testSeq = st.seq; }
       if (cdLike(s)) moved = true;
     }
@@ -183,12 +247,17 @@ function record(ns, key, cmd, cwd) {
     if (st.gitdir !== '' && st.branch !== '') { o.gitdir = st.gitdir; o.branch = st.branch; }
     return JSON.stringify(o);
   });
+  // this command's own arm is used up with it; another command's arm and the time of the last pick are left as they are
+  if (picked || hadPick) updateMeta(key, function (m) { if (picked) m.at = ah.clock.now(); delete m.arms[armKey(cmd)]; });
 }
 
 // The recorded side-pick with no test run after it: {cmd, gitdir, branch}, or null.
 function pending(ns, key) {
   if (key === '') return null;
   var st = load(ah.sessionState.get(ns, key));
+  // a record older than the TTL is stale; so is one with no time (written before the time was kept: it can never be shown to be fresh)
+  var at = loadMeta(ah.cfg('merge_side_pick.meta_ns'), key).at;
+  if (at <= 0 || ah.clock.now() - at > ah.cfgNum('merge_side_pick.pick_ttl_ms')) return null;
   if (st.pickSeq > 0 && st.pickSeq > st.testSeq) return { cmd: st.cmd === '' ? ah.cfg('merge_side_pick.fallback_cmd') : st.cmd, gitdir: st.gitdir, branch: st.branch };
   return null;
 }
@@ -199,8 +268,8 @@ function pushCheck(ns, key, cmd, cwd) {
   for (var i = 0; i < segs.length; i++) {
     var s = segs[i];
     if (segPick(s)) {
-      var at = moved || cdLike(s) ? { gitdir: '', branch: '' } : scopeOf(segDir(s, cwd, cq));
-      pend = { cmd: keep(s), gitdir: at.gitdir, branch: at.branch };
+      var at = pickScope(s, cwd, cq, moved);
+      if (evidenceFor(at)) pend = { cmd: keep(s), gitdir: at.gitdir, branch: at.branch };
     } else if (segTest(s)) pend = null;
     else if (segPush(s) && pend !== null && !pushLeavesPick(pend, segs.slice(0, i), s, cwd, cq)) return pend.cmd;
     if (cdLike(s)) moved = true;
@@ -224,6 +293,7 @@ function decide(p, opts, event) {
   if (!bash || cmd === '' || sid === '') return 'allow';
   if (!ah.settings.bool('merge_side_pick.setting') || ah.settings.skipped(ah.cfg('merge_side_pick.guard_name'))) return 'allow';
   if (event === 'PostToolUse' || p.hook_event_name === 'PostToolUse') { record(ns, key, cmd, cwd); return 'allow'; }
+  arm(key, cmd, cwd);
   var pick = pushCheck(ns, key, cmd, cwd);
   if (pick === '') return 'allow';
   var what = text.render(ah.cfg('merge_side_pick.msg_what'), { pick: pick });
