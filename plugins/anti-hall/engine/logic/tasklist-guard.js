@@ -131,6 +131,14 @@ function tlNote(out, abs, ts, cx) {
   tlName(out, cx.root && wd.isUnder(abs, cx.root) && abs !== cx.root ? abs.slice(cx.root.length + 1) : abs, true);
 }
 
+// One write the count cannot name (`patch`, `git apply`, an unknown variable): ONE unknown project file per command segment that runs, never
+// merged with an earlier identical one (the same `git stash pop` run twice changed files twice), named by the command.
+function tlNoteUnknown(out, seg, ts) {
+  if (ts !== null && ts > out.lastWork) out.lastWork = ts;
+  out.work++;
+  tlName(out, seg, false);
+}
+
 // One tool use of the work count: `tu` is {name, input: {file_path, command}} (the fields the count reads), `ts` its entry's time in ms
 // or null; updates `out` ({work, lastWork, lastProgressWrite}). Only a file path written inside the project counts: an Edit/Write path,
 // a shell redirect target or the file arguments of a write verb (wd.bashWrites). A command that names no file (git commit, mkdir, a
@@ -149,10 +157,14 @@ function tlCountUse(tu, ts, out, progressAbs, cx) {
     if (!cmd || wd.housekeepingOnly(cmd)) return;
     var writes = wd.bashWrites(cmd, cx), wroteProgress = false;
     for (var i = 0; i < writes.length; i++) {
-      if (progressAbs && writes[i].abs === progressAbs) wroteProgress = true;
-      if (wd.countablePath(writes[i].abs, cx)) tlNote(out, writes[i].abs, ts, cx);
+      var w = writes[i];
+      if (w.kind === 'unknown') { tlNoteUnknown(out, w.seg, ts); continue; }
+      // only a redirect with output (`>`, `>>`), a tee or the destination of a `cp`/`mv` is a progress update: `rm`, `mv`, `chmod`, `touch` and `: >` write no content
+      if (progressAbs && w.abs === progressAbs && (w.kind === 'redirect' || w.kind === 'tee' || w.kind === 'dest')) wroteProgress = true;
+      if (wd.countableWrite(w, cx)) tlNote(out, w.abs, ts, cx);
     }
-    // a shell append or redirect to the session's progress file is a progress update like an Edit of it
+    // a shell append or redirect to the session's progress file is a progress update like an Edit of it (the file must also hold content
+    // after the turn: see the freshness check)
     if (wroteProgress && ts !== null && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   }
 }
@@ -492,16 +504,22 @@ function tlJev(f, jevState) {
   return r === false;
 }
 
-// True when an in-progress task's owner names an agent the tracker shows (by id or launch name, case-insensitive) in a state that is not
-// finished or gone: the owner may be working. A row whose liveness is unknown counts as alive (a stall is never blocked on missing evidence).
+// True when EVERY in-progress task has its own owner among THIS session's own tracker rows (by id or launch name, case-insensitive; `dord.ownRows`:
+// the session's launched agents by parent, never another session's rows of the same cwd) in a state that is not finished or gone: each owner
+// may be working. A task with no owner is never excused, and one task's live owner never excuses another's. A row whose liveness is unknown
+// counts as alive (a stall is never blocked on missing evidence); `waiting` is alive (the tracker's own live_states list it: an idle agent
+// still holding the task). GH #794.
 function tlOwnerAlive(f) {
-  var owners = f.scan.inProgress.map(function (t) { return String(t.owner || '').trim().toLowerCase(); }).filter(function (o) { return o !== ''; });
-  if (owners.length === 0) return false;
-  var tr = ah.transcript.trackedAgents(f.p);
-  if (!Array.isArray(tr)) return false;
+  var tasks = f.scan.inProgress;
+  if (!Array.isArray(tasks) || tasks.length === 0) return false;
+  var rows = dord.ownRows(f.p);
+  if (!Array.isArray(rows)) return false;
   var dead = ah.cfg('agent_tracker.guard_inactive_states');
-  return tr.some(function (r) {
-    return dead.indexOf(r.state) < 0 && (owners.indexOf(String(r.id || '').toLowerCase()) >= 0 || owners.indexOf(String(r.name || '').toLowerCase()) >= 0);
+  var live = rows.filter(function (r) { return dead.indexOf(r.state) < 0; });
+  return tasks.every(function (t) {
+    var o = String(t.owner || '').trim().toLowerCase();
+    if (o === '') return false;
+    return live.some(function (r) { return String(r.id || '').toLowerCase() === o || String(r.name || '').toLowerCase() === o; });
   });
 }
 
@@ -748,7 +766,10 @@ function decide(p, opts) {
       }
     }
   }
-  if (!progressFresh && isFinite(scan.lastProgressWrite) && scan.lastProgressWrite > 0 && tlFresh(scan.lastProgressWrite, scan.lastWork, freshMs, now)) progressFresh = true;
+  // a progress write the transcript shows counts only while the file exists and holds content (a later `rm`, or an empty file, is no update)
+  var pnow = progressAbs ? ah.fs.lstat(progressAbs) : null;
+  var progressHasContent = pnow !== null && pnow.kind === 'file' && pnow.size > 0;
+  if (!progressFresh && progressHasContent && isFinite(scan.lastProgressWrite) && scan.lastProgressWrite > 0 && tlFresh(scan.lastProgressWrite, scan.lastWork, freshMs, now)) progressFresh = true;
   // the history index is kept whenever the session's own history file exists
   if (root !== null) { var hs = ah.fs.lstat(historyAbs); if (hs && hs.kind === 'file') tlIndex(root, date, sid, 'history'); }
   // the resume-verification nudge: independent of the block decision below

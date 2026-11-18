@@ -201,9 +201,10 @@ fn the_segment_note_has_an_off_switch_and_the_block_stays() {
     assert!(blocked && !out.contains("Heavy: "), "{out}");
 }
 
-// Shipped defaults (no switch pinned): commands that restore or resolve real file content are work; pure integration is not.
+// The command-counting mode (guards.tasklistCountFiles off, pinned below): commands that restore or resolve real file content are work;
+// pure integration is not. The shipped file count is tested in `git_commands_count_only_the_files_they_name`.
 #[test]
-fn restoring_or_resolving_file_content_is_counted_with_the_shipped_defaults() {
+fn restoring_or_resolving_file_content_is_counted_in_the_command_counting_mode() {
     let rows = [
         "git checkout HEAD -- src/a.js",
         "git checkout HEAD -- src/a.js ",
@@ -230,7 +231,8 @@ fn restoring_or_resolving_file_content_is_counted_with_the_shipped_defaults() {
 }
 
 // GH #794, the shipped count: a git command that restores or removes files BY NAME writes those files (three distinct ones are work); one
-// that names none (commit, merge --continue, a checkout of a branch) writes nothing, however often it runs.
+// that changes files without naming them (merge --continue, stash, reset --hard, apply: workdetect.git_unknown_subcommands) counts as one
+// unknown file each time it runs (fail toward stale); one that changes none (commit, a checkout of a branch, a soft reset, stash list) counts nothing.
 #[test]
 fn git_commands_count_only_the_files_they_name() {
     for (row, blocks) in [
@@ -241,8 +243,13 @@ fn git_commands_count_only_the_files_they_name() {
         ("git checkout src/f{i}.js", true), // an existing file: restored
         ("git checkout dev{i}", false),     // not a file: a branch
         ("git commit -q -m x{i}", false),
-        ("git merge --continue", false),
-        ("git stash", false),
+        ("git merge --continue", true),     // resolves file content it does not name: an unknown file per run
+        ("git stash", true),
+        ("git stash pop", true),
+        ("git reset --hard HEAD~{i}", true),
+        ("git apply fix{i}.diff", true),
+        ("git stash list", false),
+        ("git reset --soft HEAD~{i}", false),
     ] {
         let h = home("tl-git");
         let proj = project(&h);

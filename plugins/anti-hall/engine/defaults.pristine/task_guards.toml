@@ -946,6 +946,43 @@ value = { rm = "all", cp = "last", mv = "all", tee = "all", touch = "all", chmod
 doc = "The git subcommands that change working-tree files by name, and how the files are named: `all` (every non-flag argument: `git rm`, `git mv`, `git restore`) and `dashes` (`git checkout`: the arguments after `--`, or, with no `--`, the arguments that are existing files, since a branch or ref is not one). Any other git command (commit, merge, rebase, stash, apply, push) names no file and counts nothing."
 value = { rm = "all", mv = "all", restore = "all", checkout = "dashes" }
 
+[workdetect.assign_builtins]
+doc = "Shell builtins that stand before a `NAME=value` assignment and still make it (`export F=src/x`): the assignment is kept for the later segments of the same command, so `export F=src/x; echo > $F` names `src/x`."
+value = ["export", "declare", "local", "readonly", "typeset"]
+
+[workdetect.git_unknown_subcommands]
+doc = "The git subcommands that change working-tree files WITHOUT naming them (GH #794: a command that changes files the count cannot name counts as one unknown project file, never zero). The value lists the words that make the subcommand count: `*` is always, `<none>` is the bare subcommand (a plain `git stash` stashes the changes), any other entry is a word among the arguments (`reset --hard`, `merge --continue`, `stash pop`). A merge, cherry-pick or branch switch that only brings in committed work is the integration the tasklist guard leaves out (workdetect.integration_work)."
+value = { apply = ["*"], am = ["*"], rebase = ["*"], revert = ["*"], clean = ["*"], stash = ["<none>", "pop", "apply", "push", "save"], reset = ["--hard", "--merge", "--keep"], merge = ["--continue"], "cherry-pick" = ["--continue"] }
+
+[workdetect.unknown_write_res]
+doc = "Regex sources (case-insensitive) tested against a simple command from its command word on (quotes removed): a command that writes files whose names the count cannot read from its words counts as one unknown project file when no other file of that command was named (GH #794). `patch`, `install`, `dd of=`, `rsync`, `truncate`, an extracting or creating `tar`, `unzip`, `perl -i`, `awk -i inplace`."
+value = ['^patch\b', '^install\b', '^dd\b.*\bof=', '^rsync\b', '^truncate\b', '^tar\b.*(?:\s-[A-Za-z]*[xc]|\s--(?:extract|create|get)\b)', '^unzip\b', '^perl\b.*\s-[A-Za-z]*i', '^g?awk\b.*\s-i\s*inplace']
+
+[workdetect.indirect_verbs]
+doc = "Commands that run another command over files they find or read (`xargs sed -i`, `find -exec rm`): when a word after them is a write verb (workdetect.bash_write_verbs; `sed` only with an in-place flag) and no file was named, the command counts as one unknown project file."
+value = ["xargs", "find", "parallel"]
+
+[workdetect.shell_verbs]
+doc = "Shells whose `-c` argument is itself a command line: it is read for the files it writes (`bash -c 'echo > f'`), down to workdetect.shell_depth_max levels."
+value = ["bash", "sh", "zsh", "dash"]
+
+[workdetect.shell_depth_max]
+doc = "How many nested `bash -c` levels are read for the files they write; a deeper command line counts as one unknown project file."
+value = 2
+min = 0
+
+[workdetect.empty_redirect_verbs]
+doc = "Command words whose redirect writes no content (`: > f`, `true > f`): an empty truncation is not a progress update."
+value = [":", "true", "false"]
+
+[workdetect.progress_dest_verbs]
+doc = "Write verbs whose LAST argument is a destination that receives content (`cp x P`, `mv x P`): a write to the session's progress file by one of them is a progress update, like a redirect. Any other argument (`mv P /x` moves the file away) and the other verbs (`rm`, `touch`, `chmod`) are not."
+value = ["cp", "mv"]
+
+[workdetect.excluded_redirect_res]
+doc = "Regex sources of redirect targets that are build or run logs, not project work (`make &> build.log`): a shell redirect to such a file does not count. Only a `>`/`>>`/`&>` target is judged; an Edit or Write of the file counts."
+value = ['\.log$']
+
 [workdetect.bash_wrappers]
 doc = "Words that may stand before the command proper (`sudo rm f`, `env X=1 tee f`) and are skipped when the write verb is looked for."
 value = ["sudo", "env", "command", "nohup", "time", "nice", "exec", "builtin"]

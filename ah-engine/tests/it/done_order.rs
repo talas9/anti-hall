@@ -453,14 +453,20 @@ fn a_repeated_task_event_is_one_ledger_row() {
 impl Scratch {
     /// The tracker's retained rows: one agent per `(id, name)` launched by the session `SID`.
     fn track_agents(&self, agents: &[(&str, &str)]) {
+        let rows: Vec<(&str, &str, &str)> = agents.iter().map(|(i, n)| (*i, *n, SID)).collect();
+        self.track_rows(&rows, &self.home().to_string_lossy());
+    }
+
+    /// The tracker's retained rows: `(id, name, parent)` with the given `cwd` (a row of ANOTHER session in this session's project).
+    fn track_rows(&self, agents: &[(&str, &str, &str)], cwd: &str) {
         let mut st = ah_engine::agents::State::default();
-        for (id, name) in agents {
+        for (id, name, parent) in agents {
             let a = ah_engine::agents::Agent {
                 id: (*id).into(),
                 kind: "subagent".into(),
-                parent: SID.into(),
+                parent: (*parent).into(),
                 name: (*name).into(),
-                cwd: self.home().to_string_lossy().into_owned(),
+                cwd: cwd.into(),
                 path: self.home().join(format!("{id}.jsonl")).to_string_lossy().into_owned(),
                 ..Default::default()
             };
@@ -496,4 +502,21 @@ fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered
     s.seed("anti-hall/1", 30, 0, 0);
     let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall"), ("ANTIHALL_DONE_ORDER_OWN_OWNERS", "0")]);
     assert!(!out.contains("status=deleted"), "{out}");
+}
+
+/// GH #794 review P0: the tracker's guard rows hold every row of the project's cwd, other sessions' agents included. A completed task owned by
+/// an agent of ANOTHER session (same cwd) is not this session's and is never ordered deleted.
+#[test]
+fn a_task_owned_by_another_sessions_agent_in_the_same_project_is_never_ordered_deleted() {
+    let s = Scratch::new("do-other-session");
+    s.named_list("anti-hall", &[("completed", "executor"), ("completed", "fix-df1")]);
+    let proj = s.dir.join("proj").to_string_lossy().into_owned();
+    s.track_rows(&[("a000000000000001", "executor", "OTHER-SESSION"), ("a000000000000002", "fix-df1", SID)], &proj);
+    let tr = s.transcript("completed");
+    let first = json!({"first": (now_ms() - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #2"), "only this session's own agent's task: {out}");
+    assert!(!out.contains("#1"), "another session's agent's task is not ours: {out}");
 }

@@ -262,24 +262,62 @@ var wd = {
     if (r === '~' || r.indexOf('~/') === 0) { if (!home) return null; r = home + r.slice(1); }
     return r;
   },
-  // The absolute paths one command writes: a redirect target, or the file arguments of a write verb (workdetect.bash_write_verbs).
-  // Returns [{abs, seg}]; a path with an unknown variable, or a relative one with no usable working directory, is left out.
-  bashWrites: function (cmd, cx) {
+  // Whether a git command (the words after `git`) is one of the subcommands that change files without naming them (workdetect.git_unknown_subcommands).
+  gitUnknown: function (args) {
+    var table = ah.cfg('workdetect.git_unknown_subcommands'), sub = '', at = -1;
+    for (var i = 0; i < args.length; i++) {
+      if (args[i] === '-C' || args[i] === '-c') { i++; continue; }
+      if (args[i].charAt(0) === '-') continue;
+      sub = args[i]; at = i; break;
+    }
+    if (at < 0 || !Object.prototype.hasOwnProperty.call(table, sub)) return false;
+    var want = table[sub], rest = args.slice(at + 1);
+    if (want.indexOf('*') >= 0) return true;
+    if (want.indexOf('<none>') >= 0 && rest.filter(function (a) { return a !== '' && a.charAt(0) !== '-'; }).length === 0) return true;
+    return rest.some(function (a) { return want.indexOf(a) >= 0; });
+  },
+  // Whether a simple command (its words from the command word on) writes files it does not name: an indirect runner over a write verb, a
+  // file-changing git subcommand, or a command of workdetect.unknown_write_res.
+  writesUnknown: function (cw) {
+    var verb = cw[0].slice(cw[0].lastIndexOf('/') + 1), verbs = ah.cfg('workdetect.bash_write_verbs'), rest = cw.slice(1);
+    if (verb === 'git') return wd.gitUnknown(rest);
+    if (ah.cfg('workdetect.indirect_verbs').indexOf(verb) >= 0) {
+      return rest.some(function (w) {
+        var v = w.slice(w.lastIndexOf('/') + 1);
+        if (!Object.prototype.hasOwnProperty.call(verbs, v)) return false;
+        return verbs[v] !== 'sed' || rest.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; });
+      });
+    }
+    var joined = cw.join(' '), res = ah.cfg('workdetect.unknown_write_res');
+    for (var i = 0; i < res.length; i++) if (new RegExp(res[i], 'i').test(joined)) return true;
+    return false;
+  },
+  // The files one command writes. Returns [{abs, seg, kind}]: `abs` is the absolute path (null for one the count cannot name), `kind` is
+  // `redirect` (a `>`/`>>`/`&>` target with output), `redirect_empty` (`: > f`, a bare `> f`), `tee`, `dest` (the destination of `cp`/`mv`) or `verb` (a file argument of a write
+  // verb, workdetect.bash_write_verbs). A write whose target cannot be named (an unknown variable, a relative path with no working
+  // directory, `patch`, `git apply`, `xargs sed -i`, `git stash pop`...) is `{abs: null, kind: 'unknown'}`: it counts as ONE unknown project
+  // file, never zero (GH #794: a write the count cannot see makes the session look stale, not idle).
+  bashWrites: function (cmd, cx, depth) {
     var body = cmd;
     if (cmd.indexOf('<<') >= 0) { var st = wd.stripHeredocBodies(cmd); if (st !== null) body = st; }
-    var verbs = ah.cfg('workdetect.bash_write_verbs'), wrappers = ah.cfg('workdetect.bash_wrappers'), out = [], vars = {};
-    var segs = wd.segments(body), dir = cx.cwd;
+    var verbs = ah.cfg('workdetect.bash_write_verbs'), wrappers = ah.cfg('workdetect.bash_wrappers'), builtins = ah.cfg('workdetect.assign_builtins');
+    var shells = ah.cfg('workdetect.shell_verbs'), emptyVerbs = ah.cfg('workdetect.empty_redirect_verbs'), out = [], vars = {};
+    var segs = wd.segments(body), dir = cx.cwd, level = depth || 0;
     for (var i = 0; i < segs.length; i++) {
       var seg = segs[i];
       if (!seg.trim()) continue;
-      var rw = wd.words(seg), words = rw.words, targets = rw.redirects.slice();
-      // leading NAME=value assignments (kept for later segments of the same command), then wrapper words
+      var rw = wd.words(seg), words = rw.words, targets = [];
+      rw.redirects.forEach(function (t) { targets.push({ t: t, kind: 'redirect' }); });
+      // leading NAME=value assignments (kept for later segments of the same command; `export NAME=value` too), then wrapper words
       var at = 0;
-      while (at < words.length && /^[A-Za-z_]\w*=/.test(words[at])) {
-        var eq = words[at].indexOf('=');
-        var val = wd.expand(words[at].slice(eq + 1), vars);
-        if (val !== null) vars[words[at].slice(0, eq)] = val;
-        at++;
+      for (;;) {
+        if (at < words.length && /^[A-Za-z_]\w*=/.test(words[at])) {
+          var eq = words[at].indexOf('=');
+          var val = wd.expand(words[at].slice(eq + 1), vars);
+          if (val !== null) vars[words[at].slice(0, eq)] = val;
+          at++;
+        } else if (at < words.length && builtins.indexOf(words[at]) >= 0) at++;
+        else break;
       }
       while (at < words.length && wrappers.indexOf(words[at]) >= 0) at++;
       // `cd <dir>`: the segments after it run there (null when the directory cannot be told: a relative path is then not named)
@@ -291,10 +329,21 @@ var wd = {
         else dir = dir ? ah.path.resolve(dir, cdTo) : null;
         continue;
       }
+      var unknown = false, nested = null;
+      if (at >= words.length) targets.forEach(function (x) { x.kind = 'redirect_empty'; }); // a bare `> f` truncates
       if (at < words.length) {
         var verb = words[at].slice(words[at].lastIndexOf('/') + 1), mode = Object.prototype.hasOwnProperty.call(verbs, verb) ? verbs[verb] : '';
         var args = words.slice(at + 1);
-        if (mode === 'sed') {
+        if (rw.redirects.length > 0 && (emptyVerbs.indexOf(verb) >= 0)) targets.forEach(function (x) { x.kind = 'redirect_empty'; });
+        if (shells.indexOf(verb) >= 0) {
+          // `bash -c 'cmd'`: the script is read for its own writes (down to shell_depth_max levels), else it counts as one unknown file
+          var ci = -1;
+          for (var q = 0; q < args.length; q++) if (/^-[A-Za-z]*c[A-Za-z]*$/.test(args[q])) { ci = q; break; }
+          if (ci >= 0 && ci + 1 < args.length) {
+            if (level < ah.cfgNum('workdetect.shell_depth_max')) nested = wd.bashWrites(args[ci + 1], { cwd: dir }, level + 1);
+            else unknown = true;
+          }
+        } else if (mode === 'sed') {
           var inplace = args.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; });
           if (!inplace) mode = '';
           else {
@@ -307,22 +356,41 @@ var wd = {
             mode = 'all';
           }
         } else if (mode !== '') {
+          // `cp -t DIR files`: the destination is the directory named by the option, not the last argument
+          var tdir = null;
+          if (mode === 'last') {
+            for (var m = 0; m < args.length; m++) {
+              if ((args[m] === '-t' || args[m] === '--target-directory') && m + 1 < args.length) { tdir = args[m + 1]; break; }
+              if (args[m].indexOf('--target-directory=') === 0) { tdir = args[m].slice('--target-directory='.length); break; }
+            }
+          }
           args = args.filter(function (a) { return a !== '--' && !(a.charAt(0) === '-' && a.length > 1); });
-          if (mode === 'last') args = args.slice(-1);
+          if (tdir !== null) args = [tdir];
+          else if (mode === 'last') args = args.slice(-1);
           else if (mode === 'rest') args = args.slice(1);
         }
-        if (mode !== '') targets = targets.concat(args);
-        else if (verb === 'git') targets = targets.concat(wd.gitWrites(args, dir, vars));
+        if (mode !== '' && nested === null) {
+          var destVerb = ah.cfg('workdetect.progress_dest_verbs').indexOf(verb) >= 0;
+          args.forEach(function (a, idx) { targets.push({ t: a, kind: verb === 'tee' ? 'tee' : destVerb && idx === args.length - 1 ? 'dest' : 'verb' }); });
+        }
+        else if (verb === 'git') wd.gitWrites(args, dir, vars).forEach(function (a) { targets.push({ t: a, kind: 'verb' }); });
+        else if (nested === null && mode === '' && wd.writesUnknown(words.slice(at))) unknown = true;
+        if (verb === 'git' && wd.gitUnknown(args) && targets.length === rw.redirects.length) unknown = true;
       }
+      var named = 0;
       for (var j = 0; j < targets.length; j++) {
-        var e = wd.expand(targets[j], vars);
-        if (e === null || e === '' || e === '-') continue;
+        var e = wd.expand(targets[j].t, vars);
+        if (e === '' || e === '-') continue;
+        if (e === null) { unknown = true; continue; }
         var abs;
         if (e.charAt(0) === '/') abs = ah.path.resolveAbs(e);
         else if (dir) abs = ah.path.resolve(dir, e);
-        else { ah.unable('workdetect:relative_no_cwd'); continue; }
-        out.push({ abs: abs, seg: seg.trim() });
+        else { ah.unable('workdetect:relative_no_cwd'); unknown = true; continue; }
+        out.push({ abs: abs, seg: seg.trim(), kind: targets[j].kind });
+        named++;
       }
+      if (nested !== null) nested.forEach(function (w) { out.push(w); });
+      if (unknown) out.push({ abs: null, seg: seg.trim(), kind: 'unknown' });
     }
     return out;
   },
@@ -332,15 +400,30 @@ var wd = {
   // guards.tasklistProjectOnly on (cx.projectOnly), else those under a temp directory (workdetect.excluded_outside_res). A path inside
   // the project is never excluded by a temp pattern, so a project that lives under a temp directory keeps its own files.
   countablePath: function (abs, cx) {
-    if (!abs || wd.excludedWritePath(abs, cx)) return false;
+    if (!abs) return false;
     var always = ah.cfg('workdetect.excluded_path_res');
     for (var i = 0; i < always.length; i++) if (new RegExp(always[i]).test(abs)) return false;
+    // a path INSIDE the project is never excluded by where it lives (a project under TMPDIR, a subdirectory named `scratchpad`): only
+    // anti-hall's own bookkeeping files (workdetect.state_dir) and what the one user request names are left out there
+    if (cx.root && (wd.isUnder(abs, cx.root) || (cx.cwd && wd.isUnder(abs, cx.cwd)))) {
+      return !(wd.inRequested(abs, cx) || wd.re('workdetect.state_dir').test(abs));
+    }
+    if (wd.excludedWritePath(abs, cx)) return false;
     if (!cx.root) return true;
-    if (wd.isUnder(abs, cx.root) || (cx.cwd && wd.isUnder(abs, cx.cwd))) return true;
     if (cx.projectOnly) return false;
     var outside = ah.cfg('workdetect.excluded_outside_res');
     for (var j = 0; j < outside.length; j++) if (new RegExp(outside[j]).test(abs)) return false;
     return true;
+  },
+  // Whether one write of `bashWrites` is project work: an unknown one is (counted as one file), a shell redirect into a log file is not
+  // (workdetect.excluded_redirect_res), any other is judged by its path.
+  countableWrite: function (w, cx) {
+    if (w.kind === 'unknown') return true;
+    if (w.kind === 'redirect' || w.kind === 'redirect_empty') {
+      var logs = ah.cfg('workdetect.excluded_redirect_res');
+      for (var i = 0; i < logs.length; i++) if (new RegExp(logs[i], 'i').test(w.abs)) return false;
+    }
+    return wd.countablePath(w.abs, cx);
   },
   // Whether a tool use writes at least one project file (the file-based count, GH #794): an Edit/Write path or a Bash command's write targets
   // (wd.bashWrites), judged by wd.countablePath. Shared by every check that asks "was there real work after time T".
@@ -356,7 +439,7 @@ var wd = {
     if (name !== 'Bash') return false;
     var cmd = input && typeof input.command === 'string' ? input.command : '';
     if (!cmd || wd.housekeepingOnly(cmd)) return false;
-    return wd.bashWrites(cmd, cx).some(function (w) { return wd.countablePath(w.abs, cx); });
+    return wd.bashWrites(cmd, cx).some(function (w) { return wd.countableWrite(w, cx); });
   },
   // `isCountedWork(tu)` for a tool-use block.
   counted: function (tu, cx) {

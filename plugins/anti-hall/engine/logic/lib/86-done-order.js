@@ -62,12 +62,33 @@ var dord = {
     // pairing rule makes every task's owner an agent name, so an owner that was never allowed here left every completed task unordered
     return !(typeof o === 'string' && own !== undefined && own !== null && dord.isOwn(o, own));  // null (an owner that could not be read) is foreign
   },
-  // The agents of this session by lower-case name and id (the tracker's rows, which hold only the session's own agents); null when it cannot be read.
-  ownNames: function (p) {
-    if (!ah.settings.bool('done_order.sw_own_owners') || !p || typeof p !== 'object') return null;
+  // The rows of the tracker that are THIS session's own: the session itself, its launched agents (parent = this session id) and theirs, followed
+  // down. The tracker's guard rows hold every row of the project's cwd, other sessions' agents included, so a row whose parent is not this
+  // session (or one of its own agents) is never adopted. GH #794 review: ownership is by parent, never by cwd.
+  ownRows: function (p) {
+    var sid = p && typeof p === 'object' && typeof p.session_id === 'string' ? p.session_id : '';
+    if (sid === '') return null;
     var rows;
     try { rows = ah.transcript.trackedAgents(p); } catch (e) { return null; }
     if (!Array.isArray(rows)) return null;
+    var ids = {}, own = [], grew = true;
+    ids[sid] = true;
+    while (grew) {
+      grew = false;
+      rows.forEach(function (r) {
+        var id = typeof r.id === 'string' ? r.id : '';
+        if (id === '' || ids[id] === true) return;
+        if (typeof r.parent === 'string' && ids[r.parent] === true) { ids[id] = true; grew = true; }
+      });
+    }
+    rows.forEach(function (r) { if (typeof r.id === 'string' && ids[r.id] === true) own.push(r); });
+    return own;
+  },
+  // The agents of this session by lower-case name and id (its own tracker rows, `ownRows`); null when it cannot be read.
+  ownNames: function (p) {
+    if (!ah.settings.bool('done_order.sw_own_owners') || !p || typeof p !== 'object') return null;
+    var rows = dord.ownRows(p);
+    if (rows === null) return null;
     var set = {};
     rows.forEach(function (r) {
       if (typeof r.name === 'string' && r.name !== '') set['n:' + r.name.trim().toLowerCase()] = true;
