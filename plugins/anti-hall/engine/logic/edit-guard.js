@@ -272,7 +272,30 @@ function egNudge(p, tool, cwd) {
   return { st: st, rel: rel, dir: dir, prune: prune, note: note };
 }
 
+// GH #802: an edit tool's target (or an apply_patch file) that is a session transcript: every agent, whatever the edit-guard switch says.
+function egTranscript(p) {
+  if (!egIsObj(p) || !ah.settings.bool('transcript_protect.sw')) return null;
+  var tool = p.tool_name;
+  if (typeof tool !== 'string') return null;
+  var ti = egIsObj(p.tool_input) ? p.tool_input : {}, files = [], codexPatch = tool === ah.cfg('edit_guard.patch_tool');
+  if (codexPatch) {
+    var parsed = applyPatch.parse(ti.command);
+    if (parsed.ok) parsed.files.forEach(function (f) { files.push(f.path); if (f.moveTo !== null && f.moveTo !== undefined) files.push(f.moveTo); });
+  } else if (ah.cfg('edit_guard.edit_tools').indexOf(tool) >= 0) {
+    files.push(tool === ah.cfg('edit_guard.notebook_tool') ? ti.notebook_path : ti.file_path);
+  } else return null;
+  for (var i = 0; i < files.length; i++) {
+    if (tp.editHit(egStr(files[i]), p)) {
+      ah.metric('transcript_write_blocked', ['kind', ah.cfg('transcript_protect.kinds').edit]);
+      return egBlock(text.message('block', ah.cfg('edit_guard.guard_name'), { what: ah.cfg('transcript_protect.msg_what') }), codexPatch);
+    }
+  }
+  return null;
+}
+
 function egMain(p) {
+  var transcript = egTranscript(p);
+  if (transcript !== null) return transcript;
   if (!ah.settings.bool('edit_guard.setting') || ah.settings.skipped(ah.cfg('edit_guard.guard_name'))) return 'allow';
   var tool = egIsObj(p) ? p.tool_name : undefined;
   if (typeof tool !== 'string') return 'allow';
