@@ -151,6 +151,26 @@ value = [
   '(?:merge|pull)\b[^\n]*?\s(?:-s\s*|--strategy[= ])ours\b',
 ]
 
+[merge_side_pick.meta_ns]
+doc = "Namespace of the side-pick bookkeeping state (when the last pick was recorded; whether a conflict existed when its command began), kept beside the record."
+value = "merge-side-pick-meta"
+
+[merge_side_pick.conflict_markers]
+doc = "Names inside a checkout's git directory whose presence means a merge, cherry-pick, revert or rebase is in progress, i.e. there is a conflict to resolve. A side-pick is recorded only when one exists or the repository has unmerged paths."
+value = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply"]
+
+[merge_side_pick.unmerged_args]
+doc = "git arguments (run in the pick's directory) that list unmerged paths; any output means a conflict is open."
+value = ["ls-files", "--unmerged"]
+
+[merge_side_pick.unmerged_timeout_ms]
+doc = "Milliseconds the unmerged-paths query may run; a git that does not answer counts as unknown, which keeps the side-pick recorded."
+value = 3000
+
+[merge_side_pick.pick_ttl_ms]
+doc = "A recorded side-pick older than this (milliseconds) no longer draws the push advisory; a test run clears it sooner. Default 4 hours."
+value = 14400000
+
 [merge_side_pick.push_tail]
 doc = "Regex source appended to git_prefix that recognises a push."
 value = 'push\b'
