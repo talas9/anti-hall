@@ -59,6 +59,48 @@ value = [
   '\bg?awk\b[^\n;|]*\s-i\s*inplace\b([^\n;|]*)',
 ]
 
+[transcript_protect.inline_interp_res]
+doc = "Patterns (case-insensitive): a command that runs an inline interpreter script (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, a heredoc fed to one, ...) holds an interpreter command word. For such a command the check FAILS CLOSED (transcript_protect.inline_write_marks, inline_calls, inline_receiver_re): when it names a protected path and can write, it is blocked unless every write call provably targets a non-protected path."
+value = ['(?:^|[\s;&|(/])(?:python[\d.]*|pypy[\d.]*|node|nodejs|deno|bun|ruby|perl[\d.]*|php|lua|osascript|pwsh|powershell|Rscript|julia|tclsh|groovy|jshell)(?:\s|$)']
+
+[transcript_protect.inline_write_marks]
+doc = "Text (case-insensitive) that says an inline script CAN write: with none of these the script only reads and the fail-closed check lets it through. A protected path named in a script that holds one of these is blocked unless every write call in it has a provably non-protected literal target."
+value = ["open(", "'a'", "'w'", "\">>\"", "\">\"", "'>>'", "'>'", ".write", "writefile", "appendfile", "openSync", "os.open", "O_APPEND", "O_WRONLY", "O_RDWR", "O_CREAT", "shutil.", "copy", "move", "rename", "print $", "fs.", "unlink", "remove", "rmtree", "truncate", "symlink", "link(", "system", "popen", "subprocess", "spawn", "exec", "touch", "fopen", "file_put_contents", "Bun.write"]
+
+[transcript_protect.inline_receiver_re]
+doc = "Pattern (case-insensitive): a write whose target is the RECEIVER, not an argument (`Path(..).write_text(..)`, `Path(..).expanduser().open('a')`, `p.unlink()`), so no call argument can be checked. In a script that names a protected path (and is an inline interpreter command) any of these blocks."
+value = '''\.\s*(?:write_text|write_bytes|touch|unlink|rename|symlink_to|hardlink_to|truncate|chmod)\s*\(|\.\s*open\s*\(\s*(?:mode\s*=\s*)?['"][rwxabt+U]{1,4}['"]'''
+
+[transcript_protect.inline_readonly_mode_re]
+doc = "Pattern (case-insensitive) for an open call's mode (or flags) argument that only READS (`'r'`, `'rb'`, perl `'<'`, `os.O_RDONLY`). Any other mode, or one the script computes, is a write."
+value = '''^(?:['"]\s*(?:r[bt]?|[bt]r|U|<[^'"+>]*)\s*['"]|(?:[\w.]+\.)?O_RDONLY)$'''
+
+[transcript_protect.inline_handle_re]
+doc = "Pattern for the mode argument of perl's 3-argument open (`open(my $f, '>>', $path)`), where the first argument is a file handle and the path is the third."
+value = '''^\s*['"]\s*\+?[<>]{1,2}'''
+
+[transcript_protect.literal_re]
+doc = "Pattern for a plain string literal argument: no interpolation, no f/r/b prefix, no variable or template marker. Group 2 is its text. Only such a literal (an absolute path, or `~/...`) that is not a protected path proves a write goes elsewhere."
+value = '''^\s*(['"])([^'"\\$`{}%]*)\1\s*$'''
+
+[transcript_protect.inline_calls]
+doc = "Write calls the fail-closed inline check examines (found in the whole script, argument list read with matched parentheses). `args` says which arguments are the call's targets, and each must be a plain literal non-protected absolute path (or a variable only ever assigned one): open = the first argument of an open call whose mode is not read-only (perl 3-argument form: the third); first = the first argument; last = the last (the destination of a copy or link); two = the first two (a rename or move); shell = a command string run by a shell, judged as a Bash command when it names a protected folder."
+value = [
+  { args = "open", re = '\b(?:open|openSync|sysopen|fopen)\s*\(' },
+  { args = "first", re = '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncate|truncateSync|unlink|unlinkSync|rmSync|rmdirSync|writeTextFile|writeTextFileSync|outputFile|file_put_contents)\s*\(|\b(?:fs|fsp|promises|fsPromises)\.(?:rm|rmdir)\s*\(|\bos\.(?:remove|rmdir|removedirs)\s*\(|\bshutil\.rmtree\s*\(|\bBun\.write\s*\(|\bFile\.(?:write|binwrite|delete|unlink)\s*\(|\bFileUtils\.(?:rm\w*|remove\w*)\s*\(' },
+  { args = "last", re = '\b(?:copyFile|copyFileSync|cpSync)\s*\(|\b(?:shutil|fs|fsp|promises|fsPromises|os|FileUtils|File)\.(?:copy\w*|cp\w*|symlink\w*|link\w*|ln\w*|install)\s*\(' },
+  { args = "two", re = '\b(?:rename|renameSync)\s*\(|\bos\.(?:rename|renames|replace)\s*\(|\bshutil\.move\s*\(|\bFile\.rename\s*\(|\bFileUtils\.(?:mv|move)\s*\(' },
+  { args = "shell", re = '\b(?:os\.(?:system|popen)|popen|system|execSync|execFileSync|spawnSync|spawn|subprocess\.\w+|child_process\.\w+|Popen|check_output|check_call)\s*\(' },
+]
+
+[transcript_protect.walk_max_entries]
+doc = "Most directory entries the folder check reads when it asks whether a folder holds a protected file at any depth (a remove or move of a project folder, or of the projects folder, takes its transcripts along). Past the limit the folder counts as holding one."
+value = 5000
+
+[transcript_protect.walk_max_depth]
+doc = "Deepest folder level that walk descends; a deeper folder counts as holding a protected file."
+value = 6
+
 [transcript_protect.indirect_arg_re]
 doc = "Pattern (case-insensitive): a write call's target argument (or the value of a variable it names) that reads its path at run time (`sys.argv[1]`, `os.environ[...]`, `process.argv`, `$VAR`, stdin) cannot be tied to a path in the command, so the check falls back to: the command names a protected path anywhere. A bare variable the command never assigns falls back the same way."
 value = '''\bargv\b|\benviron\b|\bgetenv\b|\bprocess\.env\b|\bARGV\b|\bENV\b|\$\w|\bstdin\b|\binput\s*\('''

@@ -88,7 +88,23 @@ var tp = {
       var f = tp.fold(fs[i].replace(/\/+$/, ''));
       for (var j = 0; j < pat.roots.length; j++) if (pat.roots[j] === f || pat.roots[j].indexOf(f + '/') === 0) return true;
     }
-    return false;
+    // a folder under a protected root (a project folder, a session's tool-results folder) that holds a protected file anywhere below it
+    return tp.insideRoot(abs, pat) && ah.fs.isDir(abs) && tp.contains(abs, pat);
+  },
+  // whether a folder holds a protected file at any depth (a bounded walk: past the limits it counts as holding one)
+  contains: function (dir, pat) {
+    var left = ah.cfg('transcript_protect.walk_max_entries'), maxDepth = ah.cfg('transcript_protect.walk_max_depth');
+    var walk = function (d, depth) {
+      var names = ah.fs.readdir(d) || [];
+      for (var i = 0; i < names.length; i++) {
+        if (--left < 0) return true;
+        var p = d + '/' + names[i];
+        if (tp.isProtected(p, pat)) return true;
+        if (ah.fs.isDir(p)) { if (depth >= maxDepth) return true; if (walk(p, depth + 1)) return true; }
+      }
+      return false;
+    };
+    return walk(dir.replace(/\/+$/, ''), 0);
   },
   // a file_path of an edit tool as an absolute path (`~` is the home; a relative path is under `cwd`); null when it cannot be named
   resolve: function (fp, cwd) {
@@ -225,6 +241,88 @@ var tp = {
         if (!any && tp.named(command, pat)) return kinds.inline;
       }
     }
+    return tp.inlineHit(command, payload, pat) ? kinds.inline : null;
+  },
+  // the arguments (top-level, comma-separated, string-aware) of the call whose `(` is at `at`; null when the call never closes
+  callArgs: function (text, at) {
+    var out = [], depth = 0, cur = '', q = '', i;
+    for (i = at; i < text.length; i++) {
+      var c = text.charAt(i);
+      if (q !== '') {
+        cur += c;
+        if (c === '\\' && i + 1 < text.length) { cur += text.charAt(++i); } else if (c === q) q = '';
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') { q = c; cur += c; continue; }
+      if (c === '(' || c === '[' || c === '{') { depth++; if (depth > 1) cur += c; continue; }
+      if (c === ')' || c === ']' || c === '}') {
+        depth--;
+        if (depth === 0) { out.push(cur); return out; }
+        cur += c; continue;
+      }
+      if (c === ',' && depth === 1) { out.push(cur); cur = ''; continue; }
+      cur += c;
+    }
     return null;
+  },
+  // the text of a plain string literal (no interpolation, no prefix) or null
+  lit: function (arg) {
+    var m = new RegExp(ah.cfg('transcript_protect.literal_re')).exec(arg.trim());
+    return m ? m[2] : null;
+  },
+  // whether a call argument provably names a non-protected absolute path: a plain literal, or a variable the script only ever assigns such literals
+  safeArg: function (arg, script, pat, depth) {
+    var a = arg.trim().replace(/^(?:file|path|filename|dest|dst|target)\s*=\s*/, ''), l = tp.lit(a);
+    if (l === null) {
+      if (depth > 0 || !/^[A-Za-z_]\w*$/.test(a)) return false;
+      var re = new RegExp('(?:^|[^\\w.$])' + a + '\\s*=(?!=)\\s*([^\\n;]*)', 'g'), m, n = 0;
+      while ((m = re.exec(script)) !== null) { n++; if (!tp.safeArg(m[1].replace(/\s*#.*$/, ''), script, pat, depth + 1)) return false; }
+      return n > 0;
+    }
+    var e = wd.expand(l, {});
+    if (e === null || e.charAt(0) !== '/') return false;
+    var abs = ah.path.resolveAbs(e);
+    return !tp.isProtected(abs, pat) && !tp.isParent(abs, pat) && !tp.insideRoot(abs, pat);
+  },
+  // Does an inline interpreter script (python -c, node -e, perl -e, a heredoc ...) that names a protected path, and has anything that can write,
+  // write it? Fail closed: allowed only when EVERY write call's target is provably a non-protected path (a plain string literal, or a variable only
+  // ever assigned one), and nothing writes through a receiver (`Path(..).write_text`, `.open('a')`).
+  inlineHit: function (command, payload, pat) {
+    var interp = ah.cfg('transcript_protect.inline_interp_res');
+    if (!interp.some(function (r) { return new RegExp(r, 'i').test(command); })) return false;
+    var script = command.replace(/\\(["'])/g, '$1'), low = tp.fold(script);
+    if (!ah.cfg('transcript_protect.anchors').some(function (a) { return low.indexOf(tp.fold(a)) >= 0; }) && !tp.named(script, pat)) return false;
+    var marks = ah.cfg('transcript_protect.inline_write_marks');
+    if (!marks.some(function (k) { return low.indexOf(tp.fold(k)) >= 0; })) return false;
+    if (new RegExp(ah.cfg('transcript_protect.inline_receiver_re'), 'i').test(script)) return true;
+    var roMode = new RegExp(ah.cfg('transcript_protect.inline_readonly_mode_re'), 'i'), hdl = new RegExp(ah.cfg('transcript_protect.inline_handle_re'), 'i');
+    var families = ah.cfg('transcript_protect.inline_calls'), f, m;
+    for (f = 0; f < families.length; f++) {
+      var re = new RegExp(families[f].re, 'gi');
+      while ((m = re.exec(script)) !== null) {
+        var args = tp.callArgs(script, m.index + m[0].length - 1);
+        if (args === null) return true;
+        var kind = families[f].args;
+        if (kind === 'shell') {
+          var cmd = args.join(' ').replace(/['"\[\],]+/g, ' ');
+          if (tp.fold(cmd).indexOf('.claude') >= 0 || tp.fold(cmd).indexOf('.codex') >= 0) { if (tp.bashHit(cmd, payload) !== null) return true; }
+          continue;
+        }
+        if (kind === 'open') {
+          // `open(target, mode ...)`; perl's 3-argument form puts a handle first: `open(my $f, '>>', target)`
+          var tgt = args[0], mode = args.length > 1 ? args[1] : '', kw = /^\s*(\w+)\s*=(?!=)\s*([\s\S]*)$/;
+          if (args.length >= 3 && hdl.test(args[1]) && /^\s*(?:(?:my|our|local)\s+)?[$*\\]?\w+\s*$/.test(args[0])) { tgt = args[2]; mode = args[1]; }
+          var km = kw.exec(mode);
+          if (km) mode = /^(?:mode|flags)$/.test(km[1]) ? km[2] : '';
+          for (var k = 2; k < args.length && mode === ''; k++) { var kk = kw.exec(args[k]); if (kk && /^(?:mode|flags)$/.test(kk[1])) mode = kk[2]; }
+          if (mode === '' || roMode.test(mode.trim())) continue;
+          if (!tp.safeArg(tgt, script, pat, 0)) return true;
+          continue;
+        }
+        var pick = kind === 'first' ? args.slice(0, 1) : kind === 'last' ? args.slice(-1) : args;
+        if (pick.length === 0 || pick.some(function (a) { return a.trim() === '' || !tp.safeArg(a, script, pat, 0); })) return true;
+      }
+    }
+    return false;
   },
 };
