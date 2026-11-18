@@ -449,3 +449,51 @@ fn a_repeated_task_event_is_one_ledger_row() {
     }
     assert_eq!(std::fs::read_to_string(s.ledger()).unwrap().lines().count(), 3);
 }
+
+impl Scratch {
+    /// The tracker's retained rows: one agent per `(id, name)` launched by the session `SID`.
+    fn track_agents(&self, agents: &[(&str, &str)]) {
+        let mut st = ah_engine::agents::State::default();
+        for (id, name) in agents {
+            let a = ah_engine::agents::Agent {
+                id: (*id).into(),
+                kind: "subagent".into(),
+                parent: SID.into(),
+                name: (*name).into(),
+                cwd: self.home().to_string_lossy().into_owned(),
+                path: self.home().join(format!("{id}.jsonl")).to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            st.agents.insert((*id).into(), a);
+        }
+        std::fs::create_dir_all(self.home().join(".anti-hall/agent-tracker")).unwrap();
+        std::fs::write(self.home().join(".anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+}
+
+/// GH #794 (bug 6): the coordinator's NAMED list (CLAUDE_CODE_TASK_LIST_ID) holds tasks owned by the agents it launched (the pairing rule makes
+/// every owner an agent name). Those are the session's own and are ordered deleted; a task owned by a name the session never launched is
+/// another session's and is left alone.
+#[test]
+fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered_deleted() {
+    let s = Scratch::new("do-own-owner");
+    s.named_list("anti-hall", &[("completed", "fix-df1"), ("completed", "someone-elses-agent"), ("completed", "main"), ("completed", "")]);
+    s.track_agents(&[("a000000000000001", "fix-df1")]);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let first = json!({"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    let rec = json!({"ids": {"anti-hall/1": first, "anti-hall/2": first, "anti-hall/3": first, "anti-hall/4": first}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("3 completed task(s) still listed: TaskUpdate status=deleted #1 #3 #4"), "own agent's, the coordinator's and the unowned task: {out}");
+    assert!(!out.contains("#2"), "an owner this session never launched is not ours: {out}");
+    // switched off: every owned task is left alone again
+    let s = Scratch::new("do-own-owner-off");
+    s.named_list("anti-hall", &[("completed", "fix-df1")]);
+    s.track_agents(&[("a000000000000001", "fix-df1")]);
+    let tr = s.transcript("completed");
+    s.seed("anti-hall/1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall"), ("ANTIHALL_DONE_ORDER_OWN_OWNERS", "0")]);
+    assert!(!out.contains("status=deleted"), "{out}");
+}

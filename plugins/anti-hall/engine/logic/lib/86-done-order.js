@@ -52,20 +52,42 @@ var dord = {
   },
   // True when the task must not be ordered deleted: the list is ambiguous, or it is shared and the task's owner is not exactly known to be
   // nobody (`owners` is `dord.owners(sid)` when the list is shared).
-  foreign: function (c, owners, id) {
+  foreign: function (c, owners, id, own) {
     if (c.ambiguous) return true;
     if (!c.shared) return false;
-    return owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id)) || owners[String(id)] !== '';  // null (an owner that could not be read) is not '' either
+    if (owners === null || !Object.prototype.hasOwnProperty.call(owners, String(id))) return true;
+    var o = owners[String(id)];
+    if (o === '') return false;
+    // GH #794: a task owned by an agent THIS session launched (or by the coordinator itself) is the session's own, not another session's: the
+    // pairing rule makes every task's owner an agent name, so an owner that was never allowed here left every completed task unordered
+    return !(typeof o === 'string' && own !== undefined && own !== null && dord.isOwn(o, own));  // null (an owner that could not be read) is foreign
+  },
+  // The agents of this session by lower-case name and id (the tracker's rows, which hold only the session's own agents); null when it cannot be read.
+  ownNames: function (p) {
+    if (!ah.settings.bool('done_order.sw_own_owners') || !p || typeof p !== 'object') return null;
+    var rows;
+    try { rows = ah.transcript.trackedAgents(p); } catch (e) { return null; }
+    if (!Array.isArray(rows)) return null;
+    var set = {};
+    rows.forEach(function (r) {
+      if (typeof r.name === 'string' && r.name !== '') set['n:' + r.name.trim().toLowerCase()] = true;
+      if (typeof r.id === 'string' && r.id !== '') set['n:' + r.id.toLowerCase()] = true;
+    });
+    return set;
+  },
+  isOwn: function (owner, own) {
+    var lc = owner.trim().toLowerCase();
+    return own['n:' + lc] === true || new RegExp(ah.cfg('task_guard.coordinator_owner_re'), 'i').test(lc);
   },
   // May this task be ordered deleted now (the gate `fresh` and `plan` share)?
-  orderable: function (sid, id) {
+  orderable: function (sid, id, own) {
     var c = dord.ctx();
-    return !dord.foreign(c, c.shared ? dord.owners(sid) : null, id);
+    return !dord.foreign(c, c.shared ? dord.owners(sid) : null, id, own);
   },
   key: function (c, id) { return c.list === '' ? String(id) : c.list + '/' + id; },
   num: function (v) { return typeof v === 'number' && isFinite(v) && v >= 0 ? v : 0; },
   // `tasks`: the session's task list (a read that is exact). Returns {rel, due: [ids], lingering, followed, next, changed}; nothing is written.
-  plan: function (sid, tasks, now) {
+  plan: function (sid, tasks, now, own) {
     var rel = dord.rel(sid), prev = dord.read(rel), next = {}, due = [], lingering = 0;
     var after = ah.settings.num('done_order.num_after_min') * ah.cfgNum('done_order.ms_per_minute');
     var steps = ah.cfg('done_order.steps_min'), max = ah.cfgNum('done_order.max_orders'), perMin = ah.cfgNum('done_order.ms_per_minute');
@@ -74,7 +96,7 @@ var dord = {
     tasks.filter(tk.isDone).forEach(function (t) {
       var id = dord.key(c, t.id), rec = prev[id] && typeof prev[id] === 'object' ? prev[id] : {};
       // fail safe: in a shared list a task another owner holds is never ordered deleted, nor is any task when the list is ambiguous
-      var foreign = dord.foreign(c, owners, t.id);
+      var foreign = dord.foreign(c, owners, t.id, own);
       var first = rec.first > 0 ? rec.first : now, count = dord.num(rec.count), last = dord.num(rec.lastAt);
       next[id] = { first: first, count: count, lastAt: last };
       if (foreign) return;
@@ -124,7 +146,7 @@ var dord = {
     return t !== null && new RegExp(text.render(ah.cfg('done_order.entry_re'), { id: String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }), 'm').test(t);
   },
   fresh: function (sid, id, now, p) {
-    if (!dord.orderable(sid, id)) return '';
+    if (!dord.orderable(sid, id, dord.ownNames(p))) return '';
     var rel = dord.rel(sid), ids = dord.read(rel);
     ids[dord.key(dord.ctx(), id)] = { first: now, count: 1, lastAt: now };
     if (!dord.write(rel, ids)) return '';

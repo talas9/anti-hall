@@ -596,7 +596,7 @@ function tgEnforce(p, out) {
   }
   var dpl = null;
   if (reason === '' && orderOn) {
-    dpl = dord.plan(sessionId, tasks, ah.clock.now());
+    dpl = dord.plan(sessionId, tasks, ah.clock.now(), dord.ownNames(p));
     if (dpl.due.length > 0) reason = dord.order(dpl.due);
   }
   if (reason === '') {

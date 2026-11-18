@@ -1516,6 +1516,10 @@ value = { section = "guards", key = "doneOrder", env = "ANTIHALL_DONE_ORDER", de
 doc = "Off switch (guards.doneOrderSkipLogged, default on, GH #794). On: when the session's history ledger already holds a written entry for a task that was just marked completed (a heading matching done_order.entry_re), the completion line only orders the task deleted; it no longer tells the agent to log the outcome it already logged. Off: every completion gets the log-then-delete line."
 value = { section = "guards", key = "doneOrderSkipLogged", env = "ANTIHALL_DONE_ORDER_SKIP_LOGGED", default = true }
 
+[done_order.sw_own_owners]
+doc = "Off switch (guards.doneOrderOwnOwners, default on, GH #794). In a NAMED task list (CLAUDE_CODE_TASK_LIST_ID) a completed task whose owner is an agent this session launched (a row of the agent tracker, by name or id) or the coordinator is the session's own and is ordered deleted; one whose owner is anyone else stays untouched (another session's). Off: any task with an owner is left alone, so with the pairing rule (every task owned by an agent name) nothing in a named list was ever ordered."
+value = { section = "guards", key = "doneOrderOwnOwners", env = "ANTIHALL_DONE_ORDER_OWN_OWNERS", default = true }
+
 [done_order.entry_re]
 doc = "Regex source (multiline) of a written ledger entry for one task: a heading such as `## Task #19 Release`. {id} is the task id, regex-escaped. The rows the engine appends itself on TaskCreated/TaskCompleted (`- <time> · TaskCompleted · task_id=...`) are not entries."
 value = '^#+\s*Task\s*#?{id}(?![0-9A-Za-z])'
