@@ -45,6 +45,14 @@ var tk = {
     });
     return { openTaskIds: ids, inProgressCount: inProg };
   },
+  // GH #781: a resumed or shared session keeps its tasks in ANOTHER list; its own directory `own` (under `base`) then holds only a pointer file
+  // naming it. The pointer is followed one hop, and only to a valid id whose directory exists; any other pointer leaves the own directory.
+  // The ONE resolver every reader of a session's list directory uses (the shared task reader and the R-pair by-id reader).
+  followPointer: function (base, own) {
+    var ptr = ah.fs.readText(own + '/' + ah.cfg('taskstate.store_pointer_file'), ah.cfgNum('taskstate.store_pointer_max_bytes'));
+    var target = typeof ptr === 'string' ? ptr.trim() : '';
+    return target !== '' && new RegExp(ah.cfg('taskstate.list_id_re')).test(target) && ah.fs.isDir(base + target) ? base + target : own;
+  },
   // The named task list id (taskstate.list_id_env holds a valid id whose store directory exists), else null.
   namedList: function (home) {
     if (!home) return null;
@@ -70,12 +78,7 @@ var tk = {
     var named = tk.namedList(home), dirs = [];
     if (named !== null) dirs.push(base + named);
     else for (var j = 0; j < names.length; j++) {
-      var own = base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) });
-      // GH #781: a resumed or shared session keeps its tasks in ANOTHER list; its own directory then holds only a pointer file naming it.
-      // The pointer is followed one hop, and only to a valid id whose directory exists; any other pointer leaves the own directory.
-      var ptr = ah.fs.readText(own + '/' + ah.cfg('taskstate.store_pointer_file'), ah.cfgNum('taskstate.store_pointer_max_bytes'));
-      var target = typeof ptr === 'string' ? ptr.trim() : '';
-      dirs.push(target !== '' && new RegExp(ah.cfg('taskstate.list_id_re')).test(target) && ah.fs.isDir(base + target) ? base + target : own);
+      dirs.push(tk.followPointer(base, base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) })));
     }
     for (var i = 0; i < dirs.length; i++) {
       var dir = dirs[i];
