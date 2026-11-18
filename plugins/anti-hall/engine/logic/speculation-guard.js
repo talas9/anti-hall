@@ -23,13 +23,11 @@ function sgHasAck(t) {
 // A label that follows the hedge in its own sentence and is written as a label (speculation_guard.ack_local_ci): '(not yet proven)',
 // '\u2014 unconfirmed', ', my inference,', 'unconfirmed:' attached to the hedge by punctuation. A label before the hedge, in another
 // sentence, or inside a description of another subject ('The ticket is unconfirmed; ... probably DNS') covers nothing. The sentence cut is
-// speculation_guard.ack_scope_re, tested on the text between the hedge and the label.
+// speculation_guard.ack_scope_re: the text after the hedge is cut at its first match before the label is looked for.
 function sgLocalAck(text, end) {
-  var rest = text.slice(end), list = ah.cfg('speculation_guard.ack_local_ci'), cut = ah.cfg('speculation_guard.ack_scope_re');
-  for (var i = 0; i < list.length; i++) {
-    var m = ah.re.find(list[i], 'i', rest);
-    if (m && !ah.re.find(cut, '', rest.slice(0, m[0]))) return true;
-  }
+  var rest = text.slice(end), list = ah.cfg('speculation_guard.ack_local_ci'), cut = ah.re.find(ah.cfg('speculation_guard.ack_scope_re'), '', rest);
+  if (cut) rest = rest.slice(0, cut[0]);
+  for (var i = 0; i < list.length; i++) if (ah.re.find(list[i], 'i', rest)) return true;
   return false;
 }
 
