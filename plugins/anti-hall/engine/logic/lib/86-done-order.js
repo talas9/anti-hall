@@ -107,13 +107,29 @@ var dord = {
   },
   // A task was just marked completed: the record starts at its first order (the line is given now). Returns the order, or '' when the
   // record cannot be saved.
-  fresh: function (sid, id, now) {
+  // GH #794: whether the session's history ledger already holds a written entry (not an engine-appended lifecycle row) for the task. false
+  // when it cannot be told (no project, no ledger, one over the read cap).
+  logged: function (p, id) {
+    if (!ah.settings.bool('done_order.sw_skip_logged') || !p || typeof p !== 'object') return false;
+    var cwd = typeof p.cwd === 'string' ? p.cwd : '', sid = typeof p.session_id === 'string' ? p.session_id : '';
+    if (cwd === '' || cwd.charAt(0) !== '/' || sid === '' || ah.home() === '') return false;
+    var root = task.sessionProjectRoot(cwd, ah.home());
+    if (root === null) root = ho.sessionProjectRoot(cwd);
+    if (root === null) return false;
+    var date = new Date(ah.clock.now()).toISOString().slice(0, 10);
+    var abs = root + '/' + ah.cfg('task_lifecycle_log.history_dir').join('/') + '/' + date + '/' + task.sessionPathId(sid) + ah.cfg('task_lifecycle_log.ledger_ext');
+    var size = ah.fs.size(abs);
+    if (size === null || size > ah.cfgNum('script.read_max_bytes')) return false;
+    var t = ah.fs.readText(abs);
+    return t !== null && new RegExp(text.render(ah.cfg('done_order.entry_re'), { id: String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }), 'm').test(t);
+  },
+  fresh: function (sid, id, now, p) {
     if (!dord.orderable(sid, id)) return '';
     var rel = dord.rel(sid), ids = dord.read(rel);
     ids[dord.key(dord.ctx(), id)] = { first: now, count: 1, lastAt: now };
     if (!dord.write(rel, ids)) return '';
     dord.count('emitted', 1);
-    return text.render(ah.cfg('done_order.msg_fresh'), { id: id });
+    return text.render(ah.cfg(dord.logged(p, id) ? 'done_order.msg_fresh_logged' : 'done_order.msg_fresh'), { id: id });
   },
   // A task was deleted: if it had been ordered, the order was followed.
   forget: function (sid, id) {

@@ -108,12 +108,17 @@ fn worker_commits_integrated_by_the_session_do_not_block_stop_and_are_counted() 
     let h = home("tl-int");
     let proj = project(&h);
     let before = advisory("tasklist_integration_skipped", "suppressed");
-    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[]));
+    // the command-counting mode (guards.tasklistCountFiles off, the count before GH #794)
+    let legacy = ("ANTIHALL_TASKLIST_COUNT_FILES", "0");
+    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[legacy]));
     assert!(!blocked, "integration-only commands must not block: {out}");
     assert_eq!(advisory("tasklist_integration_skipped", "suppressed"), before + 1);
     // the off switch restores the old count: the same integration commands block again
-    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
+    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[legacy, ("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
     assert!(blocked, "with the switch off the integration commands count again: {out}");
+    // the shipped count names files: git integration names none, so it never counts, whatever the switch says
+    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
+    assert!(!blocked, "commands that name no file count nothing: {out}");
 }
 
 #[test]
@@ -212,14 +217,41 @@ fn restoring_or_resolving_file_content_is_counted_with_the_shipped_defaults() {
         let h = home("tl-row");
         let proj = project(&h);
         let lines: Vec<String> = (0..3).map(|i| bash_use(i, row)).collect();
-        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[("ANTIHALL_TASKLIST_COUNT_FILES", "0")]));
         assert!(blocked, "must count: {row}: {out}");
     }
     for row in ["git checkout dev", "git switch -c fix/x", "git merge fix/a", "git merge --no-ff fix/b", "git cherry-pick abc123", "git checkout release/1.2"] {
         let h = home("tl-row");
         let proj = project(&h);
         let lines: Vec<String> = (0..3).map(|i| bash_use(i, row)).collect();
-        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[("ANTIHALL_TASKLIST_COUNT_FILES", "0")]));
         assert!(!blocked, "must not count: {row}: {out}");
+    }
+}
+
+// GH #794, the shipped count: a git command that restores or removes files BY NAME writes those files (three distinct ones are work); one
+// that names none (commit, merge --continue, a checkout of a branch) writes nothing, however often it runs.
+#[test]
+fn git_commands_count_only_the_files_they_name() {
+    for (row, blocks) in [
+        ("git checkout HEAD -- src/f{i}.js", true),
+        ("git checkout --ours -- src/f{i}.js", true),
+        ("git restore src/f{i}.js", true),
+        ("git rm src/f{i}.js", true),
+        ("git checkout src/f{i}.js", true), // an existing file: restored
+        ("git checkout dev{i}", false),     // not a file: a branch
+        ("git commit -q -m x{i}", false),
+        ("git merge --continue", false),
+        ("git stash", false),
+    ] {
+        let h = home("tl-git");
+        let proj = project(&h);
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        for i in 0..3 {
+            std::fs::write(proj.join(format!("src/f{i}.js")), "x").unwrap();
+        }
+        let lines: Vec<String> = (0..3).map(|i| bash_use(i, &row.replace("{i}", &i.to_string()))).collect();
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        assert_eq!(blocked, blocks, "{row}: {out}");
     }
 }

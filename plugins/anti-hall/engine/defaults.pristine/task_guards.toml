@@ -48,6 +48,10 @@ value = "Appends one line per TaskCreated/TaskCompleted event to the per-session
 doc = "Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)."
 value = { section = "maintenance", key = "taskLifecycleLog", env = "", aliases = [], option = "maintenance_task_lifecycle_log", default = true }
 
+[task_lifecycle_log.dedupe_setting]
+doc = "Off switch (maintenance.taskLifecycleDedupe, default on, GH #794): a task event (created, completed) is written to the history ledger once. A repeat of the same event for the same task id (the hook is reached again for a teammate's completion, then the session's) adds no row; one completion produced five."
+value = { section = "maintenance", key = "taskLifecycleDedupe", env = "ANTIHALL_TASK_LIFECYCLE_DEDUPE", aliases = [], option = "", default = true }
+
 [task_lifecycle_log.events]
 doc = "The hook events the ledger records."
 value = ["TaskCreated", "TaskCompleted"]
@@ -934,6 +938,26 @@ value = ["Agent", "Task", "CronCreate", "CronDelete"]
 doc = "File-mutating tools: each call counts as work unless it targets an excluded path."
 value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
+[workdetect.bash_write_verbs]
+doc = "Shell commands whose file arguments are files the command changes (GH #794: the tasklist work count names real files, not command strings). The value says which arguments: `all` (every non-flag argument), `last` (the destination of cp and ln), `rest` (every argument after the first: the mode of chmod, the owner of chown) and `sed` (only `sed -i`: the file arguments after the script). A redirect target (`>`, `>>`) counts for any command. A command that names no file (git commit, mkdir, a build, an install) changes no file this count can name and counts nothing."
+value = { rm = "all", cp = "last", mv = "all", tee = "all", touch = "all", chmod = "rest", chown = "rest", ln = "last", sed = "sed" }
+
+[workdetect.git_write_subcommands]
+doc = "The git subcommands that change working-tree files by name, and how the files are named: `all` (every non-flag argument: `git rm`, `git mv`, `git restore`) and `dashes` (`git checkout`: the arguments after `--`, or, with no `--`, the arguments that are existing files, since a branch or ref is not one). Any other git command (commit, merge, rebase, stash, apply, push) names no file and counts nothing."
+value = { rm = "all", mv = "all", restore = "all", checkout = "dashes" }
+
+[workdetect.bash_wrappers]
+doc = "Words that may stand before the command proper (`sudo rm f`, `env X=1 tee f`) and are skipped when the write verb is looked for."
+value = ["sudo", "env", "command", "nohup", "time", "nice", "exec", "builtin"]
+
+[workdetect.excluded_path_res]
+doc = "Regex sources of absolute paths that are never project work for the tasklist work count, wherever the project is: the device files (a redirect to /dev/stderr writes no file). The scratchpad directory, anti-hall's progress/history/handover files (workdetect.scratchpad_path, workdetect.state_dir), the TMPDIR of the request and a path the one user request names are excluded on top of these."
+value = ['^/dev/']
+
+[workdetect.excluded_outside_res]
+doc = "Regex sources of absolute paths that are not project work when they lie OUTSIDE the session's project: the system and per-user temporary directories (a session's scratchpad lives there). Only read while guards.tasklistProjectOnly is off and the project is known; with it on, every path outside the project is already left out. A path inside the project or the session's directory is never excluded by these, so a project that lives under a temp directory keeps counting."
+value = ['^/(?:private/)?tmp(?:/|$)', '^/(?:private/)?var/(?:folders|tmp)(?:/|$)']
+
 # ---- tasklist-guard ---------------------------------------------------------------------------
 
 [tasklist_guard.summary]
@@ -1488,6 +1512,14 @@ value = "shorten the subject and delete finished tasks first; put details in the
 doc = "Claude only (Codex has no task tools). Where the on/off switch of the completed-task orders is read from (guards.doneOrder, default on). Off: the completion line stays the one-shot tip and no order is given for a completed task left in the list."
 value = { section = "guards", key = "doneOrder", env = "ANTIHALL_DONE_ORDER", default = true }
 
+[done_order.sw_skip_logged]
+doc = "Off switch (guards.doneOrderSkipLogged, default on, GH #794). On: when the session's history ledger already holds a written entry for a task that was just marked completed (a heading matching done_order.entry_re), the completion line only orders the task deleted; it no longer tells the agent to log the outcome it already logged. Off: every completion gets the log-then-delete line."
+value = { section = "guards", key = "doneOrderSkipLogged", env = "ANTIHALL_DONE_ORDER_SKIP_LOGGED", default = true }
+
+[done_order.entry_re]
+doc = "Regex source (multiline) of a written ledger entry for one task: a heading such as `## Task #19 Release`. {id} is the task id, regex-escaped. The rows the engine appends itself on TaskCreated/TaskCompleted (`- <time> · TaskCompleted · task_id=...`) are not entries."
+value = '^#+\s*Task\s*#?{id}(?![0-9A-Za-z])'
+
 [done_order.num_after_min]
 doc = "Where the minutes a completed task may stay in the list before the first order are read from (guards.doneOrderAfterMin, default 10). The age counts from the first time the engine saw the task done (the completion itself, or the first prompt or Stop that found it)."
 value = { section = "guards", key = "doneOrderAfterMin", env = "ANTIHALL_DONE_ORDER_AFTER_MIN", default = 10, min = 1 }
@@ -1549,6 +1581,10 @@ value = "⚠️ Do now: {n} completed task(s) still listed: TaskUpdate status=de
 doc = "The order given when a task is marked completed (PostToolUse of TaskUpdate). Placeholder: {id} the task id."
 value = "⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledger (write it yourself), then TaskUpdate status=deleted #{id}."
 
+[done_order.msg_fresh_logged]
+doc = "The order given when a task is marked completed and its ledger entry is already written (done_order.sw_skip_logged). Placeholder: {id} the task id."
+value = "⚠️ Do now: task #{id} is done and logged: TaskUpdate status=deleted #{id}."
+
 [done_order.events]
 doc = "Counter events (advisory kind tasklist_hygiene) of the completed-task orders: lingering = one per completed task found in the list past the age; emitted = one per completed task an order was given for; followed = one per task that was ordered and then deleted before the next order."
 value = { lingering = "completed_lingering", emitted = "order_emitted", followed = "followed" }
@@ -1608,6 +1644,14 @@ value = { section = "guards", key = "tasklistIntegrationSkip", env = "ANTIHALL_T
 doc = "Off switch (guards.tasklistCarryProgress, default on): a session that crossed midnight keeps using its progress file under the earlier date instead of being asked for a new one under today's date."
 value = { section = "guards", key = "tasklistCarryProgress", env = "ANTIHALL_TASKLIST_CARRY_PROGRESS", aliases = [], option = "", default = true }
 
+[tasklist_guard.file_count_setting]
+doc = "Off switch (guards.tasklistCountFiles, default on, GH #794): the work count is the number of distinct project files written (an Edit or Write path, a shell redirect target, the file arguments of rm, cp, mv, tee, touch, chmod, sed -i and git rm/mv/restore/checkout), deduplicated, and a command that names no file (git commit, mkdir, a build) counts nothing. Off: every Edit or Write and every shell command that looks like a file change counts one, named by its command text, as before."
+value = { section = "guards", key = "tasklistCountFiles", env = "ANTIHALL_TASKLIST_COUNT_FILES", aliases = [], option = "", default = true }
+
+[tasklist_guard.project_only_setting]
+doc = "Off switch (guards.tasklistProjectOnly, default on): only a file written inside the session's project (its root, or the working directory) counts toward tasklist-guard's work count; a write to another repository or a path outside the project does not."
+value = { section = "guards", key = "tasklistProjectOnly", env = "ANTIHALL_TASKLIST_PROJECT_ONLY", aliases = [], option = "", default = true }
+
 [tasklist_guard.name_counted_setting]
 doc = "Off switch (guards.tasklistNameCounted, default on): the block message names the first counted actions."
 value = { section = "guards", key = "tasklistNameCounted", env = "ANTIHALL_TASKLIST_NAME_COUNTED", aliases = [], option = "", default = true }
@@ -1619,13 +1663,27 @@ doc = "Regex source of a progress date directory name."
 value = '^\d{4}-\d{2}-\d{2}$'
 
 [tasklist_guard.counted_max]
-doc = "How many counted actions the block message names (the visible block text holds 115 characters)."
+doc = "How many counted files (or stalled tasks) the block message names (the visible block text holds 115 characters)."
 value = 3
 min = 1
 
 [tasklist_guard.counted_label_max]
-doc = "Longest label (characters) of one named action; a longer one is cut."
-value = 20
+doc = "Longest label (characters) of one named file; a longer path is cut at the front, so the file name stays."
+value = 28
+min = 8
+
+[tasklist_guard.counted_task_label]
+doc = "How one in-progress task is named in the 'Counted:' list of a stalled-tasks block; {id} is the task id and {subject} its subject (cut to counted_task_subject_max)."
+value = "#{id} {subject}"
+
+[tasklist_guard.counted_task_subject_max]
+doc = "Longest task subject (characters) shown in the stalled-tasks 'Counted:' list; a longer one is cut."
+value = 24
+min = 4
+
+[tasklist_guard.counted_task_label_max]
+doc = "Longest whole task label (characters) in the stalled-tasks 'Counted:' list; a longer one is cut."
+value = 32
 min = 8
 
 [tasklist_guard.counted_ellipsis]

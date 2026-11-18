@@ -220,7 +220,7 @@ fn tasklist_guard_counts_the_in_progress_tasks_of_the_store() {
     let s = Scratch::new("tl");
     s.store(&["in_progress", "in_progress"]);
     let tr = s.dir.join("t.jsonl");
-    let edit = |n: u32| json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", s.dir.join("proj").display())}}]}});
     let create = json!({"type": "assistant", "message": {"id": "c", "role": "assistant", "content": [{"type": "tool_use", "id": "tuc", "name": "TaskCreate", "input": {"subject": "x"}}]}});
     let result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tuc", "content": "Task #1 created successfully: x"}]}});
     let done = json!({"type": "assistant", "message": {"id": "u", "role": "assistant", "content": [{"type": "tool_use", "id": "tuu", "name": "TaskUpdate", "input": {"taskId": "1", "status": "completed"}}]}});

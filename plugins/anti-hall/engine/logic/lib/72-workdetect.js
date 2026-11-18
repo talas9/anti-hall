@@ -168,6 +168,180 @@ var wd = {
     }
     return saw;
   },
+  // ---- the files a command writes (GH #794: the work count names real files, never command strings) ----
+  // The command split into simple commands at `&&`, `||`, `;`, `|`, a newline, a lone `&`, a parenthesis, a backtick or `$(`, cut where the
+  // quote-blanked copy shows the separator (a separator inside a quoted span is text).
+  segments: function (cmd) {
+    var n = wd.neutralize(cmd), out = [], from = 0, re = /&&|\|\||;|\||\n|(?<![<>&])&(?![&>])|\$\(|[()`]/g, m;
+    while ((m = re.exec(n)) !== null) { out.push(cmd.slice(from, m.index)); from = m.index + m[0].length; }
+    out.push(cmd.slice(from));
+    return out;
+  },
+  // One simple command read as words and redirect targets: {words: [text], redirects: [text]}. Quotes are removed, a backslash escapes
+  // the next character, fd redirects (`2>&1`, `>&2`) and input redirects (`< f`, `<<EOF`) name no written file.
+  words: function (seg) {
+    var words = [], redirects = [], cur = '', has = false, i = 0, len = seg.length;
+    function flush() { if (has) words.push(cur); cur = ''; has = false; }
+    function readWord() {
+      while (i < len && /\s/.test(seg.charAt(i))) i++;
+      var w = '', any = false;
+      while (i < len && !/\s/.test(seg.charAt(i))) {
+        var c = seg.charAt(i);
+        if (c === "'") { i++; while (i < len && seg.charAt(i) !== "'") w += seg.charAt(i++); i++; any = true; }
+        else if (c === '"') { i++; while (i < len && seg.charAt(i) !== '"') { if (seg.charAt(i) === '\\' && i + 1 < len) i++; w += seg.charAt(i++); } i++; any = true; }
+        else if (c === '\\' && i + 1 < len) { w += seg.charAt(i + 1); i += 2; any = true; }
+        else if (c === '>' || c === '<') break;
+        else { w += c; i++; any = true; }
+      }
+      return any ? w : null;
+    }
+    while (i < len) {
+      var ch = seg.charAt(i);
+      if (/\s/.test(ch)) { flush(); i++; continue; }
+      if (ch === '>') {
+        if (has && !/^(?:\d*|&)$/.test(cur)) flush(); else { cur = ''; has = false; }
+        i++;
+        if (seg.charAt(i) === '>') i++;
+        if (seg.charAt(i) === '|') i++;
+        if (seg.charAt(i) === '&') { i++; readWord(); continue; }
+        var t = readWord();
+        if (t !== null) redirects.push(t);
+        continue;
+      }
+      if (ch === '<') {
+        flush(); i++;
+        if (seg.charAt(i) === '<') { i++; if (seg.charAt(i) === '-' || seg.charAt(i) === '<') i++; }
+        readWord();
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '\\') { var q = readWord(); if (q !== null) { cur += q; has = true; } continue; }
+      cur += ch; has = true; i++;
+    }
+    flush();
+    return { words: words, redirects: redirects };
+  },
+  // The file arguments of a git command that changes working-tree files by name (workdetect.git_write_subcommands): `rm`/`mv`/`restore` name
+  // their files; `checkout` names them after `--`, or, with no `--`, as the arguments that are existing files (a branch or ref is not one).
+  // `args`: the words after `git`; `dir`: the working directory. Returns the file words (unresolved).
+  gitWrites: function (args, dir, vars) {
+    var table = ah.cfg('workdetect.git_write_subcommands'), sub = '', at = -1;
+    for (var i = 0; i < args.length; i++) {
+      if (args[i] === '-C' || args[i] === '-c') { i++; continue; }
+      if (args[i].charAt(0) === '-') continue;
+      sub = args[i]; at = i; break;
+    }
+    var mode = at >= 0 && Object.prototype.hasOwnProperty.call(table, sub) ? table[sub] : '';
+    if (mode === '') return [];
+    var rest = args.slice(at + 1), dashes = rest.indexOf('--'), out = [];
+    if (mode === 'dashes' && dashes >= 0) return rest.slice(dashes + 1);
+    for (var j = 0; j < rest.length; j++) {
+      var a = rest[j];
+      if (a === '--source' || a === '-s') { j++; continue; }
+      if (a === '--' || a === '' || a.charAt(0) === '-') continue;
+      if (mode === 'dashes') {
+        var e = wd.expand(a, vars);
+        if (e === null) continue;
+        var abs = e.charAt(0) === '/' ? e : (dir ? ah.path.resolve(dir, e) : '');
+        if (abs === '' || ah.fs.kind(abs) !== 'file') continue;
+      }
+      out.push(a);
+    }
+    return out;
+  },
+  // `$NAME` / `${NAME}` and a leading `~` read against `vars` (and HOME); null when a variable is not known (the path is then not a path
+  // this count can name).
+  expand: function (w, vars) {
+    var home = ah.home() || '', bad = false;
+    var r = w.replace(/\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, function (m, a, b) {
+      var k = a || b;
+      if (Object.prototype.hasOwnProperty.call(vars, k)) return vars[k];
+      if (k === 'HOME' && home) return home;
+      bad = true; return m;
+    });
+    if (bad || r.indexOf('$') >= 0) return null;
+    if (r === '~' || r.indexOf('~/') === 0) { if (!home) return null; r = home + r.slice(1); }
+    return r;
+  },
+  // The absolute paths one command writes: a redirect target, or the file arguments of a write verb (workdetect.bash_write_verbs).
+  // Returns [{abs, seg}]; a path with an unknown variable, or a relative one with no usable working directory, is left out.
+  bashWrites: function (cmd, cx) {
+    var body = cmd;
+    if (cmd.indexOf('<<') >= 0) { var st = wd.stripHeredocBodies(cmd); if (st !== null) body = st; }
+    var verbs = ah.cfg('workdetect.bash_write_verbs'), wrappers = ah.cfg('workdetect.bash_wrappers'), out = [], vars = {};
+    var segs = wd.segments(body), dir = cx.cwd;
+    for (var i = 0; i < segs.length; i++) {
+      var seg = segs[i];
+      if (!seg.trim()) continue;
+      var rw = wd.words(seg), words = rw.words, targets = rw.redirects.slice();
+      // leading NAME=value assignments (kept for later segments of the same command), then wrapper words
+      var at = 0;
+      while (at < words.length && /^[A-Za-z_]\w*=/.test(words[at])) {
+        var eq = words[at].indexOf('=');
+        var val = wd.expand(words[at].slice(eq + 1), vars);
+        if (val !== null) vars[words[at].slice(0, eq)] = val;
+        at++;
+      }
+      while (at < words.length && wrappers.indexOf(words[at]) >= 0) at++;
+      // `cd <dir>`: the segments after it run there (null when the directory cannot be told: a relative path is then not named)
+      if (at < words.length && words[at] === 'cd') {
+        var cdArg = words.slice(at + 1).filter(function (a) { return a.charAt(0) !== '-' || a === '-'; })[0];
+        var cdTo = cdArg === undefined ? null : wd.expand(cdArg, vars);
+        if (cdTo === null || cdTo === '-') dir = null;
+        else if (cdTo.charAt(0) === '/') dir = ah.path.resolveAbs(cdTo);
+        else dir = dir ? ah.path.resolve(dir, cdTo) : null;
+        continue;
+      }
+      if (at < words.length) {
+        var verb = words[at].slice(words[at].lastIndexOf('/') + 1), mode = Object.prototype.hasOwnProperty.call(verbs, verb) ? verbs[verb] : '';
+        var args = words.slice(at + 1);
+        if (mode === 'sed') {
+          var inplace = args.some(function (a) { return /^-[A-Za-z]*i/.test(a) || a.indexOf('--in-place') === 0; });
+          if (!inplace) mode = '';
+          else {
+            var scripted = false, rest = [];
+            for (var k = 0; k < args.length; k++) {
+              if (args[k] === '-e' || args[k] === '-f' || args[k] === '--expression' || args[k] === '--file') { scripted = true; k++; continue; }
+              if (args[k] !== '' && (args[k].charAt(0) !== '-' || args[k] === '-')) rest.push(args[k]);
+            }
+            args = scripted ? rest : rest.slice(1);
+            mode = 'all';
+          }
+        } else if (mode !== '') {
+          args = args.filter(function (a) { return a !== '--' && !(a.charAt(0) === '-' && a.length > 1); });
+          if (mode === 'last') args = args.slice(-1);
+          else if (mode === 'rest') args = args.slice(1);
+        }
+        if (mode !== '') targets = targets.concat(args);
+        else if (verb === 'git') targets = targets.concat(wd.gitWrites(args, dir, vars));
+      }
+      for (var j = 0; j < targets.length; j++) {
+        var e = wd.expand(targets[j], vars);
+        if (e === null || e === '' || e === '-') continue;
+        var abs;
+        if (e.charAt(0) === '/') abs = ah.path.resolveAbs(e);
+        else if (dir) abs = ah.path.resolve(dir, e);
+        else { ah.unable('workdetect:relative_no_cwd'); continue; }
+        out.push({ abs: abs, seg: seg.trim() });
+      }
+    }
+    return out;
+  },
+  // Whether a written path is project work the tasklist gate counts: not the scratchpad, anti-hall's own progress/history/handover files,
+  // the request's TMPDIR or a path named by the one user request (excludedWritePath), and not a device file (workdetect.excluded_path_res).
+  // With a known project root (cx.root) a path outside the project and the session's directory is not project work either: all of them with
+  // guards.tasklistProjectOnly on (cx.projectOnly), else those under a temp directory (workdetect.excluded_outside_res). A path inside
+  // the project is never excluded by a temp pattern, so a project that lives under a temp directory keeps its own files.
+  countablePath: function (abs, cx) {
+    if (!abs || wd.excludedWritePath(abs, cx)) return false;
+    var always = ah.cfg('workdetect.excluded_path_res');
+    for (var i = 0; i < always.length; i++) if (new RegExp(always[i]).test(abs)) return false;
+    if (!cx.root) return true;
+    if (wd.isUnder(abs, cx.root) || (cx.cwd && wd.isUnder(abs, cx.cwd))) return true;
+    if (cx.projectOnly) return false;
+    var outside = ah.cfg('workdetect.excluded_outside_res');
+    for (var j = 0; j < outside.length; j++) if (new RegExp(outside[j]).test(abs)) return false;
+    return true;
+  },
   // `isCountedWork(tu)` for a tool-use block.
   counted: function (tu, cx) {
     var name = tu.name && typeof tu.name === 'string' ? tu.name : '';

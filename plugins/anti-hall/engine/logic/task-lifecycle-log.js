@@ -14,6 +14,22 @@ function tllSan(s, max) {
   return task.sanitizeText(s, max - 1);
 }
 
+// Whether the ledger already holds a row with this event and task id (`needle` is `<sep>event<sep>task_id=<id>`): the id must end there
+// (a following separator, newline or the end of the file), so task 1 is not task 12. A ledger over the read cap is not searched (counted).
+function tllHasRow(abs, needle) {
+  var size = ah.fs.size(abs);
+  if (size === null) return false;
+  if (size > ah.cfgNum('script.read_max_bytes')) { ah.unable('task-lifecycle-log:ledger_big'); return false; }
+  var t = ah.fs.readText(abs);
+  if (t === null) return false;
+  var sep = ah.cfg('task_lifecycle_log.separator');
+  for (var at = t.indexOf(needle); at >= 0; at = t.indexOf(needle, at + 1)) {
+    var next = t.charAt(at + needle.length);
+    if (next === '' || next === '\n' || t.indexOf(sep, at + needle.length) === at + needle.length) return true;
+  }
+  return false;
+}
+
 function decide(p) {
   if (!ah.settings.bool('task_lifecycle_log.setting')) return 'allow';
   if (p === null || typeof p !== 'object' || Array.isArray(p)) return 'allow';
@@ -47,7 +63,10 @@ function decide(p) {
   if (!ah.state.op(root, 'mkdir', dir + '/' + date)) return 'allow';
   // A name the file system cannot hold: Node's append fails and the hook stops quietly, after the directory was made.
   if ((sid + ext).length > ah.cfgNum('task_lifecycle_log.name_max')) return 'allow';
-  if (!ah.state.op(root, 'append', dir + '/' + date + '/' + sid + ext, line + '\n')) return 'allow';
+  var ledger = dir + '/' + date + '/' + sid + ext;
+  // one row per (event, task): a completion that reaches the hook more than once (a teammate's, then the session's) is one row (GH #794)
+  if (ah.settings.bool('task_lifecycle_log.dedupe_setting') && tllHasRow(root + '/' + ledger, sep + event + sep + 'task_id=' + taskId)) return 'allow';
+  if (!ah.state.op(root, 'append', ledger, line + '\n')) return 'allow';
   if (indexBig) return 'allow';
   var existing = ah.fs.readText(abs);
   if (existing !== null && existing.indexOf(sid) >= 0) return 'allow';

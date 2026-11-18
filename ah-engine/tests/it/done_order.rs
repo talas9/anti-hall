@@ -370,3 +370,82 @@ fn the_record_is_bounded_to_max_entries() {
     let rec: Value = serde_json::from_str(&std::fs::read_to_string(s.record_path()).unwrap()).unwrap();
     assert!(rec["ids"].as_object().unwrap().len() <= 200, "the record is capped at done_order.max_entries: {}", rec["ids"].as_object().unwrap().len());
 }
+
+/// Today's UTC date as the history ledger directory spells it.
+fn utc_date() -> String {
+    String::from_utf8(Command::new("date").args(["-u", "+%F"]).output().unwrap().stdout).unwrap().trim().to_string()
+}
+
+impl Scratch {
+    fn ledger(&self) -> PathBuf {
+        self.dir.join("proj/.anti-hall/history").join(utc_date()).join(format!("{SID}.md"))
+    }
+
+    fn write_ledger(&self, text: &str) {
+        std::fs::create_dir_all(self.ledger().parent().unwrap()).unwrap();
+        std::fs::write(self.ledger(), text).unwrap();
+    }
+}
+
+/// GH #794: the completion line asks for the ledger entry only while there is none. A written entry (a `## Task #1` heading) turns it into the
+/// delete-only order; the rows the engine appends itself on TaskCreated/TaskCompleted are not entries.
+#[test]
+fn the_completion_line_does_not_ask_for_a_ledger_entry_that_is_already_written() {
+    let s = Scratch::new("do-logged");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("- 2026-11-18T12:00:00.000Z · TaskCompleted · task_id=1 · store task 1\n");
+    let rows_only = s.task_update(&tr, "completed");
+    assert!(rows_only.contains("log its Cause/Fix/Verified"), "a lifecycle row is not an entry: {rows_only}");
+    let s = Scratch::new("do-logged2");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #1 store task 1\n- Cause: x\n- Fix: y\n- Verified: z\n");
+    let out = s.task_update(&tr, "completed");
+    assert!(out.contains("task #1 is done and logged") && out.contains("TaskUpdate status=deleted #1"), "delete-only order: {out}");
+    assert!(!out.contains("Cause/Fix/Verified"), "no request to log what is logged: {out}");
+    // task #1 is not task #11: the entry of another task does not stand in
+    let s = Scratch::new("do-logged3");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #11 another\n- Cause: x\n");
+    assert!(s.task_update(&tr, "completed").contains("log its Cause/Fix/Verified"), "entry of #11 is not #1");
+    // the switch off restores the old line
+    let s = Scratch::new("do-logged4");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #1 store task 1\n- Cause: x\n");
+    let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+    assert!(s.check("tasklist-hygiene", &p, &[("ANTIHALL_DONE_ORDER_SKIP_LOGGED", "0")]).contains("log its Cause/Fix/Verified"));
+}
+
+/// GH #794: one completion that reaches the TaskCompleted hook several times is one ledger row; another task, and another event of the same
+/// task, are rows of their own.
+#[test]
+fn a_repeated_task_event_is_one_ledger_row() {
+    let s = Scratch::new("lc-dedupe");
+    let ev = |event: &str, id: &str, mate: Option<&str>| {
+        let mut p = json!({"hook_event_name": event, "session_id": SID, "cwd": s.dir.join("proj"), "task_id": id, "task_subject": "write the parser"});
+        if let Some(m) = mate {
+            p["teammate_name"] = m.into();
+        }
+        s.check("task-lifecycle-log", &p, &[]);
+    };
+    ev("TaskCreated", "7", None);
+    for mate in [Some("fix-a"), Some("fix-b"), None, Some("fix-a"), None] {
+        ev("TaskCompleted", "7", mate);
+    }
+    ev("TaskCompleted", "70", None); // task 70 is not task 7
+    let text = std::fs::read_to_string(s.ledger()).unwrap();
+    let rows = |needle: &str| text.lines().filter(|l| l.contains(needle)).count();
+    assert_eq!(rows("TaskCreated · task_id=7"), 1, "{text}");
+    assert_eq!(rows("TaskCompleted · task_id=7 "), 1, "five deliveries, one row: {text}");
+    assert_eq!(rows("TaskCompleted · task_id=70"), 1, "{text}");
+    // off: every delivery is a row, as before
+    let s = Scratch::new("lc-dedupe-off");
+    for _ in 0..3 {
+        let p = json!({"hook_event_name": "TaskCompleted", "session_id": SID, "cwd": s.dir.join("proj"), "task_id": "7", "task_subject": "x"});
+        s.check("task-lifecycle-log", &p, &[("ANTIHALL_TASK_LIFECYCLE_DEDUPE", "0")]);
+    }
+    assert_eq!(std::fs::read_to_string(s.ledger()).unwrap().lines().count(), 3);
+}

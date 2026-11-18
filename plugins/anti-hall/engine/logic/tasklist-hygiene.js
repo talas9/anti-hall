@@ -74,7 +74,7 @@ function decide(p, opts, event) {
     ah.advisory(mk, ah.cfg('tasklist_hygiene.event_nudge'));
     // the completion line is an order (GH #762), recorded so a task left in the list is ordered again on the schedule; when the record
     // cannot be saved (or the switch is off) the one-shot tip is what is left
-    if (orderOn && id !== '') orderLine = dord.fresh(sid, id, ah.clock.now());
+    if (orderOn && id !== '') orderLine = dord.fresh(sid, id, ah.clock.now(), p);
     // a task the gate refuses (another owner's, or the list is ambiguous or unreadable) gets neither the order nor the delete tip
     var refused = orderOn && id !== '' && orderLine === '' && !dord.orderable(sid, id);
     if (orderLine === '' && !refused) {

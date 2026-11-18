@@ -37,13 +37,13 @@ var tk = {
   storeScan: function (home, sid) {
     var st = tk.storeTasks(home, sid);
     if (st === null) return null;
-    var ids = [], inProg = 0;
+    var ids = [], inProg = 0, prog = [];
     tk.withStore([], st).forEach(function (t) {
       if (!tk.isOpen(t)) return;
       var s = tk.statusLc(t);
-      if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
+      if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; prog.push({ id: t.id, content: t.content, owner: t.owner }); } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
     });
-    return { openTaskIds: ids, inProgressCount: inProg };
+    return { openTaskIds: ids, inProgressCount: inProg, inProgress: prog };
   },
   // GH #781: a resumed or shared session keeps its tasks in ANOTHER list; its own directory `own` (under `base`) then holds only a pointer file
   // naming it. The pointer is followed one hop, and only to a valid id whose directory exists; any other pointer leaves the own directory.

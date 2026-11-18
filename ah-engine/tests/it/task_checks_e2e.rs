@@ -312,7 +312,7 @@ fn task_guard_advisories_never_share_stdout_with_the_answer() {
 fn tasklist_guard_advisories_never_share_stdout_with_the_answer() {
     let w = World::new("tasklist-guard-advisory");
     let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
     std::fs::write(w.path("t.jsonl"), format!("{}\n{}\n{}\n", edit(1), edit(2), edit(3))).unwrap();
     // plan mode: the advisory goes to stderr, stdout stays empty
     let payload =
@@ -442,7 +442,7 @@ fn tasklist_guard_answers_a_quiet_stop_with_its_file_effects_and_answers_a_block
     assert!(day.is_dir());
     // three file-changing actions with no task activity: Node blocks, and the native fire path (lane stop) answers that block
     // itself (exit 0 + JSON block) instead of handing the Stop over
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", w.path("proj").display())}}]}});
     std::fs::write(w.path("t2.jsonl"), format!("{}\n{}\n{}\n", edit(1), edit(2), edit(3))).unwrap();
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t2.jsonl")}).to_string();
     let (code, out) = stop_run(&w, "tasklist-guard", &payload);
@@ -465,7 +465,7 @@ fn tasklist_guard_blocks_in_a_repository_nested_inside_another_one() {
     git(&w.path("proj"));
     git(&w.path("proj/inner"));
     let cwd = std::fs::canonicalize(w.path("proj/inner")).unwrap();
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
     // tasks are tracked (all done), so only a stale progress file can block: that is judged in the nested repository's own ledger
     std::fs::write(w.path("t.jsonl"), format!("{}{}\n{}\n{}\n", task_lines("completed"), edit(1), edit(2), edit(3))).unwrap();
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl")}).to_string();
@@ -482,7 +482,7 @@ fn tasklist_guard_blocks_in_a_repository_nested_inside_another_one() {
 fn tasklist_guard_counts_the_work_inside_a_window_smaller_than_the_transcript() {
     let w = World::new("tasklist-guard-window");
     let cwd = std::fs::canonicalize(w.path("proj")).unwrap();
-    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
+    let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("{}/f{n}.js", cwd.display())}}]}});
     let filler = serde_json::json!({"type": "user", "message": {"role": "user", "content": "x".repeat(1000)}}).to_string();
     let pad: String = (0..700).map(|_| format!("{filler}\n")).collect(); // ~700 KB, past the 512 KiB window
     assert!(pad.len() > 600_000);
