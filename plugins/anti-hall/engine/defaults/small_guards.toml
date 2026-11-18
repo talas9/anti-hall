@@ -179,6 +179,14 @@ value = '\s(?:-X\s*|--strategy-option[= ]|-s\s*ours\b|--strategy[= ]ours\b)'
 doc = "git arguments (run in the pick's directory, after the command) that say whether the merge commit it made would have conflicted without the automatic resolution: exit 1 = it would have (the pick resolved a conflict, so it is recorded), exit 0 = it would not (nothing was resolved), any other answer (no merge commit, an old git) cannot be told, which keeps the pick recorded."
 value = ["merge-tree", "--write-tree", "--no-messages", "HEAD^1", "HEAD^2"]
 
+[merge_side_pick.auto_probe_pre_args]
+doc = "git arguments (run in the pick's directory, BEFORE the command) that say whether merging a ref into the current HEAD would conflict; the ref of each merge segment is appended. Exit 1 = it would, 0 = it would not, any other answer (an unknown ref, an old git) cannot be told, which keeps the pick recorded. A command that chains several automatic merges is probed ref by ref."
+value = ["merge-tree", "--write-tree", "--no-messages", "HEAD"]
+
+[merge_side_pick.merge_value_opts]
+doc = "The git merge options that take their value as a separate word (so the word after them is not a ref): -X ours, -s ours, -m <msg>, -F <file>, --into-name <branch>."
+value = ["-X", "-s", "-m", "-F", "--strategy", "--strategy-option", "--into-name"]
+
 [merge_side_pick.auto_probe_timeout_ms]
 doc = "Milliseconds the automatic-resolution probe may run; a git that does not answer counts as unknown, which keeps the pick recorded."
 value = 3000

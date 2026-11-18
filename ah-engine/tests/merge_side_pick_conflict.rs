@@ -170,3 +170,64 @@ fn a_side_pick_older_than_the_ttl_is_forgotten() {
     assert!(!says(&v), "a pick older than the TTL still draws the advisory: {v}");
     std::fs::remove_dir_all(&h).ok();
 }
+
+/// `main` is itself a clean merge commit (so `HEAD^1`/`HEAD^2` name a clean merge); branch `c` conflicts with `main` on `f.txt`, branch `d`
+/// changes `g.txt` only.
+fn repo_merge_head(h: &str) -> String {
+    let r = format!("{h}/repo");
+    std::fs::create_dir_all(&r).unwrap();
+    assert!(git(&r, &["init", "-q"]));
+    for f in ["f.txt", "g.txt", "h.txt"] {
+        std::fs::write(format!("{r}/{f}"), "base\n").unwrap();
+    }
+    assert!(git(&r, &["add", "."]) && git(&r, &["commit", "-qm", "base"]));
+    assert!(git(&r, &["checkout", "-qb", "c"]));
+    std::fs::write(format!("{r}/f.txt"), "theirs\n").unwrap();
+    assert!(git(&r, &["commit", "-qam", "c"]));
+    assert!(git(&r, &["checkout", "-q", "main"]) && git(&r, &["checkout", "-qb", "d"]));
+    std::fs::write(format!("{r}/g.txt"), "d\n").unwrap();
+    assert!(git(&r, &["commit", "-qam", "d"]));
+    assert!(git(&r, &["checkout", "-q", "main"]) && git(&r, &["checkout", "-qb", "e"]));
+    std::fs::write(format!("{r}/h.txt"), "e\n").unwrap();
+    assert!(git(&r, &["commit", "-qam", "e"]));
+    assert!(git(&r, &["checkout", "-q", "main"]));
+    std::fs::write(format!("{r}/f.txt"), "ours\n").unwrap();
+    assert!(git(&r, &["commit", "-qam", "ours"]));
+    assert!(git(&r, &["merge", "-q", "--no-edit", "e"]), "a clean merge commit becomes HEAD");
+    r
+}
+
+/// GH #782 round 3 (A): HEAD is a clean merge commit and the command merges a conflicting branch with `-X ours` and pushes in the same
+/// command. The probe must look at the merge the command is about to make (the pre-merge HEAD against `c`), not at the old HEAD's parents.
+#[test]
+fn an_x_ours_merge_and_push_in_one_command_after_a_clean_merge_head_is_flagged() {
+    let h = home("chain-a");
+    let r = repo_merge_head(&h);
+    let v = run(&h, "PreToolUse", &r, "git merge -q --no-edit -X ours c && git push");
+    assert!(says(&v), "the push in the same command went unflagged: {v}");
+    std::fs::remove_dir_all(&h).ok();
+}
+
+/// (B): two automatic merges chained in one command, the first conflicting and the last clean; the record must not be decided by the last one.
+#[test]
+fn a_chain_of_x_ours_merges_is_flagged_when_any_of_them_conflicts() {
+    let h = home("chain-b");
+    let r = repo_merge_head(&h);
+    let cmd = "git merge -q --no-edit -X ours c && git merge -q --no-edit -X ours d";
+    run(&h, "PreToolUse", &r, cmd);
+    assert!(git(&r, &["merge", "-q", "--no-edit", "-X", "ours", "c"]) && git(&r, &["merge", "-q", "--no-edit", "-X", "ours", "d"]));
+    run(&h, "PostToolUse", &r, cmd);
+    let v = run(&h, "PreToolUse", &r, "git push");
+    assert!(says(&v), "the first merge's conflict was lost behind the last merge: {v}");
+    std::fs::remove_dir_all(&h).ok();
+}
+
+/// Two clean automatic merges in a chain stay silent, and so does a chain whose refs are all clean against the pre-merge HEAD.
+#[test]
+fn a_chain_of_clean_x_ours_merges_stays_silent() {
+    let h = home("chain-clean");
+    let r = repo_merge_head(&h);
+    let cmd = "git merge -q --no-edit -X ours d && git push";
+    assert!(!says(&run(&h, "PreToolUse", &r, cmd)), "a clean merge then push drew the advisory");
+    std::fs::remove_dir_all(&h).ok();
+}
