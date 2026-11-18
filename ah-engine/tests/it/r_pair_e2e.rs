@@ -972,3 +972,51 @@ fn post_named_store_owner_overrides_stale_unowned_transcript() {
     std::fs::write(dir.join("1.json"), r#"{"id":"1","status":"in_progress","owner":"wake-worker"}"#).unwrap();
     assert!(!pair_text(&w.post("wake-worker", &t, true)), "the owner is already set in the authoritative named list");
 }
+
+/// GH #781: a resumed or shared session keeps its tasks in ANOTHER list; its own `session-<8>` directory holds only a `.session-list`
+/// pointer naming it. The pointer is followed, so an agent that owns open tasks of that list is never "without a task"; an agent that owns
+/// none of them still is.
+#[test]
+fn stop_follows_the_session_list_pointer_to_the_list_that_holds_the_tasks() {
+    let w = World::new("stop-pointer");
+    w.track(&["port the wake"]);
+    let t = transcript(&[], &[("port the wake", Some("wake-worker"))]);
+    let own = w.path("home/.claude/tasks/session-s1");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join(".session-list"), "session-e0e935c3").unwrap();
+    let real = w.path("home/.claude/tasks/session-e0e935c3");
+    std::fs::create_dir_all(&real).unwrap();
+    for (id, owner) in [(1, "wake-worker"), (2, "wake-worker [9d68d9]")] {
+        std::fs::write(real.join(format!("{id}.json")), format!(r#"{{"id":"{id}","status":"in_progress","owner":"{owner}"}}"#)).unwrap();
+    }
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(!o.1.contains("owns no task"), "the pointed-to list holds the agent's task: {o:?}");
+    // an agent that owns nothing in the pointed-to list is still flagged
+    std::fs::write(real.join("1.json"), r#"{"id":"1","status":"in_progress","owner":"someone-else"}"#).unwrap();
+    std::fs::remove_file(real.join("2.json")).unwrap();
+    let o = w.stop(&t, true, serde_json::json!({}));
+    assert!(o.1.contains("agent \\\"wake-worker\\\" owns no task"), "an agent with no task of that list is flagged: {o:?}");
+}
+
+/// GH #781 (the by-id reader of the Pre and Post paths): the session's own `session-<8>` directory holds only a `.session-list` pointer; the
+/// by-id proof and the Post advisory read the list it names, as the shared task reader does. A pointer to a list that lacks the task still denies.
+#[test]
+fn by_id_and_post_follow_the_session_list_pointer() {
+    let w = World::new("byid-pointer");
+    let own = w.path("home/.claude/tasks/session-s1");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join(".session-list"), "session-e0e935c3").unwrap();
+    let real = w.path("home/.claude/tasks/session-e0e935c3");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("405.json"), r#"{"id":"405","subject":"live","status":"in_progress","owner":"wake-worker"}"#).unwrap();
+    // Pre: an unnamed spawn referencing #405 (open in the pointed-to list, owned by the name it carries) is paired by id
+    let o = w.pre_ref(Some("wake-worker"), Some("#405 work"), Some(&by_id_tasks()));
+    assert!(!denied(&o), "the pointed-to list holds #405: {o:?}");
+    // a task the pointed-to list does not hold still denies (the own directory's emptiness is not the list)
+    let o = w.pre_ref(None, Some("#999 work"), Some(&by_id_tasks()));
+    assert!(denied(&o), "#999 is in no list: {o:?}");
+    // Post: the agent owns an open task of the pointed-to list, so no pair advisory even over a stale unowned transcript
+    let t = transcript(&[task(405, "in_progress", None)], &[("port the wake", Some("wake-worker"))]);
+    assert!(!pair_text(&w.post("wake-worker", &t, true)), "the pointed-to list's owner pairs the agent");
+    assert!(pair_text(&w.post("other-worker", &t, true)), "an agent that owns nothing there still speaks");
+}
