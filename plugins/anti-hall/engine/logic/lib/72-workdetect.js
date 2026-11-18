@@ -342,6 +342,22 @@ var wd = {
     for (var j = 0; j < outside.length; j++) if (new RegExp(outside[j]).test(abs)) return false;
     return true;
   },
+  // Whether a tool use writes at least one project file (the file-based count, GH #794): an Edit/Write path or a Bash command's write targets
+  // (wd.bashWrites), judged by wd.countablePath. Shared by every check that asks "was there real work after time T".
+  countedFiles: function (tu, cx) {
+    var name = tu.name && typeof tu.name === 'string' ? tu.name : '', input = tu.input ? tu.input : null;
+    if (ah.cfg('workdetect.never_work_tools').indexOf(name) >= 0) return false;
+    if (ah.cfg('workdetect.mutating_tools').indexOf(name) >= 0) {
+      var fp = input && typeof input.file_path === 'string' ? input.file_path : '';
+      if (!fp) return false;
+      if (fp.charAt(0) !== '/' && !cx.cwd) return false;
+      return wd.countablePath(fp.charAt(0) === '/' ? ah.path.resolveAbs(fp) : ah.path.resolve(cx.cwd, fp), cx);
+    }
+    if (name !== 'Bash') return false;
+    var cmd = input && typeof input.command === 'string' ? input.command : '';
+    if (!cmd || wd.housekeepingOnly(cmd)) return false;
+    return wd.bashWrites(cmd, cx).some(function (w) { return wd.countablePath(w.abs, cx); });
+  },
   // `isCountedWork(tu)` for a tool-use block.
   counted: function (tu, cx) {
     var name = tu.name && typeof tu.name === 'string' ? tu.name : '';

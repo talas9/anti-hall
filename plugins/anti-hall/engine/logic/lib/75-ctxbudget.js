@@ -331,7 +331,7 @@ var cb = {
     try { return cb.freshScan(lines, mtime, { tmp: wd.tmpdir(), cwd: cwd }); } finally { wd.underTmp = under; }
   },
   freshScan: function (lines, mtime, cx) {
-    var recognized = false, last = 0;
+    var recognized = false, last = 0, byFiles = ah.settings.bool('tasklist_guard.file_count_setting'); // GH #794: real project files, not command text
     for (var i = 0; i < (lines || []).length; i++) {
       var line = lines[i];
       if (!line) continue;
@@ -348,7 +348,7 @@ var cb = {
       var uses = [];
       cb.toolUses(e, uses);
       for (var u = 0; u < uses.length; u++) {
-        if (wd.counted(uses[u], cx) && ts > last) last = ts;
+        if ((byFiles ? wd.countedFiles(uses[u], cx) : wd.counted(uses[u], cx)) && ts > last) last = ts;
       }
     }
     return recognized ? last <= mtime + cb.n('ctxbudget.ah_freshness_grace_ms') : null;
