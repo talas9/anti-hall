@@ -88,20 +88,32 @@ var tp = {
       var f = tp.fold(fs[i].replace(/\/+$/, ''));
       for (var j = 0; j < pat.roots.length; j++) if (pat.roots[j] === f || pat.roots[j].indexOf(f + '/') === 0) return true;
     }
-    // a folder under a protected root (a project folder, a session's tool-results folder) that holds a protected file anywhere below it
-    return tp.insideRoot(abs, pat) && ah.fs.isDir(abs) && tp.contains(abs, pat);
+    // a folder under a protected root (a project folder, a session's tool-results folder) that holds a protected file: among its own files
+    // (always read, by name: a project folder holds its transcripts), or anywhere below it (the budgeted walk)
+    if (!tp.insideRoot(abs, pat) || !ah.fs.isDir(abs)) return false;
+    var dir = abs.replace(/\/+$/, ''), names = ah.fs.readdir(dir) || [];
+    for (var k = 0; k < names.length; k++) {
+      var p = tp.fold(dir + '/' + names[k]);
+      if (pat.exact.indexOf(p) >= 0 || pat.res.some(function (r) { return r.test(p); })) return true;
+    }
+    return tp.contains(abs, pat);
   },
-  // whether a folder holds a protected file at any depth (a bounded walk: past the limits it counts as holding one)
+  // whether a folder holds a protected file at any depth. One budget per command (transcript_protect.walk_max_entries entries and
+  // walk_budget_ms of time, shared by every folder the command names, kept on `pat`): past it, or below walk_max_depth, the walk FAILS OPEN
+  // (the folder counts as holding none). A folder's own files are checked before its subfolders are entered.
   contains: function (dir, pat) {
-    var left = ah.cfg('transcript_protect.walk_max_entries'), maxDepth = ah.cfg('transcript_protect.walk_max_depth');
+    if (!pat.walk) pat.walk = { left: ah.cfg('transcript_protect.walk_max_entries'), until: ah.clock.now() + ah.cfg('transcript_protect.walk_budget_ms') };
+    var budget = pat.walk, maxDepth = ah.cfg('transcript_protect.walk_max_depth');
     var walk = function (d, depth) {
-      var names = ah.fs.readdir(d) || [];
-      for (var i = 0; i < names.length; i++) {
-        if (--left < 0) return true;
+      var names = ah.fs.readdir(d) || [], subs = [], i;
+      for (i = 0; i < names.length; i++) {
+        if (--budget.left < 0 || ah.clock.now() > budget.until) return false;
         var p = d + '/' + names[i];
         if (tp.isProtected(p, pat)) return true;
-        if (ah.fs.isDir(p)) { if (depth >= maxDepth) return true; if (walk(p, depth + 1)) return true; }
+        if (ah.fs.isDir(p)) subs.push(p);
       }
+      if (depth >= maxDepth) return false;
+      for (i = 0; i < subs.length; i++) if (walk(subs[i], depth + 1)) return true;
       return false;
     };
     return walk(dir.replace(/\/+$/, ''), 0);
@@ -173,48 +185,186 @@ var tp = {
     }
     return false;
   },
-  // whether text names a protected path among its path-like words (a spelled-out path in a script)
-  named: function (text, pat) {
-    var words = text.match(new RegExp(ah.cfg('transcript_protect.token_re'), 'g')) || [];
-    for (var i = 0; i < words.length; i++) {
-      if (words[i].indexOf('/') < 0 && words[i].indexOf('~') < 0) continue;
-      var e = wd.expand(words[i], {});
-      if (e !== null && e.charAt(0) === '/' && tp.isProtected(ah.path.resolveAbs(e), pat)) return true;
+  // A write whose target the parser cannot name (`perl -pi`, `find -delete`, `truncate $(...)`): blocked when a word of its command part
+  // names a protected folder mention (transcript_protect.anchors) that is, or holds, a protected path, or cannot be resolved (a glob, an
+  // unknown variable). A part whose every such word is a plain non-protected path (`perl -pi -e .. <memory note>`) is allowed.
+  unnamedHit: function (seg, pat, vars) {
+    var ws = wd.words(seg).words;
+    for (var i = 0; i < ws.length; i++) {
+      if (tp.anchorAt(ws[i]) < 0) continue;
+      var e = /[*?[]/.test(ws[i]) ? null : wd.expand(ws[i], vars);
+      if (e === null || e.charAt(0) !== '/') return true;
+      var abs = ah.path.resolveAbs(e);
+      if (tp.isProtected(abs, pat) || tp.isParent(abs, pat)) return true;
     }
     return false;
   },
-  // Does one write call's own target argument reach a protected path: spelled out, or through a variable the command assigns? `command` is the
-  // whole script. An argument read at run time (transcript_protect.indirect_arg_re) or a bare variable never assigned cannot be tied to a path:
-  // then the command naming a protected path anywhere counts.
-  argHit: function (arg, command, pat) {
-    if (tp.named(arg, pat)) return true;
-    var indirect = new RegExp(ah.cfg('transcript_protect.indirect_arg_re'), 'i');
-    if (indirect.test(arg)) return tp.named(command, pat);
-    var ids = (arg.match(/[A-Za-z_]\w*/g) || []).filter(function (x, i, all) { return all.indexOf(x) === i; }).slice(0, 8), unresolved = /^\s*[A-Za-z_]\w*\s*$/.test(arg);
-    for (var i = 0; i < ids.length; i++) {
-      var re = new RegExp('(?:^|[^\\w.])' + ids[i] + '\\s*=(?!=)\\s*([^\\n;]*)', 'g'), m;
-      while ((m = re.exec(command)) !== null) {
-        unresolved = false;
-        if (tp.named(m[1], pat) || (indirect.test(m[1]) && tp.named(command, pat))) return true;
+  // `NAME=value` shell assignments of a command, expanded in order (`S=~/scratch; F=$S/x`), for the literal check
+  shellVars: function (command) {
+    var vars = {}, re = /(?:^|[\s;&|(])([A-Za-z_]\w*)=((?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()'"])+)/g, m;
+    while ((m = re.exec(command)) !== null) {
+      var e = wd.expand(m[2].replace(/^(["'])([\s\S]*)\1$/, '$2'), vars);
+      if (e !== null && e.charAt(0) === '/') vars[m[1]] = e;
+    }
+    return vars;
+  },
+  // where an anchor fragment (transcript_protect.anchors) starts in a word, or -1 (an anchor glued to a name, an escape or a pattern
+  // delimiter, transcript_protect.anchor_glued_re, is no folder mention)
+  anchorAt: function (w) {
+    var f = tp.fold(w), anchors = ah.cfg('transcript_protect.anchors').map(tp.fold), glued = new RegExp(ah.cfg('transcript_protect.anchor_glued_re'));
+    for (var j = 0; j < anchors.length; j++) {
+      var x = f.indexOf(anchors[j]);
+      while (x >= 0) {
+        if (x === 0 || !glued.test(f.charAt(x - 1))) return x;
+        x = f.indexOf(anchors[j], x + 1);
       }
     }
-    return unresolved && tp.named(command, pat);
+    return -1;
   },
-  // The kind (transcript_protect.kinds: write, remove, unnamed, inline) of the first write of a Bash command to a protected path, else null.
+  // The folder an expression names, for the part of a path before its anchor fragment: the home (transcript_protect.home_expr_re), a
+  // variable's value (a shell `NAME=value` of the command, or the value the code assigns it), or null when it is read at run time
+  // (`process.argv[1]`, `tempfile.mkdtemp()`, a parameter): such a path is not a literal and is never blocked.
+  baseOf: function (expr, ctx, depth) {
+    var e = expr.trim().replace(/^\$?\{([^{}]*)\}$/, '$1').trim(), home = new RegExp('(?:' + ah.cfg('transcript_protect.home_expr_re') + ')$');
+    if (home.test(e)) return ah.home() || null;
+    var v = /^\$?([A-Za-z_]\w*)$/.exec(e) || /(?:^|[^\w.$])([A-Za-z_]\w*)$/.exec(e);
+    if (!v || depth >= 2) return null;
+    if (Object.prototype.hasOwnProperty.call(ctx.vars, v[1])) return ctx.vars[v[1]];
+    var vals = tp.assigned(v[1], ctx.code);
+    for (var i = 0; i < vals.length; i++) {
+      var val = vals[i].replace(/\s*#.*$/, '').trim();
+      if (home.test(val)) return ah.home() || null;
+      var ps = tp.litPaths(val, ctx, depth + 1);
+      if (ps.length) return ps[0];
+    }
+    return null;
+  },
+  // The absolute paths the path-like words of a piece of code spell. A word that expands to an absolute path is that path (a memory note or a
+  // scratch-home copy stays itself). A word whose folder is an expression (`{home}/.claude/projects/...`, `$ENV{HOME}/...`,
+  // `homedir()+'/.claude/projects/...'`, `S+'/.claude/projects/...'`) is taken from its anchor fragment on, under the folder that expression
+  // names (tp.baseOf); a fragment that opens a relative path is under the payload's cwd. A glob pattern (`*`, `?`) names no file.
+  litPaths: function (text, ctx, depth) {
+    var re = new RegExp(ah.cfg('transcript_protect.token_re'), 'g'), op = new RegExp(ah.cfg('transcript_protect.path_join_re')), out = [], m;
+    while ((m = re.exec(text)) !== null) {
+      var w = m[0];
+      if (/[*?]/.test(w) || (w.indexOf('/') < 0 && w.indexOf('~') < 0)) continue;
+      var at = tp.anchorAt(w), e = wd.expand(w, ctx.vars);
+      if (e !== null && e.charAt(0) === '/' && !(at >= 0 && at <= 1)) { out.push(ah.path.resolveAbs(e)); continue; }
+      if (at < 0) continue;
+      var inner = w.slice(0, at).replace(/\/+$/, ''), base = null;
+      // `${os.homedir()}/...`: the word starts inside an interpolation the word cut split; its expression runs back to the `{`
+      if (inner === '}') {
+        var ob = text.lastIndexOf('{', m.index);
+        while (ob > 0 && /[\w$.]/.test(text.charAt(ob - 1))) ob--;
+        inner = ob >= 0 ? text.slice(ob, m.index + 1) : '';
+      }
+      if (inner !== '') base = tp.baseOf(inner, ctx, depth || 0);
+      else {
+        // the fragment opens a string: joined to the expression before it (`<expr> + '`, `<expr> / '`, `join(<expr>, '`), else relative
+        var before = text.slice(Math.max(0, m.index - 200), m.index), j = op.exec(before);
+        if (j) base = tp.baseOf(before.slice(0, j.index), ctx, depth || 0);
+        else if (w.charAt(0) === '/') base = '';
+        else base = ctx.cwd || null;
+      }
+      if (base !== null) out.push(ah.path.resolveAbs(base + '/' + w.slice(at)));
+    }
+    return out;
+  },
+  // Does a piece of code (a write call's own target argument, a receiver chain, a value a variable is assigned) hold a protected path LITERAL?
+  litHit: function (text, pat, ctx) {
+    return tp.litPaths(text, ctx, 0).some(function (p) { return tp.isProtected(p, pat); });
+  },
+  // the values the code assigns a variable (`name = <value>`, to the end of the line or statement)
+  assigned: function (id, code) {
+    var re = new RegExp('(?:^|[^\\w.$])' + id + '\\s*=(?!=)\\s*([^\\n;]*)', 'g'), m, out = [];
+    while ((m = re.exec(code)) !== null && out.length < 8) out.push(m[1]);
+    return out;
+  },
+  // whether a value a variable is assigned is a path (or a file opened on one): not a record (transcript_protect.record_value_re), and every
+  // call in it is one that passes a path on (transcript_protect.path_calls: `os.path.expanduser(..)`, `Path(..)`, `open(..)`); data read
+  // FROM a path (`pd.read_json('<transcript>')`, `T.replace('.jsonl', '.md')`) is not that path
+  pathValue: function (v, rec) {
+    if (rec.test(v)) return false;
+    var ok = ah.cfg('transcript_protect.path_calls'), re = /([A-Za-z_]\w*)\s*\(/g, m;
+    while ((m = re.exec(v)) !== null) if (ok.indexOf(m[1]) < 0) return false;
+    return true;
+  },
+  // Does a write call's own target (argument text or receiver chain) hold a protected literal: spelled out, or in the value a variable it
+  // names is assigned in the code (`T='<transcript>'; open(T,'a')`; an alias of one, `b=T`, two levels; a value that builds a record,
+  // transcript_protect.record_value_re, is no path)? A target read at run time
+  // (`sys.argv[1]`, `process.env.X`, a loop variable) holds no literal and is never blocked.
+  argHit: function (arg, pat, ctx, depth) {
+    if (tp.litHit(arg, pat, ctx)) return true;
+    if ((depth || 0) >= 2) return false;
+    var ids = (arg.match(/[A-Za-z_]\w*/g) || []).filter(function (x, i, all) { return all.indexOf(x) === i; }).slice(0, 8), rec = new RegExp(ah.cfg('transcript_protect.record_value_re'));
+    for (var i = 0; i < ids.length; i++) {
+      var vals = tp.assigned(ids[i], ctx.code);
+      for (var j = 0; j < vals.length; j++) if (tp.pathValue(vals[j], rec) && tp.argHit(vals[j], pat, ctx, (depth || 0) + 1)) return true;
+    }
+    return false;
+  },
+  // The shell command text of a shell call's arguments: string literals as they are, an f-string's or a `+` concatenation's variable as the
+  // first path its assigned value spells (`os.system('echo x >> ' + p)`, `subprocess.run(f'echo x >> {p}', shell=True)`).
+  shellText: function (args, ctx) {
+    var lre = /([fF]?)(['"])((?:\\.|(?!\2)[^\\])*)\2|([A-Za-z_][\w.]*)(?!\s*\()/g, out = [];
+    var val = function (id) {
+      var vals = tp.assigned(id, ctx.code);
+      for (var i = 0; i < vals.length; i++) { var ps = tp.litPaths(vals[i], ctx, 1); if (ps.length) return ps[0]; }
+      return '';
+    };
+    var text = args.join(','), l;
+    while ((l = lre.exec(text)) !== null) {
+      if (l[4] !== undefined) { if (/^\s*\+|\+\s*$/.test(text.slice(Math.max(0, l.index - 3), l.index) + text.slice(l.index + l[4].length, l.index + l[4].length + 3))) out.push(val(l[4])); continue; }
+      out.push(l[1] ? l[3].replace(/\{([A-Za-z_]\w*)\}/g, function (_, id) { return val(id) || _; }) : l[3]);
+    }
+    return out.join(' ');
+  },
+  // A command split by what runs its heredoc bodies. `code` (the inline check's text, `-c`/`-e` scripts unescaped) keeps a body only when the
+  // heredoc feeds an interpreter (transcript_protect.inline_interp_res: `python3 - <<EOF`). `shell` (the Bash write parse's text) keeps a
+  // body as command lines when the heredoc feeds a shell (transcript_protect.shell_res: `bash <<'EOF'`), and drops a quoted-delimiter body
+  // fed to anything else (`cat > gen.py <<'EOF'`: a file write judged by its own target; its text, often this check's own probes, does not
+  // run). An unquoted body is left to the parse (its `$(...)` runs).
+  bodies: function (command) {
+    var interp = ah.cfg('transcript_protect.inline_interp_res').map(function (r) { return new RegExp(r, 'i'); }), sh = new RegExp(ah.cfg('transcript_protect.shell_res'), 'i');
+    var code = [], shell = [], delim = null, keep = false, run = false, quoted = false, held = [], lines = command.split('\n'), hd = wd.re('workdetect.heredoc_delimiter');
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (delim !== null) {
+        if (line.trim() === delim) {
+          if (!quoted && !run) shell.push.apply(shell, held.concat([line]));
+          delim = null; held = [];
+          continue;
+        }
+        if (keep) code.push(line);
+        if (run) shell.push(line); else if (!quoted) held.push(line);
+        continue;
+      }
+      code.push(line);
+      var at = line.search(/<<(?!<)/), m = at < 0 ? null : hd.exec(line.slice(at));
+      if (!m) { shell.push(line); continue; }
+      delim = m[1].replace(/\\([^\n])|['"]/g, function (_, c) { return c || ''; });
+      quoted = /['"\\]/.test(m[1]);
+      var head = line.slice(0, at).split(/[;&|]/).pop();
+      keep = interp.some(function (r) { return r.test(head); });
+      run = sh.test(head);
+      shell.push(run || quoted ? line.slice(0, at) + line.slice(at + m[0].length) : line);
+    }
+    if (delim !== null && !quoted && !run) shell.push.apply(shell, held);
+    return { code: code.join('\n').replace(/\\(["'])/g, '$1'), shell: shell.join('\n') };
+  },
   bashHit: function (command, payload) {
     var kinds = ah.cfg('transcript_protect.kinds'), pat = tp.build(payload);
     var cwd = payload && typeof payload.cwd === 'string' && payload.cwd.charAt(0) === '/' ? payload.cwd : null;
     // the parse is for a command that can name a protected path (a long commit message or script that never does is not parsed): it holds one of transcript_protect.hints, or runs inside a protected folder
     var low = tp.fold(command);
     if (!ah.cfg('transcript_protect.hints').some(function (h) { return low.indexOf(tp.fold(h)) >= 0; }) && !(cwd !== null && tp.insideRoot(cwd, pat))) return null;
-    var ws = wd.bashWrites(command, { cwd: cwd }), destr = new RegExp(ah.cfg('transcript_protect.destructive_re'), 'i'), i;
-    var anchors = ah.cfg('transcript_protect.anchors').map(tp.fold), link = new RegExp(ah.cfg('transcript_protect.link_re'), 'i');
+    var sv = tp.shellVars(command), ws = wd.bashWrites(tp.bodies(command).shell, { cwd: cwd }), destr = new RegExp(ah.cfg('transcript_protect.destructive_re'), 'i'), i;
+    var link = new RegExp(ah.cfg('transcript_protect.link_re'), 'i');
     var lastSegs = [], lastWrites = [];
     for (i = 0; i < ws.length; i++) {
       var w = ws[i];
       if (w.abs === null) {
-        var seg = tp.fold(w.seg);
-        if (anchors.some(function (a) { return seg.indexOf(a) >= 0; })) return kinds.unnamed;
+        if (tp.unnamedHit(w.seg, pat, sv)) return kinds.unnamed;
         continue;
       }
       if (tp.isProtected(w.abs, pat)) return kinds.write;
@@ -226,21 +376,6 @@ var tp = {
     }
     // a file that lands IN a protected folder (`cp x <project folder>/`, `tar -x -C <folder>`): the destination folder is the last write named
     for (i = 0; i < lastSegs.length; i++) if (tp.dirDest(lastSegs[i], lastWrites[i], pat)) return kinds.write;
-    // inline code (python -c, node -e, a heredoc script, awk): a write call whose own target argument is a protected path
-    var res = ah.cfg('transcript_protect.inline_write_res');
-    for (i = 0; i < res.length; i++) {
-      var re = new RegExp(res[i], 'gi'), m;
-      while ((m = re.exec(command)) !== null) {
-        if (m[0] === '') { re.lastIndex++; continue; }
-        var any = false, g;
-        for (g = 1; g < m.length; g++) {
-          if (typeof m[g] !== 'string') continue;
-          any = true;
-          if (tp.argHit(m[g], command, pat)) return kinds.inline;
-        }
-        if (!any && tp.named(command, pat)) return kinds.inline;
-      }
-    }
     return tp.inlineHit(command, payload, pat) ? kinds.inline : null;
   },
   // the arguments (top-level, comma-separated, string-aware) of the call whose `(` is at `at`; null when the call never closes
@@ -265,62 +400,70 @@ var tp = {
     }
     return null;
   },
-  // the text of a plain string literal (no interpolation, no prefix) or null
-  lit: function (arg) {
-    var m = new RegExp(ah.cfg('transcript_protect.literal_re')).exec(arg.trim());
-    return m ? m[2] : null;
-  },
-  // whether a call argument provably names a non-protected absolute path: a plain literal, or a variable the script only ever assigns such literals
-  safeArg: function (arg, script, pat, depth) {
-    var a = arg.trim().replace(/^(?:file|path|filename|dest|dst|target)\s*=\s*/, ''), l = tp.lit(a);
-    if (l === null) {
-      if (depth > 0 || !/^[A-Za-z_]\w*$/.test(a)) return false;
-      var re = new RegExp('(?:^|[^\\w.$])' + a + '\\s*=(?!=)\\s*([^\\n;]*)', 'g'), m, n = 0;
-      while ((m = re.exec(script)) !== null) { n++; if (!tp.safeArg(m[1].replace(/\s*#.*$/, ''), script, pat, depth + 1)) return false; }
-      return n > 0;
+  // the receiver chain of a method call whose `.` is at `dot` (`Path('<p>').expanduser()` of `Path('<p>').expanduser().open('a')`)
+  receiver: function (text, dot) {
+    var i = dot - 1;
+    while (i >= 0 && /\s/.test(text.charAt(i))) i--;
+    while (i >= 0) {
+      var c = text.charAt(i);
+      if (c === ')' || c === ']') {
+        var depth = 0;
+        for (; i >= 0; i--) {
+          var d = text.charAt(i);
+          if (d === ')' || d === ']') depth++;
+          else if ((d === '(' || d === '[') && --depth === 0) break;
+        }
+        i--;
+        continue;
+      }
+      if (/[\w.$]/.test(c)) { i--; continue; }
+      break;
     }
-    var e = wd.expand(l, {});
-    if (e === null || e.charAt(0) !== '/') return false;
-    var abs = ah.path.resolveAbs(e);
-    return !tp.isProtected(abs, pat) && !tp.isParent(abs, pat) && !tp.insideRoot(abs, pat);
+    return text.slice(i + 1, dot);
   },
-  // Does an inline interpreter script (python -c, node -e, perl -e, a heredoc ...) that names a protected path, and has anything that can write,
-  // write it? Fail closed: allowed only when EVERY write call's target is provably a non-protected path (a plain string literal, or a variable only
-  // ever assigned one), and nothing writes through a receiver (`Path(..).write_text`, `.open('a')`).
+  // Inline interpreter code (python -c, node -e, perl -e, ruby -e, a heredoc fed to one, awk): a write call whose OWN target holds a protected
+  // path literal (transcript_protect.inline_write_res, inline_calls, inline_receiver_re). A target that is not a literal is never blocked:
+  // no static rule stops arbitrary code from writing a file, so this stops the plain forms and never blocks everyday reads and reports.
   inlineHit: function (command, payload, pat) {
+    var code = tp.bodies(command).code, res = ah.cfg('transcript_protect.inline_write_res'), i, m, g;
+    var ctx = { vars: tp.shellVars(command), code: code, cwd: payload && typeof payload.cwd === 'string' && payload.cwd.charAt(0) === '/' ? payload.cwd : null };
+    for (i = 0; i < res.length; i++) {
+      var wre = new RegExp(res[i], 'gi');
+      while ((m = wre.exec(code)) !== null) {
+        if (m[0] === '') { wre.lastIndex++; continue; }
+        for (g = 1; g < m.length; g++) if (typeof m[g] === 'string' && tp.argHit(m[g], pat, ctx)) return true;
+      }
+    }
     var interp = ah.cfg('transcript_protect.inline_interp_res');
     if (!interp.some(function (r) { return new RegExp(r, 'i').test(command); })) return false;
-    var script = command.replace(/\\(["'])/g, '$1'), low = tp.fold(script);
-    if (!ah.cfg('transcript_protect.anchors').some(function (a) { return low.indexOf(tp.fold(a)) >= 0; }) && !tp.named(script, pat)) return false;
-    var marks = ah.cfg('transcript_protect.inline_write_marks');
-    if (!marks.some(function (k) { return low.indexOf(tp.fold(k)) >= 0; })) return false;
-    if (new RegExp(ah.cfg('transcript_protect.inline_receiver_re'), 'i').test(script)) return true;
+    var rre = new RegExp(ah.cfg('transcript_protect.inline_receiver_re'), 'gi');
+    while ((m = rre.exec(code)) !== null) if (tp.argHit(tp.receiver(code, m.index), pat, ctx)) return true;
     var roMode = new RegExp(ah.cfg('transcript_protect.inline_readonly_mode_re'), 'i'), hdl = new RegExp(ah.cfg('transcript_protect.inline_handle_re'), 'i');
-    var families = ah.cfg('transcript_protect.inline_calls'), f, m;
+    var families = ah.cfg('transcript_protect.inline_calls'), f;
     for (f = 0; f < families.length; f++) {
       var re = new RegExp(families[f].re, 'gi');
-      while ((m = re.exec(script)) !== null) {
-        var args = tp.callArgs(script, m.index + m[0].length - 1);
-        if (args === null) return true;
-        var kind = families[f].args;
+      while ((m = re.exec(code)) !== null) {
+        var args = tp.callArgs(code, m.index + m[0].length - 1), kind = families[f].args;
+        if (args === null) continue;
         if (kind === 'shell') {
-          var cmd = args.join(' ').replace(/['"\[\],]+/g, ' ');
-          if (tp.fold(cmd).indexOf('.claude') >= 0 || tp.fold(cmd).indexOf('.codex') >= 0) { if (tp.bashHit(cmd, payload) !== null) return true; }
+          // a command string run by a shell, judged as a Bash command when it holds a protected path
+          var cmd = tp.shellText(args, ctx);
+          if (cmd !== '' && tp.litHit(cmd, pat, ctx) && tp.bashHit(cmd, payload) !== null) return true;
           continue;
         }
         if (kind === 'open') {
-          // `open(target, mode ...)`; perl's 3-argument form puts a handle first: `open(my $f, '>>', target)`
+          // `open(target, mode ...)`; perl's 3-argument form puts a handle first: `open(my $f, '>>', target)`. No mode (or a read-only one) reads.
           var tgt = args[0], mode = args.length > 1 ? args[1] : '', kw = /^\s*(\w+)\s*=(?!=)\s*([\s\S]*)$/;
           if (args.length >= 3 && hdl.test(args[1]) && /^\s*(?:(?:my|our|local)\s+)?[$*\\]?\w+\s*$/.test(args[0])) { tgt = args[2]; mode = args[1]; }
           var km = kw.exec(mode);
           if (km) mode = /^(?:mode|flags)$/.test(km[1]) ? km[2] : '';
           for (var k = 2; k < args.length && mode === ''; k++) { var kk = kw.exec(args[k]); if (kk && /^(?:mode|flags)$/.test(kk[1])) mode = kk[2]; }
           if (mode === '' || roMode.test(mode.trim())) continue;
-          if (!tp.safeArg(tgt, script, pat, 0)) return true;
+          if (tp.argHit(tgt, pat, ctx)) return true;
           continue;
         }
-        var pick = kind === 'first' ? args.slice(0, 1) : kind === 'last' ? args.slice(-1) : args;
-        if (pick.length === 0 || pick.some(function (a) { return a.trim() === '' || !tp.safeArg(a, script, pat, 0); })) return true;
+        var pick = kind === 'first' ? args.slice(0, 1) : kind === 'last' ? args.slice(-1) : args.slice(0, 2);
+        if (pick.some(function (a) { return a.trim() !== '' && tp.argHit(a, pat, ctx); })) return true;
       }
     }
     return false;

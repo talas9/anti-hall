@@ -19,7 +19,7 @@ doc = "Match protected paths without regard to case (macOS and Windows volumes i
 value = true
 
 [transcript_protect.anchors]
-doc = "Text that marks a Bash write whose target the parser cannot name (`truncate`, `perl -i`, `find -delete`, a `$(...)` path) as a write to a protected folder: the write is blocked when its command part holds one of these. Plain text, not a pattern."
+doc = "Text that marks a protected folder in a command. A Bash write whose target the parser cannot name (`truncate`, `perl -i`, `find -delete`, a `$(...)` path) is blocked when a word of its command part holds one of these and that word is, or holds, a protected path, or cannot be resolved (a glob, an unknown variable); a part whose every such word is a plain non-protected path (a memory note) is allowed. In inline code a path-like word that does not expand to an absolute path (`{home}/.claude/projects/...`, `$ENV{HOME}/...`, `homedir()+'/.claude/projects/...'`) is tested from this fragment on, under the home. Plain text, not a pattern."
 value = [".claude/projects", ".codex/sessions"]
 
 [transcript_protect.hints]
@@ -35,11 +35,31 @@ doc = "Pattern (case-insensitive) for a command part that makes a link (`ln`): a
 value = '(?:^|[\s;&|(])ln(?:\s|$)'
 
 [transcript_protect.token_re]
-doc = "Pattern that cuts a command into path-like words, for the inline-code check (a path inside a `python -c` or heredoc script)."
+doc = "Pattern that cuts code into path-like words, for the inline-code check (a path literal in a write call's target, in a `python -c` or heredoc script)."
 value = '''[^\s'"`;|&()<>=,]+'''
 
+[transcript_protect.anchor_glued_re]
+doc = "Pattern for the one character before an anchor (transcript_protect.anchors) that makes it no folder mention: glued to a name (`my.claude/projects`), escaped (`\\.claude`) or a pattern delimiter (`s|.claude/projects|`, in a `perl -pi -e` or `sed` script)."
+value = '''[\w.\\|-]'''
+
+[transcript_protect.home_expr_re]
+doc = "Pattern (matched at the end of an expression) for code that names the home folder: `~`, `$HOME`, `$ENV{HOME}`, `homedir()`, `os.path.expanduser('~')`, `Path.home()`, `process.env.HOME`, `os.environ['HOME']`, `getenv('HOME')`, `Dir.home`. A path whose folder is such an expression (`homedir()+'/.claude/projects/...'`) is under the home; one whose folder is read at run time from anything else is not a literal and is never blocked."
+value = '''~|\$HOME|\$\{HOME\}|\$ENV\{\s*['"]?HOME['"]?\s*\}|homedir\(\s*\)|expanduser\(\s*['"]~/?['"]\s*\)|Path\.home\(\s*\)|process\.env\.HOME|process\.env\[\s*['"]HOME['"]\s*\]|environ\[\s*['"]HOME['"]\s*\]|environ\.get\(\s*['"]HOME['"][^)]*\)|getenv\(\s*['"]HOME['"]\s*\)|Dir\.home(?:\(\s*\))?|ENV\[\s*['"]HOME['"]\s*\]'''
+
+[transcript_protect.path_join_re]
+doc = "Pattern (matched at the end of the code before a string that opens with an anchor fragment) for the operator that joins it to a folder expression: `<expr> + '/.claude/...'`, `<expr> / '.claude/...'` (pathlib), `join(<expr>, '.claude/...')`. Without one the string is a path of its own (relative to the cwd)."
+value = '''(?:\+|/|,)\s*[fFrRbB]?['"`]$'''
+
+[transcript_protect.record_value_re]
+doc = "Pattern for a value a variable is assigned that builds a record, not a path: a dict, list or object literal, or a call over one (`p = json!({\"transcript_path\": ...})`, `row = {'path': ...}`). A write call whose target is such a variable is not tied to a path the record holds."
+value = '''^\s*(?:[\[{]|[\w.:]+!?\s*\(\s*[\[{])|['"]\s*:'''
+
+[transcript_protect.path_calls]
+doc = "Calls that pass a path on (or open a file on one): a variable assigned a value whose every call is one of these is that path (`p = os.path.expanduser('~/.claude/projects/..')`, `f = open(T, 'r+')`). A value that calls anything else (`df = pd.read_json(T)`, `q = T.replace('.jsonl', '.md')`) is data read from the path, or another path, and a write through it (`df.rename(columns=..)`) is not tied to the transcript."
+value = ["Path", "PurePath", "PosixPath", "expanduser", "expandvars", "abspath", "realpath", "normpath", "join", "joinpath", "resolve", "expand_path", "absolute", "home", "homedir", "getenv", "get", "require", "str", "String", "fspath", "open", "fopen", "openSync", "createWriteStream"]
+
 [transcript_protect.inline_write_res]
-doc = "Patterns (case-insensitive) that say inline code (python, node, perl, ruby, php, a heredoc, awk) WRITES, found in the whole command. Each capture group is the write call's OWN target argument(s): the first argument of a write-mode open or writeFile, the destination of shutil.copy or copyFileSync, every argument of a rename/remove/move, the string an awk `>`/`>>` names. The command is blocked only when a captured argument is a protected path, spelled out or through a variable the command assigns (`T='<transcript>'; open(T,'a')`); reading a transcript and writing elsewhere (`shutil.copy(T,'/tmp/c')`, `open(T).read()` then `open('/tmp/o','w')`) is allowed. A pattern with no capture group falls back to: the command names a protected path anywhere. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
+doc = "Patterns (case-insensitive) for a write call in inline code (python, node, perl, ruby, php, a heredoc fed to an interpreter, awk), found in the code an interpreter runs (a heredoc written to a file is not run here and is not scanned). Each capture group is the write call's OWN target argument(s): the first argument of a write-mode open or writeFile, the destination of shutil.copy or copyFileSync, every argument of a rename/remove/move, the string an awk `>`/`>>` names, the path of perl's `open my $f, '>>', <path>` and `open F, '>><path>'`. The command is blocked only when a captured target holds a protected path LITERAL, spelled out or in the value a variable it names is assigned (`T='<transcript>'; open(T,'a')`). A target read at run time (`sys.argv[1]`, `process.env.X`, a loop variable) is never blocked: no static rule can stop arbitrary code from writing a file. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
 value = [
   '''\bopen\s*\(\s*([^,)]+?)\s*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]''',
   '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncateSync|unlinkSync|rmSync)\s*\(\s*([^,)]+)',
@@ -57,19 +77,21 @@ value = [
   '\bFileUtils\.\w+\s*\(\s*([^)]*)',
   '''\bg?awk\b[^|]*?>>?\s*\(?\s*"([^"]*)"''',
   '\bg?awk\b[^\n;|]*\s-i\s*inplace\b([^\n;|]*)',
+  '''\bopen\s+(?:(?:my|our|local)\s+)?[$*]?\w+\s*,\s*['"]\s*\+?(?:>{1,2}|\+<)\s*['"]\s*,\s*([^;\n]+)''',
+  '''\bopen\s*\(?\s*(?:(?:my|our|local)\s+)?[$*]?\w+\s*,\s*(['"]\s*\+?>{1,2}[^'"]+['"])''',
 ]
 
+[transcript_protect.shell_res]
+doc = "Pattern (case-insensitive) for a shell command word (`bash`, `sh`, `zsh`, ...): a heredoc fed to one (`bash <<'EOF'`) is commands, and the Bash write parse reads its body; a quoted-delimiter heredoc fed to anything else (`cat > gen.py <<'EOF'`) is text and is not parsed."
+value = '''(?:^|[\s;&|(/])(?:ba|z|da|k|fi)?sh(?:\s|$)'''
+
 [transcript_protect.inline_interp_res]
-doc = "Patterns (case-insensitive): a command that runs an inline interpreter script (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, a heredoc fed to one, ...) holds an interpreter command word. For such a command the check FAILS CLOSED (transcript_protect.inline_write_marks, inline_calls, inline_receiver_re): when it names a protected path and can write, it is blocked unless every write call provably targets a non-protected path."
+doc = "Patterns (case-insensitive): an inline interpreter command word (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, ...). The call (transcript_protect.inline_calls) and receiver (inline_receiver_re) checks run only for a command that holds one, and a heredoc body is code only when the heredoc feeds one (`python3 - <<EOF`)."
 value = ['(?:^|[\s;&|(/])(?:python[\d.]*|pypy[\d.]*|node|nodejs|deno|bun|ruby|perl[\d.]*|php|lua|osascript|pwsh|powershell|Rscript|julia|tclsh|groovy|jshell)(?:\s|$)']
 
-[transcript_protect.inline_write_marks]
-doc = "Text (case-insensitive) that says an inline script CAN write: with none of these the script only reads and the fail-closed check lets it through. A protected path named in a script that holds one of these is blocked unless every write call in it has a provably non-protected literal target."
-value = ["open(", "'a'", "'w'", "\">>\"", "\">\"", "'>>'", "'>'", ".write", "writefile", "appendfile", "openSync", "os.open", "O_APPEND", "O_WRONLY", "O_RDWR", "O_CREAT", "shutil.", "copy", "move", "rename", "print $", "fs.", "unlink", "remove", "rmtree", "truncate", "symlink", "link(", "system", "popen", "subprocess", "spawn", "exec", "touch", "fopen", "file_put_contents", "Bun.write"]
-
 [transcript_protect.inline_receiver_re]
-doc = "Pattern (case-insensitive): a write whose target is the RECEIVER, not an argument (`Path(..).write_text(..)`, `Path(..).expanduser().open('a')`, `p.unlink()`), so no call argument can be checked. In a script that names a protected path (and is an inline interpreter command) any of these blocks."
-value = '''\.\s*(?:write_text|write_bytes|touch|unlink|rename|symlink_to|hardlink_to|truncate|chmod)\s*\(|\.\s*open\s*\(\s*(?:mode\s*=\s*)?['"][rwxabt+U]{1,4}['"]'''
+doc = "Pattern (case-insensitive): a write whose target is the RECEIVER, not an argument (`Path(..).write_text(..)`, `Path(..).expanduser().open('a')`, `p.unlink()`). The receiver chain before the call (a variable resolves to the value it is assigned) is blocked when it holds a protected path literal. An `.open` with a read-only mode (`'r'`, `'rb'`, `'rt'`) is no write."
+value = '''\.\s*(?:write_text|write_bytes|touch|unlink|rename|symlink_to|hardlink_to|truncate|chmod)\s*\(|\.\s*open\s*\(\s*(?:mode\s*=\s*)?['"][rbtU]*[wxa+][rwxabt+U]*['"]'''
 
 [transcript_protect.inline_readonly_mode_re]
 doc = "Pattern (case-insensitive) for an open call's mode (or flags) argument that only READS (`'r'`, `'rb'`, perl `'<'`, `os.O_RDONLY`). Any other mode, or one the script computes, is a write."
@@ -79,12 +101,8 @@ value = '''^(?:['"]\s*(?:r[bt]?|[bt]r|U|<[^'"+>]*)\s*['"]|(?:[\w.]+\.)?O_RDONLY)
 doc = "Pattern for the mode argument of perl's 3-argument open (`open(my $f, '>>', $path)`), where the first argument is a file handle and the path is the third."
 value = '''^\s*['"]\s*\+?[<>]{1,2}'''
 
-[transcript_protect.literal_re]
-doc = "Pattern for a plain string literal argument: no interpolation, no f/r/b prefix, no variable or template marker. Group 2 is its text. Only such a literal (an absolute path, or `~/...`) that is not a protected path proves a write goes elsewhere."
-value = '''^\s*(['"])([^'"\\$`{}%]*)\1\s*$'''
-
 [transcript_protect.inline_calls]
-doc = "Write calls the fail-closed inline check examines (found in the whole script, argument list read with matched parentheses). `args` says which arguments are the call's targets, and each must be a plain literal non-protected absolute path (or a variable only ever assigned one): open = the first argument of an open call whose mode is not read-only (perl 3-argument form: the third); first = the first argument; last = the last (the destination of a copy or link); two = the first two (a rename or move); shell = a command string run by a shell, judged as a Bash command when it names a protected folder."
+doc = "Write calls the inline check examines (found in the code an interpreter runs, argument list read with matched parentheses). `args` says which arguments are the call's targets; the call is blocked when one holds a protected path literal (transcript_protect.inline_write_res): open = the first argument of an open call whose mode is not read-only (no mode reads; perl 3-argument form: the third); first = the first argument; last = the last (the destination of a copy or link); two = the first two (a rename or move); shell = a command string run by a shell: its string literals, judged as a Bash command when they hold a protected path. A call whose argument is not a literal (`df.rename(columns=...)`, `os.unlink(tmp)`) is never blocked."
 value = [
   { args = "open", re = '\b(?:open|openSync|sysopen|fopen)\s*\(' },
   { args = "first", re = '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncate|truncateSync|unlink|unlinkSync|rmSync|rmdirSync|writeTextFile|writeTextFileSync|outputFile|file_put_contents)\s*\(|\b(?:fs|fsp|promises|fsPromises)\.(?:rm|rmdir)\s*\(|\bos\.(?:remove|rmdir|removedirs)\s*\(|\bshutil\.rmtree\s*\(|\bBun\.write\s*\(|\bFile\.(?:write|binwrite|delete|unlink)\s*\(|\bFileUtils\.(?:rm\w*|remove\w*)\s*\(' },
@@ -94,16 +112,16 @@ value = [
 ]
 
 [transcript_protect.walk_max_entries]
-doc = "Most directory entries the folder check reads when it asks whether a folder holds a protected file at any depth (a remove or move of a project folder, or of the projects folder, takes its transcripts along). Past the limit the folder counts as holding one."
+doc = "Most directory entries the folder check reads, in total for one command (shared by every folder it names), when it asks whether a folder holds a protected file at any depth (a remove or move of a project folder takes its transcripts along). Past it the walk FAILS OPEN: the folder counts as holding none. A protected folder named directly (`rm -rf ~/.claude/projects`, a folder that holds a transcript among its own files, which are always read) is still blocked."
 value = 5000
 
-[transcript_protect.walk_max_depth]
-doc = "Deepest folder level that walk descends; a deeper folder counts as holding a protected file."
-value = 6
+[transcript_protect.walk_budget_ms]
+doc = "Most time (milliseconds, wall clock: the script host has no CPU clock) the folder walk of one command may take, shared by every folder it names. Past it the walk FAILS OPEN like transcript_protect.walk_max_entries; a protected path or folder named directly is still blocked."
+value = 50
 
-[transcript_protect.indirect_arg_re]
-doc = "Pattern (case-insensitive): a write call's target argument (or the value of a variable it names) that reads its path at run time (`sys.argv[1]`, `os.environ[...]`, `process.argv`, `$VAR`, stdin) cannot be tied to a path in the command, so the check falls back to: the command names a protected path anywhere. A bare variable the command never assigns falls back the same way."
-value = '''\bargv\b|\benviron\b|\bgetenv\b|\bprocess\.env\b|\bARGV\b|\bENV\b|\$\w|\bstdin\b|\binput\s*\('''
+[transcript_protect.walk_max_depth]
+doc = "Deepest folder level the folder walk descends; a deeper folder is not read (it counts as holding no protected file)."
+value = 6
 
 [transcript_protect.copy_verbs]
 doc = "Commands that copy or move their sources INTO the last argument: when that is a directory (a trailing `/`, `.`, or an existing folder) each source lands there under its own name, so `cp /tmp/s1.jsonl <project folder>/` writes a transcript. The write is tested as `<folder>/<source name>`; a recursive copy (a recursive option, or a source that is a folder's contents: `dir/`, `dir/.`) is blocked when a file could land there as the transcript_protect.probe_name. Being inside a protected folder alone never blocks (a memory `.md` copy stays allowed)."
