@@ -69,7 +69,14 @@ var tk = {
     // THE list, and the session's own `session-<8>` directory is then stale or empty (a read of it would name another list's ids)
     var named = tk.namedList(home), dirs = [];
     if (named !== null) dirs.push(base + named);
-    else for (var j = 0; j < names.length; j++) dirs.push(base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) }));
+    else for (var j = 0; j < names.length; j++) {
+      var own = base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) });
+      // GH #781: a resumed or shared session keeps its tasks in ANOTHER list; its own directory then holds only a pointer file naming it.
+      // The pointer is followed one hop, and only to a valid id whose directory exists; any other pointer leaves the own directory.
+      var ptr = ah.fs.readText(own + '/' + ah.cfg('taskstate.store_pointer_file'), ah.cfgNum('taskstate.store_pointer_max_bytes'));
+      var target = typeof ptr === 'string' ? ptr.trim() : '';
+      dirs.push(target !== '' && new RegExp(ah.cfg('taskstate.list_id_re')).test(target) && ah.fs.isDir(base + target) ? base + target : own);
+    }
     for (var i = 0; i < dirs.length; i++) {
       var dir = dirs[i];
       var files = ah.fs.readdir(dir);
