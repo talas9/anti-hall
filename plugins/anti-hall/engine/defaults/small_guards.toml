@@ -151,6 +151,55 @@ value = [
   '(?:merge|pull)\b[^\n]*?\s(?:-s\s*|--strategy[= ])ours\b',
 ]
 
+[merge_side_pick.meta_ns]
+doc = "Namespace of the side-pick bookkeeping state (when the last pick was recorded; whether a conflict existed when its command began), kept beside the record."
+value = "merge-side-pick-meta"
+
+[merge_side_pick.conflict_markers]
+doc = "Names inside a checkout's git directory whose presence means a merge, cherry-pick, revert or rebase is in progress, i.e. there is a conflict to resolve. A side-pick is recorded only when one exists or the repository has unmerged paths."
+value = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply"]
+
+[merge_side_pick.unmerged_args]
+doc = "git arguments (run in the pick's directory) that list unmerged paths; any output means a conflict is open."
+value = ["ls-files", "--unmerged"]
+
+[merge_side_pick.unmerged_timeout_ms]
+doc = "Milliseconds the unmerged-paths query may run; a git that does not answer counts as unknown, which keeps the side-pick recorded."
+value = 3000
+
+[merge_side_pick.pick_ttl_ms]
+doc = "A recorded side-pick older than this (milliseconds) no longer draws the push advisory; a test run clears it sooner. Default 4 hours."
+value = 14400000
+
+[merge_side_pick.auto_resolve_re]
+doc = "Regex that recognises a pick git settles by itself, leaving no conflict marker and no unmerged path: a strategy option (-X ours/theirs, --strategy-option) or the ours strategy (-s ours, --strategy ours). For these, no conflict at the pick is not proof that nothing was resolved: the merge it made is probed (auto_probe_args)."
+value = '\s(?:-X\s*|--strategy-option[= ]|-s\s*ours\b|--strategy[= ]ours\b)'
+
+[merge_side_pick.auto_probe_args]
+doc = "git arguments (run in the pick's directory, after the command) that say whether the merge commit it made would have conflicted without the automatic resolution: exit 1 = it would have (the pick resolved a conflict, so it is recorded), exit 0 = it would not (nothing was resolved), any other answer (no merge commit, an old git) cannot be told, which keeps the pick recorded."
+value = ["merge-tree", "--write-tree", "--no-messages", "HEAD^1", "HEAD^2"]
+
+[merge_side_pick.auto_probe_pre_args]
+doc = "git arguments (run in the pick's directory, BEFORE the command) that say whether merging a ref into the current HEAD would conflict; the ref of each merge segment is appended. Exit 1 = it would, 0 = it would not, any other answer (an unknown ref, an old git) cannot be told, which keeps the pick recorded. A command that chains several automatic merges is probed ref by ref."
+value = ["merge-tree", "--write-tree", "--no-messages", "HEAD"]
+
+[merge_side_pick.merge_value_opts]
+doc = "The git merge options that take their value as a separate word (so the word after them is not a ref): -X ours, -s ours, -m <msg>, -F <file>, --into-name <branch>."
+value = ["-X", "-s", "-m", "-F", "--strategy", "--strategy-option", "--into-name"]
+
+[merge_side_pick.auto_probe_timeout_ms]
+doc = "Milliseconds the automatic-resolution probe may run; a git that does not answer counts as unknown, which keeps the pick recorded."
+value = 3000
+
+[merge_side_pick.arm_ttl_ms]
+doc = "How long (milliseconds) a command's 'a conflict existed when it began' note stays valid; a command whose PostToolUse never came cannot arm a later one."
+value = 600000
+
+[merge_side_pick.arm_max]
+doc = "The most commands whose conflict note is kept at once (the newest stay), so parallel tool calls each keep their own."
+value = 16
+min = 1
+
 [merge_side_pick.push_tail]
 doc = "Regex source appended to git_prefix that recognises a push."
 value = 'push\b'

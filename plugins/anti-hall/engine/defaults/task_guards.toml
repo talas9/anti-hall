@@ -1137,7 +1137,7 @@ value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
-value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. Delegate the entry to a cheap teammate (Haiku or Sonnet) with the facts, the exact path and the format; handovers stay self-written. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
+value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. Write the entry yourself with the Write or Edit tool; the facts are in your context, and a teammate lacks them. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
 
 [tasklist_guard.append_claude]
 doc = "How to append to the history file (Claude wording)."
@@ -1428,7 +1428,7 @@ value = ["completed"]
 
 [tasklist_hygiene.msg_done]
 doc = "What the done line says; {id} is the task id."
-value = "task {id} done: delegate its Cause/Fix/Verified ledger entry."
+value = "task {id} done: write its Cause/Fix/Verified ledger entry yourself."
 
 [tasklist_hygiene.instead_done]
 doc = "What to do, in the done line."
@@ -1436,7 +1436,7 @@ value = "TaskUpdate status=deleted (own task entries are not user data)."
 
 [tasklist_hygiene.detail_done]
 doc = "Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from."
-value = "Delegate the ledger entry to a cheap teammate (facts, exact path, format, no heredoc). Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
+value = "Write the ledger entry yourself (Write or Edit tool, no heredoc). Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
 
 [tasklist_hygiene.event_nudge]
 doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."
@@ -1547,7 +1547,7 @@ value = "⚠️ Do now: {n} completed task(s) still listed: TaskUpdate status=de
 
 [done_order.msg_fresh]
 doc = "The order given when a task is marked completed (PostToolUse of TaskUpdate). Placeholder: {id} the task id."
-value = "⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledger (delegate it), then TaskUpdate status=deleted #{id}."
+value = "⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledger (write it yourself), then TaskUpdate status=deleted #{id}."
 
 [done_order.events]
 doc = "Counter events (advisory kind tasklist_hygiene) of the completed-task orders: lingering = one per completed task found in the list past the age; emitted = one per completed task an order was given for; followed = one per task that was ordered and then deleted before the next order."
