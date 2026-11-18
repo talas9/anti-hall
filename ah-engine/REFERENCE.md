@@ -5510,6 +5510,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `taskstate.store_file_max_bytes` | `65536` |  |  | Largest task file read; a bigger one is skipped. |
 | `taskstate.store_file_suffix` | `.json` |  |  | Suffix of the task files in a store directory (the lock and high-water-mark files lack it). |
 | `taskstate.store_max_files` | `1000` |  |  | Most task files read from one store directory; a larger directory is read as absent and the transcript reconstruction answers (fail-open, bounded hook latency). |
+| `taskstate.store_pointer_file` | `.session-list` |  |  | Name of the file a session's own store directory holds when its tasks live in ANOTHER list (a resumed or shared session): its text is the id of that list (`taskstate.list_id_re`), whose directory under the store is then read instead. Followed one hop; a missing file, an invalid id or a list directory that does not exist leaves the session's own directory as the list. |
+| `taskstate.store_pointer_max_bytes` | `256` |  |  | Bytes of the pointer file read (a list id is one directory name). |
 | `taskstate.tail_bytes` | `1572864` |  |  | How much of the end of a transcript the task reconstruction reads (the Node `MAX_TAIL_BYTES`, 1.5 MiB). |
 | `taskstate.task_tools` | `TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet` |  |  | The tool names a task reconstruction reacts to (a call that creates, updates, lists or reads tasks, or rewrites the whole list). The kept task lines (transcript.tasks_cache_*) hold every line that names one; a name a reconstruction acts on that is missing here would make its kept answer differ from a fresh read. |
 | `taskstate.terminal_status_re` | `^(completed\|done\|cancelled\|canceled\|deleted)$` |  |  | JavaScript regex source (case-insensitive) of the statuses that close a task for the backfill (`TERMINAL`). |
@@ -9111,7 +9113,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.max_archive_files` | `1000` |  |  | Most files in the archive across all month buckets. |
 | `defect.max_file_bytes` | `65536` |  |  | Most bytes of one defect file. |
 | `defect.max_line_bytes` | `4096` |  |  | Most bytes of one NDJSON line. |
-| `defect.max_open_files` | `200` |  |  | Most open defect files; a new defect past it is refused. |
+| `defect.max_open_files` | `1000` |  |  | Most open defect files; a new defect past it is refused. |
 | `defect.max_report_lines` | `20` |  |  | Most report lines of one defect. |
 | `defect.no_repo` | `no-repo` |  |  | The project of a report filed outside any repository. |
 | `defect.none` | `none` |  |  | Shown under a report section with no rows. |
