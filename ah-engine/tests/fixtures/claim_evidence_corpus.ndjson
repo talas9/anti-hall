@@ -192,7 +192,7 @@
 {"text": "Subagent result: 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
 {"text": "The subagent returned 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
 {"text": "Per the worker, 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
-{"text": "fix-123 (builder): 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
+{"text": "fix-123 (builder): 91/91 tests pass.", "expect": "block", "source": "opus-787-r3-id-label"}
 {"text": "Result: 91/91 tests pass.", "expect": "block", "source": "gh-376-l287"}
 {"text": "Great news: 91/91 tests pass.", "expect": "block", "source": "gh-376-l287"}
 {"text": "The deploy was refused; nothing was deployed.", "expect": "allow", "source": "gh-376-l106"}
@@ -202,7 +202,7 @@
 {"text": "The gate refused the deploy; it is deployed to local only.", "expect": "allow", "source": "gh-376-l106"}
 {"text": "It is deployed to prod.", "expect": "block", "source": "gh-376-l106"}
 {"text": "Verified earlier: PR #5 is merged.", "expect": "allow", "source": "gh-376-l238"}
-{"text": "PR #5 is merged, verified earlier in this session.", "expect": "allow", "source": "gh-376-l238"}
+{"text": "PR #5 is merged, verified earlier in this session.", "expect": "block", "source": "opus-787-r3-label-after"}
 {"text": "PR #5 is merged.", "expect": "block", "source": "gh-376-l238"}
 {"text": "The deploy was refused, so nothing is live.", "expect": "allow", "source": "gh-376-l106"}
 {"text": "The gate refused the deploy, so the fix is not deployed.", "expect": "allow", "source": "gh-376-l106"}
@@ -220,3 +220,15 @@
 {"text": "Per the worker, however I independently verified it.", "expect": "block", "source": "codex-787-p1-lead-override"}
 {"text": "The phrase \"Tests pass\" is true.", "expect": "block", "source": "codex-787-p1-mention-endorsed"}
 {"text": "The health endpoint returned 200 and tests pass.", "expect": "block", "source": "codex-787-p1-returned-and"}
+{"text": "T-47: all tests pass.", "expect": "block", "source": "opus-787-r3"}
+{"text": "Lane 3: all tests pass.", "expect": "block", "source": "opus-787-r3"}
+{"text": "cargo test returned 91 passed.", "expect": "block", "source": "opus-787-r3"}
+{"text": "The suite returned all tests pass.", "expect": "block", "source": "opus-787-r3"}
+{"text": "The health endpoint returned 200, tests pass.", "expect": "block", "source": "opus-787-r3"}
+{"text": "The run logged 91 tests passed.", "expect": "block", "source": "opus-787-r3"}
+{"text": "cargo printed 91 passed.", "expect": "block", "source": "opus-787-r3"}
+{"text": "All tests pass, must stay local.", "expect": "block", "source": "opus-787-r3"}
+{"text": "All tests pass, deployed nowhere.", "expect": "block", "source": "opus-787-r3"}
+{"text": "Tests pass, refused to deploy.", "expect": "block", "source": "opus-787-r3"}
+{"text": "The change is merged, push was blocked.", "expect": "block", "source": "opus-787-r3"}
+{"text": "Tests pass, verified earlier.", "expect": "block", "source": "opus-787-r3"}

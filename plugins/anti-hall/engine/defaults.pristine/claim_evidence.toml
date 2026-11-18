@@ -85,11 +85,36 @@ value = [
   '\b(?:earlier|previously|before)\s+(?:i\s+|we\s+)?(?:ran|verified|checked|confirmed|tested)\b',
   '\b(?:pending|awaiting|waiting for)\s+(?:ci|review|the run|the check)',
   '\b(?:expected|supposed|meant|intended)\s+to\s+(?:pass|work|be)\b',
+]
+
+[claim_evidence.ack_lead_res]
+doc = "A label that says an earlier run backs the claim: 'Verified earlier: PR #5 is merged'. It covers a claim that FOLLOWS it in the same clause (claim_evidence.ack_lead_stop_re) and no other: 'Tests pass, verified earlier.' covers nothing, so the label cannot be tacked on after the fact. Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed."
+value = [
   '\b(?:verified|checked|tested|confirmed|ran)\s+(?:earlier|previously|before|last\s+turn|in\s+(?:an?\s+|the\s+)?(?:earlier|previous|prior|last)\s+(?:turn|run|session))\b',
+]
+
+[claim_evidence.ack_lead_stop_re]
+doc = "Text between a label of claim_evidence.ack_lead_res and the claim that ends the label's reach: a comma or semicolon, or a contrast word ('Verified earlier; tests pass now'). A colon stays: it is the label's own punctuation ('Verified earlier: PR #5 is merged'). Rust regular expression, case-insensitive."
+value = '[,;]|\b(?:but|however|although|though|yet|whereas|while|nevertheless|nonetheless)\b'
+
+[claim_evidence.ack_shipped_res]
+doc = "A refused, blocked or local-only ship (GH #376): 'refused to deploy', 'deploy was refused', 'must stay local', 'deployed nowhere'. It covers a 'shipped' claim that follows it in the same clause (claim_evidence.ack_shipped_stop_re) or is made of its own words ('It is deployed nowhere'), never a claim of another row and never a claim before it ('Tests pass, refused to deploy.', 'The change is merged, push was blocked.'). Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed."
+value = [
   '\b(?:refus(?:ed|es|ing)|declin(?:ed|es|ing)|abort(?:ed|s|ing)|den(?:ied|ies|ying)|reject(?:ed|s|ing)|block(?:ed|s|ing))\s+(?:to\s+|the\s+|a\s+|any\s+)?(?:deploy\w*|release\w*|publish\w*|push\w*|merg\w*|ship\w*|roll\w*)\b',
   '\b(?:deploy\w*|release\w*|publish\w*|push\w*|merge\w*|ship\w*|rollout)\s+(?:was\s+|were\s+|is\s+|got\s+|has\s+been\s+)?(?:refused|declined|aborted|denied|rejected|blocked|cancell?ed)\b',
   '\b(?:must|should|needs?\s+to|has\s+to|have\s+to)\s+(?:stay|remain|be|run)\s+(?:local|locally)(?:\s+only)?\b',
   '\b(?:deployed|released|published|merged|live)\s+nowhere\b',
+]
+
+[claim_evidence.ack_shipped_stop_re]
+doc = "Text between a label of claim_evidence.ack_shipped_res and the claim that ends the label's reach: a comma, semicolon or colon, or a contrast word. Rust regular expression, case-insensitive."
+value = '[,;:]|\b(?:but|however|although|though|yet|whereas|while|nevertheless|nonetheless)\b'
+
+[claim_evidence.ack_scoped]
+doc = "The labels that cover only a claim after them (never one before them), each with the claim rows it may cover: list = the config key of the patterns, stop = the config key of the regular expression that ends its reach, claims = the ids of claim_evidence.claims rows it covers (empty = every row). Reach claim_evidence.reach_label."
+value = [
+  { list = "claim_evidence.ack_lead_res", stop = "claim_evidence.ack_lead_stop_re", claims = [] },
+  { list = "claim_evidence.ack_shipped_res", stop = "claim_evidence.ack_shipped_stop_re", claims = ["shipped"] },
 ]
 
 [claim_evidence.sentence_end_re]
@@ -167,9 +192,15 @@ doc = "Text that starts right after an honest-label word and shows it is no labe
 value = '^(?:\W*(?:(?:is|are|was|were)\s+(?:false|untrue|wrong|incorrect|not)\b|meaning\s+not\b|(?:\w+\s+)?aside\b)|\s+(?:boxes|checkboxes|items?|tasks?|files?)\b)'
 
 [claim_evidence.reported_res]
-doc = "A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+doc = "A reporting verb that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'the subagent returned 91 tests pass'. 'returned' and 'replied' count only after an agent noun: a tool, endpoint or command that returned something is no reported speech ('cargo test returned 91 passed'). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = [
-  '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|reads?|quotes?|quoted|asserts?|asserted|returned|returns|replied|replies|responded|responds|relayed|relays|relaying|told|tells)(?:\s+that)?\b',
+  '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|reads?|quotes?|quoted|asserts?|asserted|relayed|relays|relaying|told|tells)(?:\s+that)?\b',
+  '\b(?:(?:the|a|an|our|its|this|that)\s+)?(?:(?:sub-?)?agents?|workers?|teammates?|peers?|reviewers?|builders?|executors?|bots?)\s+(?:\w+\s+)?(?:returned|returns|replied|replies|responded|responds)(?:\s+that)?\b',
+]
+
+[claim_evidence.reported_according_res]
+doc = "'according to' a named source that opens the claim's own clause (rule 1): 'according to the PR body the change is merged' ('according to plan' names no source). Its comma is part of the phrase ('According to the docs, CI is green'), so it is not a stop here. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = [
   '\baccording\s+to\s+(?:the\s+|a\s+|its\s+|this\s+|that\s+)?(?:pr\s+(?:body|description)|report|logs?|bot|comment|changelog|release\s+notes|docs?|issue|ticket|commit\s+message|status\s+page|dashboard)\b',
 ]
 
@@ -242,7 +273,7 @@ doc = "A word that starts a new noun phrase: seen after a counted word, the gap 
 value = '^(?:the|a|an)$'
 
 [claim_evidence.mention_res]
-doc = "A word that makes the claim a quoted mention, not a statement (rule 1, GH #376): 'the phrase \"Tests pass\"', 'the quoted example 'Tests pass'', 'I typed 'Tests pass'', 'the label ...'. The claim's own words are the thing named. Only unambiguous nouns and naming verbs: a bare 'example' is not here ('the example tests pass' is a claim). Reach claim_evidence.reach_mention. Regular expressions, case-insensitive, matched against the clause before the claim (quote marks are already blanked)."
+doc = "A word that makes the claim a quoted mention, not a statement (rule 1, GH #376): 'the phrase \"Tests pass\"', 'the quoted example 'Tests pass'', 'I typed 'Tests pass'', 'the label ...'. The claim's own words are the thing named, and they must stand inside real quote marks (the suppress row has quote_only: a mention word before bare words, 'The run logged 91 tests passed', names nothing). Only unambiguous nouns and naming verbs: a bare 'example' is not here ('the example tests pass' is a claim). Reach claim_evidence.reach_mention. Regular expressions, case-insensitive, matched against the clause before the claim (quote marks are already blanked)."
 value = [
   '(?:^|[^-\w])(?:phrases?|strings?|labels?|wording|headers?|headings?|titles?|captions?|snippets?|slogans?|keywords?|catchphrases?|literals?|column\s+names?)\s*$',
   '(?:^|[^-\w])(?:quoted|cited|sample|example|exact)\s+(?:example|phrase|text|string|wording|words?|line|claim|header|heading|label)\s*$',
@@ -256,11 +287,11 @@ min = 0
 max = 2
 
 [claim_evidence.leading_labels]
-doc = "A label or attribution that opens the claim's sentence and covers every claim after it (rule 1, GH #376): 'Not verified by me: its answer tests pass 32 of 32', 'Subagent result: 91/91 tests pass', 'Per the worker, 91/91 tests pass', 'fix-12 (builder): all tests pass'. reason = the label written to the log; re = Rust regular expression, case-insensitive, matched against the sentence text before the claim, anchored at both ends: the label or source, then a colon, dash or comma, then at most three short words (an answer, a figure). A label followed by a clause of its own ('Not verified by me, but tests pass') covers nothing: a plain comma ends only a source ('Per the worker,')."
+doc = "A label or attribution that opens the claim's sentence and covers every claim after it (rule 1, GH #376): 'Not verified by me: its answer tests pass 32 of 32', 'Subagent result: 91/91 tests pass', 'Per the worker, 91/91 tests pass'. An id-shaped label ('T-47:', 'Lane 3:') names no other author and covers nothing. reason = the label written to the log; re = Rust regular expression, case-insensitive, matched against the sentence text before the claim, anchored at both ends: the label or source, then a colon, dash or comma, then at most three short words (an answer, a figure). A label followed by a clause of its own ('Not verified by me, but tests pass') covers nothing: a plain comma ends only a source ('Per the worker,')."
 value = [
   { reason = "labelled", re = '^[\W_]*(?:not\s+(?:yet\s+)?(?:verified|checked|tested|run|confirmed)|unverified|unchecked|untested)(?:\s+(?:by|from)\s+\w+)?[\s*_]*[:\u2014\u2013-][\s*_]*(?:[\w\x27\x{2019}#/.-]+\s+){0,3}[\w#/.-]*$' },
-  { reason = "reported", re = '^[\W_]*(?:the\s+|a\s+|our\s+)?(?:(?:sub-?)?agents?|workers?|teammates?|peers?|reviewers?|builders?|executors?|lanes?|bots?|[a-z]+-\d+)\b(?:\s+[\w-]+){0,1}\s*(?:\([^)]{0,30}\))?[\s*_]*[:\u2014\u2013-][\s*_]*(?:[\w\x27\x{2019}#/.-]+\s+){0,3}[\w#/.-]*$' },
-  { reason = "reported", re = '^[\W_]*(?:per|from|via)\s+(?:the|our|a)\s+(?:(?:sub-?)?agents?|workers?|teammates?|peers?|reviewers?|builders?|executors?|lanes?|bots?|[a-z]+-\d+)\b(?:\s+[\w-]+){0,1}[\s,:\u2014\u2013-]*(?:[\w\x27\x{2019}#/.-]+\s+){0,3}[\w#/.-]*$' },
+  { reason = "reported", re = '^[\W_]*(?:the\s+|a\s+|our\s+)?(?:(?:sub-?)?agents?|workers?|teammates?|peers?|reviewers?|builders?|executors?|bots?)\b(?:\s+[\w-]+){0,1}\s*(?:\([^)]{0,30}\))?[\s*_]*[:\u2014\u2013-][\s*_]*(?:[\w\x27\x{2019}#/.-]+\s+){0,3}[\w#/.-]*$' },
+  { reason = "reported", re = '^[\W_]*(?:per|from|via)\s+(?:the|our|a)\s+(?:(?:sub-?)?agents?|workers?|teammates?|peers?|reviewers?|builders?|executors?|bots?)\b(?:\s+[\w-]+){0,1}[\s,:\u2014\u2013-]*(?:[\w\x27\x{2019}#/.-]+\s+){0,3}[\w#/.-]*$' },
 ]
 
 [claim_evidence.leading_unless_re]
@@ -270,6 +301,10 @@ value = '\b(?:but|however|although|though|yet|nevertheless|nonetheless|i|we)(?:[
 [claim_evidence.reported_stop_re]
 doc = "Text between a reporting verb (reported_res) and the claim that ends its reach: a coordinating word starts a separate assertion ('The endpoint returned 200 and tests pass'). Rust regular expression, case-insensitive, matched against the text between the reporting word and the claim."
 value = '\b(?:and|or|but|while|whereas)\b'
+
+[claim_evidence.reported_verb_stop_re]
+doc = "Text between a reporting verb (reported_res) and the claim that ends its reach: a comma, semicolon or colon, or a coordinating word, starts a separate assertion ('The endpoint returned 200, tests pass', 'The worker said it ran and tests pass'). Rust regular expression, case-insensitive, matched against the text between the reporting word and the claim."
+value = '[,;:]|\b(?:and|or|but|while|whereas)\b'
 
 [claim_evidence.mention_endorse_re]
 doc = "Text right after a quoted claim that shows the author endorses it, so it is no mere mention ('The phrase Tests pass is true'). Rust regular expression, case-insensitive, matched against the text after the claim."
@@ -282,9 +317,10 @@ value = [
   { reason = "negated", list = "claim_evidence.neg_subject_res", reach = "claim_evidence.reach_subject", idiom = "claim_evidence.no_idiom_re" },
   { reason = "future", list = "claim_evidence.modal_res", reach = "claim_evidence.reach_verb" },
   { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", idiom_strict = "claim_evidence.opener_filler_re", chain = true },
-  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", stop = "claim_evidence.reported_stop_re", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
+  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", stop = "claim_evidence.reported_verb_stop_re", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
+  { reason = "reported", list = "claim_evidence.reported_according_res", reach = "claim_evidence.reach_clause", stop = "claim_evidence.reported_stop_re", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
-  { reason = "mention", list = "claim_evidence.mention_res", reach = "claim_evidence.reach_mention", after_stop = "claim_evidence.mention_endorse_re" },
+  { reason = "mention", list = "claim_evidence.mention_res", reach = "claim_evidence.reach_mention", after_stop = "claim_evidence.mention_endorse_re", quote_only = true },
 ]
 
 [claim_evidence.ack_reason]
