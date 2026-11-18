@@ -1,0 +1,89 @@
+# ---- Owner-approval pass-through (GH #800): command-guard lets a command the owner just approved in their own prompt run ----
+# command-guard stops `gh pr merge` (command.remote_block) and heavy script runs in the main thread and says "hand it to a helper".
+# A helper cannot run what the owner approved in the Primary's chat: the approval reaches it only as a relayed message, which a
+# worker rightly refuses. With guards.ownerApprovalPass on, the main-thread block stands down when the LATEST genuine owner prompt
+# (an entry the host marked as typed by a human: not a tool result, not a cross-session or teammate message, not a system note)
+# approves the action. Conservative on purpose: an approval word AND a reference to the action, no negation or question, a short
+# prompt, a fresh prompt, and a never-exempt list that no wording can lift. Part C (the `! <cmd>` wording) is unconditional.
+
+[owner_approval.sw]
+doc = "Owner-approval pass-through. Switch guards.ownerApprovalPass (default OFF: it changes a safety guard, the owner turns it on). On: a command-guard main-thread block of an eligible command (owner_approval.kinds) is lifted when the latest genuine owner prompt approves it. Off: every answer is unchanged and nothing is counted."
+value = { section = "guards", key = "ownerApprovalPass", type = "boolean", env = "ANTIHALL_OWNER_APPROVAL_PASS", option = "", default = false }
+
+[owner_approval.kinds]
+doc = "Command shapes the pass can lift, each with the owner's way of naming it. id: the kind; segment_re: one shell segment of the command (prefix words like `cd` are other segments), group 1 captures what the command targets (the PR number, the script path); ref_kind: pr (the owner may name the number) or script (the owner may name the script, with or without its extension); nouns: action words that count as naming the action, matched as whole words with an optional s/d/ed/ing ending. Every heavy segment of the command must be of ONE kind here, or nothing is lifted."
+value = [
+  { id = "pr_merge", segment_re = '^\s*(?:\S+=\S*\s+)*gh\s+pr\s+merge\b(?:\s+(?:-\S+\s+)*#?([0-9]+))?', ref_kind = "pr", nouns = ["merge"] },
+  { id = "script_run", segment_re = '^\s*(?:\S+=\S*\s+)*(?:python3?|node|ruby|perl|bash|sh|zsh|tsx|ts-node|bun)\s+(?:-[A-Za-z-]+\s+)*(\S+\.(?:py|js|mjs|cjs|ts|rb|sh|pl))\b', ref_kind = "script", nouns = ["import", "create", "apply", "migrate", "backfill", "seed", "load", "upload", "sync", "export", "generate"] },
+]
+
+[owner_approval.approve_re]
+doc = "An approval in the owner's prompt: any of these whole words or phrases (case-insensitive). The approval alone is not enough: the prompt must also name the action (owner_approval.kinds)."
+value = '\b(?:yes|yeah|yep|yup|ok|okay|ofc|of course|sure|go|go ahead|go for it|approve|approved|run it|do it|ship it|proceed|merge|confirmed?)\b'
+
+[owner_approval.deny_re]
+doc = "A prompt that matches is never an approval, whatever else it says: a negation, a hold, a condition, a question. Case-insensitive."
+value = "\\b(?:no|not|nope|don'?t|dont|do not|never|stop|wait|hold|hold off|cancel|abort|skip|shouldn'?t|should|if|when|until|unless|after|before|why|what|how|which|can|could|would|status)\\b|\\?"
+
+[owner_approval.reject_markers]
+doc = "Text that marks a prompt as relayed or system-made even when the host tagged it human (pasted relay, teammate message, system note): a prompt containing one is not an approval."
+value = ["<cross-session-message", "<teammate-message", "<system-reminder", "<task-notification", "Another Claude session"]
+
+[owner_approval.never_exempt_re]
+doc = "Commands no prompt can lift, tested against the WHOLE command (every chained part): force push, --admin, secrets and credentials, repo delete, a gh api DELETE. Case-insensitive."
+value = [
+  '\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force\S*|\s-[A-Za-z]*f[A-Za-z]*(?:\s|$)|\s\+\S)',
+  '(?:^|\s)--admin\b',
+  '\bsecrets?\b',
+  '\.env\b|\bid_rsa\b|\.pem\b|\bcredentials?\b|\bservice[-_]?account\b|\bprivate[-_]?key\b',
+  '\bgh\s+repo\s+delete\b',
+  '\bgh\s+api\b[^|;&\n]*(?:-X|--method)[\s=]*DELETE\b',
+]
+
+[owner_approval.max_prompt_chars]
+doc = "A prompt longer than this is not a short approval (a pasted document or plan is not 'yes, run it')."
+value = 400
+
+[owner_approval.max_age_ms]
+doc = "How old (ms) the owner's latest prompt may be and still approve a command. Older than this: the approval is stale."
+value = 900000
+
+[owner_approval.window_bytes]
+doc = "Bytes read from the end of the transcript to find the owner's latest prompt."
+value = 1048576
+
+[owner_approval.line_max_bytes]
+doc = "A transcript line over this size is skipped when looking for the owner's prompt."
+value = 262144
+
+[owner_approval.max_lines]
+doc = "Most transcript lines examined from the end when looking for the owner's prompt."
+value = 600
+
+[owner_approval.prompt_origin_kind]
+doc = "The value of the transcript entry's origin.kind that the host sets for a prompt the owner typed or queued themselves."
+value = "human"
+
+[owner_approval.msg_allowed]
+doc = "The one-line notice when the pass lifts a block. {kind} is the command kind, {ts} the timestamp of the approving prompt."
+value = "Owner approval: allowed this {kind}; approved by the owner's prompt of {ts}."
+
+[owner_approval.msg_owner_run]
+doc = "Part C, appended to the command-guard 'Do instead' text: the owner can run the command themselves. {cmd} is the full command."
+value = "or ask the owner to run it themselves: ! {cmd}"
+
+[owner_approval.msg_owner_run_long]
+doc = "Part C when the full command is too long (or has several lines) for the short visible text; the full command is in the saved details."
+value = "or ask the owner to run it themselves with ! (full command in the details)"
+
+[owner_approval.msg_owner_run_saved]
+doc = "Part C in the saved details file: the full original command, so it can be pasted."
+value = "or ask the owner to run it themselves, pasting this in the prompt: ! {cmd}"
+
+[owner_approval.owner_run_max_chars]
+doc = "Longest command (chars) shown in the visible 'Do instead' text, which the guard-text rule cuts at 115 chars in all (the helper hint plus this wording take about 77); a longer or multi-line command is named only in the saved details."
+value = 38
+
+[metric.owner_approval_pass]
+doc = "Owner-approval pass decisions (guards.ownerApprovalPass on) for a command-guard block of an eligible command, by result: allowed (the owner's latest prompt approved it), no_approval (no fresh genuine prompt approved it, or the command is not an eligible kind), never_exempt (the command is on the never-exempt list)."
+value = { kind = "counter", unit = "calls", labels = ["result"] }

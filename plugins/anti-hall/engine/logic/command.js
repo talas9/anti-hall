@@ -4422,6 +4422,95 @@ function guarded(fn) {
 
 function irBlocked(kind) { ah.metric('inline_rule_blocked', ['guard', ah.cfg('inline_rule.guard_command'), 'kind', ah.cfg(kind)]); } // R-inline (guards.inlineRule)
 
+// GH #800 owner-approval pass-through (switch guards.ownerApprovalPass, default off; config in defaults/owner_approval.toml).
+// The latest GENUINE owner prompt of the transcript: an entry the host tagged origin.kind = human (never a tool result, a
+// cross-session or teammate message, a system note or a sidechain entry). {text, ts}, or null when none is found or readable.
+function ownerLatestPrompt(payload) {
+  const tp = payload && payload.transcript_path;
+  if (typeof tp !== 'string' || tp === '') return null;
+  const keep = [['type'], ['origin', 'kind'], ['isMeta'], ['isSidechain'], ['timestamp'], ['message', 'content'], ['message', 'content', '*', 'type'], ['message', 'content', '*', 'text']];
+  const r = ah.transcript.tailEntries(tp, ah.cfgNum('owner_approval.window_bytes'), ah.cfgNum('owner_approval.line_max_bytes'), keep, ah.cfgNum('owner_approval.max_lines'));
+  if (r === null || !Array.isArray(r.lines)) return null;
+  const human = ah.cfg('owner_approval.prompt_origin_kind');
+  for (let i = r.lines.length - 1; i >= 0; i--) {
+    let e = r.lines[i][1];
+    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { continue; } }
+    if (!e || typeof e !== 'object' || e.type !== 'user' || e.isMeta || e.isSidechain) continue;
+    if (!e.origin || e.origin.kind !== human) continue;
+    const c = e.message && e.message.content;
+    let t = '';
+    if (typeof c === 'string') t = c;
+    else if (Array.isArray(c)) {
+      if (c.some(function (b) { return b && b.type === 'tool_result'; })) continue;
+      t = c.filter(function (b) { return b && b.type === 'text' && typeof b.text === 'string'; }).map(function (b) { return b.text; }).join('\n');
+    }
+    if (t.trim() === '') continue;
+    return { text: t, ts: typeof e.timestamp === 'string' ? e.timestamp : '' };
+  }
+  return null;
+}
+
+// The one eligible kind of a command (owner_approval.kinds), or null: every heavy segment must be of ONE kind and target, and the
+// command may hide nothing (no substitution, shell -c or eval payload).
+function ownerApprovalKind(command) {
+  if (extractSubstitutions(command).length) return null;
+  const kinds = ah.cfg('owner_approval.kinds');
+  let found = null;
+  const segs = splitSegments(command);
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    if (seg.trim() === '') continue;
+    if (extractShellCPayload(seg) || extractEvalPayload(seg)) return null;
+    if (!isHeavySegment(seg, command)) continue;
+    let hit = null;
+    for (let k = 0; k < kinds.length && !hit; k++) {
+      const m = new RegExp(kinds[k].segment_re).exec(seg);
+      if (m) hit = { id: kinds[k].id, refKind: kinds[k].ref_kind, nouns: kinds[k].nouns, target: m[1] || '' };
+    }
+    if (!hit) return null;
+    if (found && (found.id !== hit.id || found.target !== hit.target)) return null;
+    found = hit;
+  }
+  return found;
+}
+
+function ownerRegexEsc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Does the owner's prompt approve this kind+target? An approval word AND a reference to the action, no negation/question/relay marker.
+function ownerPromptApproves(promptText, kind) {
+  if (promptText.length > ah.cfgNum('owner_approval.max_prompt_chars')) return false;
+  const marks = ah.cfg('owner_approval.reject_markers');
+  for (let i = 0; i < marks.length; i++) if (promptText.toLowerCase().indexOf(String(marks[i]).toLowerCase()) !== -1) return false;
+  if (new RegExp(ah.cfg('owner_approval.deny_re'), 'i').test(promptText)) return false;
+  if (!new RegExp(ah.cfg('owner_approval.approve_re'), 'i').test(promptText)) return false;
+  const nouns = (kind.nouns || []).map(ownerRegexEsc);
+  if (nouns.length && new RegExp('\\b(?:' + nouns.join('|') + ')(?:s|d|ed|ing)?\\b', 'i').test(promptText)) return true;
+  if (kind.target === '') return false;
+  if (kind.refKind === 'pr') return new RegExp('(?:^|[^0-9A-Za-z])#?' + ownerRegexEsc(kind.target) + '(?![0-9A-Za-z])').test(promptText);
+  if (kind.refKind === 'script') {
+    const base = kind.target.split('/').pop();
+    const stem = base.replace(/\.[A-Za-z0-9]+$/, '');
+    return new RegExp('(?:^|[^0-9A-Za-z_])(?:' + ownerRegexEsc(base) + '|' + ownerRegexEsc(stem) + ')(?![0-9A-Za-z_])', 'i').test(promptText);
+  }
+  return false;
+}
+
+// The pass: an advisory (the command runs) when the owner's latest genuine prompt approves it, else undefined (the block stands).
+function ownerApprovalPass(command, payload) {
+  if (!ah.settings.bool('owner_approval.sw')) return undefined;
+  const count = function (r) { ah.metric('owner_approval_pass', ['result', r]); };
+  const never = ah.cfg('owner_approval.never_exempt_re');
+  for (let i = 0; i < never.length; i++) {
+    if (new RegExp(never[i], 'i').test(command)) { count('never_exempt'); return undefined; }
+  }
+  const kind = ownerApprovalKind(command);
+  const prompt = kind ? ownerLatestPrompt(payload) : null;
+  const ts = prompt ? Date.parse(prompt.ts) : NaN;
+  if (!kind || !prompt || !(ah.clock.now() - ts <= ah.cfgNum('owner_approval.max_age_ms')) || !ownerPromptApproves(prompt.text, kind)) { count('no_approval'); return undefined; }
+  count('allowed');
+  return { advisory: text.advisoryJson('PreToolUse', text.render(ah.cfg('owner_approval.msg_allowed'), { kind: kind.id, ts: prompt.ts })) };
+}
+
 function mainFlow(payload) {
   const isSkipped = (name) => cmdSkipped(name);
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
@@ -4536,6 +4625,8 @@ function mainFlow(payload) {
 
   // a DevSwarm child worker commits and pushes its own branch inline (hooks/command-guard.js isChildGitSyncChain)
   if (guarded(() => cmdChildWorker((payload && payload.cwd) || '') && isChildGitSyncChain(command))) return 'allow';
+  const approved = guarded(() => ownerApprovalPass(command, payload));
+  if (approved) return approved;
   const cls = classifyHeavy(command);
   const remote = !!cls && cls.kind === 'remote';
   const detail = remote ? '' : cls
@@ -4564,12 +4655,17 @@ function mainFlow(payload) {
     }
   }
   const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + ah.cfg('command.msg_heavy_suite_place') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
+  // Part C (GH #800): the owner can always run it themselves; the full command is in the text when it fits, else in the saved details
+  const ownerRun = { text: text.render(ah.cfg('owner_approval.msg_owner_run'), { cmd: command }), long: false };
+  if (command.length > ah.cfgNum('owner_approval.owner_run_max_chars') || /[\r\n]/.test(command)) { ownerRun.text = ah.cfg('owner_approval.msg_owner_run_long'); ownerRun.long = true; }
   const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
     why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
-      : delegateTo + '.') + cdJoinHint + segNote,
+      : delegateTo + '.') + cdJoinHint + segNote + ' ' + text.render(ah.cfg('owner_approval.msg_owner_run_saved'), { cmd: command }),
+    briefInsteadExtra: ownerRun.text,
+    details: ownerRun.long,
     allowed: allowedShapes,
     briefExtra: segNote,
   }, payload && payload.session_id);
