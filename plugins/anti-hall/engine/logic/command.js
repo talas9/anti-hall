@@ -4423,9 +4423,9 @@ function guarded(fn) {
 function irBlocked(kind) { ah.metric('inline_rule_blocked', ['guard', ah.cfg('inline_rule.guard_command'), 'kind', ah.cfg(kind)]); } // R-inline (guards.inlineRule)
 
 // GH #800 owner-approval pass-through (switch guards.ownerApprovalPass, default off; config in defaults/owner_approval.toml).
-// The approval is BOUND to the exact command: the assistant message right before the owner's approving prompt must quote the
-// command verbatim (a code span or block), the owner's prompt must be a short plain "yes", and the executed command must equal the
-// quoted one after whitespace normalisation. One approving prompt lifts one run (its uuid is claimed once in the session state).
+// The approval is BOUND to the exact command: the assistant message right before the owner's approving prompt must propose ONE
+// command (a single command-shaped code span or block, in its final paragraph, which ends with a question, no negation near it), the
+// owner's prompt must be a short plain "yes", and the executed command must equal that command after whitespace normalisation. One approving prompt lifts one run (its uuid is claimed once in the session state).
 function ownerEntryText(e) {
   const c = e && e.message && e.message.content;
   if (typeof c === 'string') return c;
@@ -4472,17 +4472,37 @@ function ownerLatestPrompt(payload) {
 
 function ownerNorm(s) { return String(s).replace(new RegExp(ah.cfg('owner_approval.ws_re'), 'g'), ' ').trim(); }
 
-// The commands an assistant text quotes verbatim: each fenced block and each inline code span, whitespace-normalised.
-function ownerQuoted(t) {
+// The code spans an assistant text quotes: each fenced block and each inline code span, as {cmd (whitespace-normalised), raw (as written)}.
+function ownerSpans(t) {
   const out = [];
   const take = function (re, str) {
     const g = new RegExp(re, 'g');
     let m;
-    while ((m = g.exec(str)) !== null) { out.push(ownerNorm(m[1])); if (m[0] === '') g.lastIndex++; }
+    while ((m = g.exec(str)) !== null) { out.push({ cmd: ownerNorm(m[1]), raw: m[0] }); if (m[0] === '') g.lastIndex++; }
   };
   take(ah.cfg('owner_approval.quote_fenced_re'), t);
   take(ah.cfg('owner_approval.quote_inline_re'), t.replace(new RegExp(ah.cfg('owner_approval.quote_fenced_re'), 'g'), ' '));
   return out;
+}
+
+// The ONE command the assistant text proposes, or null. The text must hold exactly one command-shaped span (owner_approval.command_shape_re:
+// two spans = ambiguous), it must sit in the FINAL paragraph, that paragraph must end like a question, and no negation word may stand near the span.
+function ownerQuotedCommand(t) {
+  const paras = String(t).trim().split(new RegExp(ah.cfg('owner_approval.paragraph_re')));
+  const last = paras[paras.length - 1];
+  const shape = new RegExp(ah.cfg('owner_approval.command_shape_re'));
+  const cmds = function (s) { return ownerSpans(s).filter(function (sp) { return shape.test(sp.cmd); }); };
+  const all = cmds(String(t));
+  const inLast = cmds(last);
+  if (all.length !== 1 || inLast.length !== 1) return null;
+  if (!new RegExp(ah.cfg('owner_approval.question_end_re')).test(last)) return null;
+  const sp = inLast[0];
+  const at = last.indexOf(sp.raw);
+  const w = ah.cfgNum('owner_approval.negation_window_chars');
+  const near = last.slice(Math.max(0, at - w), at) + ' ' + last.slice(at + sp.raw.length, at + sp.raw.length + w);
+  const words = ah.cfg('owner_approval.negation_words');
+  if (words.length && new RegExp('(?:^|[^A-Za-z0-9_])(?:' + words.join('|') + ')(?![A-Za-z0-9_])', 'i').test(near)) return null;
+  return sp.cmd;
 }
 
 // The one eligible kind of a command (owner_approval.kinds), or null: ONE shell segment, no chain/pipe/substitution/-c/eval, and a
@@ -4553,7 +4573,7 @@ function ownerApprovalPass(command, payload) {
   const age = prompt ? ah.clock.now() - Date.parse(prompt.ts) : NaN;
   const sh = spawn.stateHome();
   const ok = kind && prompt && age >= 0 && age <= ah.cfgNum('owner_approval.max_age_ms') && ownerPromptApproves(prompt.text)
-    && ownerQuoted(prompt.prev).indexOf(ownerNorm(command)) !== -1 && sh.ok !== undefined && ownerClaim(prompt.uuid, sh.ok);
+    && ownerQuotedCommand(prompt.prev) === ownerNorm(command) && sh.ok !== undefined && ownerClaim(prompt.uuid, sh.ok);
   if (!ok) { count('no_approval'); return undefined; }
   count('allowed');
   return { advisory: text.advisoryJson('PreToolUse', text.render(ah.cfg('owner_approval.msg_allowed'), { kind: kind.id, ts: prompt.ts })) };
@@ -4707,9 +4727,16 @@ function mainFlow(payload) {
   const ownerRun = { text: '', saved: '', long: false };
   if (!ownerNeverExempt(command)) {
     const shown = ownerRedact(command);
-    ownerRun.text = text.render(ah.cfg('owner_approval.msg_owner_run'), { cmd: shown });
-    ownerRun.saved = ' ' + text.render(ah.cfg('owner_approval.msg_owner_run_saved'), { cmd: shown });
-    if (shown.length > ah.cfgNum('owner_approval.owner_run_max_chars') || /[\r\n]/.test(shown)) { ownerRun.text = ah.cfg('owner_approval.msg_owner_run_long'); ownerRun.long = true; }
+    if (shown !== command) {
+      // secrets were masked: the owner must fill the value in, so the command is named only in the saved details
+      ownerRun.text = ah.cfg('owner_approval.msg_owner_run_redacted_long');
+      ownerRun.saved = ' ' + text.render(ah.cfg('owner_approval.msg_owner_run_saved_redacted'), { cmd: shown });
+      ownerRun.long = true;
+    } else {
+      ownerRun.text = text.render(ah.cfg('owner_approval.msg_owner_run'), { cmd: shown });
+      ownerRun.saved = ' ' + text.render(ah.cfg('owner_approval.msg_owner_run_saved'), { cmd: shown });
+      if (shown.length > ah.cfgNum('owner_approval.owner_run_max_chars') || /[\r\n]/.test(shown)) { ownerRun.text = ah.cfg('owner_approval.msg_owner_run_long'); ownerRun.long = true; }
+    }
   }
   const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,

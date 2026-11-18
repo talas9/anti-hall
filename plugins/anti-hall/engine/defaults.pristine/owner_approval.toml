@@ -3,8 +3,8 @@
 # A helper cannot run what the owner approved in the Primary's chat: the approval reaches it only as a relayed message, which a
 # worker rightly refuses. With guards.ownerApprovalPass on, the main-thread block stands down when the LATEST genuine owner prompt
 # (an entry the host marked as typed by a human: not a tool result, not a cross-session or teammate message, not a system note)
-# approves the action. Conservative on purpose: the assistant message right before the prompt must quote the EXACT command (a code
-# span or block), the prompt is a plain short yes (no negation, question, paste or relay marker), 0 <= age <= max_age_ms, ONE
+# approves the action. Conservative on purpose: the assistant message right before the prompt must hold exactly ONE command-shaped code
+# span or block, in its final paragraph, which ends with a question and has no negation near the command, and that is the EXACT command executed; the prompt is a plain short yes (no negation, question, paste or relay marker), 0 <= age <= max_age_ms, ONE
 # single-segment command, one run per approving prompt, and a never-exempt list that no wording can lift. Part C (the `! <cmd>`
 # wording) is unconditional.
 
@@ -38,6 +38,26 @@ value = '```[^\n`]*\n([\s\S]*?)```'
 [owner_approval.quote_inline_re]
 doc = "An inline code span in the assistant's text (read after the fenced blocks are removed); group 1 is the quoted command."
 value = '`([^`\n]+)`'
+
+[owner_approval.paragraph_re]
+doc = "Splits the assistant's message into paragraphs (a blank line). The approval binds only to a command quoted in the FINAL paragraph."
+value = '\n[ \t]*\n'
+
+[owner_approval.command_shape_re]
+doc = "A code span or block that counts as a command: at least two whitespace-separated words (after optional VAR=value prefixes), so a single file or identifier in backticks is not a command. The message must hold exactly ONE of these (two = ambiguous = no approval)."
+value = '^\s*(?:\S+=\S*\s+)*[A-Za-z0-9_./~-]+\s+\S'
+
+[owner_approval.question_end_re]
+doc = "The final paragraph must end like a question to the owner: a question mark, then only whitespace or closing markup."
+value = '\?[\s*_)"]*$'
+
+[owner_approval.negation_words]
+doc = "Words that, within negation_window_chars of the quoted command (before or after it), mean the assistant was NOT proposing to run it. Regex fragments, matched as whole words, case-insensitive."
+value = ["not", "won't", "won’t", "will not", "don't", "don’t", "skip"]
+
+[owner_approval.negation_window_chars]
+doc = "How many characters before and after the quoted command are searched for a negation word."
+value = 60
 
 [owner_approval.quote_line_re]
 doc = "A line of the owner's prompt that only quotes (a markdown quote line). A prompt with nothing left after these lines are dropped is not an approval."
@@ -111,14 +131,29 @@ doc = "Part C in the saved details file: the full original command, so it can be
 value = "or ask the owner to run it themselves, pasting this in the prompt: ! {cmd}"
 
 [owner_approval.redact]
-doc = "Secrets masked in a command before it appears in a block text or the saved details file (Part C and the named heavy segment). Applied in order with JS String.replace: re is the pattern, flags its flags, rep the replacement ($1.. are its groups). Masks `VAR=value` assignments, GitHub/OpenAI/Slack/AWS-style tokens, bearer and authorization values, --token/--password/--secret/--api-key values, and credentials in a URL."
+doc = "Secrets masked in a command before it appears in a block text or the saved details file (Part C and the named heavy segment). Applied in order with JS String.replace: re is the pattern, flags its flags, rep the replacement ($1.. are its groups); the placeholder REDACTED is plain text that a shell cannot read as a redirect or a command. Masks `VAR=value` assignments, GitHub/OpenAI/Slack/AWS-style tokens, --token/--password/--pass/--secret/--api-key values, a password glued to -p, the password of -u/--user user:pass, a whole -H/--header value whose name holds key/token/secret/auth/cookie/password (Authorization: Bearer X is masked whole), bearer/basic values, credentials and a bare token in a URL, and a 40-character AWS secret key after an aws command word."
 value = [
-  { re = '''(^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]*)''', flags = "g", rep = "$1$2=<redacted>" },
-  { re = '''\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-[A-Za-z0-9_-]{16,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b''', flags = "g", rep = "<redacted>" },
-  { re = '''(--?(?:[A-Za-z0-9_-]*(?:token|password|passwd|secret|api-?key|auth|credential)[A-Za-z0-9_-]*))([=\s]+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2<redacted>" },
-  { re = '''\b(Bearer|Basic|Authorization:)(\s+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2<redacted>" },
-  { re = '''(://[^/\s:@]+:)[^@\s/]+@''', flags = "g", rep = "$1<redacted>@" },
+  { re = '''(^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]*)''', flags = "g", rep = "$1$2=REDACTED" },
+  { re = '''\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-[A-Za-z0-9_-]{16,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b''', flags = "g", rep = "REDACTED" },
+  { re = '''(--?(?:[A-Za-z0-9_-]*(?:token|password|passwd|passphrase|secret|api-?key|auth|credential)[A-Za-z0-9_-]*))([=\s]+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2REDACTED" },
+  { re = '''(^|\s)(--?pass)([=\s]+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2$3REDACTED" },
+  { re = '''(^|\s)(-p)("[^"]*"|'[^']*'|[^\s;&|)-][^\s;&|)]*)''', flags = "g", rep = "$1$2REDACTED" },
+  { re = '''(^|\s)(-u|--user|--proxy-user)([\s=]+)(["']?)([^\s:"';&|)]*:)[^\s"';&|)]*''', flags = "g", rep = "$1$2$3$4$5REDACTED" },
+  { re = '''(-H|--header)([=\s]+)(["'])([^"':]*(?:key|token|secret|auth|cookie|password)[^"':]*)(\s*:\s*)[^\n]*?\3''', flags = "gi", rep = "$1$2$3$4$5REDACTED$3" },
+  { re = '''(-H|--header)([=\s]+)([^\s"':;&|)]*(?:key|token|secret|auth|cookie|password)[^\s"':;&|)]*)(\s*:\s*)[^\s"';&|)]+''', flags = "gi", rep = "$1$2$3$4REDACTED" },
+  { re = '''\b(Bearer|Basic|Authorization:)(\s+)("[^"]*"|'[^']*'|[^\s;&|)"']+)''', flags = "gi", rep = "$1$2REDACTED" },
+  { re = '''(://[^/\s:@]+:)[^@\s/]+@''', flags = "g", rep = "$1REDACTED@" },
+  { re = '''(://)[^/\s:@"']+@''', flags = "g", rep = "$1REDACTED@" },
+  { re = '''(\baws\b[^;&|\n]*?[\s=]["']?)[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])''', flags = "g", rep = "$1REDACTED" },
 ]
+
+[owner_approval.msg_owner_run_redacted_long]
+doc = "Part C when the command had secrets masked: the owner must fill in the masked value (REDACTED) before running it; the masked command is in the saved details."
+value = "or ask the owner to run it with ! after filling in REDACTED (see details)"
+
+[owner_approval.msg_owner_run_saved_redacted]
+doc = "Part C in the saved details file when the command had secrets masked: the masked command; the owner replaces REDACTED with the real value before pasting it. {cmd} is the masked command."
+value = "or ask the owner to run it themselves, pasting this in the prompt after replacing each REDACTED with the real value: ! {cmd}"
 
 [owner_approval.owner_run_max_chars]
 doc = "Longest command (chars) shown in the visible 'Do instead' text, which the guard-text rule cuts at 115 chars in all (the helper hint plus this wording take about 77); a longer or multi-line command is named only in the saved details."
