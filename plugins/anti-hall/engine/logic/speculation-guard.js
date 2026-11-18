@@ -20,6 +20,17 @@ function sgHasAck(t) {
   return false;
 }
 
+// A label that follows the hedge in its own sentence and is written as a label (speculation_guard.ack_local_ci): '(not yet proven)',
+// '\u2014 unconfirmed', ', my inference,', 'unconfirmed:' attached to the hedge by punctuation. A label before the hedge, in another
+// sentence, or inside a description of another subject ('The ticket is unconfirmed; ... probably DNS') covers nothing. The sentence cut is
+// speculation_guard.ack_scope_re: the text after the hedge is cut at its first match before the label is looked for.
+function sgLocalAck(text, end) {
+  var rest = text.slice(end), list = ah.cfg('speculation_guard.ack_local_ci'), cut = ah.re.find(ah.cfg('speculation_guard.ack_scope_re'), '', rest);
+  if (cut) rest = rest.slice(0, cut[0]);
+  for (var i = 0; i < list.length; i++) if (ah.re.find(list[i], 'i', rest)) return true;
+  return false;
+}
+
 // Same-turn tool evidence as citation (dogfood 2026-10-09): a reply that names specifics (paths, versions, numbers, identifiers) found in
 // the output of tool calls made since the last human prompt cites that output, so its hedge is not an unevidenced guess.
 function sgTurnOutputs(lines) {
@@ -83,10 +94,11 @@ function sgHit(text) {
   for (var i = 0; i < markers.length; i++) {
     var all = rp.wordHits(markers[i], 'i', text);
     if (all.length === 0) continue;
-    var first = text.slice(all[0][0], all[0][1]);
-    if (modal.indexOf(first.toLowerCase()) < 0) return { text: first, at: all[0][0] };
+    var first = text.slice(all[0][0], all[0][1]), isModal = modal.indexOf(first.toLowerCase()) >= 0;
     for (var j = 0; j < all.length; j++) {
-      if (!sgObligation(text, all[j][0], all[j][1])) return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
+      if (isModal && sgObligation(text, all[j][0], all[j][1])) continue;
+      if (sgLocalAck(text, all[j][1])) continue; // a hedge its own sentence labels honest, after it, is not a guess
+      return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
     }
   }
   return null;
