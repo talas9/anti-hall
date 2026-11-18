@@ -171,6 +171,27 @@ value = 3000
 doc = "A recorded side-pick older than this (milliseconds) no longer draws the push advisory; a test run clears it sooner. Default 4 hours."
 value = 14400000
 
+[merge_side_pick.auto_resolve_re]
+doc = "Regex that recognises a pick git settles by itself, leaving no conflict marker and no unmerged path: a strategy option (-X ours/theirs, --strategy-option) or the ours strategy (-s ours, --strategy ours). For these, no conflict at the pick is not proof that nothing was resolved: the merge it made is probed (auto_probe_args)."
+value = '\s(?:-X\s*|--strategy-option[= ]|-s\s*ours\b|--strategy[= ]ours\b)'
+
+[merge_side_pick.auto_probe_args]
+doc = "git arguments (run in the pick's directory, after the command) that say whether the merge commit it made would have conflicted without the automatic resolution: exit 1 = it would have (the pick resolved a conflict, so it is recorded), exit 0 = it would not (nothing was resolved), any other answer (no merge commit, an old git) cannot be told, which keeps the pick recorded."
+value = ["merge-tree", "--write-tree", "--no-messages", "HEAD^1", "HEAD^2"]
+
+[merge_side_pick.auto_probe_timeout_ms]
+doc = "Milliseconds the automatic-resolution probe may run; a git that does not answer counts as unknown, which keeps the pick recorded."
+value = 3000
+
+[merge_side_pick.arm_ttl_ms]
+doc = "How long (milliseconds) a command's 'a conflict existed when it began' note stays valid; a command whose PostToolUse never came cannot arm a later one."
+value = 600000
+
+[merge_side_pick.arm_max]
+doc = "The most commands whose conflict note is kept at once (the newest stay), so parallel tool calls each keep their own."
+value = 16
+min = 1
+
 [merge_side_pick.push_tail]
 doc = "Regex source appended to git_prefix that recognises a push."
 value = 'push\b'

@@ -2350,6 +2350,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `merge_side_pick.arm_max` | `16` |  |  | The most commands whose conflict note is kept at once (the newest stay), so parallel tool calls each keep their own. |
+| `merge_side_pick.arm_ttl_ms` | `600000` |  |  | How long (milliseconds) a command's 'a conflict existed when it began' note stays valid; a command whose PostToolUse never came cannot arm a later one. |
+| `merge_side_pick.auto_probe_args` | `merge-tree, --write-tree, --no-messages, HEAD^1, HEAD^2` |  |  | git arguments (run in the pick's directory, after the command) that say whether the merge commit it made would have conflicted without the automatic resolution: exit 1 = it would have (the pick resolved a conflict, so it is recorded), exit 0 = it would not (nothing was resolved), any other answer (no merge commit, an old git) cannot be told, which keeps the pick recorded. |
+| `merge_side_pick.auto_probe_timeout_ms` | `3000` |  |  | Milliseconds the automatic-resolution probe may run; a git that does not answer counts as unknown, which keeps the pick recorded. |
+| `merge_side_pick.auto_resolve_re` | `\s(?:-X\s*\|--strategy-option[= ]\|-s\s*ours\b\|--strategy[= ]ours\b)` |  |  | Regex that recognises a pick git settles by itself, leaving no conflict marker and no unmerged path: a strategy option (-X ours/theirs, --strategy-option) or the ours strategy (-s ours, --strategy ours). For these, no conflict at the pick is not proof that nothing was resolved: the merge it made is probed (auto_probe_args). |
 | `merge_side_pick.cmd_keep` | `120` |  |  | How many UTF-16 units of the side-pick command are kept for the advisory. |
 | `merge_side_pick.conflict_markers` | `MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, REBASE_HEAD, rebase-merge, rebase-...` |  |  | Names inside a checkout's git directory whose presence means a merge, cherry-pick, revert or rebase is in progress, i.e. there is a conflict to resolve. A side-pick is recorded only when one exists or the repository has unmerged paths. |
 | `merge_side_pick.dry_run` | `\s(?:--dry-run\|-n)\b` |  |  | Regex that marks a push segment as a dry run, which is not a push. |
