@@ -4587,6 +4587,20 @@ function mainFlow(payload) {
   // a command over the classify cap is judged in parts (the edit gate below scans its head and tail); the heavy-command gates skip it, as in Node
   const bm = LIB['./lib/block-message.js'];
   let hit;
+  // GH #802: no agent writes a session transcript (every agent, inside or outside the session project, even when the command is otherwise allowed)
+  hit = guarded(() => {
+    if (!ah.settings.bool('transcript_protect.sw') || !command) return undefined;
+    const scans = command.length > T.maxLen ? (function () { const bp = cmdBigParts(command); return bp.rest ? [bp.head, bp.rest] : [bp.head]; })() : [command];
+    for (let i = 0; i < scans.length; i++) {
+      const kind = tp.bashHit(scans[i], payload);
+      if (kind) {
+        ah.metric('transcript_write_blocked', ['kind', kind]);
+        return blockExact(text.message('block', ah.cfg('command.guard_name'), { what: ah.cfg('transcript_protect.msg_what') }));
+      }
+    }
+    return undefined;
+  });
+  if (hit) return hit;
   hit = guarded(() => {
     const devswarmActive = guarded(() => LIB['./lib/devswarm-detect.js'].isDevswarmActive()) || false;
     if (devswarmActive && !isSkipped(ah.cfg('command.dsread_guard'))) {

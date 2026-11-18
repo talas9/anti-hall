@@ -142,7 +142,9 @@ var wd = {
         if (scan.charAt(k) === '<' && scan.charAt(k + 1) === '<' && !(k > 0 && scan.charAt(k - 1) === '<') && scan.charAt(k + 2) !== '<') {
           var bs = 0;
           while (k > bs && scan.charAt(k - 1 - bs) === '\\') bs++;
-          if (bs % 2 === 0) { at = k; break; }
+          // a shift inside arithmetic (`$((1<<2))`, `(( x << 3 ))`) is no heredoc
+          var pre = scan.slice(0, k);
+          if (bs % 2 === 0 && pre.split('((').length <= pre.split('))').length) { at = k; break; }
         }
       }
       if (at < 0) continue;
@@ -169,10 +171,10 @@ var wd = {
     return saw;
   },
   // ---- the files a command writes (GH #794: the work count names real files, never command strings) ----
-  // The command split into simple commands at `&&`, `||`, `;`, `|`, a newline, a lone `&`, a parenthesis, a backtick or `$(`, cut where the
+  // The command split into simple commands at `&&`, `||`, `;`, `|` (not the `|` of a `>|` clobber redirect), a newline, a lone `&`, a parenthesis, a backtick or `$(`, cut where the
   // quote-blanked copy shows the separator (a separator inside a quoted span is text).
   segments: function (cmd) {
-    var n = wd.neutralize(cmd), out = [], from = 0, re = /&&|\|\||;|\||\n|(?<![<>&])&(?![&>])|\$\(|[()`]/g, m;
+    var n = wd.neutralize(cmd), out = [], from = 0, re = /&&|\|\||;|(?<!>)\||\n|(?<![<>&])&(?![&>])|\$\(|[()`]/g, m;
     while ((m = re.exec(n)) !== null) { out.push(cmd.slice(from, m.index)); from = m.index + m[0].length; }
     out.push(cmd.slice(from));
     return out;
