@@ -226,12 +226,49 @@ doc = "The first characters of a changed line in a patch text (added, removed); 
 value = ["+", "-"]
 
 [edit_guard.cap_edit_patch_headers]
-doc = "Patch lines that start with one of these are headers, not changed lines."
-value = ["+++", "---"]
+doc = "Patch lines that start with one of these are headers, not changed lines. A Codex apply_patch text has no +/- file headers (its headers start with ***), so the list is empty: a changed line whose own text starts with ++ or -- still counts."
+value = []
+
+[edit_guard.cap_replace_all_field]
+doc = "The edit field that makes an Edit replace every occurrence of its old text. The edit then counts the occurrences in the target file times its size."
+value = "replace_all"
+
+[edit_guard.cap_replace_all_needle]
+doc = "The edit field holding the text whose occurrences a replace-all edit changes."
+value = "old_string"
+
+[edit_guard.cap_edit_unreadable_lines]
+doc = "The size, in lines, a replace-all edit counts as when the target file cannot be read or the old text is empty (fail closed: over cap_edit_max_lines)."
+value = 1000
+min = 1
+max = 100000
+
+[edit_guard.cap_scoped_field]
+doc = "The usage-cache field holding the model-specific weekly buckets; they count for the relief like the 5-hour and weekly buckets."
+value = "scopedWeeklyBuckets"
+
+[edit_guard.cap_scoped_keys]
+doc = "Field names inside one model-specific bucket: name, label (the name when there is no id), pct, resets."
+value = { name = "id", label = "label", pct = "percent", resets = "resetsAt" }
+
+[edit_guard.cap_state_file]
+doc = "File (in the engine state directory) holding the last readings at or above the hard stop (spawn_usage.block_pct), by bucket name. A remembered reading keeps the relief on while the cache is missing, stale or without a reset time, until its reset time passes."
+value = "edit-guard-cap.json"
+
+[edit_guard.cap_state_max_age_ms]
+doc = "How long a remembered reading with no reset time keeps counting after it was last seen (a weekly window)."
+value = 604800000
+unit = "ms"
+min = 60000
+max = 2592000000
 
 [edit_guard.msg_cap_note]
 doc = "The note said with an edit allowed under the relief ({pct} the fullest usage percent, {lines} the edit size, {max} the limit)."
 value = "usage is at {pct}%: this {lines}-line edit is allowed in the main thread (limit {max} lines)."
+
+[edit_guard.msg_cap_hard_note]
+doc = "The note said with an edit allowed at the hard stop ({pct} the usage percent, {name} the bucket, {resets} the reset text): spawning is stopped, so the edit is made here."
+value = "{name} usage is at {pct}% ({resets}): spawning is stopped, so this edit is allowed in the main thread."
 
 [edit_guard.msg_cap_what]
 doc = "Heading of the block on an edit over the relief limit ({tool} the tool name, {lines} its size, {max} the limit, {pct} the usage percent)."
