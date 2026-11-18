@@ -142,7 +142,9 @@ var wd = {
         if (scan.charAt(k) === '<' && scan.charAt(k + 1) === '<' && !(k > 0 && scan.charAt(k - 1) === '<') && scan.charAt(k + 2) !== '<') {
           var bs = 0;
           while (k > bs && scan.charAt(k - 1 - bs) === '\\') bs++;
-          if (bs % 2 === 0) { at = k; break; }
+          // a shift inside arithmetic (`$((1<<2))`, `(( x << 3 ))`) is no heredoc
+          var pre = scan.slice(0, k);
+          if (bs % 2 === 0 && pre.split('((').length <= pre.split('))').length) { at = k; break; }
         }
       }
       if (at < 0) continue;

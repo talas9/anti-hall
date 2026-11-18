@@ -11,6 +11,9 @@ for the probes during the run and always restored.
   python3 scripts/tp-corpus-replay.py corpus.json [--out res.json]   # replay: counts + the list of blocked commands
   python3 scripts/tp-corpus-replay.py --cases probes.jsonl           # replay prepared golden-format probe cases (named by "n")
 
+The probes run in the golden harness, which fills `{HOME}`, `{HOMEREAL}` and similar tokens in a command: a command whose own text holds
+such a token (`$ENV{HOME}`, a probe generator's `'{HOMEREAL}'`) is judged on the filled text, not as it ran.
+
 Run it from ah-engine/ (cargo builds the test binary; set CARGO_BUILD_JOBS to bound it).
 """
 import glob, json, os, re, shutil, subprocess, sys

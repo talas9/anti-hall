@@ -280,6 +280,39 @@ var tp = {
     while ((m = re.exec(code)) !== null && out.length < 8) out.push(m[1]);
     return out;
   },
+  // The words each inline interpreter call of a command passes its script after the script (`python3 -c '<code>' a b`, `node -e .. a`,
+  // `python3 - a b <<EOF`): what `sys.argv[1]`, `process.argv[1]`, `$ARGV[0]` read (transcript_protect.argv_refs).
+  argvLists: function (shell) {
+    var interp = ah.cfg('transcript_protect.inline_interp_res').map(function (r) { return new RegExp(r, 'i'); }), out = [];
+    wd.segments(shell).forEach(function (seg) {
+      var ws = wd.words(seg).words;
+      for (var i = 0; i < ws.length; i++) {
+        if (!interp.some(function (r) { return r.test(' ' + ws[i] + ' '); })) continue;
+        for (var j = i + 1; j < ws.length; j++) {
+          if (/^-[ceE]$/.test(ws[j])) { out.push(ws.slice(j + 2)); break; }
+          if (ws[j] === '-') { out.push(ws.slice(j + 1)); break; }
+          if (ws[j].charAt(0) !== '-') break;
+        }
+        break;
+      }
+    });
+    return out;
+  },
+  // Does a target read from the command line (`open(sys.argv[1], 'a')`) name a protected path the command passes there?
+  argvHit: function (arg, pat, ctx) {
+    var refs = ah.cfg('transcript_protect.argv_refs');
+    for (var r = 0; r < refs.length; r++) {
+      var re = new RegExp(refs[r].re, 'g'), m;
+      while ((m = re.exec(arg)) !== null) {
+        var k = Number(m[1]) - refs[r].offset;
+        for (var i = 0; i < ctx.argv.length; i++) {
+          var w = k >= 0 && k < ctx.argv[i].length ? wd.expand(ctx.argv[i][k], ctx.vars) : null;
+          if (w !== null && w.charAt(0) === '/' && tp.isProtected(ah.path.resolveAbs(w), pat)) return true;
+        }
+      }
+    }
+    return false;
+  },
   // whether a value a variable is assigned is a path (or a file opened on one): not a record (transcript_protect.record_value_re), and every
   // call in it is one that passes a path on (transcript_protect.path_calls: `os.path.expanduser(..)`, `Path(..)`, `open(..)`); data read
   // FROM a path (`pd.read_json('<transcript>')`, `T.replace('.jsonl', '.md')`) is not that path
@@ -295,6 +328,7 @@ var tp = {
   // (`sys.argv[1]`, `process.env.X`, a loop variable) holds no literal and is never blocked.
   argHit: function (arg, pat, ctx, depth) {
     if (tp.litHit(arg, pat, ctx)) return true;
+    if (tp.argvHit(arg, pat, ctx)) return true;
     if ((depth || 0) >= 2) return false;
     var ids = (arg.match(/[A-Za-z_]\w*/g) || []).filter(function (x, i, all) { return all.indexOf(x) === i; }).slice(0, 8), rec = new RegExp(ah.cfg('transcript_protect.record_value_re'));
     for (var i = 0; i < ids.length; i++) {
@@ -336,11 +370,11 @@ var tp = {
           continue;
         }
         if (keep) code.push(line);
-        if (run) shell.push(line); else if (!quoted) held.push(line);
+        if (run) shell.push(line); else held.push(line);
         continue;
       }
       code.push(line);
-      var at = line.search(/<<(?!<)/), m = at < 0 ? null : hd.exec(line.slice(at));
+      var at = tp.heredocAt(line), m = at < 0 ? null : hd.exec(line.slice(at));
       if (!m) { shell.push(line); continue; }
       delim = m[1].replace(/\\([^\n])|['"]/g, function (_, c) { return c || ''; });
       quoted = /['"\\]/.test(m[1]);
@@ -349,8 +383,23 @@ var tp = {
       run = sh.test(head);
       shell.push(run || quoted ? line.slice(0, at) + line.slice(at + m[0].length) : line);
     }
-    if (delim !== null && !quoted && !run) shell.push.apply(shell, held);
+    // a body that never closes is left to the parse as it is (the opener may not be one)
+    if (delim !== null && !run) shell.push.apply(shell, held);
     return { code: code.join('\n').replace(/\\(["'])/g, '$1'), shell: shell.join('\n') };
+  },
+  // where a heredoc operator `<<` starts in one line, or -1: outside quotes and a comment, not a here-string `<<<`, not escaped, not a shift
+  // inside arithmetic `$((..))` (the opener rules of wd.stripHeredocBodies)
+  heredocAt: function (line) {
+    var neutral = wd.neutralize(line), end = neutral.length;
+    for (var i = 0; i < neutral.length; i++) if (neutral.charAt(i) === '#' && (i === 0 || /\s/.test(neutral.charAt(i - 1)))) { end = i; break; }
+    for (var k = 0; k + 1 < end; k++) {
+      if (neutral.charAt(k) !== '<' || neutral.charAt(k + 1) !== '<' || (k > 0 && neutral.charAt(k - 1) === '<') || neutral.charAt(k + 2) === '<') continue;
+      var bs = 0;
+      while (k > bs && neutral.charAt(k - 1 - bs) === '\\') bs++;
+      var before = neutral.slice(0, k);
+      if (bs % 2 === 0 && before.split('((').length <= before.split('))').length) return k;
+    }
+    return -1;
   },
   bashHit: function (command, payload) {
     var kinds = ah.cfg('transcript_protect.kinds'), pat = tp.build(payload);
@@ -425,8 +474,8 @@ var tp = {
   // path literal (transcript_protect.inline_write_res, inline_calls, inline_receiver_re). A target that is not a literal is never blocked:
   // no static rule stops arbitrary code from writing a file, so this stops the plain forms and never blocks everyday reads and reports.
   inlineHit: function (command, payload, pat) {
-    var code = tp.bodies(command).code, res = ah.cfg('transcript_protect.inline_write_res'), i, m, g;
-    var ctx = { vars: tp.shellVars(command), code: code, cwd: payload && typeof payload.cwd === 'string' && payload.cwd.charAt(0) === '/' ? payload.cwd : null };
+    var split = tp.bodies(command), code = split.code, res = ah.cfg('transcript_protect.inline_write_res'), i, m, g;
+    var ctx = { argv: tp.argvLists(split.shell), vars: tp.shellVars(command), code: code, cwd: payload && typeof payload.cwd === 'string' && payload.cwd.charAt(0) === '/' ? payload.cwd : null };
     for (i = 0; i < res.length; i++) {
       var wre = new RegExp(res[i], 'gi');
       while ((m = wre.exec(code)) !== null) {

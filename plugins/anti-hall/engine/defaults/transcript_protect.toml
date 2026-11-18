@@ -58,8 +58,17 @@ value = '''^\s*(?:[\[{]|[\w.:]+!?\s*\(\s*[\[{])|['"]\s*:'''
 doc = "Calls that pass a path on (or open a file on one): a variable assigned a value whose every call is one of these is that path (`p = os.path.expanduser('~/.claude/projects/..')`, `f = open(T, 'r+')`). A value that calls anything else (`df = pd.read_json(T)`, `q = T.replace('.jsonl', '.md')`) is data read from the path, or another path, and a write through it (`df.rename(columns=..)`) is not tied to the transcript."
 value = ["Path", "PurePath", "PosixPath", "expanduser", "expandvars", "abspath", "realpath", "normpath", "join", "joinpath", "resolve", "expand_path", "absolute", "home", "homedir", "getenv", "get", "require", "str", "String", "fspath", "open", "fopen", "openSync", "createWriteStream"]
 
+[transcript_protect.argv_refs]
+doc = "How inline code reads its command-line arguments: `re` (group 1 is the index) and `offset` (the index of the first word after the inline script: python `sys.argv[1]`, node -e `process.argv[1]`, perl `$ARGV[0]`, ruby `ARGV[0]`). A write call whose target is such an argument is tested against the word the command passes there (`python3 -c \"open(sys.argv[1],'a')\" <transcript>`)."
+value = [
+  { re = '\bsys\.argv\s*\[\s*(\d+)\s*\]', offset = 1 },
+  { re = '\bprocess\.argv\s*\[\s*(\d+)\s*\]', offset = 1 },
+  { re = '\$ARGV\s*\[\s*(\d+)\s*\]', offset = 0 },
+  { re = '(?:^|[^$\w])ARGV\s*\[\s*(\d+)\s*\]', offset = 0 },
+]
+
 [transcript_protect.inline_write_res]
-doc = "Patterns (case-insensitive) for a write call in inline code (python, node, perl, ruby, php, a heredoc fed to an interpreter, awk), found in the code an interpreter runs (a heredoc written to a file is not run here and is not scanned). Each capture group is the write call's OWN target argument(s): the first argument of a write-mode open or writeFile, the destination of shutil.copy or copyFileSync, every argument of a rename/remove/move, the string an awk `>`/`>>` names, the path of perl's `open my $f, '>>', <path>` and `open F, '>><path>'`. The command is blocked only when a captured target holds a protected path LITERAL, spelled out or in the value a variable it names is assigned (`T='<transcript>'; open(T,'a')`). A target read at run time (`sys.argv[1]`, `process.env.X`, a loop variable) is never blocked: no static rule can stop arbitrary code from writing a file. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
+doc = "Patterns (case-insensitive) for a write call in inline code (python, node, perl, ruby, php, a heredoc fed to an interpreter, awk), found in the code an interpreter runs (a heredoc written to a file is not run here and is not scanned). Each capture group is the write call's OWN target argument(s): the first argument of a write-mode open or writeFile, the destination of shutil.copy or copyFileSync, every argument of a rename/remove/move, the string an awk `>`/`>>` names, the path of perl's `open my $f, '>>', <path>` and `open F, '>><path>'`. The command is blocked only when a captured target holds a protected path LITERAL, spelled out or in the value a variable it names is assigned (`T='<transcript>'; open(T,'a')`). A command-line argument (`sys.argv[1]`) is tested against the word the command passes there (transcript_protect.argv_refs). A target read at run time from anything else (`process.env.X`, a loop variable, a file) is never blocked: no static rule can stop arbitrary code from writing a file. A plain read (`open(p).read()`, `sys.stdout.write`) matches none."
 value = [
   '''\bopen\s*\(\s*([^,)]+?)\s*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+]''',
   '\b(?:writeFile|appendFile|writeFileSync|appendFileSync|createWriteStream|truncateSync|unlinkSync|rmSync)\s*\(\s*([^,)]+)',
