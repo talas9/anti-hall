@@ -170,17 +170,14 @@ value = [
 ]
 
 [speculation_guard.ack_local_ci]
-doc = "Regex sources (case-insensitive) of acknowledgments that label only the sentence they sit in (GH #486): 'not yet proven', 'unproven' or 'unconfirmed' used as a label, 'my inference'. A hedge in another sentence is not covered. Unlike ack_ci, which covers the whole reply."
+doc = "Regex sources (case-insensitive) matched against the text AFTER a hedge: a label written as a label, attached to the hedge by punctuation in the same sentence (GH #486). '(not yet proven)', 'DNS - unconfirmed', 'likely the cache, my inference, not yet proven.', 'my guess, unconfirmed: check it', 'likely a stale cache, and that is unproven.'. The label must open with a comma, semicolon, colon, dash or bracket (or 'and/but that is'), end at punctuation or the end of the text, and follow the hedge: a label before the hedge ('The order is not confirmed by the API, so ... probably'), in another sentence, or inside a description of another subject ('The ticket is unconfirmed; ...') covers nothing. Unlike ack_ci, which covers the whole reply."
 value = [
-  '\bnot (?:yet )?(?:proven|confirmed)\b',
-  '\b(?:unconfirmed|unproven)\s*(?:[:;,.)!?\u2014-]|$)',
-  '\bmy inference\b',
-  '\bas an inference\b',
+  '[,;:(\[\u2014\u2013-]\s*[*_]*(?:(?:and|but|though)\s+)?(?:(?:that|this|it)\s+(?:is|remains|stays)\s+)?(?:not\s+(?:yet\s+)?(?:proven|confirmed)|unproven|unconfirmed|(?:my|an)\s+inference)[*_]*\s*(?:[,;:.)\]!?\u2014\u2013]|$)',
 ]
 
 [speculation_guard.ack_scope_re]
-doc = "Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space, or a line break."
-value = '[.!?]+\s|\n+'
+doc = "Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space or by the next sentence's first letter, bracket or emphasis mark, or a line break."
+value = '[.!?]+(?:\s|[*_)\]]*[A-Z(])|\n+'
 
 [speculation_guard.ack_cs]
 doc = "Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42."

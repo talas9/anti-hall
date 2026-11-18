@@ -20,16 +20,16 @@ function sgHasAck(t) {
   return false;
 }
 
-// An acknowledgment that covers only the sentence it sits in (speculation_guard.ack_local_ci): 'not yet proven', 'my inference' label
-// the hedge in their own sentence, not every hedge of the reply. The sentence cut is speculation_guard.ack_scope_re.
-function sgLocalAck(text, at) {
-  var br = ah.re.findAll(ah.cfg('speculation_guard.ack_scope_re'), '', text), from = 0, to = text.length, i;
-  for (i = 0; i < br.length; i++) {
-    if (br[i][1] <= at) from = br[i][1];
-    else if (br[i][0] >= at) { to = br[i][0]; break; }
+// A label that follows the hedge in its own sentence and is written as a label (speculation_guard.ack_local_ci): '(not yet proven)',
+// '\u2014 unconfirmed', ', my inference,', 'unconfirmed:' attached to the hedge by punctuation. A label before the hedge, in another
+// sentence, or inside a description of another subject ('The ticket is unconfirmed; ... probably DNS') covers nothing. The sentence cut is
+// speculation_guard.ack_scope_re, tested on the text between the hedge and the label.
+function sgLocalAck(text, end) {
+  var rest = text.slice(end), list = ah.cfg('speculation_guard.ack_local_ci'), cut = ah.cfg('speculation_guard.ack_scope_re');
+  for (var i = 0; i < list.length; i++) {
+    var m = ah.re.find(list[i], 'i', rest);
+    if (m && !ah.re.find(cut, '', rest.slice(0, m[0]))) return true;
   }
-  var seg = text.slice(from, to), list = ah.cfg('speculation_guard.ack_local_ci');
-  for (i = 0; i < list.length; i++) if (ah.re.test(list[i], 'i', seg)) return true;
   return false;
 }
 
@@ -99,7 +99,7 @@ function sgHit(text) {
     var first = text.slice(all[0][0], all[0][1]), isModal = modal.indexOf(first.toLowerCase()) >= 0;
     for (var j = 0; j < all.length; j++) {
       if (isModal && sgObligation(text, all[j][0], all[j][1])) continue;
-      if (sgLocalAck(text, all[j][0])) continue; // a hedge its own sentence labels honest is not a guess
+      if (sgLocalAck(text, all[j][1])) continue; // a hedge its own sentence labels honest, after it, is not a guess
       return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
     }
   }
