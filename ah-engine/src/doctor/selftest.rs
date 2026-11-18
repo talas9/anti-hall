@@ -127,6 +127,12 @@ pub(super) fn fill_value(v: &mut Value, pairs: &[(&str, String)]) {
     }
 }
 
+/// Whether a row's `needs` program is absent from the test environment's PATH; a row with no `needs` always counts as missing
+/// (its `warn` applies unconditionally, as before).
+fn needs_missing(needs: &str, env: &BTreeMap<String, String>) -> bool {
+    needs.is_empty() || super::system::which(needs, env.get("PATH").map_or("", String::as_str)).is_none()
+}
+
 /// Run one table row and record its finding.
 fn one(doc: &mut Doc, ctx: &Ctx, home: &Scratch<'_>, fixtures: &Scratch<'_>, plugin_root: Option<&str>, t: &V) {
     let name = t.str_field("check");
@@ -173,7 +179,9 @@ fn one(doc: &mut Doc, ctx: &Ctx, home: &Scratch<'_>, fixtures: &Scratch<'_>, plu
                 doc.bad(bad.to_string());
             }
         }
-        (_, got) if !warn.is_empty() => {
+        // a row naming `needs` (an interpreter the guard shells out to) downgrades a miss to a warning only when that program is
+        // not on PATH; with it present a miss is real breakage
+        (_, got) if !warn.is_empty() && needs_missing(t.str_field("needs"), &env) => {
             let code = if matches!(got, Got::Block(_)) { 2 } else { 0 };
             doc.warnl(defaults::fill(warn, &[("code", &code)]));
         }
