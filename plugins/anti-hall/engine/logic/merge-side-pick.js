@@ -181,6 +181,32 @@ function conflictEvidence(dir, gitdir, auto) {
   if (q === null) return null;
   return q.status === 1 ? true : (q.status === 0 ? false : null);
 }
+// The refs a merge segment merges: the words after `merge` that are neither an option nor an option's separate value
+// (merge_side_pick.merge_value_opts). [] when there is none (`merge --continue`).
+function mergeRefs(s) {
+  var w = words(s), i = 0, refs = [], valued = ah.cfg('merge_side_pick.merge_value_opts');
+  while (i < w.length && w[i] !== 'merge') i++;
+  for (i = i + 1; i < w.length; i++) {
+    if (w[i].charAt(0) === '-') { if (valued.indexOf(w[i]) >= 0) i += 1; continue; }
+    refs.push(w[i]);
+  }
+  return refs;
+}
+// Would the merge this automatic-resolution segment is about to make conflict, judged BEFORE it runs, against the HEAD it will merge into:
+// true = it would, false = it would not (every ref merges cleanly), null = cannot be told (no directory, no ref, a ref git does not know, git did
+// not answer). The probe is merge_side_pick.auto_probe_pre_args plus the ref, one per ref of the segment.
+function autoWouldConflict(s, dir) {
+  if (dir === '') return null;
+  var refs = mergeRefs(s);
+  if (refs.length === 0) return null;
+  var unknown = false;
+  for (var i = 0; i < refs.length; i++) {
+    var q = ah.exec('git', ah.cfg('merge_side_pick.auto_probe_pre_args').concat([refs[i]]), { cwd: dir, timeoutMs: ah.cfgNum('merge_side_pick.auto_probe_timeout_ms') });
+    if (q === null || (q.status !== 0 && q.status !== 1)) unknown = true;
+    else if (q.status === 1) return true;
+  }
+  return unknown ? null : false;
+}
 function pickScope(s, cwd, cq, moved) {
   var auto = ah.re.test(ah.cfg('merge_side_pick.auto_resolve_re'), '', s);
   return moved || cdLike(s) ? { gitdir: '', branch: '', dir: '', auto: auto } : Object.assign({ dir: segDir(s, cwd, cq), auto: auto }, scopeOf(segDir(s, cwd, cq)));
@@ -208,7 +234,15 @@ function updateMeta(key, fn) {
   });
 }
 function armKey(cmd) { return keep(cmd) + ':' + cmd.length; }
-function hasEvidenceNow(s, cwd, cq, moved) { var at = pickScope(s, cwd, cq, moved); return conflictEvidence(at.dir, at.gitdir, false) === true; }
+// Evidence of a conflict BEFORE the segment runs: a merge/pick in progress or unmerged paths, or (for an automatic resolution) a merge that
+// would conflict or cannot be told. `asPush` (the pick sits in the command that pushes): a doubt about the checkout counts too, as before.
+function hasEvidenceNow(s, cwd, cq, moved, asPush) {
+  var at = pickScope(s, cwd, cq, moved), e = conflictEvidence(at.dir, at.gitdir, false);
+  if (e === true) return true;
+  if (!at.auto) return asPush ? e !== false : false;
+  var p = autoWouldConflict(s, at.dir);
+  return p === true || p === null;
+}
 
 // PreToolUse of a command that takes a side: the conflict may be gone by PostToolUse (`checkout --theirs . && add . && commit`),
 // so its presence now is remembered, for this command, for the Post record.
@@ -216,7 +250,7 @@ function arm(key, cmd, cwd) {
   if (key === '') return;
   var segs = segments(cmd), cq = quoted(cmd), moved = false, found = false;
   for (var i = 0; i < segs.length && !found; i++) {
-    if (segPick(segs[i])) found = hasEvidenceNow(segs[i], cwd, cq, moved);
+    if (segPick(segs[i])) found = hasEvidenceNow(segs[i], cwd, cq, moved, false);
     if (cdLike(segs[i])) moved = true;
   }
   if (found) updateMeta(key, function (m) { m.arms[armKey(cmd)] = ah.clock.now(); });
@@ -269,7 +303,8 @@ function pushCheck(ns, key, cmd, cwd) {
     var s = segs[i];
     if (segPick(s)) {
       var at = pickScope(s, cwd, cq, moved);
-      if (evidenceFor(at)) pend = { cmd: keep(s), gitdir: at.gitdir, branch: at.branch };
+      // this pick has not run yet: an automatic resolution is judged by the merge it is about to make, not by the HEAD before it
+      if (hasEvidenceNow(s, cwd, cq, moved, true)) pend = { cmd: keep(s), gitdir: at.gitdir, branch: at.branch };
     } else if (segTest(s)) pend = null;
     else if (segPush(s) && pend !== null && !pushLeavesPick(pend, segs.slice(0, i), s, cwd, cq)) return pend.cmd;
     if (cdLike(s)) moved = true;
