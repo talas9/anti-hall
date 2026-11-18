@@ -237,8 +237,9 @@ function prgByIdTasks(p, home) {
   if (home && sid !== '' && !/[^A-Za-z0-9_-]/.test(sid)) {
     var names = ah.cfg('taskstate.store_dir_names'), seen = false;
     for (var i = 0; i < names.length; i++) {
-      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
-      if (!ah.fs.isDir(dir)) continue;
+      var own = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+      if (!ah.fs.isDir(own)) continue;
+      var dir = tk.followPointer(base, own); // a pointer-only own directory: the list it names (GH #781), as the shared reader reads it
       seen = true;
       var recs = prgDirRecords(dir);
       if (recs === null) return null;
