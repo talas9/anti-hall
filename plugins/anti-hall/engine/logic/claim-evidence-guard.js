@@ -95,16 +95,22 @@ function ceGapWords(gap) {
 // With guards.claimEvidenceStrict on, three more checks refuse a hit (GH #427): `row.idiom_strict` (filler openers: 'If you ask', 'If true'),
 // `row.noun_before` (a reporting verb that is a noun after an article: 'the reports') and `row.compound` (a source word that is the start of
 // a compound: 'doc-string', 'report-card'); each refusal is counted in claim_evidence_suppressor_rejected {reason}.
-function ceInReach(list, head, reach, row) {
+function ceInReach(list, head, reach, row, after) {
   var strict = ceStrict();
   var idiom = row.idiom ? ah.cfg(row.idiom) : null;
   var filler = strict && row.idiom_strict ? ah.cfg(row.idiom_strict) : null;
   var noun = strict && row.noun_before ? ah.cfg(row.noun_before) : null;
   var comp = strict && row.compound ? ah.cfg(row.compound) : null;
+  // `row.stop` (regex key): text between the hit and the claim that ends the hit's reach ('returned 200 and tests pass');
+  // `row.after_stop` (regex key): text after the claim that shows the author endorses it ('"Tests pass" is true').
+  var stop = row.stop ? ah.cfg(row.stop) : null;
+  var endorse = row.after_stop && typeof after === 'string' ? ah.cfg(row.after_stop) : null;
+  if (endorse !== null && ah.re.find(endorse, 'i', after)) return false;
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', head);
     for (var j = 0; j < all.length; j++) {
       if (ceGapWords(head.slice(all[j][1])) > reach) continue;
+      if (stop !== null && ah.re.find(stop, 'i', head.slice(all[j][1]))) continue;
       var from = head.slice(all[j][0]);
       if (idiom !== null && ah.re.find(idiom, 'i', from)) continue;
       if (filler !== null && ah.re.find(filler, 'i', from)) { ceRejected('filler_opener'); continue; }
@@ -128,6 +134,9 @@ function ceLabelled(sent, hit) {
         continue;
       }
       var gap = all[j][1] <= hit[0] ? sent.slice(all[j][1], hit[0]) : all[j][0] >= hit[1] ? sent.slice(hit[1], all[j][0]) : '';
+      // a clause break or contrast word between label and claim ('Verified earlier; tests pass now', 'Deployed, but must stay local') ends the label's reach
+      if (ah.re.find(ah.cfg('claim_evidence.ack_stop_re'), 'i', gap)) continue;
+      if (all[j][1] <= hit[0] && ah.re.find(ah.cfg('claim_evidence.ack_stop_before_re'), 'i', gap)) continue;
       if (ceGapWords(gap) <= reach) return true;
     }
   }
@@ -143,14 +152,19 @@ function ceLabelled(sent, hit) {
 function ceReason(sent, hit, prev) {
   var sup = ah.cfg('claim_evidence.suppress'), from = ceStart(sent, hit[0]), head = sent.slice(from, hit[0]);
   for (var i = 0; i < sup.length; i++) {
-    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), sup[i])) return { reason: sup[i].reason, chain: sup[i].chain === true };
+    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), sup[i], sent.slice(hit[1]))) return { reason: sup[i].reason, chain: sup[i].chain === true };
   }
   if (prev !== null && prev.start === from && prev.end <= hit[0] && ceGapWords(sent.slice(prev.end, hit[0])) <= ah.cfgNum('claim_evidence.reach_consequent')) {
     return { reason: prev.reason, chain: true };
   }
+  // a claim that names its own scope as local ('is deployed to local only') says nothing about a real deploy
+  var scope = ah.cfg('claim_evidence.local_scope'), rowId = ah.cfg('claim_evidence.claims')[hit[2]].id;
+  for (var s = 0; s < scope.length; s++) if (scope[s].claim === rowId && ah.re.find(scope[s].re, 'i', sent.slice(hit[0]))) return { reason: scope[s].reason, chain: false };
   if (ceLabelled(sent, hit)) return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
   // a label or source that opens the sentence covers every claim after it ('Not verified by me: ...', 'Subagent result: ...')
   var lead = ah.cfg('claim_evidence.leading_labels'), before = sent.slice(0, hit[0]);
+  // ... unless the author speaks again or contrasts before the claim ('Per the worker, however I verified it')
+  if (ah.re.find(ah.cfg('claim_evidence.leading_unless_re'), 'i', before)) return null;
   for (var l = 0; l < lead.length; l++) if (ah.re.find(lead[l].re, 'i', before)) return { reason: lead[l].reason, chain: false };
   return null;
 }

@@ -195,6 +195,20 @@ value = 2
 min = 0
 max = 6
 
+[claim_evidence.ack_stop_re]
+doc = "Text between an honest label (ack_res) and the claim it would cover that ends the label's reach: a semicolon or a contrast word ('Verified earlier; tests pass now', 'Deployed to prod, but must stay local'). A label covers a claim only in its own clause. Rust regular expression, case-insensitive, matched against the text between the label and the claim (either order)."
+value = '\b(?:but|however|although|though|yet|whereas|while|nevertheless|nonetheless)\b'
+
+[claim_evidence.ack_stop_before_re]
+doc = "Text between a label and a claim that FOLLOWS it which ends the label's reach: a semicolon ('Verified earlier; tests pass now'). A label that closes a claim's clause after a semicolon ('CI is green; not unverified') is not stopped here. Rust regular expression, case-insensitive, matched against the text between the label and the claim."
+value = '[;]'
+
+[claim_evidence.local_scope]
+doc = "A claim that names its own scope as local is no claim of a real ship (GH #376): claim = the id of the claim row (claim_evidence.claims), reason = the label written to the log, re = Rust regular expression, case-insensitive, matched against the sentence from the start of the claim hit ('is deployed to local only', 'is live only locally')."
+value = [
+  { claim = "shipped", reason = "local", re = '^(?:\w+\s+){0,3}(?:to\s+local(?:ly|host)?|only\s+(?:locally|local)|locally\s+only|local\s+only)(?:\s|[.,;!?]|$)' },
+]
+
 [claim_evidence.reach_label]
 doc = "Most counted words between a claim and the honest label (ack_res) in its own sentence that covers it (1 = the claim's own subject) ('Tests pass per the earlier run', 'Unverified: the service is live'). A label elsewhere in the reply covers nothing."
 value = 1
@@ -249,6 +263,18 @@ value = [
   { reason = "reported", re = '^[\W_]*(?:per|from|via)\s+(?:the|our|a)\s+(?:(?:sub-?)?agents?|workers?|teammates?|peers?|reviewers?|builders?|executors?|lanes?|bots?|[a-z]+-\d+)\b(?:\s+[\w-]+){0,1}[\s,:\u2014\u2013-]*(?:[\w\x27\x{2019}#/.-]+\s+){0,3}[\w#/.-]*$' },
 ]
 
+[claim_evidence.leading_unless_re]
+doc = "Text between the start of the sentence and the claim that cancels a leading label or source (leading_labels): the author speaks again or contrasts ('Per the worker, however I independently verified it'). Rust regular expression, case-insensitive, matched against the sentence text before the claim."
+value = '\b(?:but|however|although|though|yet|nevertheless|nonetheless|i|we)(?:[\x27\x{2019}]\w+)?\b'
+
+[claim_evidence.reported_stop_re]
+doc = "Text between a reporting verb (reported_res) and the claim that ends its reach: a coordinating word starts a separate assertion ('The endpoint returned 200 and tests pass'). Rust regular expression, case-insensitive, matched against the text between the reporting word and the claim."
+value = '\b(?:and|or|but|while|whereas)\b'
+
+[claim_evidence.mention_endorse_re]
+doc = "Text right after a quoted claim that shows the author endorses it, so it is no mere mention ('The phrase Tests pass is true'). Rust regular expression, case-insensitive, matched against the text after the claim."
+value = '^\W*(?:(?:is|are|was|were)\s+(?:(?:\w+ly|now|still|really)\s+)*(?:true|correct|right|accurate|valid|real|so|the\s+case)|holds|stands)\b'
+
 [claim_evidence.suppress]
 doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason."
 value = [
@@ -256,9 +282,9 @@ value = [
   { reason = "negated", list = "claim_evidence.neg_subject_res", reach = "claim_evidence.reach_subject", idiom = "claim_evidence.no_idiom_re" },
   { reason = "future", list = "claim_evidence.modal_res", reach = "claim_evidence.reach_verb" },
   { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", idiom_strict = "claim_evidence.opener_filler_re", chain = true },
-  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
+  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", stop = "claim_evidence.reported_stop_re", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
-  { reason = "mention", list = "claim_evidence.mention_res", reach = "claim_evidence.reach_mention" },
+  { reason = "mention", list = "claim_evidence.mention_res", reach = "claim_evidence.reach_mention", after_stop = "claim_evidence.mention_endorse_re" },
 ]
 
 [claim_evidence.ack_reason]

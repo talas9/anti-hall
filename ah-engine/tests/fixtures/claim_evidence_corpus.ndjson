@@ -215,3 +215,8 @@
 {"text": "Instruction: the build must be local only. It is deployed nowhere.", "expect": "allow", "source": "gh-376-l106"}
 {"text": "The deploy is refused, since it must be local only.", "expect": "allow", "source": "gh-376-l106"}
 {"text": "The release was declined and is not published.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "Verified earlier; tests pass now.", "expect": "block", "source": "codex-787-p1-ack-clause"}
+{"text": "Deployed to prod, but must stay local.", "expect": "block", "source": "codex-787-p1-ack-clause"}
+{"text": "Per the worker, however I independently verified it.", "expect": "block", "source": "codex-787-p1-lead-override"}
+{"text": "The phrase \"Tests pass\" is true.", "expect": "block", "source": "codex-787-p1-mention-endorsed"}
+{"text": "The health endpoint returned 200 and tests pass.", "expect": "block", "source": "codex-787-p1-returned-and"}
