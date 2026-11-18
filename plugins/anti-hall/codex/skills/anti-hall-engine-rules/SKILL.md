@@ -29,7 +29,7 @@ Generated from the same config the engine reads. Tier: essential rules are also 
 - `broad_kill.lookup` (skill): `...` is blocked: it kills whatever a name or port lookup returns, not a process you started.
 - `burn.msg` (skill): this tool call is paused after work with no recorded outcome. Why: Tokens spent with nothing to show for them are wasted budget; running agents in parallel is fine. Instead: save a report of the outcome and stop.
 - `burn.waste` (skill): this tool call is paused after repeated work with no outcome.
-- `claim_evidence.claim` (skill, switch `guards.claimEvidence`): "..." (...) has no matching check run this turn. Instead: run the check this turn, or label the claim 'not verified' or 'verified earlier: <what>'; rewording alone re-blocks.
+- `claim_evidence.claim` (skill, switch `guards.claimEvidence`): "..." (...) has no matching check run this turn. Instead: run the check and show its result, or say it was not verified.
 - `claim_evidence.pushed` (skill, switch `guards.claimEvidence`): pushed this turn, then called done, but CI and merge state were never checked. Instead: check the run (gh run list, gh pr checks), or report it as pushed, not done.
 - `codex_handover.avail_note` (skill): Codex unavailable until ... (...). Instead: route correctness review to ... until then.
 - `codex_handover.avail` (skill): Codex binary detected on PATH (per a SessionStart PATH probe). Why: Necessary but not sufficient: it does not prove Codex is authenticated or functional, only that a spawn is worth attempting. If a Codex spawn returns null at runtime, take the documented Opus/Sonnet fallback; that null-check is still the real backstop. Instead: use Codex for correctness review.

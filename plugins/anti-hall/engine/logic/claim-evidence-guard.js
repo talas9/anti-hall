@@ -36,31 +36,16 @@ function ceCommands(tp, n) {
 }
 
 // The reply cut into sentences at claim_evidence.sentence_end_re (a hit that consumes nothing ends the cut).
-// `.offs` holds the start of each sentence in `t`.
 function ceSentences(t) {
-  var re = ah.cfg('claim_evidence.sentence_end_re'), out = [], offs = [], rest = t, at = 0;
+  var re = ah.cfg('claim_evidence.sentence_end_re'), out = [], rest = t;
   for (;;) {
     var m = ah.re.find(re, 'i', rest);
     if (!m || m[1] <= 0) break;
     out.push(rest.slice(0, m[0]));
-    offs.push(at);
     rest = rest.slice(m[1]);
-    at += m[1];
   }
   out.push(rest);
-  offs.push(at);
-  out.offs = offs;
   return out;
-}
-
-// The positions of the quote marks ceUnquote blanked in the reply being judged (a mention needs a real quote mark right before the claim).
-var ceMarks = {};
-function ceQuotedAt(text, pos) {
-  for (var j = pos - 1; j >= 0; j--) {
-    if (ceMarks[j] === true) return true;
-    if (!/\s/.test(text.charAt(j))) return false;
-  }
-  return false;
 }
 
 // Where the text of `sent` that governs a claim found at `a` starts: after the last clause break before it (or `win` chars back, the nearer).
@@ -110,23 +95,16 @@ function ceGapWords(gap) {
 // With guards.claimEvidenceStrict on, three more checks refuse a hit (GH #427): `row.idiom_strict` (filler openers: 'If you ask', 'If true'),
 // `row.noun_before` (a reporting verb that is a noun after an article: 'the reports') and `row.compound` (a source word that is the start of
 // a compound: 'doc-string', 'report-card'); each refusal is counted in claim_evidence_suppressor_rejected {reason}.
-function ceInReach(list, head, reach, row, after, quoted) {
-  if (row.quote_only === true && quoted !== true) return false;
+function ceInReach(list, head, reach, row) {
   var strict = ceStrict();
   var idiom = row.idiom ? ah.cfg(row.idiom) : null;
   var filler = strict && row.idiom_strict ? ah.cfg(row.idiom_strict) : null;
   var noun = strict && row.noun_before ? ah.cfg(row.noun_before) : null;
   var comp = strict && row.compound ? ah.cfg(row.compound) : null;
-  // `row.stop` (regex key): text between the hit and the claim that ends the hit's reach ('returned 200 and tests pass');
-  // `row.after_stop` (regex key): text after the claim that shows the author endorses it ('"Tests pass" is true').
-  var stop = row.stop ? ah.cfg(row.stop) : null;
-  var endorse = row.after_stop && typeof after === 'string' ? ah.cfg(row.after_stop) : null;
-  if (endorse !== null && ah.re.find(endorse, 'i', after)) return false;
   for (var i = 0; i < list.length; i++) {
     var all = ah.re.findAll(list[i], 'i', head);
     for (var j = 0; j < all.length; j++) {
       if (ceGapWords(head.slice(all[j][1])) > reach) continue;
-      if (stop !== null && ah.re.find(stop, 'i', head.slice(all[j][1]))) continue;
       var from = head.slice(all[j][0]);
       if (idiom !== null && ah.re.find(idiom, 'i', from)) continue;
       if (filler !== null && ah.re.find(filler, 'i', from)) { ceRejected('filler_opener'); continue; }
@@ -150,27 +128,7 @@ function ceLabelled(sent, hit) {
         continue;
       }
       var gap = all[j][1] <= hit[0] ? sent.slice(all[j][1], hit[0]) : all[j][0] >= hit[1] ? sent.slice(hit[1], all[j][0]) : '';
-      // a clause break or contrast word between label and claim ('Verified earlier; tests pass now', 'Deployed, but must stay local') ends the label's reach
-      if (ah.re.find(ah.cfg('claim_evidence.ack_stop_re'), 'i', gap)) continue;
-      if (all[j][1] <= hit[0] && ah.re.find(ah.cfg('claim_evidence.ack_stop_before_re'), 'i', gap)) continue;
       if (ceGapWords(gap) <= reach) return true;
-    }
-  }
-  // scoped labels (claim_evidence.ack_scoped) cover only a claim that FOLLOWS them in the same clause, or is made of their own words, and only
-  // the claim rows the entry names: a label after the claim ('Tests pass, verified earlier.', 'Tests pass, deployed nowhere.') covers nothing
-  var scoped = ah.cfg('claim_evidence.ack_scoped'), rowId = ah.cfg('claim_evidence.claims')[hit[2]].id;
-  for (var q = 0; q < scoped.length; q++) {
-    var sc = scoped[q];
-    if (sc.claims.length && sc.claims.indexOf(rowId) < 0) continue;
-    var pats = ah.cfg(sc.list), stopRe = ah.cfg(sc.stop);
-    for (var a = 0; a < pats.length; a++) {
-      var lab = rp.wordHits(pats[a], 'i', sent);
-      for (var b = 0; b < lab.length; b++) {
-        if (lab[b][0] >= hit[1]) continue;
-        var between = lab[b][1] > hit[0] ? '' : sent.slice(lab[b][1], hit[0]);
-        if (ah.re.find(stopRe, 'i', between)) continue;
-        if (ceGapWords(between) <= reach) return true;
-      }
     }
   }
   // a label that closes the sentence as its own clause covers every claim before it ('...; unverified.')
@@ -182,23 +140,15 @@ function ceLabelled(sent, hit) {
 // claim_evidence.suppress whose list hits the claim's clause within that row's reach (counted words between the hit and the claim) and
 // not as an idiom, the consequent of a claim a chain row covered (`prev`: {end, start} of that claim and of its clause), or an honest
 // label next to the claim in its own sentence. A second predicate, an unknown connector or a second phrase between them ends the reach.
-function ceReason(sent, hit, prev, quoted) {
+function ceReason(sent, hit, prev) {
   var sup = ah.cfg('claim_evidence.suppress'), from = ceStart(sent, hit[0]), head = sent.slice(from, hit[0]);
   for (var i = 0; i < sup.length; i++) {
-    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), sup[i], sent.slice(hit[1]), quoted)) return { reason: sup[i].reason, chain: sup[i].chain === true };
+    if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), sup[i])) return { reason: sup[i].reason, chain: sup[i].chain === true };
   }
   if (prev !== null && prev.start === from && prev.end <= hit[0] && ceGapWords(sent.slice(prev.end, hit[0])) <= ah.cfgNum('claim_evidence.reach_consequent')) {
     return { reason: prev.reason, chain: true };
   }
-  // a claim that names its own scope as local ('is deployed to local only') says nothing about a real deploy
-  var scope = ah.cfg('claim_evidence.local_scope'), rowId = ah.cfg('claim_evidence.claims')[hit[2]].id;
-  for (var s = 0; s < scope.length; s++) if (scope[s].claim === rowId && ah.re.find(scope[s].re, 'i', sent.slice(hit[0]))) return { reason: scope[s].reason, chain: false };
   if (ceLabelled(sent, hit)) return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
-  // a label or source that opens the sentence covers every claim after it ('Not verified by me: ...', 'Subagent result: ...')
-  var lead = ah.cfg('claim_evidence.leading_labels'), before = sent.slice(0, hit[0]);
-  // ... unless the author speaks again or contrasts before the claim ('Per the worker, however I verified it')
-  if (ah.re.find(ah.cfg('claim_evidence.leading_unless_re'), 'i', before)) return null;
-  for (var l = 0; l < lead.length; l++) if (ah.re.find(lead[l].re, 'i', before)) return { reason: lead[l].reason, chain: false };
   return null;
 }
 
@@ -217,7 +167,7 @@ function ceFindClaim(scan, seen) {
     hits.sort(function (x, y) { return x[0] - y[0] || x[2] - y[2]; });
     var prev = null;
     for (var h = 0; h < hits.length; h++) {
-      var why = ceReason(sents[k], hits[h], prev, ceQuotedAt(scan, sents.offs[k] + hits[h][0])), quote = sents[k].slice(hits[h][0], hits[h][1]), row = rows[hits[h][2]];
+      var why = ceReason(sents[k], hits[h], prev), quote = sents[k].slice(hits[h][0], hits[h][1]), row = rows[hits[h][2]];
       if (why === null) return { row: row, quote: quote };
       seen.push([why.reason, quote, row.id]);
       if (why.chain && (prev === null || hits[h][1] > prev.end)) prev = { end: hits[h][1], start: ceStart(sents[k], hits[h][0]), reason: why.reason };
@@ -230,9 +180,7 @@ function ceFindClaim(scan, seen) {
 // inside a word stays.
 function ceUnquote(t) {
   var all = ah.re.findAll(ah.cfg('claim_evidence.quote_mark_re'), 'i', t), out = '', at = 0;
-  ceMarks = {};
   for (var i = 0; i < all.length; i++) {
-    ceMarks[all[i][0]] = true;
     out += t.slice(at, all[i][0]) + ' ';
     at = all[i][1];
   }
@@ -406,7 +354,6 @@ function decide(p) {
     claim = ceFindClaim(scan1, seen);
     // a claim that exists only inside code, a fence or a blockquote is suppressed (the masked scan cannot see it)
     if (claim === null && scan1 !== sreply) {
-      ceMarks = {};
       var raw = [], rawClaim = ceFindClaim(sreply, raw);
       if (rawClaim !== null) seen.push([ah.cfg('claim_evidence.quoted_reason'), rawClaim.quote, rawClaim.row.id]);
     }
