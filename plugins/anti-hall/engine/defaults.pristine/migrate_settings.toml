@@ -87,6 +87,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"allowReadOnlyVerifyScripts\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ALLOW_READ_ONLY_VERIFY_SCRIPTS\",\"pluginOption\":\"guards_allow_read_only_verify_scripts\"}",
   "{\"section\":\"guards\",\"key\":\"projectCommandAllow\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PROJECT_COMMAND_ALLOW\",\"pluginOption\":\"guards_project_command_allow\"}",
   "{\"section\":\"guards\",\"key\":\"projectEditAllow\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PROJECT_EDIT_ALLOW\",\"pluginOption\":\"guards_project_edit_allow\"}",
+  "{\"section\":\"guards\",\"key\":\"editGuardCapEdit\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_EDIT_GUARD_CAP_EDIT\",\"pluginOption\":\"\"}",
   "{\"section\":\"guards\",\"key\":\"allowPlainPush\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ALLOW_PLAIN_PUSH\",\"pluginOption\":\"guards_allow_plain_push\"}",
   "{\"section\":\"guards\",\"key\":\"allowGcloudReads\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ALLOW_GCLOUD_READS\",\"pluginOption\":\"guards_allow_gcloud_reads\"}",
   "{\"section\":\"guards\",\"key\":\"allowBackgroundScratchScripts\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS\",\"pluginOption\":\"guards_allow_background_scratch_scripts\"}",
