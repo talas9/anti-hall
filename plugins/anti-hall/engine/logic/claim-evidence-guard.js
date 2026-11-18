@@ -149,6 +149,9 @@ function ceReason(sent, hit, prev) {
     return { reason: prev.reason, chain: true };
   }
   if (ceLabelled(sent, hit)) return { reason: ah.cfg('claim_evidence.ack_reason'), chain: false };
+  // a label or source that opens the sentence covers every claim after it ('Not verified by me: ...', 'Subagent result: ...')
+  var lead = ah.cfg('claim_evidence.leading_labels'), before = sent.slice(0, hit[0]);
+  for (var l = 0; l < lead.length; l++) if (ah.re.find(lead[l].re, 'i', before)) return { reason: lead[l].reason, chain: false };
   return null;
 }
 

@@ -177,3 +177,41 @@
 {"text": "I updated the config according to the docs — CI is green.", "expect": "block", "source": "gh-432-p1-sep"}
 {"text": "I updated the config according to the docs\nCI is green.", "expect": "block", "source": "gh-432-p1-sep"}
 {"text": "According to the docs, CI is green.", "expect": "allow", "source": "gh-432-p1-sep"}
+{"text": "The quoted example 'Tests pass' is only a header string in the table.", "expect": "allow", "source": "gh-376-quoted-mention"}
+{"text": "The phrase \"Tests pass\" appears in the docs as an example.", "expect": "allow", "source": "gh-376-quoted-mention"}
+{"text": "The label 'Tests pass' is masked by the table-header rule.", "expect": "allow", "source": "gh-376-quoted-mention"}
+{"text": "I typed 'Tests pass' into the corpus as a test string.", "expect": "allow", "source": "gh-376-quoted-mention"}
+{"text": "Tests pass.", "expect": "block", "source": "gh-376-quoted-mention"}
+{"text": "The example tests pass.", "expect": "block", "source": "gh-376-quoted-mention"}
+{"text": "He wrote the phrase, and 'Tests pass' now.", "expect": "block", "source": "gh-376-quoted-mention"}
+{"text": "**Not verified by me:** its answer tests pass 32 of 32.", "expect": "allow", "source": "gh-376-l284"}
+{"text": "Not verified by me - the build is green.", "expect": "allow", "source": "gh-376-l284"}
+{"text": "Unverified by me: it is deployed.", "expect": "allow", "source": "gh-376-l284"}
+{"text": "Not verified by me, but tests pass 32 of 32.", "expect": "block", "source": "gh-376-l284"}
+{"text": "I ran it. Tests pass 32 of 32.", "expect": "block", "source": "gh-376-l284"}
+{"text": "Subagent result: 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
+{"text": "The subagent returned 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
+{"text": "Per the worker, 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
+{"text": "fix-123 (builder): 91/91 tests pass.", "expect": "allow", "source": "gh-376-l287"}
+{"text": "Result: 91/91 tests pass.", "expect": "block", "source": "gh-376-l287"}
+{"text": "Great news: 91/91 tests pass.", "expect": "block", "source": "gh-376-l287"}
+{"text": "The deploy was refused; nothing was deployed.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "The change must be local only, so it is not deployed.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "No fix was made and the service was not deployed.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "I refused to deploy it, so it is not live.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "The gate refused the deploy; it is deployed to local only.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "It is deployed to prod.", "expect": "block", "source": "gh-376-l106"}
+{"text": "Verified earlier: PR #5 is merged.", "expect": "allow", "source": "gh-376-l238"}
+{"text": "PR #5 is merged, verified earlier in this session.", "expect": "allow", "source": "gh-376-l238"}
+{"text": "PR #5 is merged.", "expect": "block", "source": "gh-376-l238"}
+{"text": "The deploy was refused, so nothing is live.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "The gate refused the deploy, so the fix is not deployed.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "Refused: the service is not deployed.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "The deployment was refused. The fix is not live.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "It must be local only, so I did not deploy it; nothing is live.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "Deploy was refused; the fix is live only locally.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "I refused to deploy; the fix is still local.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "No fix was made, so nothing was deployed.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "Instruction: the build must be local only. It is deployed nowhere.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "The deploy is refused, since it must be local only.", "expect": "allow", "source": "gh-376-l106"}
+{"text": "The release was declined and is not published.", "expect": "allow", "source": "gh-376-l106"}
