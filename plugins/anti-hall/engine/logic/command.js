@@ -4527,14 +4527,27 @@ function ownerClaim(uuid, home) {
   } catch (e) { if (cmdFatal(e)) throw e; return false; }
 }
 
+// Does a never-exempt pattern (owner_approval.never_exempt_re) match the WHOLE command? No prompt lifts it and no `! <cmd>` hint is offered for it.
+function ownerNeverExempt(command) {
+  const never = ah.cfg('owner_approval.never_exempt_re');
+  for (let i = 0; i < never.length; i++) if (new RegExp(never[i], 'i').test(command)) return true;
+  return false;
+}
+
+// The command with its secrets masked (owner_approval.redact: assignment prefixes `VAR=value`, tokens, --token/--password values,
+// credentials in a URL): the form of a command that may appear in a block text or the saved details file.
+function ownerRedact(command) {
+  const rules = ah.cfg('owner_approval.redact');
+  let out = String(command);
+  for (let i = 0; i < rules.length; i++) out = out.replace(new RegExp(rules[i].re, rules[i].flags), rules[i].rep);
+  return out;
+}
+
 // The pass: an advisory (the command runs) when the owner's latest genuine prompt approves exactly this command, else undefined (the block stands).
 function ownerApprovalPass(command, payload) {
   if (!ah.settings.bool('owner_approval.sw')) return undefined;
   const count = function (r) { ah.metric('owner_approval_pass', ['result', r]); };
-  const never = ah.cfg('owner_approval.never_exempt_re');
-  for (let i = 0; i < never.length; i++) {
-    if (new RegExp(never[i], 'i').test(command)) { count('never_exempt'); return undefined; }
-  }
+  if (ownerNeverExempt(command)) { count('never_exempt'); return undefined; }
   const kind = ownerApprovalKind(command);
   const prompt = kind ? ownerLatestPrompt(payload) : null;
   const age = prompt ? ah.clock.now() - Date.parse(prompt.ts) : NaN;
@@ -4690,19 +4703,24 @@ function mainFlow(payload) {
     }
   }
   const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + ah.cfg('command.msg_heavy_suite_place') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
-  // Part C (GH #800): the owner can always run it themselves; the full command is in the text when it fits, else in the saved details
-  const ownerRun = { text: text.render(ah.cfg('owner_approval.msg_owner_run'), { cmd: command }), long: false };
-  if (command.length > ah.cfgNum('owner_approval.owner_run_max_chars') || /[\r\n]/.test(command)) { ownerRun.text = ah.cfg('owner_approval.msg_owner_run_long'); ownerRun.long = true; }
+  // Part C (GH #800): the owner can run it themselves; the command shown is REDACTED (secrets masked) and is never offered for a never-exempt command
+  const ownerRun = { text: '', saved: '', long: false };
+  if (!ownerNeverExempt(command)) {
+    const shown = ownerRedact(command);
+    ownerRun.text = text.render(ah.cfg('owner_approval.msg_owner_run'), { cmd: shown });
+    ownerRun.saved = ' ' + text.render(ah.cfg('owner_approval.msg_owner_run_saved'), { cmd: shown });
+    if (shown.length > ah.cfgNum('owner_approval.owner_run_max_chars') || /[\r\n]/.test(shown)) { ownerRun.text = ah.cfg('owner_approval.msg_owner_run_long'); ownerRun.long = true; }
+  }
   const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
     why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
-      : delegateTo + '.') + cdJoinHint + segNote + ' ' + text.render(ah.cfg('owner_approval.msg_owner_run_saved'), { cmd: command }),
+      : delegateTo + '.') + cdJoinHint + ownerRedact(segNote) + ownerRun.saved,
     briefInsteadExtra: ownerRun.text,
     details: ownerRun.long,
     allowed: allowedShapes,
-    briefExtra: segNote,
+    briefExtra: ownerRedact(segNote),
   }, payload && payload.session_id);
   if (ah.settings.bool('inline_rule.sw')) irBlocked(remote ? 'inline_rule.kind_remote' : cls && cls.kind === 'verb' ? 'inline_rule.kind_verb' : 'inline_rule.kind_category');
   return blockExact(reason);

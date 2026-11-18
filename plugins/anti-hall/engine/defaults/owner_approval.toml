@@ -110,6 +110,16 @@ value = "or ask the owner to run it themselves with ! (full command in the detai
 doc = "Part C in the saved details file: the full original command, so it can be pasted."
 value = "or ask the owner to run it themselves, pasting this in the prompt: ! {cmd}"
 
+[owner_approval.redact]
+doc = "Secrets masked in a command before it appears in a block text or the saved details file (Part C and the named heavy segment). Applied in order with JS String.replace: re is the pattern, flags its flags, rep the replacement ($1.. are its groups). Masks `VAR=value` assignments, GitHub/OpenAI/Slack/AWS-style tokens, bearer and authorization values, --token/--password/--secret/--api-key values, and credentials in a URL."
+value = [
+  { re = '''(^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]*)''', flags = "g", rep = "$1$2=<redacted>" },
+  { re = '''\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-[A-Za-z0-9_-]{16,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b''', flags = "g", rep = "<redacted>" },
+  { re = '''(--?(?:[A-Za-z0-9_-]*(?:token|password|passwd|secret|api-?key|auth|credential)[A-Za-z0-9_-]*))([=\s]+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2<redacted>" },
+  { re = '''\b(Bearer|Basic|Authorization:)(\s+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2<redacted>" },
+  { re = '''(://[^/\s:@]+:)[^@\s/]+@''', flags = "g", rep = "$1<redacted>@" },
+]
+
 [owner_approval.owner_run_max_chars]
 doc = "Longest command (chars) shown in the visible 'Do instead' text, which the guard-text rule cuts at 115 chars in all (the helper hint plus this wording take about 77); a longer or multi-line command is named only in the saved details."
 value = 38
