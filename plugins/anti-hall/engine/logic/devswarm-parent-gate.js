@@ -417,7 +417,18 @@ function pgBacklog(inbox, cursor) {
 // An inbox-file line is a poke mirror by provenance (devswarm.noiseProvenance, GH #429): the prefix AND a sender that is a Primary id or
 // none; a child's native message that starts with the same words is mail (counted in mesh_noise_lookalike_kept). Off: the text prefix alone.
 function pgNoise(v, row) {
-  if (typeof v !== 'string' || v.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) !== 0) return false;
+  if (typeof v !== 'string') return false;
+  // defect 91ab5e1317e2: the engine's wake prompt (`agent_tracker.wake_prefix`, queued into a child's inbox by the Primary's own wake
+  // path) only points at mail, so peek-primary never counts it (union.rs `is_wake_line`: the prefix, and with provenance on a sender
+  // that is absent or a Primary's). The gate reads the same line the same way, or it blocks on mail no read verb shows or clears.
+  if (v.indexOf(ah.cfg('agent_tracker.wake_prefix')) === 0) {
+    if (!pgNoiseProvOn()) { pgCountSuppressed('wake'); return true; }
+    var ws = row ? row[ah.cfg('mesh_write.ndjson_sender_field')] : null;
+    if (typeof ws !== 'string' || ws === '' || ws.indexOf(ah.cfg('mesh_write.primary_prefix')) === 0) { pgCountSuppressed('wake'); return true; }
+    ah.metric('mesh_noise_lookalike_kept', ['kind', 'wake']);
+    return false;
+  }
+  if (v.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) !== 0) return false;
   if (ah.settings.bool('devswarm_role.pg_sw_provenance') !== true) return true;
   var snd = row ? row[ah.cfg('mesh_write.ndjson_sender_field')] : null;
   if (typeof snd !== 'string' || snd === '' || snd.indexOf(ah.cfg('mesh_write.primary_prefix')) === 0) return true;
@@ -641,6 +652,17 @@ function pgGate(p, root, l) {
         if (real > 0 && !allOwn) e.hadStoreOnly = true;
         if (u.age !== null) e.oldestAge = u.age;
         else if (real > 0) e.ageUnknown = true;
+        // defect 91ab5e1317e2: a child's count is capped by the ONE shared count `mesh inbox peek-primary` / `read-primary` report for
+        // this reader (the reader's own bases or the floor, the twin-read run, wake rows and own-family sends left out), as the own row's
+        // is (pgOwnLive). The gate's walk reads the descriptor's cursor file, which an ack only projects best-effort, so it can see mail
+        // the verbs already read; a gate count above the shared one is counted (count_mismatch), never blocked on. The gate's own
+        // stricter filters (pokes, a done child's broadcasts) still apply below the cap. Not settled: the walk's count stands.
+        if (pgSharedOn() && e.realUnread > 0) {
+          var sv = ah.mesh.ownReader(unionKey, d.id, d.inbox, d.cursor, true, now);
+          if (sv && sv.reader === true && sv.state === 'ok' && piFinite(sv.shared)) {
+            if (e.realUnread > sv.shared) { pgCountMismatch(); pgCountSuppressed('shared_count'); e.realUnread = sv.shared; }
+          } else ah.unable('devswarm-parent-gate:child_shared');
+        }
       }
     }
     if (ndOldest !== null) {

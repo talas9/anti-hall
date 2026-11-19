@@ -881,11 +881,11 @@ doc = "Stop blocks the DevSwarm parent gate answered, by kind (block, escalation
 value = { kind = "counter", unit = "blocks", labels = ["kind"] }
 
 [metric.devswarm_parent_gate_suppressed]
-doc = "Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send)."
+doc = "Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send, wake: an engine wake prompt in a child inbox, shared_count: a child count capped by the shared peek-primary count)."
 value = { kind = "counter", unit = "passes", labels = ["reason"] }
 
 [metric.devswarm_parent_gate_count_mismatch]
-doc = "Parent-gate own-mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384)."
+doc = "Parent-gate mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384); also a child count the gate walk read above the shared count (defect 91ab5e1317e2)."
 value = { kind = "counter", unit = "counts", labels = [] }
 
 [devswarm_role.msg_wake_live]
