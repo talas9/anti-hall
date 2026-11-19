@@ -551,7 +551,12 @@ function pgGate(p, root, l) {
     fx.extra.push({ rel: ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_role.pg_dir_summaries') + '/' + selfKey + '.json', body: derived });
     }
   }
-  var descriptors = pgDescriptors(home);
+  // GH #809: with no resolvable project (selfKey null: a directory that belongs to no project) there is no scope to compare a workspace
+  // against, so no workspace is this session's to answer for: the machine-global descriptors of other projects are not read at all.
+  // A work tree that resolved (idn.top) with no key of its own (a deleted cwd inside its repo) is the repo's Primary: Node fails open there and
+  // keeps the descriptors, so the project's key is derived from the work tree and only a directory with no work tree reads none.
+  var scopeKey = selfKey !== null ? selfKey : (idn.top === null ? null : ah.mesh.repoKey(idn.top));
+  var descriptors = idn.top === null && selfKey === null ? [] : pgDescriptors(home);
   var qs = pgQuestions(home, own, descriptors, selfKey, fx);
   var unanswered = qs.blocking, informational = qs.informational, truncated = own.truncated;
   var parked = pgParkedSegment(home, own.id, l.cli); // escalation notices the supervisor could not deliver to this Primary block like unread mail
@@ -581,10 +586,10 @@ function pgGate(p, root, l) {
     var isOwn = own.id === d.id;
     // the own descriptor is the own row's, except when the summary's own count was 0 (not checked at all): then it is counted here
     if (isOwn && !(own.parsed && own.rawZero)) return;
-    var fresh = selfKey !== null ? keyOf(d.worktree) : null;
-    if (selfKey !== null && fresh !== null && selfKey !== fresh) return;
-    var registered = selfKey !== null && fresh === null ? ah.mesh.registeredKey(d.raw, d.id) : fresh;
-    var foreign = selfKey !== null && fresh === null && registered !== null && registered !== selfKey;
+    var fresh = scopeKey !== null ? keyOf(d.worktree) : null;
+    if (scopeKey !== null && fresh !== null && scopeKey !== fresh) return;
+    var registered = scopeKey !== null && fresh === null ? ah.mesh.registeredKey(d.raw, d.id) : fresh;
+    var foreign = scopeKey !== null && fresh === null && registered !== null && registered !== scopeKey;
     if (ignore[d.id] === true) return;
     var done = !isOwn && pgArchiveReady(home, d.id, fresh, readyMemo);
     var e = pgNewEntry(d.id, d.worktree, d.session);
@@ -792,7 +797,7 @@ function pgGate(p, root, l) {
     });
   }
   if (archivedUnreadFamilies > 0) fx.err += text.render(ah.cfg('devswarm_role.pg_err_archived_unread'), { n: String(archivedUnreadFamilies) });
-  pgStray(home, sidRaw, selfKey, keyOf, now, fx);
+  pgStray(home, sidRaw, scopeKey, keyOf, now, fx);
 
   if (blocking.length === 0 && unanswered.length === 0 && !truncated && parked === null) {
     // a pass that only deferred unread mail keeps the loop state and skips the wake-coverage line; only a clean pass clears the state,
@@ -977,6 +982,7 @@ function pgDrainMarker(home, id) {
 // set (stray-seen/<sha1(session)>.json, bounded) written once the gate settles. Advisory only: it never blocks.
 function pgStray(home, sidRaw, selfKey, keyOf, now, fx) {
   if (!ah.settings.bool('devswarm_prompt.plan_tracking_setting')) return;
+  if (selfKey === null) return; // GH #809: no resolvable project, no child of this session's own project to warn about
   var dir = pgDir(home) + '/' + ah.cfg('devswarm_role.pg_dir_stray'), entries = [];
   (pgNames(dir) || []).forEach(function (n) {
     if (!/\.json$/.test(n)) return;
