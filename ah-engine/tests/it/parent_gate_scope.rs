@@ -173,3 +173,14 @@ fn a_project_with_its_own_live_child_and_no_wake_path_still_blocks() {
     assert!(details.contains(OWN_CHILD) && !details.contains(FOREIGN_CHILD), "details: {details:?}");
     assert!(!stop.contains(FOREIGN_CHILD), "the foreign workspace is never named, got: {stop:?}");
 }
+
+#[test]
+fn a_primary_whose_cwd_was_deleted_inside_its_repo_still_blocks() {
+    let e = Env::new("pdel");
+    e.own_live_child();
+    let gone = e.repo.join("gone");
+    let t = e.dir.join("transcript-del.jsonl");
+    std::fs::write(&t, "").unwrap();
+    let stop = e.run(&e.repo, "Stop", &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}));
+    assert!(stop.contains("\"block\""), "a deleted cwd inside the repo fails open and keeps the descriptors, got: {stop:?}");
+}

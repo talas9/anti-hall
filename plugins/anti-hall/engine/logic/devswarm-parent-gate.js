@@ -553,7 +553,10 @@ function pgGate(p, root, l) {
   }
   // GH #809: with no resolvable project (selfKey null: a directory that belongs to no project) there is no scope to compare a workspace
   // against, so no workspace is this session's to answer for: the machine-global descriptors of other projects are not read at all.
-  var descriptors = selfKey === null ? [] : pgDescriptors(home);
+  // A work tree that resolved (idn.top) with no key of its own (a deleted cwd inside its repo) is the repo's Primary: Node fails open there and
+  // keeps the descriptors, so the project's key is derived from the work tree and only a directory with no work tree reads none.
+  var scopeKey = selfKey !== null ? selfKey : (idn.top === null ? null : ah.mesh.repoKey(idn.top));
+  var descriptors = idn.top === null && selfKey === null ? [] : pgDescriptors(home);
   var qs = pgQuestions(home, own, descriptors, selfKey, fx);
   var unanswered = qs.blocking, informational = qs.informational, truncated = own.truncated;
   var parked = pgParkedSegment(home, own.id, l.cli); // escalation notices the supervisor could not deliver to this Primary block like unread mail
@@ -794,7 +797,7 @@ function pgGate(p, root, l) {
     });
   }
   if (archivedUnreadFamilies > 0) fx.err += text.render(ah.cfg('devswarm_role.pg_err_archived_unread'), { n: String(archivedUnreadFamilies) });
-  pgStray(home, sidRaw, selfKey, keyOf, now, fx);
+  pgStray(home, sidRaw, scopeKey, keyOf, now, fx);
 
   if (blocking.length === 0 && unanswered.length === 0 && !truncated && parked === null) {
     // a pass that only deferred unread mail keeps the loop state and skips the wake-coverage line; only a clean pass clears the state,
