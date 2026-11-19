@@ -819,13 +819,19 @@ function piLiveChildren(ctx, cwd) {
     var selfKey = ah.mesh.repoKey(cwd);
     if (selfKey === null) d = { live: false, alive: false, known: false };
     else {
-      var selfReal = ah.fs.realpath(cwd);
-      if (selfReal === null) selfReal = cwd;
+      // This Primary's own row is told by the checkout around `cwd` (its work-tree top and partition id), not by `cwd` itself: a Primary
+      // that sits in a subdirectory of its checkout is the same Primary on every hook, so the UserPromptSubmit order and the Stop gate
+      // (which can see different working directories) always read the same children.
+      var ident = ah.mesh.ident(cwd);
+      var selfRoots = [cwd];
+      if (ident.top) selfRoots.push(ident.top);
+      selfRoots = selfRoots.map(function (r) { var rr = ah.fs.realpath(r); return rr === null ? r : rr; });
       for (var i = 0; i < descriptors.length; i++) {
         var x = descriptors[i];
         if (!x.worktreePath || !x.id) continue;
+        if (ident.own && String(x.id) === String(ident.own)) continue; // this Primary's own row
         var real = ah.fs.realpath(x.worktreePath);
-        if ((real === null ? x.worktreePath : real) === selfReal) continue; // this Primary's own row
+        if (selfRoots.indexOf(real === null ? x.worktreePath : real) >= 0) continue; // this Primary's own row
         var dKey = ah.mesh.repoKey(x.worktreePath);
         if (dKey !== selfKey) continue;
         var st = piChildState(ctx, x.id, x.worktreePath, x.sessionId, true, dKey);
