@@ -61,7 +61,7 @@ function idTaskOf(owners, name) {
 function idWaiting(tp, now, finished) {
   var tag = ah.cfg('idle_order.idle_marker'), lines = ah.fs.tailLines(tp, ah.cfgNum('idle_sweep.scan_bytes'), false, ah.cfg('idle_order.scan_needles').concat([tag]));
   if (lines === null || !Array.isArray(lines)) return [];
-  var jsonRe = jx.re('idle_order.re_idle_json'), retaskRe = jx.re('idle_order.re_retask'), state = {};
+  var jsonRe = jx.re('idle_order.re_idle_json'), retaskRe = jx.re('idle_order.re_retask'), stopRe = jx.re('idle_order.re_stop'), goneRe = jx.re('idle_order.re_gone'), taskIdRe = jx.re('idle_order.re_task_id'), state = {}, ended = {};
   lines.forEach(function (raw) {
     if (typeof raw !== 'string' || raw.length > ah.cfgNum('idle_order.line_max')) return;
     if (raw.indexOf(tag) >= 0) {
@@ -72,9 +72,17 @@ function idWaiting(tp, now, finished) {
       try { o = m ? JSON.parse(m[0]) : null; } catch (y) { o = null; }
       if (o && o.type === tag && typeof o.from === 'string') {
         var ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
-        if (isFinite(ts)) state[o.from] = { ms: ts, reason: typeof o.idleReason === 'string' ? o.idleReason : '' };
+        // a stopped or removed teammate stays gone: its last idle notice can land after the stop and must not list it again
+        if (isFinite(ts) && ended[o.from] !== true) state[o.from] = { ms: ts, reason: typeof o.idleReason === 'string' ? o.idleReason : '' };
       }
       return;
+    }
+    var gone = goneRe.exec(raw);
+    if (gone && typeof gone[1] === 'string') { ended[gone[1]] = true; delete state[gone[1]]; }
+    if (stopRe.test(raw)) {
+      // the teammate a stop names (task_id), seen or not yet idle
+      var stopped = taskIdRe.exec(raw);
+      if (stopped) { ended[stopped[1]] = true; delete state[stopped[1]]; }
     }
     if (retaskRe.test(raw)) Object.keys(state).forEach(function (n) { if (raw.indexOf('"' + n + '"') >= 0) delete state[n]; });
   });
