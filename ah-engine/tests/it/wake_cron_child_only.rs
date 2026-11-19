@@ -739,6 +739,17 @@ fn the_wake_monitor_arm_text_is_one_shell_word_for_a_home_with_a_space_and_a_quo
     assert!(assert_engine_paths_are_one_word(&text, &home) >= 1, "the arm text names the engine path, got: {text:?}");
 }
 
+#[test]
+fn a_primary_whose_cwd_was_deleted_inside_its_repo_is_still_asked_for_the_wake_path_of_its_live_child() {
+    let e = Env::new("deleted-cwd");
+    assert!(e.turn("s1", "claude").contains(ORDER));
+    e.tick_marker(5 * 60_000);
+    e.live_child();
+    let gone = e.repo.join("gone"); // never created: the Primary's cwd was removed under it
+    let out = e.run("UserPromptSubmit", &serde_json::json!({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": gone}), "claude");
+    assert!(out.contains(WAKE_LINE) && out.contains("CronCreate"), "a deleted cwd inside the repo still finds its project's live child, got: {out:?}");
+}
+
 /// One verdict per state, on BOTH checks (the UserPromptSubmit mailbox-cron order and wake line, and the Stop gate): they must never
 /// contradict - the cron is never ordered deleted while the Stop gate asks for a wake path, and the Stop gate is silent without a live child.
 fn verdict(e: &Env) -> (bool, bool, bool) {
