@@ -184,3 +184,14 @@ fn a_primary_whose_cwd_was_deleted_inside_its_repo_still_blocks() {
     let stop = e.run(&e.repo, "Stop", &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}));
     assert!(stop.contains("\"block\""), "a deleted cwd inside the repo fails open and keeps the descriptors, got: {stop:?}");
 }
+
+#[test]
+fn a_primary_whose_cwd_was_deleted_inside_its_repo_is_not_blocked_by_another_projects_workspace() {
+    let e = Env::new("pdelf");
+    e.child_with_mail(&e.other, FOREIGN_CHILD, "foreign-wt");
+    let gone = e.repo.join("gone");
+    let t = e.dir.join("transcript-del.jsonl");
+    std::fs::write(&t, "").unwrap();
+    let stop = e.run(&e.repo, "Stop", &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}));
+    assert!(!stop.contains("\"block\"") && !stop.contains(FOREIGN_CHILD), "project B's workspace is not a deleted-cwd Primary's duty, got: {stop:?}");
+}

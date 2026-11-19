@@ -586,10 +586,10 @@ function pgGate(p, root, l) {
     var isOwn = own.id === d.id;
     // the own descriptor is the own row's, except when the summary's own count was 0 (not checked at all): then it is counted here
     if (isOwn && !(own.parsed && own.rawZero)) return;
-    var fresh = selfKey !== null ? keyOf(d.worktree) : null;
-    if (selfKey !== null && fresh !== null && selfKey !== fresh) return;
-    var registered = selfKey !== null && fresh === null ? ah.mesh.registeredKey(d.raw, d.id) : fresh;
-    var foreign = selfKey !== null && fresh === null && registered !== null && registered !== selfKey;
+    var fresh = scopeKey !== null ? keyOf(d.worktree) : null;
+    if (scopeKey !== null && fresh !== null && scopeKey !== fresh) return;
+    var registered = scopeKey !== null && fresh === null ? ah.mesh.registeredKey(d.raw, d.id) : fresh;
+    var foreign = scopeKey !== null && fresh === null && registered !== null && registered !== scopeKey;
     if (ignore[d.id] === true) return;
     var done = !isOwn && pgArchiveReady(home, d.id, fresh, readyMemo);
     var e = pgNewEntry(d.id, d.worktree, d.session);

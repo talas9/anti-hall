@@ -816,7 +816,9 @@ function piLiveChildren(ctx, cwd) {
   var d = { live: false, alive: false, known: true };
   var descriptors = piDescriptors(ctx.home);
   if (descriptors.length) {
-    var selfKey = ah.mesh.repoKey(cwd);
+    // a work tree that resolves (a deleted cwd inside its repo) is keyed by its top, as the gate does; only a directory with none uses the cwd's own key
+    var idn = ah.mesh.ident(cwd);
+    var selfKey = idn.top !== null && idn.top !== undefined ? ah.mesh.repoKey(idn.top) : ah.mesh.repoKey(cwd);
     if (selfKey === null) d = { live: false, alive: false, known: false };
     else {
       var selfReal = ah.fs.realpath(cwd);
