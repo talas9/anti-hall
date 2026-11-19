@@ -78,6 +78,7 @@ mod no_hardcoded_tunables;
 mod nodeback;
 mod notice_turn_e2e;
 mod operator_parity;
+mod parent_gate_scope;
 mod process_env_reads;
 mod prompt_emit_dispatch;
 mod prop_parsers;
