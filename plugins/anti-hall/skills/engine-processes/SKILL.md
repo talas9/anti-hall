@@ -27,6 +27,7 @@ Leftover processes, runaway CPU or memory and low disk space.
 - `guards.queuedWaitGuard` = true: Off lets a subagent poll background work with sleep loops
 - `guards.allowWideSearch` = false: On lets every agent run whole-disk searches (default off)
 - `guards.wideSearchDepthBound` = true: Default on: a search with a depth limit within wide_search.depth_allow_max is allowed under a...
+- `procwatch.brokerLeakMode` = "report": Mode of the leaked Codex broker tree check: off | report | kill
 - `procwatch.buildDaemonMode` = "report": Mode of the build_daemon class (build tool daemons): off | report | kill
 - `procwatch.devServerMode` = "report": Mode of the dev_server class (dev servers and watchers an agent started): off | report | kill
 - `procwatch.mcpServerMode` = "report": Mode of the mcp_server class (MCP servers of ended sessions): off | report | kill
