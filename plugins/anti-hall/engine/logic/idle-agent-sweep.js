@@ -61,7 +61,7 @@ function idTaskOf(owners, name) {
 function idWaiting(tp, now, finished) {
   var tag = ah.cfg('idle_order.idle_marker'), lines = ah.fs.tailLines(tp, ah.cfgNum('idle_sweep.scan_bytes'), false, ah.cfg('idle_order.scan_needles').concat([tag]));
   if (lines === null || !Array.isArray(lines)) return [];
-  var jsonRe = jx.re('idle_order.re_idle_json'), retaskRe = jx.re('idle_order.re_retask'), stopRe = jx.re('idle_order.re_stop'), goneRe = jx.re('idle_order.re_gone'), taskIdRe = jx.re('idle_order.re_task_id'), spawnRe = jx.re('idle_order.re_spawn'), spawnNameRe = jx.re('idle_order.re_spawn_name'), state = {}, ended = {};
+  var jsonRe = jx.re('idle_order.re_idle_json'), retaskRe = jx.re('idle_order.re_retask'), stopRe = jx.re('idle_order.re_stop'), goneRe = jx.re('idle_order.re_gone'), taskIdRe = jx.re('idle_order.re_task_id'), spawnTag = ah.cfg('idle_sweep.spawned_status'), resultField = ah.cfg('idle_order.spawn_result_field'), nameField = ah.cfg('idle_order.spawn_name_field'), state = {}, ended = {};
   lines.forEach(function (raw) {
     if (typeof raw !== 'string' || raw.length > ah.cfgNum('idle_order.line_max')) return;
     if (raw.indexOf(tag) >= 0) {
@@ -78,8 +78,13 @@ function idWaiting(tp, now, finished) {
       return;
     }
     // a teammate spawned again under a stopped name is a new one
-    var spawned = spawnRe.exec(raw), spawnName = spawned ? spawnNameRe.exec(spawned[0]) : null;
-    if (spawnName) delete ended[spawnName[1]];
+    // read by structure: the record's prompt/description hold braces, so no pattern over the text can find its name field
+    if (raw.indexOf(spawnTag) >= 0) {
+      var rec = null;
+      try { rec = JSON.parse(raw); } catch (z) { rec = null; }
+      var res = rec && typeof rec === 'object' ? rec[resultField] : null;
+      if (res && typeof res === 'object' && res.status === spawnTag && typeof res[nameField] === 'string') delete ended[res[nameField]];
+    }
     var gone = goneRe.exec(raw);
     if (gone && typeof gone[1] === 'string') { ended[gone[1]] = true; delete state[gone[1]]; }
     if (stopRe.test(raw)) {

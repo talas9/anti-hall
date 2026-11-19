@@ -709,13 +709,13 @@ value = '"task_id"\s*:\s*"([^"\\]+)"'
 doc = "The host's answer to a stop of a teammate that no longer exists (JavaScript regex over a transcript line, group 1 = the name): that teammate is gone too."
 value = 'No task found with ID: ([^<"\\\s]*[^<"\\\s.])'
 
-[idle_order.re_spawn]
-doc = "The host's answer to spawning a teammate (JavaScript regex over a transcript line): a teammate spawned again under a name that was stopped or gone is a new one, so it is listed again when it idles."
-value = '"toolUseResult"\s*:\s*\{[^{}]*"status"\s*:\s*"teammate_spawned"[^{}]*\}'
+[idle_order.spawn_result_field]
+doc = "The top-level field of a transcript line that holds the host's answer to a tool call. A spawn is read from it structurally (the line parsed as JSON), because a spawn record's prompt and description carry braces a pattern cannot step over: a teammate spawned again under a name that was stopped or gone is a new one, so it is listed again when it idles."
+value = "toolUseResult"
 
-[idle_order.re_spawn_name]
-doc = "The teammate a spawn names (JavaScript regex over the match of re_spawn, group 1 = the name)."
-value = '"name"\s*:\s*"([^"\\]+)"'
+[idle_order.spawn_name_field]
+doc = "The field of that answer that names the spawned teammate; the answer's status is idle_sweep.spawned_status."
+value = "name"
 
 [idle_order.msg_waiting]
 doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check."
