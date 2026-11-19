@@ -156,6 +156,14 @@ value = { write = "bash_write", remove = "bash_remove", unnamed = "bash_unnamed"
 doc = "The one-line block text, for a Bash command and for an edit."
 value = "that write to a session transcript was stopped: transcripts are append-only for the harness, never the agent."
 
+[transcript_protect.msg_why]
+doc = "Why a write to a session transcript is stopped."
+value = "The transcript is the harness's record of the session; a write by an agent corrupts it."
+
+[transcript_protect.msg_instead]
+doc = "What to do instead of writing to a session transcript."
+value = "keep notes in the session's progress file, not in the transcript."
+
 [metric.transcript_write_blocked]
 doc = "Writes to a protected transcript path stopped (guards.transcriptProtect on), by kind: bash_write, bash_remove, bash_unnamed, bash_inline (command-guard), edit (edit-guard)."
 value = { kind = "counter", unit = "blocks", labels = ["kind"] }

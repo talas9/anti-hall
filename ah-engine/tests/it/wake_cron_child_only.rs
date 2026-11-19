@@ -676,11 +676,19 @@ fn wake_checks_agree_primary_in_a_subdirectory_is_not_its_own_live_child() {
     e.put(&format!("workspaces/{}.json", e.primary), &serde_json::json!({"id": e.primary, "worktreePath": e.repo, "sessionId": "ps"}));
     for (name, cwd) in [("root", e.repo.clone()), ("sub", sub)] {
         let sid = format!("t-{name}");
-        let turn = e.run("UserPromptSubmit", &serde_json::json!({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": cwd}), "claude");
+        let turn =
+            e.run("UserPromptSubmit", &serde_json::json!({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": cwd}), "claude");
         let t = e.dir.join(format!("tr-{name}.jsonl"));
         std::fs::write(&t, "").unwrap();
-        let stop = e.run("Stop", &serde_json::json!({"session_id": sid, "hook_event_name": "Stop", "cwd": cwd, "transcript_path": t, "stop_hook_active": false}), "claude");
+        let stop = e.run(
+            "Stop",
+            &serde_json::json!({"session_id": sid, "hook_event_name": "Stop", "cwd": cwd, "transcript_path": t, "stop_hook_active": false}),
+            "claude",
+        );
         assert!(turn.contains(ORDER), "{name}: no live child, the cron is ordered deleted, got: {turn:?}");
-        assert!(!turn.contains(WAKE_LINE) && !stop.contains(WAKE_LINE) && !stop.contains("\"block\""), "{name}: no live child needs no wake path, got: {turn:?} / {stop:?}");
+        assert!(
+            !turn.contains(WAKE_LINE) && !stop.contains(WAKE_LINE) && !stop.contains("\"block\""),
+            "{name}: no live child needs no wake path, got: {turn:?} / {stop:?}"
+        );
     }
 }

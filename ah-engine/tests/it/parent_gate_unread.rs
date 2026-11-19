@@ -152,7 +152,11 @@ impl Env {
         c.arg("mesh").args(argv).stdin(Stdio::null());
         let o = c.output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).to_string();
-        let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).unwrap_or_else(|| panic!("no JSON from mesh {argv:?}: {out} / {}", String::from_utf8_lossy(&o.stderr)));
+        let line = out
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with('{'))
+            .unwrap_or_else(|| panic!("no JSON from mesh {argv:?}: {out} / {}", String::from_utf8_lossy(&o.stderr)));
         serde_json::from_str(line).unwrap()
     }
 
@@ -219,8 +223,15 @@ fn a_cursor_file_behind_the_shared_read_position_does_not_block() {
     e.reader_session();
     e.inbox_lines(&[mail_line("first"), mail_line("second, already read by the verbs")], 1);
     let st = e.store();
-    st.reader_cursor_txn(&[CursorPut { partition: CHILD.into(), ns: "nd".into(), reader: "#floor".into(), value: 2, retired_line: None, updated_at: now_ms() as i64 }])
-        .unwrap();
+    st.reader_cursor_txn(&[CursorPut {
+        partition: CHILD.into(),
+        ns: "nd".into(),
+        reader: "#floor".into(),
+        value: 2,
+        retired_line: None,
+        updated_at: now_ms() as i64,
+    }])
+    .unwrap();
     assert_eq!(e.peek_unread(), 0, "peek-primary reads from the store's read position");
     let stop = e.stop();
     assert!(!neglects(&stop), "the descriptor's stale cursor file is not unread mail, got: {stop:?}");

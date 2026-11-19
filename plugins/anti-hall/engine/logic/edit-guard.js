@@ -287,7 +287,7 @@ function egTranscript(p) {
   for (var i = 0; i < files.length; i++) {
     if (tp.editHit(egStr(files[i]), p)) {
       ah.metric('transcript_write_blocked', ['kind', ah.cfg('transcript_protect.kinds').edit]);
-      return egBlock(text.message('block', ah.cfg('edit_guard.guard_name'), { what: ah.cfg('transcript_protect.msg_what') }), codexPatch);
+      return egBlock(text.message('block', ah.cfg('edit_guard.guard_name'), { what: ah.cfg('transcript_protect.msg_what'), why: ah.cfg('transcript_protect.msg_why'), instead: ah.cfg('transcript_protect.msg_instead') }), codexPatch);
     }
   }
   return null;
