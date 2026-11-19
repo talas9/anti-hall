@@ -683,7 +683,7 @@ value = 262144
 
 [idle_order.scan_needles]
 doc = "Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate."
-value = ["SendMessage", "TaskStop", "No task found"]
+value = ["SendMessage", "TaskStop", "No task found", "teammate_spawned"]
 
 [idle_order.idle_marker]
 doc = "The type of the notice a teammate sends when its turn ends (read from the transcript)."
@@ -707,7 +707,15 @@ value = '"task_id"\s*:\s*"([^"\\]+)"'
 
 [idle_order.re_gone]
 doc = "The host's answer to a stop of a teammate that no longer exists (JavaScript regex over a transcript line, group 1 = the name): that teammate is gone too."
-value = 'No task found with ID: ([^<"\\\s]+)'
+value = 'No task found with ID: ([^<"\\\s]*[^<"\\\s.])'
+
+[idle_order.re_spawn]
+doc = "The host's answer to spawning a teammate (JavaScript regex over a transcript line): a teammate spawned again under a name that was stopped or gone is a new one, so it is listed again when it idles."
+value = '"toolUseResult"\s*:\s*\{[^{}]*"status"\s*:\s*"teammate_spawned"[^{}]*\}'
+
+[idle_order.re_spawn_name]
+doc = "The teammate a spawn names (JavaScript regex over the match of re_spawn, group 1 = the name)."
+value = '"name"\s*:\s*"([^"\\]+)"'
 
 [idle_order.msg_waiting]
 doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check."

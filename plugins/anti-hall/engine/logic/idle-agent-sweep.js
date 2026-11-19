@@ -61,7 +61,7 @@ function idTaskOf(owners, name) {
 function idWaiting(tp, now, finished) {
   var tag = ah.cfg('idle_order.idle_marker'), lines = ah.fs.tailLines(tp, ah.cfgNum('idle_sweep.scan_bytes'), false, ah.cfg('idle_order.scan_needles').concat([tag]));
   if (lines === null || !Array.isArray(lines)) return [];
-  var jsonRe = jx.re('idle_order.re_idle_json'), retaskRe = jx.re('idle_order.re_retask'), stopRe = jx.re('idle_order.re_stop'), goneRe = jx.re('idle_order.re_gone'), taskIdRe = jx.re('idle_order.re_task_id'), state = {}, ended = {};
+  var jsonRe = jx.re('idle_order.re_idle_json'), retaskRe = jx.re('idle_order.re_retask'), stopRe = jx.re('idle_order.re_stop'), goneRe = jx.re('idle_order.re_gone'), taskIdRe = jx.re('idle_order.re_task_id'), spawnRe = jx.re('idle_order.re_spawn'), spawnNameRe = jx.re('idle_order.re_spawn_name'), state = {}, ended = {};
   lines.forEach(function (raw) {
     if (typeof raw !== 'string' || raw.length > ah.cfgNum('idle_order.line_max')) return;
     if (raw.indexOf(tag) >= 0) {
@@ -77,6 +77,9 @@ function idWaiting(tp, now, finished) {
       }
       return;
     }
+    // a teammate spawned again under a stopped name is a new one
+    var spawned = spawnRe.exec(raw), spawnName = spawned ? spawnNameRe.exec(spawned[0]) : null;
+    if (spawnName) delete ended[spawnName[1]];
     var gone = goneRe.exec(raw);
     if (gone && typeof gone[1] === 'string') { ended[gone[1]] = true; delete state[gone[1]]; }
     if (stopRe.test(raw)) {
@@ -84,6 +87,8 @@ function idWaiting(tp, now, finished) {
       var stopped = taskIdRe.exec(raw);
       if (stopped) { ended[stopped[1]] = true; delete state[stopped[1]]; }
     }
+    // a message to a stopped teammate resumes it: it may idle (and be listed) again
+    if (retaskRe.test(raw) && !stopRe.test(raw)) Object.keys(ended).forEach(function (n) { if (raw.indexOf('"' + n + '"') >= 0) delete ended[n]; });
     if (retaskRe.test(raw)) Object.keys(state).forEach(function (n) { if (raw.indexOf('"' + n + '"') >= 0) delete state[n]; });
   });
   var after = ah.cfgNum('idle_order.waiting_after_min') * ah.cfgNum('idle_order.ms_per_minute'), stale = ah.cfgNum('idle_sweep.stale_minutes') * ah.cfgNum('idle_sweep.ms_per_minute');

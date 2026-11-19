@@ -43,11 +43,11 @@ function fixture({ state = null, answers = [], rows = [], live = null, budget = 
   vm.runInContext(source, context);
   const evidence = context.snRuntimeEvidence({ session_id: 'parent' }, '/fixture', undefined, rows);
   const publishers = rows.length ? rows : [{ session: 'parent', child: 'child', name: 'worker', block: true }];
-  function observe(current = publishers) {
+  function observe(current = publishers, blockRow = true) {
     files.set('/fixture/tracker/runtime-escalations.json', JSON.stringify({ rows: current }));
     const e = context.snRuntimeEvidence({ session_id: 'parent' }, '/fixture', undefined, current);
     if (context.snRuntimeFirstSeen) e.firstSeen = context.snRuntimeFirstSeen('/fixture', current, now, e.state);
-    return context.snRuntimeVerdict('child', 'worker', 'parent', e);
+    return context.snRuntimeVerdict('child', 'worker', 'parent', e, blockRow);
   }
   return { context, publishers, evidence, tails, verdict: observe, observe, files, cfg, advance: ms => { now += ms; }, answer: (answer, ts = now) => files.set('/fixture/tracker/answers.ndjson', JSON.stringify({ child: 'child', answer, ts }) + '\n') };
 
@@ -421,4 +421,10 @@ test('no observed change, or the window switched off, never retires a row on pro
   const off = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 9000, progress: 2 }]) });
   off.cfg['silent_nudge.rt_progress_window_ms'] = 0;
   assert.notEqual(off.verdict().retired, true);
+});
+test('a non-block (loop/burn/stall) row with fresh progress is never retired by progress (GH #818 review B)', () => {
+  const f = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 9000, progress: 2 }, { t: 9500, progress: 2 }]) });
+  f.cfg['silent_nudge.rt_progress_window_ms'] = 5000;
+  assert.notEqual(f.observe(undefined, false).retired, true);
+  assert.equal(f.observe(undefined, true).retired, true);
 });
