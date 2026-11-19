@@ -1090,7 +1090,8 @@ fn store(w: &World, tasks: &[(&str, &str, &str, &str)]) {
     let dir = w.path("home/.claude/tasks/session-s1");
     std::fs::create_dir_all(&dir).unwrap();
     for (id, subject, status, owner) in tasks {
-        std::fs::write(dir.join(format!("{id}.json")), serde_json::json!({"id": id, "subject": subject, "status": status, "owner": owner}).to_string()).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), serde_json::json!({"id": id, "subject": subject, "status": status, "owner": owner}).to_string())
+            .unwrap();
     }
     // a fresh progress file, so the only fact left is the stall
     let date = String::from_utf8(Command::new("date").args(["-u", "+%F"]).output().unwrap().stdout).unwrap();

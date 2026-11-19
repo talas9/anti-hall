@@ -126,7 +126,11 @@ impl Env {
     fn stop(&self, cwd: &Path, session: &str) -> String {
         let t = self.dir.join(format!("transcript-{session}.jsonl"));
         std::fs::write(&t, "").unwrap();
-        self.run(cwd, "Stop", &serde_json::json!({"session_id": session, "hook_event_name": "Stop", "cwd": cwd, "transcript_path": t, "stop_hook_active": false}))
+        self.run(
+            cwd,
+            "Stop",
+            &serde_json::json!({"session_id": session, "hook_event_name": "Stop", "cwd": cwd, "transcript_path": t, "stop_hook_active": false}),
+        )
     }
 
     fn turn(&self, cwd: &Path, session: &str) -> String {
@@ -181,7 +185,11 @@ fn a_primary_whose_cwd_was_deleted_inside_its_repo_still_blocks() {
     let gone = e.repo.join("gone");
     let t = e.dir.join("transcript-del.jsonl");
     std::fs::write(&t, "").unwrap();
-    let stop = e.run(&e.repo, "Stop", &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}));
+    let stop = e.run(
+        &e.repo,
+        "Stop",
+        &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}),
+    );
     assert!(stop.contains("\"block\""), "a deleted cwd inside the repo fails open and keeps the descriptors, got: {stop:?}");
 }
 
@@ -192,6 +200,10 @@ fn a_primary_whose_cwd_was_deleted_inside_its_repo_is_not_blocked_by_another_pro
     let gone = e.repo.join("gone");
     let t = e.dir.join("transcript-del.jsonl");
     std::fs::write(&t, "").unwrap();
-    let stop = e.run(&e.repo, "Stop", &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}));
+    let stop = e.run(
+        &e.repo,
+        "Stop",
+        &serde_json::json!({"session_id": "s1", "hook_event_name": "Stop", "cwd": gone, "transcript_path": t, "stop_hook_active": false}),
+    );
     assert!(!stop.contains("\"block\"") && !stop.contains(FOREIGN_CHILD), "project B's workspace is not a deleted-cwd Primary's duty, got: {stop:?}");
 }

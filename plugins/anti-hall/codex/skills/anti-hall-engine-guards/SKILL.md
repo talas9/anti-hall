@@ -24,14 +24,7 @@ What the automatic guards check and how to read a block.
 - `inbox-read-guard`: Require bounded DevSwarm inbox reads
 - `verify-first`: Deliver deduplicated verify-first reminders
 - `api-guard`: Check APIs against verified declarations
-- `broad-kill-guard`: Block broad or unscoped process kills
-- `queued-wait-guard`: Block background builds and busy polling
-- `lane-test-guard`: Keep subagent tests within their lane
-- `wide-search-guard`: Keep searches scoped to a project
-- `advisor-guard`: Require advisor consultation where configured
 - `switch-notice`: Report guard switch changes
-- `burn-breaker`: Hold wasteful subagents at the hard burn limit
-- `uncommitted-guard`: Warn on large uncommitted subagent edits
 
 ## Switches
 

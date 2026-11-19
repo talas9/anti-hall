@@ -243,7 +243,7 @@ fn git_commands_count_only_the_files_they_name() {
         ("git checkout src/f{i}.js", true), // an existing file: restored
         ("git checkout dev{i}", false),     // not a file: a branch
         ("git commit -q -m x{i}", false),
-        ("git merge --continue", true),     // resolves file content it does not name: an unknown file per run
+        ("git merge --continue", true), // resolves file content it does not name: an unknown file per run
         ("git stash", true),
         ("git stash pop", true),
         ("git reset --hard HEAD~{i}", true),

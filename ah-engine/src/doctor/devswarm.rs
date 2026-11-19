@@ -139,7 +139,10 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
     }
 
     // 4. the Primary's Stop is blocked while a child's inbox is unread
-    if let Some(h) = selftest::Scratch::new(ctx, text("doctor.ds_label_pgate")) {
+    if crate::meshw::ident::repo_key_for_worktree(&ctx.cwd).ok().flatten().is_none() {
+        // the gate answers only for its own project's workspaces: a directory that is no git worktree has none to read
+        out.push(Verdict::Skip(defaults::render("doctor_msg.ds_pgate_skip", &[("cwd", &ctx.cwd)])));
+    } else if let Some(h) = selftest::Scratch::new(ctx, text("doctor.ds_label_pgate")) {
         let lines = defaults::list("doctor.ds_inbox_lines");
         let wrote = write_workspace(&h.dir, text("doctor.ds_workspace_id"), &lines, 0);
         let env = env_for(&h.dir, &primary_env, &[]);

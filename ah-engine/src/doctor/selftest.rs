@@ -137,7 +137,9 @@ fn needs_missing(needs: &str, env: &BTreeMap<String, String>) -> bool {
 fn one(doc: &mut Doc, ctx: &Ctx, home: &Scratch<'_>, fixtures: &Scratch<'_>, plugin_root: Option<&str>, t: &V) {
     let name = t.str_field("check");
     let transcript = fixtures.dir.join(defaults::text("doctor.transcript_file"));
-    let lines = t.get("transcript").map(V::strings).unwrap_or_default();
+    // {CWD} in a transcript line is the fixture directory too: the work count judges a written path by the project it is in
+    let cwd = fixtures.dir.to_string_lossy().into_owned();
+    let lines: Vec<String> = t.get("transcript").map(V::strings).unwrap_or_default().into_iter().map(|l| l.replace("{CWD}", &cwd)).collect();
     if !lines.is_empty()
         && let Err(e) = std::fs::write(&transcript, format!("{}\n", lines.join("\n")))
     {
