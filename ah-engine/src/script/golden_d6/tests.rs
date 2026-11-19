@@ -54,6 +54,9 @@ fn model_routing_script_matches_the_compiled_port() {
 
 #[test]
 fn speculation_judge_script_matches_the_compiled_port() {
+    // the corpus is the daemon's answers (a defer to the dispatcher): no test may have the process allowed to block meanwhile
+    let _g = crate::jev::cascade::MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(!crate::judge::blocking_calls_allowed(), "a test left the process allowed to wait for a model");
     golden_report("speculation-judge", 12);
 }
 
