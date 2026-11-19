@@ -683,7 +683,7 @@ value = 262144
 
 [idle_order.scan_needles]
 doc = "Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate."
-value = ["SendMessage", "TaskStop"]
+value = ["SendMessage", "TaskStop", "No task found", "teammate_spawned"]
 
 [idle_order.idle_marker]
 doc = "The type of the notice a teammate sends when its turn ends (read from the transcript)."
@@ -696,6 +696,26 @@ value = '\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}'
 [idle_order.re_retask]
 doc = "A tool call that re-tasks or ends a teammate (JavaScript regex over a transcript line): a later one naming the teammate means it is no longer idle."
 value = '"name"\s*:\s*"(?:SendMessage|TaskStop)"'
+
+[idle_order.re_stop]
+doc = "A tool call that ENDS a teammate (JavaScript regex over a transcript line): the teammate named on that line is gone for good, so a later idle notice (its last turn can arrive after the stop) never lists it as waiting again."
+value = '"name"\s*:\s*"TaskStop"'
+
+[idle_order.re_task_id]
+doc = "The teammate a stop names (JavaScript regex over the same transcript line as re_stop, group 1 = the task_id, which is the teammate's name)."
+value = '"task_id"\s*:\s*"([^"\\]+)"'
+
+[idle_order.re_gone]
+doc = "The host's answer to a stop of a teammate that no longer exists (JavaScript regex over a transcript line, group 1 = the name): that teammate is gone too."
+value = 'No task found with ID: ([^<"\\\s]*[^<"\\\s.])'
+
+[idle_order.spawn_result_field]
+doc = "The top-level field of a transcript line that holds the host's answer to a tool call. A spawn is read from it structurally (the line parsed as JSON), because a spawn record's prompt and description carry braces a pattern cannot step over: a teammate spawned again under a name that was stopped or gone is a new one, so it is listed again when it idles."
+value = "toolUseResult"
+
+[idle_order.spawn_name_field]
+doc = "The field of that answer that names the spawned teammate; the answer's status is idle_sweep.spawned_status."
+value = "name"
 
 [idle_order.msg_waiting]
 doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check."

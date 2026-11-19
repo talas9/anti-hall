@@ -818,6 +818,11 @@ value = "primary"
 doc = "Reconcile stale runtime Stop snapshots. Reconcile runtime escalation snapshots against current agent completion and all recorded owner actions at Stop; keep verdicts in a separate session overlay without writing the publisher snapshot (guards.runtimeStopReconcile, default on). Both hosts share this logic."
 value = { section = "guards", key = "runtimeStopReconcile", env = "ANTIHALL_RUNTIME_STOP_RECONCILE", aliases = [], option = "", default = true }
 
+[silent_nudge.rt_progress_window_ms]
+doc = "A runtime-escalation child whose last outcome (its progress last changed) is newer than this many milliseconds is making progress: the coordinator's Stop is not blocked on it until the window ends. A silent child (no outcome inside the window) still blocks. 0 turns it off. The Stop reads this, never the nudge text."
+value = 900000
+unit = "ms"
+
 [silent_nudge.rt_repair]
 doc = "Logic-owned per-session runtime Stop overlay under paths.state_dir, written atomically without changing publisher rows. All audit rows are retained; verdicts expire after ttl_ms (milliseconds), live evidence overrides completion. Owner verbs/windows come from agent_nudge.answers/limits. Both Claude/OMC and Codex/OMX share the overlay logic."
 value = { marker = "retired", file_prefix = "runtime-stop-overlay-", file_ext = ".json", ttl_ms = 14400000 }
