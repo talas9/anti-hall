@@ -37,6 +37,27 @@ pub fn allow_blocking_calls() {
     BLOCKING_OK.store(true, Ordering::Relaxed);
 }
 
+/// Test-only: allow blocking calls until the returned guard drops, then restore the daemon's "not allowed". The flag is process-wide, so
+/// a test that flips it for good leaves every later test (and any concurrent one that checks the daemon's behaviour) in the dispatcher's
+/// mode. Hold `crate::jev::cascade::MODEL_LOCK` for as long as the guard lives, and declare the guard after the lock so it drops first.
+#[cfg(test)]
+pub(crate) struct BlockingCallsGuard;
+
+#[cfg(test)]
+impl BlockingCallsGuard {
+    pub(crate) fn allow() -> Self {
+        allow_blocking_calls();
+        BlockingCallsGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockingCallsGuard {
+    fn drop(&mut self) {
+        BLOCKING_OK.store(false, Ordering::Relaxed);
+    }
+}
+
 /// True when this process may make a model call that takes seconds.
 pub fn blocking_calls_allowed() -> bool {
     BLOCKING_OK.load(Ordering::Relaxed)

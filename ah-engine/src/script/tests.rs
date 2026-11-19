@@ -2527,7 +2527,7 @@ fn the_speculation_judge_is_handed_to_the_dispatcher_and_blocks_there() {
     let in_daemon = golden::verdict_json(&golden::run_case("speculation-judge", &l, 1).expect("a shipped script"), &l);
     assert_eq!(in_daemon, json!({"v": "defer"}), "the daemon hands the check to the dispatcher");
     assert!(crate::discard::captured().iter().all(|(code, _)| code != "script_error"), "{:?}", crate::discard::captured());
-    crate::judge::allow_blocking_calls();
+    let _allow = crate::judge::BlockingCallsGuard::allow(); // dropped before `_g`: the flag goes back to the daemon's
     *TEST_MODEL.lock().unwrap() =
         Some(Box::new(|_| crate::judge::cli::CliOutcome { result: Ok(r#"{"decision":"block","claim":"the cause is stated, not shown"}"#.into()), ms: 5 }));
     let l = golden::lay(&case);
@@ -3093,8 +3093,11 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     let case = golden::lay(&json!({
         "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
         "event": "Stop", "opts": {"payload_sha1": "doctor-like"},
-        "payload": {"hook_event_name": "Stop", "session_id": "direct-parent", "cwd": "{HOME}"},
+        // a Primary is a checkout of a repo (its seat id is derived from its work tree), so its cwd is inside one: a cwd with no project is
+        // not a Primary at all and the gate rightly skips it (GH #809, see parent_gate_scope.rs)
+        "payload": {"hook_event_name": "Stop", "session_id": "direct-parent", "cwd": "{HOME}/repo"},
         "files": {
+            "repo/.git/HEAD": "ref: refs/heads/main\n",
             ".anti-hall/devswarm/workspaces/c-1.json": "{\"id\":\"c-1\",\"worktreePath\":\"{HOME}/wt/c-1\",\"sessionId\":\"sess-c1\",\"inboxPath\":\"{HOME}/in.ndjson\",\"cursorPath\":\"{HOME}/cursor.json\"}",
             "in.ndjson": "{\"message\":\"handle this\",\"ts\":1}\n", "cursor.json": "0"
         }

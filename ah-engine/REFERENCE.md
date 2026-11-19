@@ -7278,7 +7278,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `entry_audit.allow` | `28 items` |  |  | What the audit lets through, each with its reason. |
+| `entry_audit.allow` | `30 items` |  |  | What the audit lets through, each with its reason. |
 | `entry_audit.cmd_files` | `12 items` |  |  | Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults (engine/defaults.pristine is a byte-identical copy, compared by the deploy kit, so it is not scanned twice), skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file. |
 | `entry_audit.file_exts` | `.sh, .js, .mjs, .cjs, .py` |  |  | Extensions (with the dot, lower case) that make a file a script for the files section and for the launcher directories. |
 | `entry_audit.generators` | `3 entries, 3 entries` |  |  | Every generator of files the engine itself writes outside the plugin tree: the service units. |
