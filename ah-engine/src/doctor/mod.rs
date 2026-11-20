@@ -366,24 +366,24 @@ fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result
     };
     match fix {
         Fix::MakeExecutable(p) => {
-            let id = "engine-binary-exec";
+            let id = defaults::raw("doctor.fix_ids").str_field("exec");
             let msg = defaults::render("doctor_msg.fix_exec", &[("path", &p.display())]);
             (id, if dry { Ok(msg) } else { add_mode(p, defaults::num("doctor.owner_exec_bit") as u32).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Unquarantine(p) => {
             let msg = defaults::render("doctor_msg.fix_quarantine", &[("path", &p.display())]);
-            ("engine-binary-quarantine", if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (defaults::raw("doctor.fix_ids").str_field("quarantine"), if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Mkdir(p) => {
             let msg = defaults::render("doctor_msg.fix_mkdir", &[("dir", &p.display())]);
-            ("state-dir-create", if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (defaults::raw("doctor.fix_ids").str_field("mkdir"), if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Private(p) => {
             let msg = defaults::render("doctor_msg.fix_private", &[("dir", &p.display())]);
-            ("state-dir-private", if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (defaults::raw("doctor.fix_ids").str_field("private"), if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Heal => {
-            let id = "config-heal";
+            let id = defaults::raw("doctor.fix_ids").str_field("heal");
             let (Some(r), Some(report)) = (root.map(Path::to_path_buf).or_else(defaults::root), defaults::load_report()) else {
                 return (id, Err(defaults::text("doctor_msg.fix_heal_nothing").to_string()));
             };
@@ -396,6 +396,12 @@ fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result
             (id, if failed { Err(lines.join("; ")) } else { Ok(lines.join("; ")) })
         }
     }
+}
+
+/// The ids of every repair step `--only` accepts: the fixes and the units heal.
+fn repair_ids() -> Vec<&'static str> {
+    let fixes = defaults::raw("doctor.fix_ids").as_table().unwrap_or_default().iter().filter_map(|(_, v)| v.as_str());
+    fixes.chain([defaults::text("units.doctor_id")]).collect()
 }
 
 fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], root: Option<&Path>) {
@@ -432,7 +438,7 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
         && !matched
         && units.is_none()
     {
-        doc.infol(defaults::render("doctor_msg.repair_only_none", &[("id", &id), ("ids", &defaults::list("doctor.repair_ids").join(", "))]));
+        doc.infol(defaults::render("doctor_msg.repair_only_none", &[("id", &id), ("ids", &repair_ids().join(", "))]));
     } else if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }

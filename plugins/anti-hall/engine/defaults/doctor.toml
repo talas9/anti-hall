@@ -1423,13 +1423,14 @@ value = "Stop"
 doc = "Defaults files whose pristine copy is a pinned released fallback (it lags the edited copy on purpose; new keys go to the edited copy only). The unknown-setting check skips them: a key the pristine copy lacks is expected there, not a typo."
 value = ["flags.toml", "roles.toml", "script.toml", "telemetry.toml"]
 
+[doctor.fix_ids]
+doc = "The id of each repair step: the id in the repair report and the name `--only <id>` takes. The units heal has its own, units.doctor_id."
+value = { exec = "engine-binary-exec", quarantine = "engine-binary-quarantine", mkdir = "state-dir-create", private = "state-dir-private", heal = "config-heal" }
+
 [doctor.repair_only_flag]
 doc = "The flag that limits `doctor --repair` to ONE repair step, named by its id (`--only units-heal`). Nothing else is repaired, migrated or swept."
 value = "--only"
 
-[doctor.repair_ids]
-doc = "The ids of the repair steps, listed when `--only` names none that is pending."
-value = ["units-heal", "config-heal", "engine-binary-exec", "engine-binary-quarantine", "state-dir-create", "state-dir-private"]
 
 [doctor.foreign_additive]
 doc = "The hook events where a foreign hook only adds to anti-hall's (reported as information)."
