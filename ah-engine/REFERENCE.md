@@ -6672,7 +6672,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `459 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `460 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9136,7 +9136,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `471 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `472 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -12287,6 +12287,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_scope_re` | `^\s*scope\s*:\s*(.+)$` |  |  | The `scope:` line of a brief (multi-line, case-insensitive; group 1: the globs). |
 | `devswarm_cli.sp_secret_like_re` | `^\.env\|\.pem$\|^credentials` |  |  | File names that look like secrets in a leftover aside directory (case-insensitive). |
 | `devswarm_cli.sp_secret_warning` | `A leftover directory {leftover} holds secret-like file(s) ({names}) in the wo...` |  |  | The warning about secret-like files left in an aside directory. {leftover} {names}. |
+| `devswarm_cli.sp_set_default_source` | `6 entries` |  |  | Setting devswarm.spawnSource: the branch a `mesh spawn` / `devswarm spawn` create branches from when no -s / --source is given (the repository's integration branch). Empty (default): hivecontrol's own default, the branch checked out in the Primary, which is the wrong base when the Primary sits on a feature branch. |
 | `devswarm_cli.sp_set_fetch_ttl` | `8 entries` |  |  | Setting devswarm.spawnFetchTtlSec: skip the origin fetch when the remote-tracking ref was updated within this many seconds (0 always fetches). |
 | `devswarm_cli.sp_set_from_origin` | `6 entries` |  |  | Setting devswarm.spawnFromOrigin: before a create from the default branch, fetch origin and fast-forward the local default branch (refuse when it is behind and cannot be updated, unless --from-local). |
 | `devswarm_cli.sp_set_plan_required` | `6 entries` |  |  | Setting devswarm.planRequired: a spawn without a numbered step list says the plan is required (it never refuses the spawn). |

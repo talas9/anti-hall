@@ -165,7 +165,7 @@ entirely; suppression counts surface in doctor), `maintenance.*` (repair-on-relo
 prune, pre-compact snapshot, task lifecycle log), `guards.*` (speculation, claim ledger,
 task, task-list; `guards.modelRouting` takes `strict|advisory|off`), and `devswarm.*`
 (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
-parentReplyTracker, wakeWatch, appSync, screenshotSync, spawnFromOrigin). `show` ends with the parts that
+parentReplyTracker, wakeWatch, appSync, screenshotSync, spawnFromOrigin, spawnSource). `show` ends with the parts that
 have no switch on purpose, and why.
 
 ## Browsing (only when the user asks to see or pick settings)
