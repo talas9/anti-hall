@@ -6760,6 +6760,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.fat_entry_size` | `20` |  |  | Size in bytes of one entry in a universal Mach-O header. |
 | `doctor.fat_first_offset` | `8` |  |  | Byte offset of the first entry in a universal Mach-O header. |
 | `doctor.fat_max_entries` | `8` |  |  | How many entries of a universal Mach-O header are read. |
+| `doctor.fix_ids` | `5 entries` |  |  | The id of each repair step: the id in the repair report and the name `--only <id>` takes. The units heal has its own, units.doctor_id. |
 | `doctor.foreign_additive` | `UserPromptSubmit, SessionStart` |  |  | The hook events where a foreign hook only adds to anti-hall's (reported as information). |
 | `doctor.foreign_bash` | `bash` |  |  | A foreign PreToolUse matcher that contains this (any case) counts as matching the shell tool. |
 | `doctor.foreign_max_bytes` | `524288` |  |  | The largest settings or hook registration file read when scanning other plugins. |
@@ -6853,6 +6854,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.plugin_name` | `anti-hall` |  |  | The plugin name anti-hall declares in its manifest; another enabled plugin with this name makes Claude Code (2.1.296+) skip hooks. |
 | `doctor.plugin_prefix` | `anti-hall@` |  |  | The registry key prefix of anti-hall plugin installs. |
 | `doctor.plugin_root_envs` | `CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT` |  |  | Environment variables that name the plugin root, first set one wins, after the engine's own and the --plugin-root flag. |
+| `doctor.pristine_pinned` | `flags.toml, roles.toml, script.toml, telemetry.toml` |  |  | Defaults files whose pristine copy is a pinned released fallback (it lags the edited copy on purpose; new keys go to the edited copy only). The unknown-setting check skips them: a key the pristine copy lacks is expected there, not a typo. |
 | `doctor.probe_label` | `doctor probe` |  |  | The name a probe of another program is logged under. |
 | `doctor.probe_poll_ms` | `20` |  |  | How often a running probe is polled. |
 | `doctor.probe_timeout_ms` | `5000` |  |  | How long a probe of another program (node, git, the installed engine, ps) may run. |
@@ -6861,6 +6863,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.quarantine_attr` | `com.apple.quarantine` |  |  | The extended attribute macOS Gatekeeper sets on a downloaded file. |
 | `doctor.registry_file` | `.claude/plugins/installed_plugins.json` |  |  | The host's plugin registry, relative to the home directory. |
 | `doctor.registry_query` | `SELECT worktree_path FROM registry ORDER BY id ASC` |  |  | The query that reads the worktree path of every registry row of a store. |
+| `doctor.repair_only_flag` | `--only` |  |  | The flag that limits `doctor --repair` to ONE repair step, named by its id (`--only units-heal`). Nothing else is repaired, migrated or swept. |
 | `doctor.repair_orphan_id` | `repair-ingest-orphan-{name}` |  |  | The row id of the orphan repair of one entry. Placeholder: {name}. |
 | `doctor.repair_orphans_id` | `repair-ingest-orphans` |  |  | The row id of the orphan repair when there is nothing to do. |
 | `doctor.repair_resurrected_id` | `repair-resurrected` |  |  | The row id of the resurrected-rows repair. |
@@ -7230,6 +7233,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.repair_mode_apply` | ` [--apply]` |  |  | The heading suffix of an explicit repair that acts. |
 | `doctor_msg.repair_mode_dry` | ` (dry-run — no changes written)` |  |  | The heading suffix of an explicit repair that only previews. |
 | `doctor_msg.repair_none` | `nothing to repair` |  |  | The repair pass found no rows and nothing failed. |
+| `doctor_msg.repair_only_none` | `no pending repair step '{id}' (step ids: {ids}); nothing was changed` |  |  | `--only <id>` found no pending repair step with that id. Placeholders: {id}, {ids}. |
 | `doctor_msg.repair_read_only` | `read-only run — nothing was changed. Run with --repair to apply the safe repa...` |  |  | The note under the repair heading when no repair was asked for. |
 | `doctor_msg.repair_skipped` | `skipped [{id}] {msg}` |  |  | A repair row that did nothing. Placeholders: {id}, {msg}. |
 | `doctor_msg.repair_title_orphans` | `Repair ingest orphans` |  |  | The title of the ingest-orphan repair section. |
