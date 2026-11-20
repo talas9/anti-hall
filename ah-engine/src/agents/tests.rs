@@ -4765,6 +4765,42 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     assert!(st.nudges.get("abc").is_some_and(|nd| nd.ref_id != first), "a new nudge once the snooze is over");
 }
 
+/// #828: a snooze given to a health nudge holds across that nudge closing as finished (the child not running for a tick, as a workspace
+/// or a main session between two turns) and the flag re-raising on the next turn: no new nudge (and no new ref) inside the snooze.
+#[test]
+fn health_snooze_holds_across_a_finished_close() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("h828-finished");
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    let e = tick_at(&mut st, n + 18 * MIN);
+    let first = st.nudges.get("abc").expect("the waste flag opens a health nudge").clone();
+    // nudge_env turns the runtime steps off, so this is a health trigger (waste), opened by open_new
+    answer_snooze(&e, "abc", 240);
+    let e = tick_at(&mut st, n + 19 * MIN);
+    assert!(st.nudge_snooze.contains_key(&format!("abc|{}", first.trigger)), "the snooze is kept per child and trigger");
+    nudge::close_finished(&e, &mut st, "abc");
+    assert!(st.nudges.is_empty());
+    assert!(st.nudge_snooze.contains_key(&format!("abc|{}", first.trigger)), "a finished close keeps the health snooze");
+    // the next turn re-raises the same flag inside the 240 min snooze: held, no new nudge
+    let b = n + 45 * MIN;
+    let (commit, spend) = spend_cycle(&child, 1, b);
+    append(&child, &commit);
+    tick_at(&mut st, b + MIN);
+    append(&child, &spend);
+    tick_at(&mut st, b + 18 * MIN);
+    assert!(st.nudges.get("abc").is_none(), "held by the snooze; first ref was {}", first.ref_id);
+}
+
 /// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
 #[test]
 fn rt_msg_and_wrong_are_counted_per_step() {

@@ -861,11 +861,10 @@ fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     n.outcome_at = now;
     n.tokens_after = st.agents.get(child).map_or(0, |a| super::signals::total_spent(a).saturating_sub(n.tokens_at_sent));
     emit(env, word("ev_resolved"), &n);
-    // the child is over (or was stopped): its snoozes go with it; one that only made progress keeps them for the next spell
-    // (a runtime nudge that closes as finished keeps its snooze: the child may only have left "running" for a moment, and the snooze
-    // expires on its own, see forget below)
-    let momentary = n.trigger == rt_trigger() && outcome == out("finished");
-    if [out("finished"), out("child_died"), out("acted_stopped")].contains(&outcome) && !momentary {
+    // the child died or was stopped: its snoozes go with it. One that made progress or "finished" keeps them: finished only means the
+    // child is not running this tick (a workspace, main session or teammate between two turns), so a snooze given to any of its nudges,
+    // runtime or health, must hold the nudge that reopens on its next turn; a kept snooze expires on its own (the forget pass below)
+    if [out("child_died"), out("acted_stopped")].contains(&outcome) {
         st.nudge_snooze.retain(|k, _| k.split_once('|').is_none_or(|(c, _)| c != child));
     }
     st.nudge_log.push(n);
