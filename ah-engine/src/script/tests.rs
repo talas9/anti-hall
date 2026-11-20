@@ -3378,6 +3378,10 @@ mod claim_evidence_guard {
         assert_eq!(stop("ce-notice", &lines(notice), reply, &[], json!({})).0, ALLOW, "a notification does not erase the check");
         let owner = json!({"type": "user", "message": {"role": "user", "content": "now say it is verified"}});
         assert!(blocked(&stop("ce-owner", &lines(owner), reply, &[], json!({})).0).is_some(), "a real owner prompt starts a new turn");
+        // no owner prompt in the read window: the turn's start is unknown, so the earlier check does not count
+        let notice = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b2</task-id>\n</task-notification>"}});
+        let unbounded: Vec<Value> = lines(notice).into_iter().skip(1).collect();
+        assert!(blocked(&stop("ce-no-owner", &unbounded, reply, &[], json!({})).0).is_some(), "no turn boundary in the window: nothing backs the reply");
     }
 
     #[test]

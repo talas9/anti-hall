@@ -252,3 +252,8 @@
 {"text":"The device lock was released.","expect":"allow","source":"nonsoftware-2026-11-20"}
 {"text":"The PR is released.","expect":"block","source":"nonsoftware-2026-11-20"}
 {"text":"The new version is released.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The fix for the device is deployed.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The patch for this session is merged.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The firmware for the device is released.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The device is deployed.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The simulator is released.","expect":"allow","source":"nonsoftware-2026-11-20"}

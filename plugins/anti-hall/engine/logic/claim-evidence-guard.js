@@ -169,7 +169,8 @@ function ceFindClaim(scan, seen) {
     for (var i = 0; i < rows.length; i++) {
       var all = ah.re.findAll(rows[i].re, 'i', sents[k]);
       for (var j = 0; j < all.length; j++) {
-        if (typeof rows[i].not_after === 'string' && ah.re.find(rows[i].not_after, 'i', sents[k].slice(0, all[j][0]))) { seen.push([ah.cfg('claim_evidence.nonsoftware_reason'), sents[k].slice(all[j][0], all[j][1]), rows[i].id]); continue; }
+        var hitText = sents[k].slice(all[j][0], all[j][1]);
+        if (typeof rows[i].not_after === 'string' && (typeof rows[i].not_after_hit !== 'string' || ah.re.find(rows[i].not_after_hit, 'i', hitText)) && ah.re.find(rows[i].not_after, 'i', sents[k].slice(0, all[j][0]))) { seen.push([ah.cfg('claim_evidence.nonsoftware_reason'), sents[k].slice(all[j][0], all[j][1]), rows[i].id]); continue; }
         hits.push([all[j][0], all[j][1], i]);
       }
     }
@@ -279,7 +280,7 @@ function ceLogReadBacks(claim, tp, tools) {
 function ceToolsSinceOwner(tp) {
   var lines = ah.fs.tailLines(tp, ah.cfgNum('claim_ledger.window_bytes'), true, ['tool_use', ah.cfg('claim_evidence.user_line_needle')]);
   if (lines === null) return null;
-  var n = 0, injected = ah.cfg('block_cap.injected_re');
+  var n = 0, bounded = false, injected = ah.cfg('block_cap.injected_re');
   for (var i = 0; i < lines.length; i++) {
     var e;
     try { e = JSON.parse(lines[i]); } catch (x) { continue; }
@@ -292,8 +293,10 @@ function ceToolsSinceOwner(tp) {
     if (Array.isArray(c) && c.some(function (b) { return b && b.type === 'tool_result'; })) continue;
     if (!text.trim() || ah.re.find(injected, 'i', text)) continue;
     n = 0;
+    bounded = true;
   }
-  return n;
+  // no owner prompt in the window: the turn's start is unknown, so no earlier tool use may back the reply
+  return bounded ? n : null;
 }
 
 // claim_evidence.tool_evidence: true when a tool call of this turn that is not a shell command backs the claim by its OWN success result.
