@@ -164,6 +164,21 @@ impl Env {
         std::fs::write(f, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
     }
 
+    /// A dormant child: registered and not archived, its session gone, its transcript silent for hours (nothing it could mail).
+    fn child_dormant(&self) {
+        let wt = self.dir.join("home/.devswarm/repos/3/8205fc11/child-wt");
+        let enc: String = wt.to_string_lossy().chars().map(|c| if "/\\:.".contains(c) { '-' } else { c }).collect();
+        let f = self.dir.join("home/.claude/projects").join(enc).join("sess-1.jsonl");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        let ts = |s: u32| format!("2026-11-10T10:00:{s:02}.000Z");
+        let lines = [
+            serde_json::json!({"type": "user", "timestamp": ts(0), "message": {"role": "user", "content": "go"}}),
+            serde_json::json!({"type": "assistant", "timestamp": ts(1), "message": {"content": [{"type": "text", "text": "done"}]}}),
+        ];
+        std::fs::write(&f, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+        std::fs::OpenOptions::new().write(true).open(&f).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)).unwrap();
+    }
+
     /// A Stop of the Primary's session, the clean-pass shape (no hook already active).
     fn stop(&self, session: &str) -> String {
         let t = self.dir.join(format!("transcript-{session}.jsonl"));
@@ -588,4 +603,92 @@ fn agent_recovery_then_expiry(sample_recovery: bool) {
             .any(|r| r["signal"] == "monitor_unarmed" && r["ts"].as_u64() == Some(n + cooldown + 5 * minute)),
         "a later expiry must be announced again after cooldown: {rows}"
     );
+}
+
+#[test]
+fn a_primary_whose_cwd_was_deleted_inside_its_repo_is_still_asked_for_the_wake_path_of_its_live_child() {
+    let e = Env::new("deleted-cwd");
+    assert!(e.turn("s1", "claude").contains(ORDER));
+    e.tick_marker(5 * 60_000);
+    e.live_child();
+    let gone = e.repo.join("gone"); // never created: the Primary's cwd was removed under it
+    let out = e.run("UserPromptSubmit", &serde_json::json!({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": gone}), "claude");
+    assert!(out.contains(WAKE_LINE) && out.contains("CronCreate"), "a deleted cwd inside the repo still finds its project's live child, got: {out:?}");
+}
+
+/// One verdict per state, on BOTH checks (the UserPromptSubmit mailbox-cron order and wake line, and the Stop gate): they must never
+/// contradict - the cron is never ordered deleted while the Stop gate asks for a wake path, and the Stop gate is silent without a live child.
+fn verdict(e: &Env) -> (bool, bool, bool) {
+    let turn = e.turn("v-turn", "claude");
+    let stop = e.stop("v-stop");
+    (turn.contains(ORDER), turn.contains(WAKE_LINE), stop.contains("\"block\"") && stop.contains(WAKE_LINE))
+}
+
+#[test]
+fn wake_checks_agree_dormant_child_only() {
+    let e = Env::new("agree-dormant");
+    e.live_child();
+    e.quiet_mail();
+    e.child_dormant();
+    let (order, line, stop_block) = verdict(&e);
+    assert!(!stop_block && !line, "a dormant child sends no mail: no wake path is asked for");
+    assert!(!(order && stop_block));
+}
+
+#[test]
+fn wake_checks_agree_live_child_with_cron() {
+    let e = Env::new("agree-cron");
+    e.live_child();
+    e.quiet_mail();
+    e.tick_marker(60_000);
+    let (order, line, stop_block) = verdict(&e);
+    assert!(!order && !stop_block && !line);
+}
+
+#[test]
+fn wake_checks_agree_live_child_no_wake_path() {
+    let e = Env::new("agree-none");
+    e.live_child();
+    e.quiet_mail();
+    let (order, line, stop_block) = verdict(&e);
+    assert!(!order, "a live child: never ordered to delete the cron");
+    assert!(line || stop_block, "a live child with no wake path is told to arm one");
+}
+
+#[test]
+fn wake_checks_agree_live_child_monitor_only() {
+    let e = Env::new("agree-monitor");
+    e.live_child();
+    e.quiet_mail();
+    e.watcher_live();
+    let (order, line, stop_block) = verdict(&e);
+    assert!(!order && !stop_block && !line);
+}
+
+#[test]
+fn wake_checks_agree_primary_in_a_subdirectory_is_not_its_own_live_child() {
+    // The Primary's own descriptor sits in the registry; it is not a child whichever directory of its checkout the hook is run from
+    // (defect a0be356d92d8: the root cwd ordered the cron deleted while a subdirectory cwd counted the Primary as a live child and the
+    // Stop gate demanded a wake path, looping).
+    let e = Env::new("agree-subdir");
+    let sub = e.repo.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    e.put(&format!("workspaces/{}.json", e.primary), &serde_json::json!({"id": e.primary, "worktreePath": e.repo, "sessionId": "ps"}));
+    for (name, cwd) in [("root", e.repo.clone()), ("sub", sub)] {
+        let sid = format!("t-{name}");
+        let turn =
+            e.run("UserPromptSubmit", &serde_json::json!({"session_id": sid, "hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": cwd}), "claude");
+        let t = e.dir.join(format!("tr-{name}.jsonl"));
+        std::fs::write(&t, "").unwrap();
+        let stop = e.run(
+            "Stop",
+            &serde_json::json!({"session_id": sid, "hook_event_name": "Stop", "cwd": cwd, "transcript_path": t, "stop_hook_active": false}),
+            "claude",
+        );
+        assert!(turn.contains(ORDER), "{name}: no live child, the cron is ordered deleted, got: {turn:?}");
+        assert!(
+            !turn.contains(WAKE_LINE) && !stop.contains(WAKE_LINE) && !stop.contains("\"block\""),
+            "{name}: no live child needs no wake path, got: {turn:?} / {stop:?}"
+        );
+    }
 }

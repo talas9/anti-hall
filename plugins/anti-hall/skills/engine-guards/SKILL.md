@@ -24,14 +24,7 @@ What the automatic guards check and how to read a block.
 - `inbox-read-guard`: Require bounded DevSwarm inbox reads
 - `verify-first`: Deliver deduplicated verify-first reminders
 - `api-guard`: Check APIs against verified declarations
-- `broad-kill-guard`: Block broad or unscoped process kills
-- `queued-wait-guard`: Block background builds and busy polling
-- `lane-test-guard`: Keep subagent tests within their lane
-- `wide-search-guard`: Keep searches scoped to a project
-- `advisor-guard`: Require advisor consultation where configured
 - `switch-notice`: Report guard switch changes
-- `burn-breaker`: Hold wasteful subagents at the hard burn limit
-- `uncommitted-guard`: Warn on large uncommitted subagent edits
 
 ## Switches
 
@@ -88,6 +81,8 @@ What the automatic guards check and how to read a block.
 - `guards.pruneStopBlock` = true: Capped Stop block after an ignored prune advisory
 - `guards.pruneCompletedTasksAfter` = 3: Completed or cancelled tasks kept before the task tracker suggests pruning
 - `guards.inlineRule` = false: R-inline
+- `guards.ownerApprovalPass` = false: Owner-approval pass-through
+- `guards.transcriptProtect` = true: Transcript protection
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
 - `guards.advisorRank` = false: Skips plan/retry blocks for an equal/higher main
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
@@ -106,6 +101,7 @@ What the automatic guards check and how to read a block.
 - `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node:...
 - `devswarm_sup.retention.capAlone` = false: Owner-gated (OFF by default)
 - `devswarm_sup.retention.foldAlone` = false: Owner-gated (OFF by default)
+- `guards.editGuardCapEdit` = true: guards.editGuardCapEdit: near the usage cap, edit-guard lets the main thread make a small,...
 - `devswarm.inlineWorkNudge` = true: Advise against inline workspace work
 - `devswarm.inlineWorkNudgeThreshold` = 5: Inline calls before an advisory
 - `guards.repeatHint` = true: Switch for the repeated-block hint

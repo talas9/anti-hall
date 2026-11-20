@@ -339,7 +339,21 @@ function snRuntimeEvidence(p, home, budget, rows) {
   return { state: state, answers: answersByChild, now: ah.clock.now(), live: typeof p.session_id === 'string' ? ah.transcript.trackedAgents(p) : [] };
 }
 
-function snRuntimeVerdict(child, name, session, evidence) {
+// When a tracked agent's last outcome (the sample where its progress last changed) stops counting as fresh, or null when it is not
+// fresh or no change was ever seen. Mirrors last_outcome_ms in the engine: the start of the newest run of samples at the current progress.
+function snFreshOutcome(a, now, windowMs) {
+  if (!a || !isFinite(windowMs) || windowMs <= 0 || !Array.isArray(a.samples) || a.samples.length < 2) return null;
+  var s = a.samples, cur = s[s.length - 1], i = s.length - 1;
+  if (!cur || !snNum(cur.progress)) return null;
+  while (i > 0 && s[i - 1] && s[i - 1].progress === cur.progress) i--;
+  if (i === 0 || !s[i] || !snNum(s[i].t)) return null; // no change observed: the run may predate the retained samples
+  var until = s[i].t + windowMs;
+  return until > now ? until : null;
+}
+
+// blockRow: the row is a block-step row (a long run past the block step). Only that row rests on fresh progress (GH #818): a loop/burn/stall
+// escalation (block false) is the unhealthy signal itself and must keep escalating however recently the child wrote.
+function snRuntimeVerdict(child, name, session, evidence, blockRow) {
   // Unreadable evidence cannot retire a candidate: preserve its normal nudge decision.
   if (evidence === null) return { retired: null, since: 0 };
   var a = evidence.state.agents && evidence.state.agents[child];
@@ -373,6 +387,10 @@ function snRuntimeVerdict(child, name, session, evidence) {
     }
     if (until > evidence.now) return { retired: true, until: until, since: since, answer_at: answer.ts };
   }
+  // (a workspace child's own tracker row names itself as parent, so the raw row is read here, not the parent-checked one)
+  // A fresh outcome (its progress changed inside rt_progress_window_ms) is progress, not a stuck child: the row rests until the window ends (GH #818).
+  var fresh = snFreshOutcome(evidence.state.agents && evidence.state.agents[child], evidence.now, ah.cfgNum('silent_nudge.rt_progress_window_ms'));
+  if (blockRow === true && !terminal && fresh !== null) return { retired: true, until: fresh, since: since, answer_at: 0 };
   if (terminal) return { retired: true, until: evidence.now + ttl, since: since, answer_at: 0 };
   return { retired: live !== null || (a && a.running === true) ? false : null, since: since };
 }
@@ -384,7 +402,8 @@ function snRetired(child, name, session, evidence) {
 // The publisher snapshot is read-only. Only this session's atomic, expiring audit overlay is repaired.
 // Preserve every audit row; expired verdicts are ignored, and current live evidence supersedes old completion.
 function snRuntimeRows(p, home, session, doc) {
-  var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session; }) : [];
+  // A session is never nudged about itself: a row whose child is the coordinator's own seat is no child to stop or extend (GH #818).
+  var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session && r.child !== session; }) : [];
   if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
   var allRows = doc && Array.isArray(doc.rows) ? doc.rows : [];
   if (rows.length === 0) { snRuntimeFirstSeen(home, allRows, ah.clock.now(), null); return rows; }
@@ -404,7 +423,7 @@ function snRuntimeRows(p, home, session, doc) {
   var changed = false, kept = [];
   rows.forEach(function (r) {
     var key = JSON.stringify([r.child, r.name]), old = jx.isObj(overlay.rows[key]) ? overlay.rows[key] : null;
-    var verdict = snRuntimeVerdict(r.child, r.name, session, evidence);
+    var verdict = snRuntimeVerdict(r.child, r.name, session, evidence, r.block === true);
     var active = old && old[cfg.marker] === true && snNum(old.until) && old.until > evidence.now && old.since === verdict.since && snNum(firstSeen[JSON.stringify([session, r.child])] );
     if (verdict.retired === true) {
       if (!active || old.answer_at !== verdict.answer_at || old.until > verdict.until) {

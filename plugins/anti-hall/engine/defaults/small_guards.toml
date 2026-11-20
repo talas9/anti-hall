@@ -151,6 +151,55 @@ value = [
   '(?:merge|pull)\b[^\n]*?\s(?:-s\s*|--strategy[= ])ours\b',
 ]
 
+[merge_side_pick.meta_ns]
+doc = "Namespace of the side-pick bookkeeping state (when the last pick was recorded; whether a conflict existed when its command began), kept beside the record."
+value = "merge-side-pick-meta"
+
+[merge_side_pick.conflict_markers]
+doc = "Names inside a checkout's git directory whose presence means a merge, cherry-pick, revert or rebase is in progress, i.e. there is a conflict to resolve. A side-pick is recorded only when one exists or the repository has unmerged paths."
+value = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply"]
+
+[merge_side_pick.unmerged_args]
+doc = "git arguments (run in the pick's directory) that list unmerged paths; any output means a conflict is open."
+value = ["ls-files", "--unmerged"]
+
+[merge_side_pick.unmerged_timeout_ms]
+doc = "Milliseconds the unmerged-paths query may run; a git that does not answer counts as unknown, which keeps the side-pick recorded."
+value = 3000
+
+[merge_side_pick.pick_ttl_ms]
+doc = "A recorded side-pick older than this (milliseconds) no longer draws the push advisory; a test run clears it sooner. Default 4 hours."
+value = 14400000
+
+[merge_side_pick.auto_resolve_re]
+doc = "Regex that recognises a pick git settles by itself, leaving no conflict marker and no unmerged path: a strategy option (-X ours/theirs, --strategy-option) or the ours strategy (-s ours, --strategy ours). For these, no conflict at the pick is not proof that nothing was resolved: the merge it made is probed (auto_probe_args)."
+value = '\s(?:-X\s*|--strategy-option[= ]|-s\s*ours\b|--strategy[= ]ours\b)'
+
+[merge_side_pick.auto_probe_args]
+doc = "git arguments (run in the pick's directory, after the command) that say whether the merge commit it made would have conflicted without the automatic resolution: exit 1 = it would have (the pick resolved a conflict, so it is recorded), exit 0 = it would not (nothing was resolved), any other answer (no merge commit, an old git) cannot be told, which keeps the pick recorded."
+value = ["merge-tree", "--write-tree", "--no-messages", "HEAD^1", "HEAD^2"]
+
+[merge_side_pick.auto_probe_pre_args]
+doc = "git arguments (run in the pick's directory, BEFORE the command) that say whether merging a ref into the current HEAD would conflict; the ref of each merge segment is appended. Exit 1 = it would, 0 = it would not, any other answer (an unknown ref, an old git) cannot be told, which keeps the pick recorded. A command that chains several automatic merges is probed ref by ref."
+value = ["merge-tree", "--write-tree", "--no-messages", "HEAD"]
+
+[merge_side_pick.merge_value_opts]
+doc = "The git merge options that take their value as a separate word (so the word after them is not a ref): -X ours, -s ours, -m <msg>, -F <file>, --into-name <branch>."
+value = ["-X", "-s", "-m", "-F", "--strategy", "--strategy-option", "--into-name"]
+
+[merge_side_pick.auto_probe_timeout_ms]
+doc = "Milliseconds the automatic-resolution probe may run; a git that does not answer counts as unknown, which keeps the pick recorded."
+value = 3000
+
+[merge_side_pick.arm_ttl_ms]
+doc = "How long (milliseconds) a command's 'a conflict existed when it began' note stays valid; a command whose PostToolUse never came cannot arm a later one."
+value = 600000
+
+[merge_side_pick.arm_max]
+doc = "The most commands whose conflict note is kept at once (the newest stay), so parallel tool calls each keep their own."
+value = 16
+min = 1
+
 [merge_side_pick.push_tail]
 doc = "Regex source appended to git_prefix that recognises a push."
 value = 'push\b'
@@ -666,6 +715,14 @@ value = { section = "guards", key = "exploreHintExec", env = "ANTIHALL_EXPLORE_H
 [model_routing.exec_report_re]
 doc = "Regex (case-insensitive) of a brief that writes a file or report (writes a report, a report file, saves findings to a file) or runs a script or shell commands (run a script, shell commands, invoking an interpreter on a script file): such an agent needs a general-purpose type, not Explore, so the row-6 Explore hint is withheld whatever read-only words the brief quotes. A negated write is removed first (negated_write_re)."
 value = '''\bwrit(?:e|es|ing|ten)\s+(?:\S+\s+){0,4}?(?:reports?|summar(?:y|ies)|findings|results?|notes|files?|output|logs?)\b|\b(?:reports?|findings|results?|output)\s+files?\b|\b(?:run|runs|running|execut(?:e|es|ing))\s+(?:\S+\s+){0,3}?(?:scripts?|shell|bash|commands?)\b|\bshell\s+(?:commands?|scripts?)\b|\b(?:bash|sh|python3?|node)\s+(?:-\S+\s+)*\S+\.(?:sh|py|js)\b'''
+
+[model_routing.build_exec_re]
+doc = "Regex (case-insensitive) of a brief that builds, compiles or installs: a toolchain command (flutter, dart, cargo, npm, pnpm, yarn, gradle, xcodebuild, pod, pip, brew, make, cmake, swift, go, mvn) followed by build, compile, install, get, pub get, run, test, archive or publish, or a build/compile/install verb aimed at an app, project, binary, package, dependencies or a platform. Such a spawn writes files, so the row-6 Explore hint is withheld (an Explore agent cannot write), like exec_report_re. A negated write is removed first (negated_write_re)."
+value = '''\b(?:flutter|dart|cargo|npm|pnpm|yarn|gradle|gradlew|xcodebuild|pod|pip3?|brew|make|cmake|swift|go|mvn)\s+(?:-\S+\s+)*(?:build|compile|install|get|pub\s+get|run|test|archive|publish)\b|\bxcodebuild\b|\b(?:build|builds|building|compile|compiles|compiling|install|installs|installing)\s+(?:\S+\s+){0,2}?(?:app|apps|project|binary|binaries|package|packages|dependencies|ios|android|apk|ipa|release|target|crate|workspace)\b'''
+
+[model_routing.design_ask_re]
+doc = "Regex (case-insensitive) of a brief that asks for a design or synthesis, not read-only research: design, propose, draft, recommend or specify a fix, change, solution or patch, a `the_fix` field, or an exact change to name. Such a spawn needs general-purpose, so the row-6 Explore hint is withheld."
+value = '''\b(?:design|propose|draft|recommend|specify|write\s+up)\s+(?:\S+\s+){0,2}?(?:fix(?:es)?|change|solution|patch|remedy)\b|\bthe_fix\b|\bfix\s+design\b|\bexact\s+(?:change|fix|edit)\b'''
 
 [model_routing.explore_hint_skip_setting]
 doc = "Withhold Explore hints for reviews and tests. Withholds the Explore hint for a review seat or a brief that runs tests (guards.exploreHintSkip, default on, #336): those agents run commands or hold a review role, so Explore is the wrong type."
@@ -2260,3 +2317,13 @@ unit = "count"
 doc = "An unread-advisory store entry older than this many hours is dropped (its session is long over; a dropped entry only means the advisory speaks once more)."
 value = 48
 unit = "hours"
+
+[devswarm_prompt.read_unacked]
+doc = "The child's order when it ran `inbox read` on its mail and never acked the read receipt (the Primary keeps seeing the mail unread and flags the child). Placeholders: {cli}, {id}, {rid}."
+value = "⚠️ anti-hall · devswarm-child-ack: Do now: you read your mail (receipt {rid}) but never acked it, so the Primary still sees it as unread. Run `{cli} inbox ack-primary {id} --receipt {rid}` once you have handled it; it stays here until you do."
+
+[devswarm_prompt.read_unacked_scan]
+doc = "How many of the child's newest read receipts the child's turn opens when looking for one that is still unacked (file names sort by time)."
+value = 8
+min = 1
+max = 100

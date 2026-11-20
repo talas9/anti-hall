@@ -15,7 +15,13 @@ Leftover processes, runaway CPU or memory and low disk space.
 
 ## Guards
 
+- `broad-kill-guard`: Block broad or unscoped process kills
+- `queued-wait-guard`: Block background builds and busy polling
+- `lane-test-guard`: Keep subagent tests within their lane
+- `wide-search-guard`: Keep searches scoped to a project
 - `procwatch-advisory`: SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude...
+- `burn-breaker`: Hold wasteful subagents at the hard burn limit
+- `uncommitted-guard`: Warn on large uncommitted subagent edits
 
 ## Switches
 

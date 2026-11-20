@@ -1582,6 +1582,14 @@ mod sibling {
     fn a_200k_line_transcript_is_answered_within_the_script_limit() {
         for (tag, big) in [("long", false), ("long-big", true)] {
             let h = h(tag);
+            // the big transcript is ~412 MB: removed when the iteration ends, a failed assertion included
+            struct Cleanup(String);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    crate::discard::harmless(std::fs::remove_dir_all(&self.0)); // keep: cleanup
+                }
+            }
+            let _cleanup = Cleanup(h.clone());
             let t = long_transcript(&h, &format!("{tag}.jsonl"), big);
             for event in ["Stop", "SubagentStop"] {
                 let mut p = stop(&h, &t, CAUSE);
@@ -2527,7 +2535,7 @@ fn the_speculation_judge_is_handed_to_the_dispatcher_and_blocks_there() {
     let in_daemon = golden::verdict_json(&golden::run_case("speculation-judge", &l, 1).expect("a shipped script"), &l);
     assert_eq!(in_daemon, json!({"v": "defer"}), "the daemon hands the check to the dispatcher");
     assert!(crate::discard::captured().iter().all(|(code, _)| code != "script_error"), "{:?}", crate::discard::captured());
-    crate::judge::allow_blocking_calls();
+    let _allow = crate::judge::BlockingCallsGuard::allow(); // dropped before `_g`: the flag goes back to the daemon's
     *TEST_MODEL.lock().unwrap() =
         Some(Box::new(|_| crate::judge::cli::CliOutcome { result: Ok(r#"{"decision":"block","claim":"the cause is stated, not shown"}"#.into()), ms: 5 }));
     let l = golden::lay(&case);
@@ -3081,7 +3089,7 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     }));
     let got = golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate");
     let Some(Verdict::Exact(out)) = got else { panic!("a child must report: {got:?}") };
-    assert!(out.out.contains("workspace reporting or inbox duties are unfinished"), "{}", out.out);
+    assert!(out.out.contains("workspace duty unfinished: no heartbeat or report sent"), "{}", out.out);
     let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-child-gate-direct-stop.md", case.home)).unwrap();
     assert!(details.contains("Heartbeat: before you stop") && details.contains("ah-engine mesh"), "{details}");
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);
@@ -3093,8 +3101,11 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     let case = golden::lay(&json!({
         "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
         "event": "Stop", "opts": {"payload_sha1": "doctor-like"},
-        "payload": {"hook_event_name": "Stop", "session_id": "direct-parent", "cwd": "{HOME}"},
+        // a Primary is a checkout of a repo (its seat id is derived from its work tree), so its cwd is inside one: a cwd with no project is
+        // not a Primary at all and the gate rightly skips it (GH #809, see parent_gate_scope.rs)
+        "payload": {"hook_event_name": "Stop", "session_id": "direct-parent", "cwd": "{HOME}/repo"},
         "files": {
+            "repo/.git/HEAD": "ref: refs/heads/main\n",
             ".anti-hall/devswarm/workspaces/c-1.json": "{\"id\":\"c-1\",\"worktreePath\":\"{HOME}/wt/c-1\",\"sessionId\":\"sess-c1\",\"inboxPath\":\"{HOME}/in.ndjson\",\"cursorPath\":\"{HOME}/cursor.json\"}",
             "in.ndjson": "{\"message\":\"handle this\",\"ts\":1}\n", "cursor.json": "0"
         }
@@ -3299,6 +3310,35 @@ mod claim_evidence_guard {
         let p = json!({"transcript_path": t, "session_id": "ce-claim-none", "cwd": h, "last_assistant_message": reply});
         let again = super::super::run_forced("claim-evidence-guard", &p, &Value::Null, "Stop", &env(&h));
         assert_eq!(again, ALLOW, "{again:?}");
+    }
+
+    #[test]
+    fn a_process_is_live_claim_is_backed_by_a_process_listing_of_this_turn() {
+        let reply = "The kit process is live.";
+        let run = |sid: &str, cmd: &str| {
+            let l = [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("4242"),
+                assistant("m2", reply, &[]),
+            ];
+            stop(sid, &l, reply, &[], json!({})).0
+        };
+        assert_eq!(run("ce-live-pgrep", "pgrep -fl kit"), ALLOW);
+        assert_eq!(run("ce-live-ps", "ps aux | grep kit"), ALLOW);
+        assert!(blocked(&run("ce-live-ls", "ls -la")).is_some(), "an unrelated command still holds it");
+        // a process listing backs only the process claim: a merge or deploy claim still needs its own evidence
+        let shipped = |sid: &str, cmd: &str, reply: &str| {
+            let l = [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("4242"),
+                assistant("m2", reply, &[]),
+            ];
+            stop(sid, &l, reply, &[], json!({})).0
+        };
+        assert!(blocked(&shipped("ce-merged-ps", "ps aux | grep kit", "The PR is merged.")).is_some(), "ps does not back a merge claim");
+        assert!(blocked(&shipped("ce-deployed-pgrep", "pgrep -fl kit", "The site is deployed and live.")).is_some(), "pgrep does not back a deploy claim");
     }
 
     #[test]

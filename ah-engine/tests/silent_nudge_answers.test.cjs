@@ -43,11 +43,11 @@ function fixture({ state = null, answers = [], rows = [], live = null, budget = 
   vm.runInContext(source, context);
   const evidence = context.snRuntimeEvidence({ session_id: 'parent' }, '/fixture', undefined, rows);
   const publishers = rows.length ? rows : [{ session: 'parent', child: 'child', name: 'worker', block: true }];
-  function observe(current = publishers) {
+  function observe(current = publishers, blockRow = true) {
     files.set('/fixture/tracker/runtime-escalations.json', JSON.stringify({ rows: current }));
     const e = context.snRuntimeEvidence({ session_id: 'parent' }, '/fixture', undefined, current);
     if (context.snRuntimeFirstSeen) e.firstSeen = context.snRuntimeFirstSeen('/fixture', current, now, e.state);
-    return context.snRuntimeVerdict('child', 'worker', 'parent', e);
+    return context.snRuntimeVerdict('child', 'worker', 'parent', e, blockRow);
   }
   return { context, publishers, evidence, tails, verdict: observe, observe, files, cfg, advance: ms => { now += ms; }, answer: (answer, ts = now) => files.set('/fixture/tracker/answers.ndjson', JSON.stringify({ child: 'child', answer, ts }) + '\n') };
 
@@ -383,4 +383,48 @@ test('an answer from before the restored generation send still does not clear (#
 });
 test('a snooze-only restored tracker (reminders unchanged) never lowers (#751 round 6)', () => {
   assert.notEqual(unreadableThenRestored(19500, track => track(19000, 3, { snoozes: 1 })).retired, true);
+});
+
+// GH #818: the coordinator is never blocked on its own seat, and a child with a fresh outcome is progress, not a stuck run.
+const progressState = samples => ({ agents: { child: { parent: 'child', running: true, first_seen: 100, samples } } });
+test('a row naming the coordinator itself is dropped; a real child stays (GH #818 A)', () => {
+  const f = fixture({});
+  f.context.ah.settings = { bool: () => false };
+  const rows = f.context.snRuntimeRows({ session_id: 'parent' }, '/fixture', 'parent', { rows: [
+    { session: 'parent', child: 'parent', name: 'Primary', block: true },
+    { session: 'parent', child: 'child', name: 'worker', block: true },
+    { session: 'other', child: 'x', name: 'y', block: true },
+  ] });
+  assert.deepEqual(rows.map(r => r.child), ['child']);
+});
+test('a child whose progress changed inside the window is retired until the window ends (GH #818 B)', () => {
+  const f = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 9000, progress: 2 }, { t: 9500, progress: 2 }]) });
+  f.cfg['silent_nudge.rt_progress_window_ms'] = 5000;
+  const v = f.verdict();
+  assert.equal(v.retired, true);
+  assert.equal(v.until, 14000);
+});
+test('a silent child (no outcome inside the window) still blocks; an expired window re-fires (GH #818 true positives)', () => {
+  const f = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 2000, progress: 2 }, { t: 9500, progress: 2 }]) });
+  f.cfg['silent_nudge.rt_progress_window_ms'] = 5000;
+  assert.notEqual(f.verdict().retired, true);
+  const g = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 9000, progress: 2 }, { t: 9500, progress: 2 }]) });
+  g.cfg['silent_nudge.rt_progress_window_ms'] = 5000;
+  assert.equal(g.verdict().retired, true);
+  g.advance(5000);
+  assert.notEqual(g.verdict().retired, true);
+});
+test('no observed change, or the window switched off, never retires a row on progress (GH #818)', () => {
+  const same = fixture({ state: progressState([{ t: 9000, progress: 3 }, { t: 9500, progress: 3 }]) });
+  same.cfg['silent_nudge.rt_progress_window_ms'] = 5000;
+  assert.notEqual(same.verdict().retired, true);
+  const off = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 9000, progress: 2 }]) });
+  off.cfg['silent_nudge.rt_progress_window_ms'] = 0;
+  assert.notEqual(off.verdict().retired, true);
+});
+test('a non-block (loop/burn/stall) row with fresh progress is never retired by progress (GH #818 review B)', () => {
+  const f = fixture({ state: progressState([{ t: 1000, progress: 1 }, { t: 9000, progress: 2 }, { t: 9500, progress: 2 }]) });
+  f.cfg['silent_nudge.rt_progress_window_ms'] = 5000;
+  assert.notEqual(f.observe(undefined, false).retired, true);
+  assert.equal(f.observe(undefined, true).retired, true);
 });

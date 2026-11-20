@@ -370,3 +370,172 @@ fn the_record_is_bounded_to_max_entries() {
     let rec: Value = serde_json::from_str(&std::fs::read_to_string(s.record_path()).unwrap()).unwrap();
     assert!(rec["ids"].as_object().unwrap().len() <= 200, "the record is capped at done_order.max_entries: {}", rec["ids"].as_object().unwrap().len());
 }
+
+/// Today's UTC date as the history ledger directory spells it.
+fn utc_date() -> String {
+    String::from_utf8(Command::new("date").args(["-u", "+%F"]).output().unwrap().stdout).unwrap().trim().to_string()
+}
+
+impl Scratch {
+    fn ledger(&self) -> PathBuf {
+        self.dir.join("proj/.anti-hall/history").join(utc_date()).join(format!("{SID}.md"))
+    }
+
+    fn write_ledger(&self, text: &str) {
+        std::fs::create_dir_all(self.ledger().parent().unwrap()).unwrap();
+        std::fs::write(self.ledger(), text).unwrap();
+    }
+}
+
+/// GH #794: the completion line asks for the ledger entry only while there is none. A written entry (a `## Task #1` heading) turns it into the
+/// delete-only order; the rows the engine appends itself on TaskCreated/TaskCompleted are not entries.
+#[test]
+fn the_completion_line_does_not_ask_for_a_ledger_entry_that_is_already_written() {
+    let s = Scratch::new("do-logged");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("- 2026-11-18T12:00:00.000Z · TaskCompleted · task_id=1 · store task 1\n");
+    let rows_only = s.task_update(&tr, "completed");
+    assert!(rows_only.contains("log its Cause/Fix/Verified"), "a lifecycle row is not an entry: {rows_only}");
+    let s = Scratch::new("do-logged2");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #1 store task 1\n- Cause: x\n- Fix: y\n- Verified: z\n");
+    let out = s.task_update(&tr, "completed");
+    assert!(out.contains("task #1 is done and logged") && out.contains("TaskUpdate status=deleted #1"), "delete-only order: {out}");
+    assert!(!out.contains("Cause/Fix/Verified"), "no request to log what is logged: {out}");
+    // task #1 is not task #11: the entry of another task does not stand in
+    let s = Scratch::new("do-logged3");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #11 another\n- Cause: x\n");
+    assert!(s.task_update(&tr, "completed").contains("log its Cause/Fix/Verified"), "entry of #11 is not #1");
+    // the switch off restores the old line
+    let s = Scratch::new("do-logged4");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #1 store task 1\n- Cause: x\n");
+    let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+    assert!(s.check("tasklist-hygiene", &p, &[("ANTIHALL_DONE_ORDER_SKIP_LOGGED", "0")]).contains("log its Cause/Fix/Verified"));
+}
+
+/// GH #794: one completion that reaches the TaskCompleted hook several times is one ledger row; another task, and another event of the same
+/// task, are rows of their own.
+#[test]
+fn a_repeated_task_event_is_one_ledger_row() {
+    let s = Scratch::new("lc-dedupe");
+    let ev = |event: &str, id: &str, mate: Option<&str>| {
+        let mut p = json!({"hook_event_name": event, "session_id": SID, "cwd": s.dir.join("proj"), "task_id": id, "task_subject": "write the parser"});
+        if let Some(m) = mate {
+            p["teammate_name"] = m.into();
+        }
+        s.check("task-lifecycle-log", &p, &[]);
+    };
+    ev("TaskCreated", "7", None);
+    for mate in [Some("fix-a"), Some("fix-b"), None, Some("fix-a"), None] {
+        ev("TaskCompleted", "7", mate);
+    }
+    ev("TaskCompleted", "70", None); // task 70 is not task 7
+    let text = std::fs::read_to_string(s.ledger()).unwrap();
+    let rows = |needle: &str| text.lines().filter(|l| l.contains(needle)).count();
+    assert_eq!(rows("TaskCreated · task_id=7"), 1, "{text}");
+    assert_eq!(rows("TaskCompleted · task_id=7 "), 1, "five deliveries, one row: {text}");
+    assert_eq!(rows("TaskCompleted · task_id=70"), 1, "{text}");
+    // off: every delivery is a row, as before
+    let s = Scratch::new("lc-dedupe-off");
+    for _ in 0..3 {
+        let p = json!({"hook_event_name": "TaskCompleted", "session_id": SID, "cwd": s.dir.join("proj"), "task_id": "7", "task_subject": "x"});
+        s.check("task-lifecycle-log", &p, &[("ANTIHALL_TASK_LIFECYCLE_DEDUPE", "0")]);
+    }
+    assert_eq!(std::fs::read_to_string(s.ledger()).unwrap().lines().count(), 3);
+}
+
+impl Scratch {
+    /// The tracker's retained rows: one agent per `(id, name)` launched by the session `SID`.
+    fn track_agents(&self, agents: &[(&str, &str)]) {
+        let rows: Vec<(&str, &str, &str)> = agents.iter().map(|(i, n)| (*i, *n, SID)).collect();
+        self.track_rows(&rows, &self.home().to_string_lossy());
+    }
+
+    /// The tracker's retained rows: `(id, name, parent)` with the given `cwd` (a row of ANOTHER session in this session's project).
+    fn track_rows(&self, agents: &[(&str, &str, &str)], cwd: &str) {
+        let mut st = ah_engine::agents::State::default();
+        for (id, name, parent) in agents {
+            let a = ah_engine::agents::Agent {
+                id: (*id).into(),
+                kind: "subagent".into(),
+                parent: (*parent).into(),
+                name: (*name).into(),
+                cwd: cwd.into(),
+                path: self.home().join(format!("{id}.jsonl")).to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            st.agents.insert((*id).into(), a);
+        }
+        std::fs::create_dir_all(self.home().join(".anti-hall/agent-tracker")).unwrap();
+        std::fs::write(self.home().join(".anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+}
+
+/// GH #794 (bug 6): the coordinator's NAMED list (CLAUDE_CODE_TASK_LIST_ID) holds tasks owned by the agents it launched (the pairing rule makes
+/// every owner an agent name). Those are the session's own and are ordered deleted; a task owned by a name the session never launched is
+/// another session's and is left alone, a coordinator-named owner (`main`) included (another session's coordinator uses that name too).
+#[test]
+fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered_deleted() {
+    let s = Scratch::new("do-own-owner");
+    s.named_list("anti-hall", &[("completed", "fix-df1"), ("completed", "someone-elses-agent"), ("completed", "main"), ("completed", "")]);
+    s.track_agents(&[("a000000000000001", "fix-df1")]);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let first = json!({"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    let rec = json!({"ids": {"anti-hall/1": first, "anti-hall/2": first, "anti-hall/3": first, "anti-hall/4": first}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("2 completed task(s) still listed: TaskUpdate status=deleted #1 #4"), "own agent's and the unowned task: {out}");
+    assert!(!out.contains("#2"), "an owner this session never launched is not ours: {out}");
+    assert!(!out.contains("#3"), "a task another session's coordinator holds (`main`) is not ours, whatever the name: {out}");
+    // switched off: every owned task is left alone again
+    let s = Scratch::new("do-own-owner-off");
+    s.named_list("anti-hall", &[("completed", "fix-df1")]);
+    s.track_agents(&[("a000000000000001", "fix-df1")]);
+    let tr = s.transcript("completed");
+    s.seed("anti-hall/1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall"), ("ANTIHALL_DONE_ORDER_OWN_OWNERS", "0")]);
+    assert!(!out.contains("status=deleted"), "{out}");
+}
+
+/// GH #794 review P0: the tracker's guard rows hold every row of the project's cwd, other sessions' agents included. A completed task owned by
+/// an agent of ANOTHER session (same cwd) is not this session's and is never ordered deleted.
+#[test]
+fn a_task_owned_by_another_sessions_agent_in_the_same_project_is_never_ordered_deleted() {
+    let s = Scratch::new("do-other-session");
+    // task #1 is the one this session's transcript created (`transcript`); #2 belongs to another session's agent
+    s.named_list("anti-hall", &[("completed", "fix-df1"), ("completed", "executor")]);
+    let proj = s.dir.join("proj").to_string_lossy().into_owned();
+    s.track_rows(&[("a000000000000001", "executor", "OTHER-SESSION"), ("a000000000000002", "fix-df1", SID)], &proj);
+    let tr = s.transcript("completed");
+    let first = json!({"first": (now_ms() - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #1"), "only this session's own agent's task: {out}");
+    assert!(!out.contains("#2"), "another session's agent's task is not ours: {out}");
+}
+
+/// GH #794 review r3: a NAME is not ownership. Two sessions share one named list and each has an agent called `worker`; the tracker shows this
+/// session's `worker`, so a name check alone adopts the other session's `worker` task too. Only a task this session's own transcript created
+/// or updated (#1 here; #2 was made by the other session) is adopted.
+#[test]
+fn a_same_named_agent_of_another_session_does_not_make_its_task_ours() {
+    let s = Scratch::new("do-same-name");
+    s.named_list("anti-hall", &[("completed", "worker"), ("completed", "worker")]);
+    s.track_agents(&[("a000000000000001", "worker")]);
+    let tr = s.transcript("completed");
+    let first = json!({"first": (now_ms() - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #1"), "the task this session created: {out}");
+    assert!(!out.contains("#2"), "the other session's same-named agent's task is not ours: {out}");
+}

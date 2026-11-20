@@ -177,3 +177,67 @@
 {"text": "I updated the config according to the docs — CI is green.", "expect": "block", "source": "gh-432-p1-sep"}
 {"text": "I updated the config according to the docs\nCI is green.", "expect": "block", "source": "gh-432-p1-sep"}
 {"text": "According to the docs, CI is green.", "expect": "allow", "source": "gh-432-p1-sep"}
+{"text": "T-47: all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "Lane 3: all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "cargo test returned 91 passed.", "expect": "block", "source": "r3probe"}
+{"text": "The suite returned all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "The health endpoint returned 200, tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "The run logged 91 tests passed.", "expect": "block", "source": "r3probe"}
+{"text": "cargo printed 91 passed.", "expect": "block", "source": "r3probe"}
+{"text": "All tests pass, must stay local.", "expect": "block", "source": "r3probe"}
+{"text": "All tests pass, deployed nowhere.", "expect": "block", "source": "r3probe"}
+{"text": "Tests pass, refused to deploy.", "expect": "block", "source": "r3probe"}
+{"text": "The change is merged, push was blocked.", "expect": "block", "source": "r3probe"}
+{"text": "Tests pass, verified earlier.", "expect": "block", "source": "r3probe"}
+{"text": "PR-12: the change is merged.", "expect": "block", "source": "r3probe"}
+{"text": "The CI run printed \"all 91 tests passed\".", "expect": "block", "source": "r3probe"}
+{"text": "cargo logged \"91 passed\" on the last line.", "expect": "block", "source": "r3probe"}
+{"text": "The test run echoed \"all tests pass\".", "expect": "block", "source": "r3probe"}
+{"text": "I told the owner that all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "I told the owner all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "cargo tells me 91 passed.", "expect": "block", "source": "r3probe"}
+{"text": "The log relays that CI is green.", "expect": "block", "source": "r3probe"}
+{"text": "Deploy was blocked and the change is merged.", "expect": "block", "source": "r3probe"}
+{"text": "The deploy was refused and the change is now live.", "expect": "block", "source": "r3probe"}
+{"text": "Push was blocked so the PR is merged.", "expect": "block", "source": "r3probe"}
+{"text": "The build must stay local and is now live.", "expect": "block", "source": "r3probe"}
+{"text": "Refused to deploy, the change is merged.", "expect": "block", "source": "r3probe"}
+{"text": "Checked before merging: all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "Ran before the release: the change is deployed to prod.", "expect": "block", "source": "r3probe"}
+{"text": "Agent update: CI is green.", "expect": "block", "source": "r3probe"}
+{"text": "Agent status - all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "Peer review: all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "Bot-free run - all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "Run `cargo test` then the phrase \"tests pass\" stays.", "expect": "block", "source": "r3probe"}
+{"text": "Fixed `a` and `bb` and `ccc`: the label \"x\" all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "The label \"\" all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "The header \"Results\" all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "I typed \"y\" tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "The heading \"CI is green\" fits.", "expect": "block", "source": "r3probe"}
+{"text": "The phrase \"the change is merged\" holds now.", "expect": "block", "source": "r3probe"}
+{"text": "The phrase \"tests pass\" is now finally true.", "expect": "block", "source": "r3probe"}
+{"text": "Workers: done - all tests pass.", "expect": "block", "source": "r3probe"}
+{"text": "Per the worker, CI is green and I deployed it, the change is live.", "expect": "block", "source": "r3probe"}
+{"text": "It is deployed to local only and to prod.", "expect": "block", "source": "r3probe"}
+{"text": "The change is deployed to local and prod.", "expect": "block", "source": "r3probe"}
+{"text": "The change is deployed to localhost and production.", "expect": "block", "source": "r3probe"}
+{"text":"PR to develop, CI green, then merge.","expect":"allow","source":"plan-tense-2026-11-20"}
+{"text":"Next: PR to develop, CI green, review, then merge.","expect":"allow","source":"plan-tense-2026-11-20"}
+{"text":"Plan: open the PR, tests pass, then ship.","expect":"allow","source":"plan-tense-2026-11-20"}
+{"text":"Reverting anything that just loosens a guard to make a test pass.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"I will revert changes made only to make the tests pass.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"We keep the retry so that the build goes green.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"Wait until CI green.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"CI is green, then merged the PR.","expect":"block","source":"plan-tense-2026-11-20"}
+{"text":"CI is green. Then merge it.","expect":"block","source":"plan-tense-2026-11-20"}
+{"text":"All tests pass.","expect":"block","source":"plan-tense-2026-11-20"}
+{"text":"I changed the guard to make progress. Tests pass.","expect":"block","source":"purpose-2026-11-20"}
+{"text":"The tests pass, to make sure, I reran them.","expect":"block","source":"purpose-2026-11-20"}
+{"text":"I haven't verified this commit.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"I haven’t verified this commit yet.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"I didn't run the tests, so nothing is confirmed.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"Not verified this commit.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"I verified this commit.","expect":"block","source":"negation-2026-11-20"}
+{"text":"All tests pass, then merge.","expect":"block","source":"review-825-plan-context"}
+{"text":"CI is green, then merge.","expect":"block","source":"review-825-plan-context"}
+{"text":"The PR is merged, then ship it.","expect":"block","source":"review-825-plan-context"}

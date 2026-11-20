@@ -104,7 +104,9 @@ mod tests {
         ["message", "content"].iter().map(|s| s.to_string()).collect()
     }
     fn file(tag: &str, text: &str) -> String {
-        let p = std::env::temp_dir().join(format!("ah-tus-{tag}-{}", std::process::id()));
+        // one file per call: the tests of this module run on threads of one process
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let p = std::env::temp_dir().join(format!("ah-tus-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::write(&p, text).unwrap();
         p.to_string_lossy().into_owned()
     }

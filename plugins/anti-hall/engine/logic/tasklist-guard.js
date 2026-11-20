@@ -57,6 +57,33 @@ function tlFresh(ts, lastWork, freshMs, now) {
   return now - ts <= freshMs;
 }
 
+// The tool uses inside an entry (`collectToolUses`).
+function tlToolUses(node, out) {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
+  if (node.type === 'tool_use' && node.name) out.push(node);
+  var keys = ah.cfg('taskstate.tools_collect_keys');
+  for (var i = 0; i < keys.length; i++) {
+    var v = node[keys[i]];
+    if (Array.isArray(v)) v.forEach(function (it) { tlToolUses(it, out); });
+    else if (v !== null && typeof v === 'object') tlToolUses(v, out);
+  }
+}
+
+// Remember what one counted action touched (the project-relative path of a file, or a task's id and subject) so the block can name it;
+// only the first few are kept. A label over the cap keeps its END (the file name), behind the ellipsis.
+function tlName(out, label, tail) {
+  if (!out.names) out.names = [];
+  out.nameTotal = (out.nameTotal || 0) + 1;
+  if (out.names.length >= tlN('counted_max')) return;
+  out.names.push(tlLabel(label, tlN('counted_label_max'), tail));
+}
+
+function tlLabel(label, max, tail) {
+  var l = String(label).replace(/\s+/g, ' ').trim(), el = tlT('counted_ellipsis');
+  if (l.length <= max) return l;
+  return tail ? el + l.slice(l.length - max) : l.slice(0, max) + el;
+}
+
 // `commandWritesToPath(cmd, target)`: a redirect whose target is exactly `target`, or a tee, cp or mv whose last argument is.
 function tlWritesTo(cmd, target) {
   if (!target) return false;
@@ -71,39 +98,84 @@ function tlWritesTo(cmd, target) {
   return parts.length > 0 && parts[parts.length - 1] === target;
 }
 
-// The tool uses inside an entry (`collectToolUses`).
-function tlToolUses(node, out) {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
-  if (node.type === 'tool_use' && node.name) out.push(node);
-  var keys = ah.cfg('taskstate.tools_collect_keys');
-  for (var i = 0; i < keys.length; i++) {
-    var v = node[keys[i]];
-    if (Array.isArray(v)) v.forEach(function (it) { tlToolUses(it, out); });
-    else if (v !== null && typeof v === 'object') tlToolUses(v, out);
-  }
-}
-
-// Remember what one counted action touched (a file path, or the start of a command) so the block can name it; only the first few are kept.
-function tlName(out, label) {
-  if (!out.names) out.names = [];
-  out.nameTotal = (out.nameTotal || 0) + 1;
-  if (out.names.length >= tlN('counted_max')) return;
-  var l = String(label).replace(/\s+/g, ' ').trim(), max = tlN('counted_label_max');
-  out.names.push(l.length > max ? l.slice(0, max) + tlT('counted_ellipsis') : l);
-}
-
-// One tool use of the work count: `tu` is {name, input: {file_path, command}} (the fields the count reads), `ts` its entry's time in ms
-// or null; updates `out` ({work, lastWork, lastProgressWrite}).
-function tlCountUse(tu, ts, out, progressAbs, cx) {
+// The work count with guards.tasklistCountFiles off (the count before GH #794): every Edit/Write counts, and so does every Bash command
+// that looks like a file change (wd.counted), named by the command segment.
+function tlCountUseLegacy(tu, ts, out, progressAbs, cx) {
   var name = typeof tu.name === 'string' ? tu.name : '';
   if (ah.cfg('workdetect.mutating_tools').indexOf(name) >= 0) {
     var fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
-    if (wd.counted(tu, cx)) { out.work++; tlName(out, fp.slice(fp.lastIndexOf('/') + 1)); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
+    if (wd.counted(tu, cx)) { out.work++; tlName(out, fp.slice(fp.lastIndexOf('/') + 1), false); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
     if (progressAbs && ts !== null && fp === progressAbs && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   } else if (name === 'Bash') {
     var cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-    if (wd.counted(tu, cx)) { out.work++; tlName(out, wd.workSegment(cmd)); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
+    if (wd.counted(tu, cx)) { out.work++; tlName(out, wd.workSegment(cmd), false); if (ts !== null && ts > out.lastWork) out.lastWork = ts; }
     if (progressAbs && ts !== null && cmd && wd.bashWork(wd.neutralize(cmd)) && tlWritesTo(cmd, progressAbs) && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
+  }
+}
+
+// The file a tool use writes, as an absolute path: null when it names none or a relative one has no working directory.
+function tlAbs(fp, cx) {
+  if (!fp) return null;
+  if (fp.charAt(0) === '/') return ah.path.resolveAbs(fp);
+  if (!cx.cwd) { ah.unable('workdetect:relative_no_cwd'); return null; }
+  return ah.path.resolve(cx.cwd, fp);
+}
+
+// One counted file: the work count is the number of DISTINCT project files written (GH #794), the time of the newest write is kept.
+function tlNote(out, abs, ts, cx) {
+  if (ts !== null && ts > out.lastWork) out.lastWork = ts;
+  if (!out.seen) out.seen = Object.create(null);
+  if (out.seen[abs] === true) return;
+  out.seen[abs] = true;
+  out.work++;
+  tlName(out, cx.root && wd.isUnder(abs, cx.root) && abs !== cx.root ? abs.slice(cx.root.length + 1) : abs, true);
+}
+
+// One write the count cannot name (`patch`, `git apply`, an unknown variable): ONE unknown project file per command segment that runs, never
+// merged with an earlier identical one (the same `git stash pop` run twice changed files twice), named by the command.
+function tlNoteUnknown(out, seg, ts) {
+  if (ts !== null && ts > out.lastWork) out.lastWork = ts;
+  out.work++;
+  tlName(out, tlUnknownLabel(seg), false);
+}
+
+// What the block calls a write the count cannot name: the command word (and a git subcommand), never the raw command string, which can hold
+// paths, flags and secrets and is not a file.
+function tlUnknownLabel(seg) {
+  var words = wd.words(seg).words, i = 0;
+  while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i])) i++;
+  var verb = i < words.length ? words[i].slice(words[i].lastIndexOf('/') + 1) : '';
+  if (verb === 'git' && i + 1 < words.length) verb += ' ' + words[i + 1];
+  return text.render(tlT('counted_unknown'), { verb: verb === '' ? tlT('counted_unknown_verb') : verb });
+}
+
+// One tool use of the work count: `tu` is {name, input: {file_path, command}} (the fields the count reads), `ts` its entry's time in ms
+// or null; updates `out` ({work, lastWork, lastProgressWrite}). Only a file path written inside the project counts: an Edit/Write path,
+// a shell redirect target or the file arguments of a write verb (wd.bashWrites). A command that names no file (git commit, mkdir, a
+// build) counts nothing; the scratchpad, the progress/history/handover files and temp directories never count (wd.countablePath).
+function tlCountUse(tu, ts, out, progressAbs, cx) {
+  if (!cx.countFiles) return tlCountUseLegacy(tu, ts, out, progressAbs, cx);
+  var name = typeof tu.name === 'string' ? tu.name : '';
+  if (ah.cfg('workdetect.never_work_tools').indexOf(name) >= 0) return;
+  if (ah.cfg('workdetect.mutating_tools').indexOf(name) >= 0) {
+    var fp = tu.input && typeof tu.input.file_path === 'string' ? tu.input.file_path : '';
+    var abs = tlAbs(fp, cx);
+    if (abs !== null && wd.countablePath(abs, cx)) tlNote(out, abs, ts, cx);
+    if (progressAbs && ts !== null && abs === progressAbs && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
+  } else if (name === 'Bash') {
+    var cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
+    if (!cmd || wd.housekeepingOnly(cmd)) return;
+    var writes = wd.bashWrites(cmd, cx), wroteProgress = false;
+    for (var i = 0; i < writes.length; i++) {
+      var w = writes[i];
+      if (w.kind === 'unknown') { tlNoteUnknown(out, w.seg, ts); continue; }
+      // only a redirect with output (`>`, `>>`), a tee or the destination of a `cp`/`mv` is a progress update: `rm`, `mv`, `chmod`, `touch` and `: >` write no content
+      if (progressAbs && w.abs === progressAbs && (w.kind === 'redirect' || w.kind === 'tee' || w.kind === 'dest')) wroteProgress = true;
+      if (wd.countableWrite(w, cx)) tlNote(out, w.abs, ts, cx);
+    }
+    // a shell append or redirect to the session's progress file is a progress update like an Edit of it (the file must also hold content
+    // after the turn: see the freshness check)
+    if (wroteProgress && ts !== null && ts > out.lastProgressWrite) out.lastProgressWrite = ts;
   }
 }
 
@@ -442,6 +514,32 @@ function tlJev(f, jevState) {
   return r === false;
 }
 
+// True when EVERY in-progress task has its own owner among THIS session's own tracker rows (by id or launch name, case-insensitive; `dord.ownRows`:
+// the session's launched agents by parent, never another session's rows of the same cwd) in a state that is not finished or gone: each owner
+// may be working. A task with no owner is never excused, and one task's live owner never excuses another's. A row whose liveness is unknown
+// counts as alive (a stall is never blocked on missing evidence); `waiting` is alive (the tracker's own live_states list it: an idle agent
+// still holding the task). GH #794.
+function tlOwnerAlive(f) {
+  var tasks = f.scan.inProgress;
+  if (!Array.isArray(tasks) || tasks.length === 0) return false;
+  var rows = dord.ownRows(f.p);
+  if (!Array.isArray(rows)) return false;
+  var dead = ah.cfg('agent_tracker.guard_inactive_states');
+  var live = rows.filter(function (r) { return dead.indexOf(r.state) < 0; });
+  return tasks.every(function (t) {
+    var o = String(t.owner || '').trim().toLowerCase();
+    if (o === '') return false;
+    return live.some(function (r) { return String(r.id || '').toLowerCase() === o || String(r.name || '').toLowerCase() === o; });
+  });
+}
+
+// The counted list of a stalled-tasks block: the in-progress tasks as `#<id> <subject>`, not the files or commands of the work count.
+function tlTaskNames(tasks) {
+  return tasks.map(function (t) {
+    return tlLabel(text.render(tlT('counted_task_label'), { id: t.id, subject: tlLabel(t.content, tlN('counted_task_subject_max'), false) }), tlN('counted_task_label_max'), false);
+  });
+}
+
 function tlFire(f) {
   var home = f.home, p = f.p;
   if (!ah.env.get(ah.cfg('env.home'))) ah.unable('tasklist-guard:no_home_env'); // Node falls back to the passwd home; ah.home() already did
@@ -450,6 +548,9 @@ function tlFire(f) {
     var ag = ah.transcript.agents(f.transcript);
     if (ag !== null && ag.unsure) { ah.unable('tasklist-guard:agents_unsure'); ag = null; } // an agent list read inexactly shows no stall
     stale = ag !== null && ag.rows.length === 0;
+    // the transcript shows no running agent, but a task's owner can still be one the tracker has running (a teammate, a workflow or
+    // background agent, one launched before the transcript window): never a stall while an in-progress task's owner is alive (GH #794)
+    if (stale && tlOwnerAlive(f)) stale = false;
   }
   var scan = f.scan;
   if (scan.sawTaskActivity && !stale && f.progressFresh) return 'allow';
@@ -515,9 +616,12 @@ function tlFire(f) {
     if (prior2) { why += text.render(tlT('prior_snapshot'), { path: prior2 }); priorPath = prior2; }
   } else if (stale) { what = text.render(tlT('what_stalled'), { n: String(scan.inProgressCount) }); why = tlT('why_stalled'); }
   else { what = text.render(tlT('what_progress'), { n: String(work), path: progressPath }); why = tlT('why_progress'); }
-  if (scan.names.length > 0 && ah.settings.bool('tasklist_guard.name_counted_setting')) {
-    var more = scan.nameTotal > scan.names.length ? text.render(tlT('counted_more'), { n: String(scan.nameTotal - scan.names.length) }) : '';
-    what += text.render(tlT('counted_text'), { list: scan.names.join(tlT('counted_sep')), more: more });
+  // the block names what it counted: the in-progress tasks when it is about a stall, else the files written
+  var named = scan.names, namedTotal = scan.nameTotal;
+  if (stale && scan.sawTaskActivity) { var tn = tlTaskNames(scan.inProgress); named = tn.slice(0, tlN('counted_max')); namedTotal = tn.length; }
+  if (named.length > 0 && ah.settings.bool('tasklist_guard.name_counted_setting')) {
+    var more = namedTotal > named.length ? text.render(tlT('counted_more'), { n: String(namedTotal - named.length) }) : '';
+    what += text.render(tlT('counted_text'), { list: named.join(tlT('counted_sep')), more: more });
   }
   var instead;
   if (reduced) {
@@ -638,7 +742,9 @@ function decide(p, opts) {
     var carried = tlCarriedProgress(root, date, sid);
     if (carried !== null) { progressSegs = carried; progressAbs = tlJoin(root, progressSegs); ah.advisory('suppressed', 'tasklist_progress_carried'); }
   }
-  var cx = { tmp: wd.tmpdir(), cwd: cwd !== null && cwd.charAt(0) === '/' ? cwd : null, skipIntegration: ah.settings.bool('tasklist_guard.integration_skip_setting'), integrationSkipped: 0 };
+  var cx = { tmp: wd.tmpdir(), cwd: cwd !== null && cwd.charAt(0) === '/' ? cwd : null, skipIntegration: ah.settings.bool('tasklist_guard.integration_skip_setting'), integrationSkipped: 0, root: null, projectOnly: false, countFiles: ah.settings.bool('tasklist_guard.file_count_setting') };
+  // with a known project, only a file inside it (its root, or the session directory) counts as work (guards.tasklistProjectOnly)
+  if (root !== null) { cx.root = root; cx.projectOnly = ah.settings.bool('tasklist_guard.project_only_setting'); }
   var work;
   work = tlScanWork(transcript, progressAbs, cx);
   if (work === 'quiet') return 'allow';
@@ -647,10 +753,11 @@ function decide(p, opts) {
   if (t.quiet) return 'allow';
   var stored = tk.storeScan(home, rawSid); // the session's task store, when it has one, is the list; the transcript only says whether tasks were used
   if (stored !== null) { t.openTaskIds = stored.openTaskIds; t.inProgressCount = stored.inProgressCount; }
+  var inProgress = stored !== null ? stored.inProgress : [];
   var scan = {
     work: work.work, lastWork: work.lastWork, lastProgressWrite: work.lastProgressWrite,
     names: work.names || [], nameTotal: work.nameTotal || 0,
-    sawTaskActivity: !!t.sawTaskActivity, taskStoreReset: !!t.taskStoreReset, inProgressCount: t.inProgressCount || 0, openTaskIds: t.openTaskIds || [],
+    sawTaskActivity: !!t.sawTaskActivity, taskStoreReset: !!t.taskStoreReset, inProgressCount: t.inProgressCount || 0, openTaskIds: t.openTaskIds || [], inProgress: inProgress,
   };
   var needsAgents = scan.inProgressCount > 1 && !codexPlat;
   var threshold = ah.settings.num('tasklist_guard.threshold_setting');
@@ -664,12 +771,15 @@ function decide(p, opts) {
       var dirRel = progressSegs.slice(0, -1).join('/');
       if (ah.state.op(root, 'mkdir', dirRel)) {
         var ps = ah.fs.lstat(progressAbs);
-        if (ps && ps.kind === 'file') { tlIndex(root, progressSegs[progressSegs.length - 2], sid, 'progress'); progressFresh = tlFresh(ps.mtimeMs, scan.lastWork, freshMs, now); }
+        if (ps && ps.kind === 'file') { tlIndex(root, progressSegs[progressSegs.length - 2], sid, 'progress'); progressFresh = ps.size > 0 && tlFresh(ps.mtimeMs, scan.lastWork, freshMs, now); } // an empty file (a `touch`) is no update, however fresh its mtime
         else progressFresh = false;
       }
     }
   }
-  if (!progressFresh && isFinite(scan.lastProgressWrite) && scan.lastProgressWrite > 0 && tlFresh(scan.lastProgressWrite, scan.lastWork, freshMs, now)) progressFresh = true;
+  // a progress write the transcript shows counts only while the file exists and holds content (a later `rm`, or an empty file, is no update)
+  var pnow = progressAbs ? ah.fs.lstat(progressAbs) : null;
+  var progressHasContent = pnow !== null && pnow.kind === 'file' && pnow.size > 0;
+  if (!progressFresh && progressHasContent && isFinite(scan.lastProgressWrite) && scan.lastProgressWrite > 0 && tlFresh(scan.lastProgressWrite, scan.lastWork, freshMs, now)) progressFresh = true;
   // the history index is kept whenever the session's own history file exists
   if (root !== null) { var hs = ah.fs.lstat(historyAbs); if (hs && hs.kind === 'file') tlIndex(root, date, sid, 'history'); }
   // the resume-verification nudge: independent of the block decision below

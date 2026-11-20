@@ -4735,6 +4735,72 @@ fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
     assert_eq!(nd.snooze_min, 10, "no reason = the shortest hold (snooze_min_min), not the asked 60");
 }
 
+/// #828: a snooze given to a runtime nudge holds across the nudge closing (the child leaving "running" for a moment) and reopening: no
+/// new nudge (and no new ref) about that child until the snooze runs out.
+#[test]
+fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt784-reopen");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    let first = st.nudges.get("abc").expect("step 1 opens").ref_id.clone();
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "the export is still running", "min": 60})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    assert!(st.nudge_snooze.keys().any(|k| k.starts_with("abc|")), "the snooze is kept per child and trigger");
+    // the nudge closes as finished (the child left "running" for a moment); the snooze must survive it
+    nudge::close_finished(&e, &mut st, "abc");
+    assert!(st.nudges.is_empty());
+    assert!(st.nudge_snooze.keys().any(|k| k.starts_with("abc|")), "a momentary finish keeps the snooze");
+    // the child runs again: inside the snooze no new nudge opens, so no new ref
+    rt_tick(&h, &child, &mut st, n + 50 * MIN, 4);
+    rt_tick(&h, &child, &mut st, n + 90 * MIN, 5);
+    assert!(st.nudges.get("abc").is_none(), "held for the snooze period; first ref was {first}");
+    // after the snooze ran out the next step opens a new nudge
+    rt_tick(&h, &child, &mut st, n + 120 * MIN, 6);
+    assert!(st.nudges.get("abc").is_some_and(|nd| nd.ref_id != first), "a new nudge once the snooze is over");
+}
+
+/// #828: a snooze given to a health nudge holds across that nudge closing as finished (the child not running for a tick, as a workspace
+/// or a main session between two turns) and the flag re-raising on the next turn: no new nudge (and no new ref) inside the snooze.
+#[test]
+fn health_snooze_holds_across_a_finished_close() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("h828-finished");
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+        e
+    };
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    let e = tick_at(&mut st, n + 18 * MIN);
+    let first = st.nudges.get("abc").expect("the waste flag opens a health nudge").clone();
+    // nudge_env turns the runtime steps off, so this is a health trigger (waste), opened by open_new
+    answer_snooze(&e, "abc", 240);
+    let e = tick_at(&mut st, n + 19 * MIN);
+    assert!(st.nudge_snooze.contains_key(&format!("abc|{}", first.trigger)), "the snooze is kept per child and trigger");
+    nudge::close_finished(&e, &mut st, "abc");
+    assert!(st.nudges.is_empty());
+    assert!(st.nudge_snooze.contains_key(&format!("abc|{}", first.trigger)), "a finished close keeps the health snooze");
+    // the next turn re-raises the same flag inside the 240 min snooze: held, no new nudge
+    let b = n + 45 * MIN;
+    let (commit, spend) = spend_cycle(&child, 1, b);
+    append(&child, &commit);
+    tick_at(&mut st, b + MIN);
+    append(&child, &spend);
+    tick_at(&mut st, b + 18 * MIN);
+    assert!(st.nudges.get("abc").is_none(), "held by the snooze; first ref was {}", first.ref_id);
+}
+
 /// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
 #[test]
 fn rt_msg_and_wrong_are_counted_per_step() {

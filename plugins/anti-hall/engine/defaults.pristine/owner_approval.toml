@@ -1,0 +1,164 @@
+# ---- Owner-approval pass-through (GH #800): command-guard lets a command the owner just approved in their own prompt run ----
+# command-guard stops `gh pr merge` (command.remote_block) and heavy script runs in the main thread and says "hand it to a helper".
+# A helper cannot run what the owner approved in the Primary's chat: the approval reaches it only as a relayed message, which a
+# worker rightly refuses. With guards.ownerApprovalPass on, the main-thread block stands down when the LATEST genuine owner prompt
+# (an entry the host marked as typed by a human: not a tool result, not a cross-session or teammate message, not a system note)
+# approves the action. Conservative on purpose: the assistant message right before the prompt must hold exactly ONE command-shaped code
+# span or block, in its final paragraph, which ends with a question and has no negation near the command, and that is the EXACT command executed; the prompt is a plain short yes (no negation, question, paste or relay marker), 0 <= age <= max_age_ms, ONE
+# single-segment command, one run per approving prompt, and a never-exempt list that no wording can lift. Part C (the `! <cmd>`
+# wording) is unconditional.
+
+[owner_approval.sw]
+doc = "Owner-approval pass-through. Switch guards.ownerApprovalPass (default OFF: it changes a safety guard, the owner turns it on). On: a command-guard main-thread block of an eligible command (owner_approval.kinds) is lifted when the latest genuine owner prompt approves it. Off: every answer is unchanged and nothing is counted."
+value = { section = "guards", key = "ownerApprovalPass", type = "boolean", env = "ANTIHALL_OWNER_APPROVAL_PASS", option = "", default = false }
+
+[owner_approval.kinds]
+doc = "Command shapes the pass can lift. id: the kind; segment_re: the command's ONE shell segment, group 1 captures what it targets (the PR number, the script path); a command whose group 1 is empty (a bare `gh pr merge`) is never eligible. The owner approves the exact command the assistant quoted, so no wording of the owner's prompt names the action."
+value = [
+  { id = "pr_merge", segment_re = '^\s*(?:\S+=\S*\s+)*gh\s+pr\s+merge\b(?:\s+(?:-\S+\s+)*#?([0-9]+))?' },
+  { id = "script_run", segment_re = '^\s*(?:\S+=\S*\s+)*(?:python3?|node|ruby|perl|bash|sh|zsh|tsx|ts-node|bun)\s+(?:-[A-Za-z-]+\s+)*(\S+\.(?:py|js|mjs|cjs|ts|rb|sh|pl))\b' },
+]
+
+[owner_approval.approve_re]
+doc = "An approval in the owner's prompt: any of these whole words or phrases (case-insensitive). Only a plain yes: a noun such as 'merge' never approves. The approval binds only to the command the assistant quoted right before the prompt."
+value = '\b(?:yes|ok|okay|go|approve|approved|do it|run it)\b'
+
+[owner_approval.chain_re]
+doc = "A command that matches is never eligible: a chain or pipe (&&, ||, ;, |, &), a newline, a command or process substitution ($(, backtick, <(, >(), a shell -c payload or eval."
+value = '[;&|\n\r`]|\$\(|<\(|>\(|\b(?:bash|sh|zsh)\s+-c\b|\beval\b'
+
+[owner_approval.ws_re]
+doc = "Whitespace runs collapsed to one space before the executed command is compared with the command the assistant quoted."
+value = '\s+'
+
+[owner_approval.quote_fenced_re]
+doc = "A fenced code block in the assistant's text; group 1 is the quoted command (one block = one command). Also removed from the owner's prompt before it is read."
+value = '```[^\n`]*\n([\s\S]*?)```'
+
+[owner_approval.quote_inline_re]
+doc = "An inline code span in the assistant's text (read after the fenced blocks are removed); group 1 is the quoted command."
+value = '`([^`\n]+)`'
+
+[owner_approval.paragraph_re]
+doc = "Splits the assistant's message into paragraphs (a blank line). The approval binds only to a command quoted in the FINAL paragraph."
+value = '\n[ \t]*\n'
+
+[owner_approval.command_shape_re]
+doc = "A code span or block that counts as a command: at least two whitespace-separated words (after optional VAR=value prefixes), so a single file or identifier in backticks is not a command. The message must hold exactly ONE of these (two = ambiguous = no approval)."
+value = '^\s*(?:\S+=\S*\s+)*[A-Za-z0-9_./~-]+\s+\S'
+
+[owner_approval.question_end_re]
+doc = "The final paragraph must end like a question to the owner: a question mark, then only whitespace or closing markup."
+value = '\?[\s*_)"]*$'
+
+[owner_approval.negation_words]
+doc = "Words that, within negation_window_chars of the quoted command (before or after it), mean the assistant was NOT proposing to run it. Regex fragments, matched as whole words, case-insensitive."
+value = ["not", "won't", "won’t", "will not", "don't", "don’t", "skip"]
+
+[owner_approval.negation_window_chars]
+doc = "How many characters before and after the quoted command are searched for a negation word."
+value = 60
+
+[owner_approval.quote_line_re]
+doc = "A line of the owner's prompt that only quotes (a markdown quote line). A prompt with nothing left after these lines are dropped is not an approval."
+value = '^\s*>'
+
+[owner_approval.uuid_re]
+doc = "The shape of an approving prompt's uuid. Anything else is refused (the uuid names the one-shot claim file)."
+value = '^[A-Za-z0-9-]{8,64}$'
+
+[owner_approval.used_dir]
+doc = "Directory, under the state root (spawn_ctx.state_root), holding one claim file per approving prompt that already lifted a block: an approval lifts ONE run."
+value = "owner-approval-used"
+
+[owner_approval.deny_re]
+doc = "A prompt that matches is never an approval, whatever else it says: a negation, a hold, a condition, a question. Case-insensitive."
+value = "\\b(?:no|not|nope|don'?t|dont|do not|never|stop|wait|hold|hold off|cancel|abort|skip|shouldn'?t|should|if|when|until|unless|after|before|why|what|how|which|can|could|would|status)\\b|\\?"
+
+[owner_approval.reject_markers]
+doc = "Text that marks a prompt as relayed, pasted or system-made even when the host tagged it human (pasted relay or content, teammate message, system note): a prompt containing one is not an approval."
+value = ["<cross-session-message", "<teammate-message", "<system-reminder", "<task-notification", "<pasted_content", "Another Claude session"]
+
+[owner_approval.never_exempt_re]
+doc = "Commands no prompt can lift, tested against the WHOLE command (every chained part): force push, --admin, secrets and credentials, repo delete, a gh api DELETE. Case-insensitive."
+value = [
+  '\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(?:\s--force\S*|\s-[A-Za-z]*f[A-Za-z]*(?:\s|$)|\s\+\S)',
+  '(?:^|\s)--admin\b',
+  '\bsecrets?\b',
+  '\.env\b|\bid_rsa\b|\.pem\b|\bcredentials?\b|\bservice[-_]?account\b|\bprivate[-_]?key\b',
+  '\bgh\s+repo\s+delete\b',
+  '\bgh\s+api\b[^|;&\n]*(?:-X|--method)[\s=]*DELETE\b',
+]
+
+[owner_approval.max_prompt_chars]
+doc = "A prompt longer than this is not a short approval (a pasted document or plan is not 'yes, run it')."
+value = 400
+
+[owner_approval.max_age_ms]
+doc = "How old (ms) the owner's latest prompt may be and still approve a command: 0 <= now - timestamp <= this. A future timestamp (forged) or an older one (stale) approves nothing."
+value = 900000
+
+[owner_approval.window_bytes]
+doc = "Bytes read from the end of the transcript to find the owner's latest prompt."
+value = 1048576
+
+[owner_approval.line_max_bytes]
+doc = "A transcript line over this size is skipped when looking for the owner's prompt."
+value = 262144
+
+[owner_approval.max_lines]
+doc = "Most transcript lines examined from the end when looking for the owner's prompt."
+value = 600
+
+[owner_approval.prompt_origin_kind]
+doc = "The value of the transcript entry's origin.kind that the host sets for a prompt the owner typed or queued themselves."
+value = "human"
+
+[owner_approval.msg_allowed]
+doc = "The one-line notice when the pass lifts a block. {kind} is the command kind, {ts} the timestamp of the approving prompt."
+value = "Owner approval: allowed this {kind}; approved by the owner's prompt of {ts}."
+
+[owner_approval.msg_owner_run]
+doc = "Part C, appended to the command-guard 'Do instead' text: the owner can run the command themselves. {cmd} is the full command."
+value = "or ask the owner to run it themselves: ! {cmd}"
+
+[owner_approval.msg_owner_run_long]
+doc = "Part C when the full command is too long (or has several lines) for the short visible text; the full command is in the saved details."
+value = "or ask the owner to run it themselves with ! (full command in the details)"
+
+[owner_approval.msg_owner_run_saved]
+doc = "Part C in the saved details file: the full original command, so it can be pasted."
+value = "or ask the owner to run it themselves, pasting this in the prompt: ! {cmd}"
+
+[owner_approval.redact]
+doc = "Secrets masked in a command before it appears in a block text or the saved details file (Part C and the named heavy segment). Applied in order with JS String.replace: re is the pattern, flags its flags, rep the replacement ($1.. are its groups); the placeholder REDACTED is plain text that a shell cannot read as a redirect or a command. Masks `VAR=value` assignments, GitHub/OpenAI/Slack/AWS-style tokens, --token/--password/--pass/--secret/--api-key values, a password glued to -p, the password of -u/--user user:pass, a whole -H/--header value whose name holds key/token/secret/auth/cookie/password (Authorization: Bearer X is masked whole), bearer/basic values, credentials and a bare token in a URL, and a 40-character AWS secret key after an aws command word."
+value = [
+  { re = '''(^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|)]*)''', flags = "g", rep = "$1$2=REDACTED" },
+  { re = '''\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-[A-Za-z0-9_-]{16,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b''', flags = "g", rep = "REDACTED" },
+  { re = '''(--?(?:[A-Za-z0-9_-]*(?:token|password|passwd|passphrase|secret|api-?key|auth|credential)[A-Za-z0-9_-]*))([=\s]+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2REDACTED" },
+  { re = '''(^|\s)(--?pass)([=\s]+)("[^"]*"|'[^']*'|[^\s;&|)]+)''', flags = "gi", rep = "$1$2$3REDACTED" },
+  { re = '''(^|\s)(-p)("[^"]*"|'[^']*'|[^\s;&|)-][^\s;&|)]*)''', flags = "g", rep = "$1$2REDACTED" },
+  { re = '''(^|\s)(-u|--user|--proxy-user)([\s=]+)(["']?)([^\s:"';&|)]*:)[^\s"';&|)]*''', flags = "g", rep = "$1$2$3$4$5REDACTED" },
+  { re = '''(-H|--header)([=\s]+)(["'])([^"':]*(?:key|token|secret|auth|cookie|password)[^"':]*)(\s*:\s*)[^\n]*?\3''', flags = "gi", rep = "$1$2$3$4$5REDACTED$3" },
+  { re = '''(-H|--header)([=\s]+)([^\s"':;&|)]*(?:key|token|secret|auth|cookie|password)[^\s"':;&|)]*)(\s*:\s*)[^\s"';&|)]+''', flags = "gi", rep = "$1$2$3$4REDACTED" },
+  { re = '''\b(Bearer|Basic|Authorization:)(\s+)("[^"]*"|'[^']*'|[^\s;&|)"']+)''', flags = "gi", rep = "$1$2REDACTED" },
+  { re = '''(://[^/\s:@]+:)[^@\s/]+@''', flags = "g", rep = "$1REDACTED@" },
+  { re = '''(://)[^/\s:@"']+@''', flags = "g", rep = "$1REDACTED@" },
+  { re = '''(\baws\b[^;&|\n]*?[\s=]["']?)[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])''', flags = "g", rep = "$1REDACTED" },
+]
+
+[owner_approval.msg_owner_run_redacted_long]
+doc = "Part C when the command had secrets masked: the owner must fill in the masked value (REDACTED) before running it; the masked command is in the saved details."
+value = "or ask the owner to run it with ! after filling in REDACTED (see details)"
+
+[owner_approval.msg_owner_run_saved_redacted]
+doc = "Part C in the saved details file when the command had secrets masked: the masked command; the owner replaces REDACTED with the real value before pasting it. {cmd} is the masked command."
+value = "or ask the owner to run it themselves, pasting this in the prompt after replacing each REDACTED with the real value: ! {cmd}"
+
+[owner_approval.owner_run_max_chars]
+doc = "Longest command (chars) shown in the visible 'Do instead' text, which the guard-text rule cuts at 115 chars in all (the helper hint plus this wording take about 77); a longer or multi-line command is named only in the saved details."
+value = 38
+
+[metric.owner_approval_pass]
+doc = "Owner-approval pass decisions (guards.ownerApprovalPass on) for a command-guard block of an eligible command, by result: allowed (the owner's latest prompt approved it), no_approval (no fresh genuine prompt approved it, or the command is not an eligible kind), never_exempt (the command is on the never-exempt list)."
+value = { kind = "counter", unit = "calls", labels = ["result"] }

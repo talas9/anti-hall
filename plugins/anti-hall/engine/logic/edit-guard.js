@@ -99,6 +99,132 @@ function egDelegation(tool, cwd, p) {
   return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, p && p.session_id);
 }
 
+// The line count of a text, 0 for no text.
+function egLines(t) { return typeof t === 'string' && t !== '' ? t.split('\n').length - (t.charAt(t.length - 1) === '\n' ? 1 : 0) : 0; }
+
+// The occurrences of `needle` in the file an Edit targets, or null when they cannot be counted (no path, no file, too big, unreadable,
+// empty needle): the caller then treats the edit as large (fail closed).
+function egOccurrences(file, needle, cwd) {
+  if (typeof file !== 'string' || file === '' || typeof needle !== 'string' || needle === '') return null;
+  var abs = ah.path.isAbsolute(file) ? file : (ah.path.isAbsolute(cwd) ? ah.path.resolve(cwd, file) : null);
+  if (abs === null) return null;
+  var size = ah.fs.size(abs);
+  if (size === null || size > ah.cfgNum('script.read_max_bytes')) return null;
+  var raw = ah.fs.readText(abs);
+  return raw === null ? null : raw.split(needle).length - 1;
+}
+
+// The size in lines of this edit (GH #783): the largest text field of one edit, the sum over a list of edits, the changed lines of a patch.
+// An edit that replaces every occurrence counts what it replaces in the target file (occurrences x the larger of the old and new text);
+// a file that cannot be read counts as cap_edit_unreadable_lines. null when the call carries nothing countable (the delegation block then stands).
+function egEditLines(ti, codexPatch, cwd) {
+  if (codexPatch) {
+    var pre = ah.cfg('edit_guard.cap_edit_patch_prefixes'), hdr = ah.cfg('edit_guard.cap_edit_patch_headers'), n = 0;
+    String(ti.command || '').split('\n').forEach(function (l) {
+      if (hdr.some(function (h) { return l.indexOf(h) === 0; })) return;
+      if (pre.some(function (c) { return l.indexOf(c) === 0; })) n++;
+    });
+    return n > 0 ? n : null;
+  }
+  var fields = ah.cfg('edit_guard.cap_edit_text_fields');
+  var file = egStr(ti.file_path);
+  var one = function (o, inherited) {
+    var m = 0;
+    if (!egIsObj(o)) return 0;
+    fields.forEach(function (f) { m = Math.max(m, egLines(o[f])); });
+    if (m > 0 && (o[ah.cfg('edit_guard.cap_replace_all_field')] === true || (o[ah.cfg('edit_guard.cap_replace_all_field')] === undefined && inherited === true))) {
+      var occ = egOccurrences(file, o[ah.cfg('edit_guard.cap_replace_all_needle')], cwd);
+      m = occ === null ? ah.cfgNum('edit_guard.cap_edit_unreadable_lines') : m * Math.max(1, occ);
+    }
+    return m;
+  };
+  var list = ti[ah.cfg('edit_guard.cap_edit_list_field')], total = one(ti, false);
+  if (Array.isArray(list)) total += list.reduce(function (a, e) { return a + one(e, false); }, 0);
+  return total > 0 ? total : null;
+}
+
+// The usage buckets of the cache as [{name, pct, resetsAt}]; pct is null for a reading that cannot be trusted (a stale cache with no
+// reset time). A window whose reset has passed counts 0. Model-specific weekly buckets (edit_guard.cap_scoped_*) are included. null: no cache.
+function egCapBuckets(home) {
+  var file = ah.path.join(home, ah.cfg('ctxbudget.usage_cache')), size = ah.fs.size(file);
+  if (size === null || size > ah.cfgNum('script.read_max_bytes')) return null;
+  var raw = ah.fs.readText(file), parsed;
+  if (raw === null) return null;
+  try { parsed = JSON.parse(raw); } catch (e) { return null; }
+  if (!egIsObj(parsed) || !egIsObj(parsed.data)) return null;
+  var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
+  var stale = ts > 0 && (now - ts) > ah.cfgNum('ctxbudget.usage_max_stale_ms'), out = [];
+  var scopedBucket = false;
+  var add = function (name, pct, at) {
+    if (typeof pct !== 'number') return;
+    var rt = typeof at === 'string' && at !== '' ? new Date(at).getTime() : NaN;
+    if (typeof at === 'string' && at !== '') {
+      if (isFinite(rt) && rt < now) pct = 0; // that window already reset
+    } else if (stale) pct = null; // a stale reading with no reset time proves nothing
+    out.push({ name: name, pct: pct, resetsAt: typeof at === 'string' && at !== '' ? at : null, scoped: scopedBucket === true });
+  };
+  var pcts = ah.cfg('spawn_usage.bucket_pct'), resets = ah.cfg('spawn_usage.bucket_resets'), names = ah.cfg('spawn_usage.bucket_names');
+  for (var i = 0; i < pcts.length; i++) add(names[i], d[pcts[i]], d[resets[i]]);
+  var scoped = d[ah.cfg('edit_guard.cap_scoped_field')], keys = ah.cfg('edit_guard.cap_scoped_keys');
+  scopedBucket = true;
+  if (Array.isArray(scoped)) scoped.forEach(function (o, k) {
+    if (egIsObj(o)) add(String(o[keys.name] || o[keys.label] || ('scoped' + k)), o[keys.pct], o[keys.resets]);
+  });
+  return out;
+}
+
+// The last readings at or above the hard stop, by bucket name: {name: {pct, resetsAt, seen}}. {} when none or unreadable.
+function egCapState() {
+  var sh = spawn.stateHome();
+  if (sh.unknown) { ah.unable('edit-guard:cap_no_home'); return { rel: null, st: {} }; }
+  if (sh.guarded) return { rel: null, st: {} };
+  var rel = ah.cfg('spawn_ctx.state_root') + '/' + ah.cfg('edit_guard.cap_state_file'), st = {};
+  var size = ah.fs.size(sh.ok + '/' + rel);
+  if (size !== null && size <= ah.cfgNum('script.read_max_bytes')) {
+    var raw = ah.fs.readText(sh.ok + '/' + rel);
+    try { var o = raw === null ? null : JSON.parse(raw); if (egIsObj(o)) st = o; } catch (e) { st = {}; }
+  }
+  return { rel: rel, st: st };
+}
+
+// The fullest usage bucket {name, pct, resetsAt, hard} when it has reached edit_guard.cap_edit_pct and the relief is on, else null.
+// Every weekly bucket counts, the model-specific ones too. A reading at the hard stop (spawn_usage.block_pct) is remembered, and while
+// the cache is missing, stale or has lost the reset time, it still counts until its reset provably passed (a reading with no reset time:
+// until cap_state_max_age_ms), so the main thread is never left with neither a helper to hand the edit to nor the right to make it.
+function egCapUsage(p) {
+  if (!ah.settings.bool('edit_guard.cap_edit_setting')) return null;
+  var home = hookProc.home(p);
+  if (home === null) return null;
+  var now = ah.clock.now(), hard = ah.cfgNum('spawn_usage.block_pct'), spawnNames = ah.cfg('spawn_usage.bucket_names');
+  var cur = egCapBuckets(home) || [], mem = egCapState(), st = mem.st, dirty = false, seen = {}, cand = [];
+  cur.forEach(function (b) {
+    if (b.pct === null) return;
+    seen[b.name] = true;
+    cand.push(b);
+    if (b.pct >= hard) { st[b.name] = { pct: b.pct, resetsAt: b.resetsAt, seen: now, scoped: b.scoped }; dirty = true; }
+    else if (st[b.name] !== undefined) { delete st[b.name]; dirty = true; }
+  });
+  Object.keys(st).forEach(function (name) {
+    if (seen[name]) return;
+    var r = st[name], rt = r && typeof r.resetsAt === 'string' ? new Date(r.resetsAt).getTime() : NaN;
+    // a remembered reading is bounded by cap_state_max_age_ms whatever its reset time says (a far-future reset must not outlive the cache)
+    var live = egIsObj(r) && typeof r.pct === 'number' && typeof r.seen === 'number' && now - r.seen < ah.cfgNum('edit_guard.cap_state_max_age_ms') && (!isFinite(rt) || rt > now);
+    if (live) cand.push({ name: name, pct: r.pct, resetsAt: r.resetsAt, scoped: r.scoped === true });
+    else { delete st[name]; dirty = true; }
+  });
+  if (dirty && mem.rel !== null) {
+    ah.commit();
+    try { ah.state.writeAtomic(mem.rel, JSON.stringify(st)); } catch (e) { /* best effort: the next call reads the cache again */ }
+  }
+  var full = swgFullest(cand);
+  if (full === null || full.pct < ah.cfgNum('edit_guard.cap_edit_pct')) return null;
+  // spawning is stopped only by the buckets the spawn guard counts (spawn_usage.bucket_names); a model-specific bucket never stops it
+  var stop = swgFullest(cand.filter(function (b) { return b.scoped !== true && spawnNames.indexOf(b.name) >= 0; }));
+  var isHard = stop !== null && stop.pct >= hard;
+  var shown = isHard ? stop : full;
+  return { name: shown.name, pct: shown.pct, resetsAt: shown.resetsAt, hard: isHard };
+}
+
 function egBlock(reason, codexPatch) { return { exact: { code: 2, out: text.blockJson(reason), err: codexPatch ? reason + '\n' : '' } }; }
 
 // hooks/lib/inline-work-nudge.js evaluate. Returns null when Node writes nothing, else {st, rel, dir, prune, note}: the counter of this
@@ -146,7 +272,30 @@ function egNudge(p, tool, cwd) {
   return { st: st, rel: rel, dir: dir, prune: prune, note: note };
 }
 
+// GH #802: an edit tool's target (or an apply_patch file) that is a session transcript: every agent, whatever the edit-guard switch says.
+function egTranscript(p) {
+  if (!egIsObj(p) || !ah.settings.bool('transcript_protect.sw')) return null;
+  var tool = p.tool_name;
+  if (typeof tool !== 'string') return null;
+  var ti = egIsObj(p.tool_input) ? p.tool_input : {}, files = [], codexPatch = tool === ah.cfg('edit_guard.patch_tool');
+  if (codexPatch) {
+    var parsed = applyPatch.parse(ti.command);
+    if (parsed.ok) parsed.files.forEach(function (f) { files.push(f.path); if (f.moveTo !== null && f.moveTo !== undefined) files.push(f.moveTo); });
+  } else if (ah.cfg('edit_guard.edit_tools').indexOf(tool) >= 0) {
+    files.push(tool === ah.cfg('edit_guard.notebook_tool') ? ti.notebook_path : ti.file_path);
+  } else return null;
+  for (var i = 0; i < files.length; i++) {
+    if (tp.editHit(egStr(files[i]), p)) {
+      ah.metric('transcript_write_blocked', ['kind', ah.cfg('transcript_protect.kinds').edit]);
+      return egBlock(text.message('block', ah.cfg('edit_guard.guard_name'), { what: ah.cfg('transcript_protect.msg_what'), why: ah.cfg('transcript_protect.msg_why'), instead: ah.cfg('transcript_protect.msg_instead') }), codexPatch);
+    }
+  }
+  return null;
+}
+
 function egMain(p) {
+  var transcript = egTranscript(p);
+  if (transcript !== null) return transcript;
   if (!ah.settings.bool('edit_guard.setting') || ah.settings.skipped(ah.cfg('edit_guard.guard_name'))) return 'allow';
   var tool = egIsObj(p) ? p.tool_name : undefined;
   if (typeof tool !== 'string') return 'allow';
@@ -219,8 +368,19 @@ function egMain(p) {
   } else if (verdict !== 'allow') {
     // while spawning is stopped there is nobody to delegate to: the edit is allowed inline, with a one-time note
     var stop = sd.applies(p, guard);
-    if (stop === null) reason = egDelegation(tool, cwd, p);
-    else standNote = sd.note(p, stop);
+    if (stop === null) {
+      // near the usage cap a small edit is made here: the delegation block would send the main thread to a helper the usage rule asks it not to start
+      var cap = egCapUsage(p), size = cap === null || cap.hard ? null : egEditLines(ti, codexPatch, cwd), lim = ah.cfgNum('edit_guard.cap_edit_max_lines');
+      var pct = cap === null ? 0 : Math.round(cap.pct);
+      // at the hard stop spawning is stopped (the stand-down's own case, here proven from the remembered reading): every edit is allowed
+      if (cap !== null && cap.hard) standNote = text.render(ah.cfg('edit_guard.msg_cap_hard_note'), { pct: pct, name: cap.name, resets: swgResetText(cap) });
+      else if (cap === null || size === null) reason = egDelegation(tool, cwd, p);
+      else if (size <= lim) standNote = text.render(ah.cfg('edit_guard.msg_cap_note'), { pct: pct, lines: size, max: lim });
+      else reason = text.message('block', guard, {
+        what: text.render(ah.cfg('edit_guard.msg_cap_what'), { tool: tool, lines: size, max: lim, pct: pct }), why: ah.cfg('edit_guard.msg_cap_why'),
+        instead: text.render(ah.cfg('edit_guard.msg_cap_instead'), { max: lim, resets: swgResetText(cap) }),
+      });
+    } else standNote = sd.note(p, stop);
   }
   var say = null;
   if (nudge !== null) {

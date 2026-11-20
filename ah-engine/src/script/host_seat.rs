@@ -225,6 +225,8 @@ fn adopt_seat(inv: &Inv, session: &str, now: f64, real: bool) -> R<Value> {
     if !eligible(&v0) {
         return Ok(json!({"verdict": v0, "adopted": false}));
     }
+    // this call is about to write the registry: stores and rosters it read so far are no longer what a later read finds
+    super::host_mesh::drop_store_cache();
     // the check is repeated just before the write: a session that adopted in between is the holder now (register-primary then refuses
     // a live holder under its own lock)
     let v = seat_verdict(inv, session, now)?;

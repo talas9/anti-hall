@@ -518,7 +518,7 @@ value = "regressed"
 
 [defect.max_open_files]
 doc = "Most open defect files; a new defect past it is refused."
-value = 200
+value = 1000
 
 [defect.max_file_bytes]
 doc = "Most bytes of one defect file."

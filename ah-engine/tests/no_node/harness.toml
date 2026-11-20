@@ -17,6 +17,13 @@ exclude = [
 ]
 # `kill` is excluded from the tool dir but is a shell builtin of every sh the wrappers use, so the wrappers keep it.
 
+[allowed_starts]
+# api-guard (a guard under test, not the doctor) judges a fabricated API by running `node -e <module probe>`; the doctor's canary rows
+# (doctor.toml, `needs = "node"`) therefore start Node on a machine that has it. Only a start whose argv begins with this prefix, on
+# one of these surfaces, is not counted as a Node path of the surface (the engine doctor itself starting Node, in any other form, still is).
+surfaces = ["run/doctor"]
+argv_prefix = "-e "
+
 [shim]
 # Exit code of the recording shim: 127 is what a shell reports for a command that is not installed.
 exit = 127

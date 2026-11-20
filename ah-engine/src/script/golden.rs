@@ -214,7 +214,9 @@ pub fn lay_at(case: &Value, now: f64, pinned: bool) -> Laid {
     let home = home.to_string_lossy().into_owned();
     if let Some(files) = case.get("files").and_then(Value::as_object) {
         for (rel, spec) in files {
-            let path = Path::new(&home).join(fill_time(&rel.replace("{HOME}/", ""), now));
+            // `{TODAY}` in a path is the day the case runs (UTC), so a case can lay the session's own dated progress file
+            let rel = rel.replace("{HOME}/", "").replace("{TODAY}", &super::expand_now("{DATE}", now));
+            let path = Path::new(&home).join(fill_time(&rel, now));
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }

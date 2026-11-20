@@ -68,9 +68,17 @@ function tgIdleSkips(open, rows) {
   (rows || []).forEach(function (r) {
     if (r.live === false) return; // the tracker knows it stopped
     var name = jx.isObj(r.spawnInput) && typeof r.spawnInput[ah.cfg('task_guard.owner_name_key')] === 'string' ? r.spawnInput[ah.cfg('task_guard.owner_name_key')] : '';
-    [String(r.description || ''), name].forEach(function (txt) {
+    // the start of the spawn prompt counts too: an agent launched "for #1" in its brief is working #1 (its description may only name the work)
+    var prompt = jx.isObj(r.spawnInput) && typeof r.spawnInput.prompt === 'string' ? r.spawnInput.prompt.slice(0, ah.cfgNum('idle_rule.prompt_ref_max')).replace(new RegExp(ah.cfg('idle_rule.prompt_ref_skip_re'), 'gi'), ' ') : '';
+    [String(r.description || ''), name, prompt].forEach(function (txt) {
       var m; refRe.lastIndex = 0;
       while ((m = refRe.exec(txt)) !== null) { covered[m[1]] = true; if (m[0].length === 0) refRe.lastIndex++; }
+    });
+    // ... and so does the task's own subject quoted in the description, launch name or prompt head
+    var hay = (String(r.description || '') + '\n' + name + '\n' + prompt).toLowerCase();
+    open.forEach(function (t) {
+      var subj = tk.oneLine(String(t.content || '').replace(jx.re('task_guard.label_priority_prefix_re', 'i'), ''), ah.cfgNum('idle_rule.subject_ref_max')).toLowerCase();
+      if (subj.length >= ah.cfgNum('idle_rule.subject_ref_min') && hay.indexOf(subj) >= 0) covered[t.id] = true;
     });
   });
   open.forEach(function (t) {
@@ -596,7 +604,7 @@ function tgEnforce(p, out) {
   }
   var dpl = null;
   if (reason === '' && orderOn) {
-    dpl = dord.plan(sessionId, tasks, ah.clock.now());
+    dpl = dord.plan(sessionId, tasks, ah.clock.now(), dord.ownNames(p));
     if (dpl.due.length > 0) reason = dord.order(dpl.due);
   }
   if (reason === '') {

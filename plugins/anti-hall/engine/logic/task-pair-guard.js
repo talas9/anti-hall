@@ -237,8 +237,9 @@ function prgByIdTasks(p, home) {
   if (home && sid !== '' && !/[^A-Za-z0-9_-]/.test(sid)) {
     var names = ah.cfg('taskstate.store_dir_names'), seen = false;
     for (var i = 0; i < names.length; i++) {
-      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
-      if (!ah.fs.isDir(dir)) continue;
+      var own = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+      if (!ah.fs.isDir(own)) continue;
+      var dir = tk.followPointer(base, own); // a pointer-only own directory: the list it names (GH #781), as the shared reader reads it
       seen = true;
       var recs = prgDirRecords(dir);
       if (recs === null) return null;
@@ -280,6 +281,22 @@ function prgErrorResponse(tr) {
   return prgIsObj(tr) && (tr.is_error === true || (typeof tr.error === 'string' && tr.error !== ''));
 }
 
+// GH #794: the task a leading `#<id>` of an agent's description names is that agent's task. With guards.pairRuleByTaskId on, an open task with
+// no owner that a live named agent's description names reads as owned by that agent's name (the first agent that names it; a task already
+// owned stays as it is). Returns the tasks with that owner filled in (copies; the list given is not changed). `agents`: [{description, name}].
+function prgAdopt(tasks, agents) {
+  if (!ah.settings.bool('pair_rule.sw_by_id')) return tasks;
+  var taken = {}, byId = {};
+  tasks.forEach(function (t) { if (prgLc(t.owner) === '') byId['i:' + t.id] = t; });
+  agents.forEach(function (a) {
+    if (a.name === '') return;
+    var ref = prgRef({ description: a.description });
+    var t = ref.id !== undefined ? byId['i:' + ref.id] : undefined;
+    if (t !== undefined && taken['i:' + t.id] !== true) taken['i:' + t.id] = a.name;
+  });
+  return tasks.map(function (t) { return taken['i:' + t.id] === undefined ? t : Object.assign({}, t, { owner: taken['i:' + t.id] }); });
+}
+
 function prgPost(p, on, home) {
   var event = ah.cfg('pair_rule.event_post'), name = prgInputName(p.tool_input);
   if (name === '' || prgErrorResponse(p.tool_response)) return 'allow'; // an unnamed spawn is the Pre fact; a failed spawn started nothing
@@ -290,9 +307,14 @@ function prgPost(p, on, home) {
   if (all === null) all = prgAllTasks(p, home);
   var open = all === null ? null : all.filter(tk.isOpen);
   if (open === null) { prgSuppressed('no_rows'); return 'allow'; }
-  var lc = prgLc(name), paired = open.some(function (t) { return prgLc(t.owner) === lc; });
+  var lc = prgLc(name);
+  // the spawn's own description may name its task (`#<id>`): that task is the agent's, whoever the store lists as owner (GH #794)
+  open = prgAdopt(open, [{ description: jx.isObj(p.tool_input) && typeof p.tool_input.description === 'string' ? p.tool_input.description : '', name: name }]);
+  var paired = open.some(function (t) { return prgLc(t.owner) === lc; });
   prgObserved(event, paired ? 'paired' : 'unpaired');
-  if (paired || !on) {
+  // the advisory itself is a switch (guards.pairRulePostAdvisory, default off): the agent cannot be paired before the TaskUpdate of the same
+  // batch has run, so the Stop block is the check that speaks
+  if (paired || !on || !ah.settings.bool('pair_rule.sw_post_advisory')) {
     if (paired) dedupe.advisory(p, 'pair', true, '', lc);
     return 'allow';
   }
@@ -390,6 +412,7 @@ function prgStop(p, on, home) {
   if (open === null || rows === null) { prgSuppressed('no_rows'); return 'allow'; }
   // a launch name below pair_rule.name_min_chars is no name (the spawn check lets such an agent through when its description names a task id)
   if (ah.settings.bool('pair_rule.sw_by_id')) rows.forEach(function (r) { if (r.name.length < ah.cfgNum('pair_rule.name_min_chars')) r.name = ''; });
+  open = prgAdopt(open, rows.filter(function (r) { return r.live === true; }));
   var unknown = rows.filter(function (r) { return r.name !== '' && r.live === null; });
   if (unknown.length > 0) prgSuppressed('liveness_unknown', unknown.length);
   var inProgress = ah.cfg('taskstate.in_progress_statuses');

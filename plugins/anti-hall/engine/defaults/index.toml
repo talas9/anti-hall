@@ -49,6 +49,8 @@ files = [
     "codex_handover.toml",
     "task_guards.toml",
     "inline_rule.toml",
+    "owner_approval.toml",
+    "transcript_protect.toml",
     "pair_rule.toml",
     "advisory.toml",
     "inference.toml",

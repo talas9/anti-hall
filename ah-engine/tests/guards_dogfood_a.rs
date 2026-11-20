@@ -108,12 +108,17 @@ fn worker_commits_integrated_by_the_session_do_not_block_stop_and_are_counted() 
     let h = home("tl-int");
     let proj = project(&h);
     let before = advisory("tasklist_integration_skipped", "suppressed");
-    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[]));
+    // the command-counting mode (guards.tasklistCountFiles off, the count before GH #794)
+    let legacy = ("ANTIHALL_TASKLIST_COUNT_FILES", "0");
+    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[legacy]));
     assert!(!blocked, "integration-only commands must not block: {out}");
     assert_eq!(advisory("tasklist_integration_skipped", "suppressed"), before + 1);
     // the off switch restores the old count: the same integration commands block again
-    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
+    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[legacy, ("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
     assert!(blocked, "with the switch off the integration commands count again: {out}");
+    // the shipped count names files: git integration names none, so it never counts, whatever the switch says
+    let (out, blocked) = text_of(stop(&h, &proj, &integration(), &[("ANTIHALL_TASKLIST_INTEGRATION_SKIP", "0")]));
+    assert!(!blocked, "commands that name no file count nothing: {out}");
 }
 
 #[test]
@@ -151,6 +156,10 @@ fn command(h: &Path, cmd: &str) -> (String, bool) {
 }
 
 fn command_with(h: &Path, cmd: &str, extra: &[(&str, &str)]) -> (String, bool) {
+    command_in(h, cmd, extra, "s")
+}
+
+fn command_in(h: &Path, cmd: &str, extra: &[(&str, &str)], session: &str) -> (String, bool) {
     let proj = project(h);
     std::fs::create_dir_all(proj.join("src")).unwrap();
     let mut pairs: Vec<(String, String)> = [
@@ -165,7 +174,7 @@ fn command_with(h: &Path, cmd: &str, extra: &[(&str, &str)]) -> (String, bool) {
     .collect();
     pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let env = RequestEnv::from_pairs(pairs);
-    let p = json!({"tool_name": "Bash", "session_id": "s", "cwd": proj, "hook_event_name": "PreToolUse", "tool_input": {"command": cmd}});
+    let p = json!({"tool_name": "Bash", "session_id": session, "cwd": proj, "hook_event_name": "PreToolUse", "tool_input": {"command": cmd}});
     text_of(ah_engine::script::run_forced("command", &p, &json!({}), "PreToolUse", &env))
 }
 
@@ -178,7 +187,15 @@ fn a_chain_with_one_heavy_part_names_it_and_still_blocks() {
     assert!(blocked, "the heavy part still blocks the chain: {out}");
     assert!(out.contains("Heavy: node tests/x.test.js"), "names the heavy segment: {out}");
     assert!(out.contains("are fine alone"), "says the rest is fine: {out}");
-    assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 1);
+    // the visible text is capped (250 units): the note outranks the owner-run hint (#800), which stays in the saved details the visible link
+    // names; a real session id (a UUID, 32 characters kept in the details path) leaves the least room
+    let (out, blocked) = command_in(&h, cmd, &[], "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0");
+    assert!(blocked, "{out}");
+    assert!(out.contains("Heavy: node tests/x.test.js") && out.contains("are fine alone"), "the note stays visible: {out}");
+    assert!(out.contains("(details: "), "the details link stays: {out}");
+    let details = std::fs::read_to_string(h.join(".anti-hall/block-details/command-guard-0b1c2d3e-4f50-6172-8394-a5b6c7d8.md")).expect("details saved");
+    assert!(details.contains("ask the owner to run it themselves"), "the owner-run hint is kept in the details: {details}");
+    assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 2);
 }
 
 #[test]
@@ -196,9 +213,10 @@ fn the_segment_note_has_an_off_switch_and_the_block_stays() {
     assert!(blocked && !out.contains("Heavy: "), "{out}");
 }
 
-// Shipped defaults (no switch pinned): commands that restore or resolve real file content are work; pure integration is not.
+// The command-counting mode (guards.tasklistCountFiles off, pinned below): commands that restore or resolve real file content are work;
+// pure integration is not. The shipped file count is tested in `git_commands_count_only_the_files_they_name`.
 #[test]
-fn restoring_or_resolving_file_content_is_counted_with_the_shipped_defaults() {
+fn restoring_or_resolving_file_content_is_counted_in_the_command_counting_mode() {
     let rows = [
         "git checkout HEAD -- src/a.js",
         "git checkout HEAD -- src/a.js ",
@@ -212,14 +230,47 @@ fn restoring_or_resolving_file_content_is_counted_with_the_shipped_defaults() {
         let h = home("tl-row");
         let proj = project(&h);
         let lines: Vec<String> = (0..3).map(|i| bash_use(i, row)).collect();
-        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[("ANTIHALL_TASKLIST_COUNT_FILES", "0")]));
         assert!(blocked, "must count: {row}: {out}");
     }
     for row in ["git checkout dev", "git switch -c fix/x", "git merge fix/a", "git merge --no-ff fix/b", "git cherry-pick abc123", "git checkout release/1.2"] {
         let h = home("tl-row");
         let proj = project(&h);
         let lines: Vec<String> = (0..3).map(|i| bash_use(i, row)).collect();
-        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[("ANTIHALL_TASKLIST_COUNT_FILES", "0")]));
         assert!(!blocked, "must not count: {row}: {out}");
+    }
+}
+
+// GH #794, the shipped count: a git command that restores or removes files BY NAME writes those files (three distinct ones are work); one
+// that changes files without naming them (merge --continue, stash, reset --hard, apply: workdetect.git_unknown_subcommands) counts as one
+// unknown file each time it runs (fail toward stale); one that changes none (commit, a checkout of a branch, a soft reset, stash list) counts nothing.
+#[test]
+fn git_commands_count_only_the_files_they_name() {
+    for (row, blocks) in [
+        ("git checkout HEAD -- src/f{i}.js", true),
+        ("git checkout --ours -- src/f{i}.js", true),
+        ("git restore src/f{i}.js", true),
+        ("git rm src/f{i}.js", true),
+        ("git checkout src/f{i}.js", true), // an existing file: restored
+        ("git checkout dev{i}", false),     // not a file: a branch
+        ("git commit -q -m x{i}", false),
+        ("git merge --continue", true), // resolves file content it does not name: an unknown file per run
+        ("git stash", true),
+        ("git stash pop", true),
+        ("git reset --hard HEAD~{i}", true),
+        ("git apply fix{i}.diff", true),
+        ("git stash list", false),
+        ("git reset --soft HEAD~{i}", false),
+    ] {
+        let h = home("tl-git");
+        let proj = project(&h);
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        for i in 0..3 {
+            std::fs::write(proj.join(format!("src/f{i}.js")), "x").unwrap();
+        }
+        let lines: Vec<String> = (0..3).map(|i| bash_use(i, &row.replace("{i}", &i.to_string()))).collect();
+        let (out, blocked) = text_of(stop(&h, &proj, &lines, &[]));
+        assert_eq!(blocked, blocks, "{row}: {out}");
     }
 }

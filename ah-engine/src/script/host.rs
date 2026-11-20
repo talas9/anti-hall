@@ -126,6 +126,10 @@ pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     super::host_parentinbox::reset_call();
     super::host_spawn::reset_call();
     let r = f();
+    // per-call read caches (open store handles, rosters, the marker index, app states) are released when the call ends, so an idle
+    // worker thread holds no file handle or index; the next call's reset clears them too, which also covers a call that unwound
+    super::host_mesh::drop_store_cache();
+    super::host_parentinbox::end_call();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
     for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
         held.release();
