@@ -171,6 +171,8 @@ function ceFindClaim(scan, seen) {
       for (var j = 0; j < all.length; j++) {
         var hitText = sents[k].slice(all[j][0], all[j][1]);
         if (typeof rows[i].not_after === 'string' && (typeof rows[i].not_after_hit !== 'string' || ah.re.find(rows[i].not_after_hit, 'i', hitText)) && ah.re.find(rows[i].not_after, 'i', sents[k].slice(0, all[j][0]))) { seen.push([ah.cfg('claim_evidence.nonsoftware_reason'), sents[k].slice(all[j][0], all[j][1]), rows[i].id]); continue; }
+        // a name, not a claim: the hit ends in a capitalised word that a capitalised word follows ('is Live Activity'); case-sensitive
+        if (typeof rows[i].not_before === 'string' && (typeof rows[i].not_before_hit !== 'string' || ah.re.find(rows[i].not_before_hit, '', hitText)) && ah.re.find(rows[i].not_before, '', sents[k].slice(all[j][1]))) { seen.push([ah.cfg('claim_evidence.featurename_reason'), hitText, rows[i].id]); continue; }
         hits.push([all[j][0], all[j][1], i]);
       }
     }
