@@ -8,7 +8,7 @@ struct World {
 }
 impl World {
     fn new(tag: &str) -> Self {
-        let home = std::env::temp_dir().join(format!("ah-reblock-{tag}-{}", std::process::id()));
+        let home = ah_engine::tmpsweep::scratch("ah-reblock-", tag); // removed when the test process exits
         std::fs::create_dir_all(home.join(".anti-hall/agent-tracker")).unwrap();
         Self { home }
     }

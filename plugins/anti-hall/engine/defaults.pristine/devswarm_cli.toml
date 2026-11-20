@@ -3619,6 +3619,10 @@ value = ["lockBusy", "id", "retriedAttempts"]
 doc = "The other name of `spawn` (`ah-engine devswarm create <branch> ...`): the same create path."
 value = "create"
 
+[devswarm_cli.sp_set_default_source]
+doc = "Setting devswarm.spawnSource: the branch a `mesh spawn` / `devswarm spawn` create branches from when no -s / --source is given (the repository's integration branch). Empty (default): hivecontrol's own default, the branch checked out in the Primary, which is the wrong base when the Primary sits on a feature branch."
+value = { type = "string", section = "devswarm", key = "spawnSource", env = "ANTIHALL_DEVSWARM_SPAWN_SOURCE", option = "devswarm_spawn_source", default = "" }
+
 [devswarm_cli.sp_set_from_origin]
 doc = "Setting devswarm.spawnFromOrigin: before a create from the default branch, fetch origin and fast-forward the local default branch (refuse when it is behind and cannot be updated, unless --from-local)."
 value = { type = "bool", section = "devswarm", key = "spawnFromOrigin", env = "", option = "devswarm_spawn_from_origin", default = true }

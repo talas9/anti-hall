@@ -257,3 +257,7 @@
 {"text":"The firmware for the device is released.","expect":"block","source":"nonsoftware-2026-11-20"}
 {"text":"The device is deployed.","expect":"block","source":"nonsoftware-2026-11-20"}
 {"text":"The simulator is released.","expect":"allow","source":"nonsoftware-2026-11-20"}
+{"text":"The Live Activity feature is Live Activity support for the widget.","expect":"allow","source":"live-feature-name-2026-11-20"}
+{"text":"Live Activity is Live Activity, a name not a claim.","expect":"allow","source":"live-feature-name-2026-11-20"}
+{"text":"The new service is live.","expect":"block","source":"live-feature-name-2026-11-20"}
+{"text":"The release is now live on prod.","expect":"block","source":"live-feature-name-2026-11-20"}

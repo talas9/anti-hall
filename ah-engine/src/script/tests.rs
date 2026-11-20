@@ -4,8 +4,7 @@ use super::*;
 use serde_json::json;
 
 fn home(tag: &str) -> String {
-    let d = std::env::temp_dir().join(format!("ah-script-{tag}-{}", std::process::id()));
-    crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
+    let d = crate::tmpsweep::scratch("ah-script-", tag); // removed when the test process exits
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     d.to_string_lossy().to_string()
 }
