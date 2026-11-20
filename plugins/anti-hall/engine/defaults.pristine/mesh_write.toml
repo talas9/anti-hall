@@ -1501,6 +1501,10 @@ value = "tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed 
 doc = "The wake-tick marker directory under the DevSwarm state directory."
 value = "wake-tick"
 
+[mesh_write.marker_native_wake_field]
+doc = "The wake-tick marker field holding how many of the native queue's pending messages are the engine's own wake prompts (agent_tracker.wake_prefix tasks queued by `workspace reactivate-child`; the native queue keeps counting them until something accepts them, which nothing does). The child's pull writes it; the child gate (devswarm-child-gate.js) subtracts it from the native `message-count` while the marker is fresh, so a wake prompt is never unread mail."
+value = "nativeWake"
+
 [mesh_write.file_cron_found_mail]
 doc = "The cron-found-mail measurement file under the DevSwarm state directory."
 value = "cron-found-mail.jsonl"

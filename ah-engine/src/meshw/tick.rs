@@ -718,13 +718,25 @@ fn write_staged(dst: &Path, text: &str, now: i64) -> std::io::Result<()> {
 }
 
 /// Effect 1: the wake-tick marker. `unread` is `None` for a result that carries no count (a refused one): `unreadTotal: null`.
-fn write_marker(inv: &Inv, id: &str, unread: Option<usize>, known: bool, seq: f64, gap: bool) {
+/// `native_wake`: how many of the native queue's pending messages are the engine's own wake prompts, from this tick's pull (`None` when
+/// no pull settled it: the marker then keeps what the previous one held, as a wake prompt stays pending until it is resolved).
+fn write_marker(inv: &Inv, id: &str, unread: Option<usize>, known: bool, seq: f64, gap: bool, native_wake: Option<usize>) {
     let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick"));
     let mut m = Obj::default();
     m.put("ts", n(inv.now as f64))
         .put("unreadTotal", unread.map_or(OVal::Null, |u| n(u as f64)))
         .put("meshGapWithheld", OVal::Bool(gap))
         .put("known", OVal::Bool(known));
+    let carried = || -> Option<f64> {
+        let bytes = std::fs::read(dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")))).ok()?;
+        match OVal::parse(&String::from_utf8_lossy(&bytes))?.get(defaults::text("mesh_write.marker_native_wake_field")) {
+            Some(OVal::Num(x)) if x.is_finite() && *x >= 0.0 => Some(*x),
+            _ => None,
+        }
+    };
+    if let Some(w) = native_wake.map(|w| w as f64).or_else(carried) {
+        m.put(defaults::text("mesh_write.marker_native_wake_field"), n(w));
+    }
     if seq != 0.0 && !seq.is_nan() {
         // JSON.stringify writes an infinite number as null
         m.put("seq", if seq.is_finite() { n(seq) } else { OVal::Null });
@@ -1012,7 +1024,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         None => None,
     };
     // ---- writes ----
-    let (counted, wal_blocked) = match pull_plan {
+    let (counted, wal_blocked, native_wake) = match pull_plan {
         Some(p) => {
             // `execute` takes the workspace's lock first and defers only while nothing is written; it marks the commit point itself
             let out = crate::meshw::pull::execute(inv, p)?;
@@ -1024,18 +1036,18 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
                 }
                 Target::Refused(_) => None,
             };
-            (counted, out.wal_blocked.then_some(out.res.error.clone()))
+            (counted, out.wal_blocked.then_some(out.res.error.clone()), out.res.native_wake)
         }
         None => {
             crate::meshw::mark_committed();
-            (pre, None)
+            (pre, None, None)
         }
     };
     let armed = tickarm::decide(inv, id, form.child, lock_armed);
     let unread = counted.as_ref().map(|c| c.unread);
     // a pull refused because its delivery log is unwritable: mail may be waiting that this count cannot see, so it is UNKNOWN
     let known = counted.as_ref().is_some_and(|c| c.known) && wal_blocked.is_none();
-    write_marker(inv, id, unread, known, tick_seq, counted.as_ref().is_some_and(|c| c.gap_withheld > 0));
+    write_marker(inv, id, unread, known, tick_seq, counted.as_ref().is_some_and(|c| c.gap_withheld > 0), native_wake);
     write_heartbeat(inv, id, &beat);
     if let Some(u) = unread.filter(|u| *u > 0)
         && lock_file.exists()

@@ -143,6 +143,10 @@ value = 300000
 doc = "How recent a zero-unread `inbox tick` marker must be to count as liveness proof for this Stop (TICK_MARKER_FRESH_MS)."
 value = 120000
 
+[devswarm_gates.cg_wake_marker_fresh_ms]
+doc = "How recent the `inbox tick` marker must be for its wake-prompt count (mesh_write.marker_native_wake_field) to be subtracted from the native pending count at this Stop. Longer than cg_tick_fresh_ms: a wake prompt stays pending natively until resolved, and the child's mailbox tick runs every 30 minutes; a marker older than this subtracts nothing."
+value = 2400000
+
 [devswarm_gates.cg_kind_cron]
 doc = "The stop-policy kind of the mailbox-cron-missing block."
 value = "cron-missing"
