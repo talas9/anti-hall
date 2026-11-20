@@ -190,6 +190,17 @@ impl Env {
         )
     }
 
+    /// A Stop whose payload carries the host's `session_crons` list.
+    fn stop_with_crons(&self, session: &str, crons: serde_json::Value) -> String {
+        let t = self.dir.join(format!("transcript-{session}.jsonl"));
+        std::fs::write(&t, "").unwrap();
+        self.run(
+            "Stop",
+            &serde_json::json!({"session_id": session, "hook_event_name": "Stop", "cwd": self.repo, "transcript_path": t, "stop_hook_active": false, "session_crons": crons}),
+            "claude",
+        )
+    }
+
     fn turn(&self, session: &str, agent: &str) -> String {
         self.run(
             "UserPromptSubmit",
@@ -346,6 +357,25 @@ fn stop_with_a_live_child_and_a_dead_monitor_blocks_with_the_directive_to_rearm_
     let out = e.stop("s1");
     assert!(out.contains("\"block\"") && out.contains(WAKE_LINE), "the dead watcher blocks the Stop with the wake line, got: {out:?}");
     assert!(out.contains(MONITOR_HINT) && out.contains("CronCreate"), "the directive re-arms the Monitor and the cron, got: {out:?}");
+}
+
+/// Dogfood 2026-11-20: "NO MAILBOX WAKE PATH / NO MAILBOX TICK" right after CronCreate (first fire not yet due, so no tick marker). The
+/// Stop payload lists the job: it exists. The prompt that follows (no cron list in its own payload) knows it from the Stop's sighting.
+#[test]
+fn a_tick_cron_the_stop_payload_lists_is_a_wake_path_before_its_first_fire_and_a_missing_one_still_blocks() {
+    let e = Env::new("stop-crons");
+    e.live_child();
+    e.quiet_mail();
+    let listed = serde_json::json!([{"id": "f8ad5ca1", "schedule": "*/10 * * * *", "recurring": true, "prompt": format!("Mailbox tick: run ah-engine mesh inbox tick {}", e.primary)}]);
+    let out = e.stop_with_crons("s1", listed);
+    assert!(!out.contains(WAKE_LINE) && !out.contains("\"block\""), "a listed tick cron is a wake path, got: {out:?}");
+    let out = e.turn("s1", "claude");
+    assert!(!out.contains("NO MAILBOX"), "the prompt after a Stop that saw the cron does not ask for it, got: {out:?}");
+    let e = Env::new("stop-crons-none");
+    e.live_child();
+    e.quiet_mail();
+    let out = e.stop_with_crons("s1", serde_json::json!([]));
+    assert!(out.contains("\"block\"") && out.contains(WAKE_LINE), "an empty list still blocks, got: {out:?}");
 }
 
 #[test]

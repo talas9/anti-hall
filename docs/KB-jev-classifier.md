@@ -632,8 +632,8 @@ Per integration: calls, jev-answered %, cache hits, agreement % (Jev vs baseline
 where both exist) OR, for a label-only `choice` integration (no boolean baseline, e.g.
 `newRequest`), the top label's share plus the full distribution via `--json`, decisions
 changed (by direction), outcome rates (joined by hash), latency p50/p95, an ESTIMATED
-cost (`calls × jev.json "costPerCall"`, an owner-supplied constant — shows `n/a` if
-unset; this is a rough estimate, not a bill), and a KEEP/REVIEW/REMOVE suggestion.
+cost (the real cost when calls reported one, else `calls × jev.json "costPerCall"`, else the shipped
+`jevrep.thr_cost_per_call_default`; a rough estimate, not a bill), and a KEEP/REVIEW/REMOVE suggestion.
 Thresholds (documented in the script's header, tune by editing them there): below 50
 calls always `REVIEW (not enough data)`. **v0.108.1 fix:** KEEP and REMOVE now BOTH
 require a labelled sample of at least `MIN_LABELED_FOR_VERDICT` (20, tp+fp, human+auto

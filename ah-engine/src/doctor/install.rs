@@ -322,8 +322,10 @@ pub fn section(doc: &mut Doc, fixes: &mut Vec<Fix>, ctx: &Ctx, root: Option<&Pat
         }
     };
     if let Some(v) = &reported {
+        // only an engine OLDER than the pin is a problem: a newer one is a local or later build, which the pin does not outrank
         if let Some(want) = &pinned
             && !v.contains(want.as_str())
+            && crate::component_cmp(v, want) == std::cmp::Ordering::Less
         {
             doc.warnl(defaults::render("doctor_msg.bin_version_differs", &[("have", v), ("want", want), ("bootstrap", &boot)]));
         } else {
@@ -334,6 +336,7 @@ pub fn section(doc: &mut Doc, fixes: &mut Vec<Fix>, ctx: &Ctx, root: Option<&Pat
         }
     } else if let (Some((have, _)), Some(want)) = (&marker, &pinned)
         && have != want
+        && crate::component_cmp(have, want) == std::cmp::Ordering::Less
     {
         doc.warnl(defaults::render("doctor_msg.bin_version_differs", &[("have", have), ("want", want), ("bootstrap", &boot)]));
     }
