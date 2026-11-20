@@ -50,3 +50,22 @@ fn read_only_investigation_scores_low_and_is_scaled_by_its_share() {
     assert!(score(&all, &p, false) < score(&half, &p, false) && score(&half, &p, false) < score(&none, &p, false));
     assert_eq!(level(score(&none, &p, false), &p), Level::Hard);
 }
+
+#[test]
+fn the_status_block_sums_every_category_and_names_the_transcript_ones() {
+    // GH #884: `ah-engine status` shows events and tokens per waste category, spent-token and avoided-advisory alike, and the total.
+    let t = crate::telemetry::Telemetry::new();
+    t.with_metrics(|m| {
+        m.add("waste_events_total", &[("category", "cache_expiry"), ("source", "transcript")], 2);
+        m.add("waste_tokens_total", &[("category", "cache_expiry"), ("source", "transcript")], 120_000);
+        m.add("waste_events_total", &[("category", "poke_turn"), ("source", "transcript")], 3);
+        m.add("waste_tokens_total", &[("category", "poke_turn"), ("source", "transcript")], 9_000);
+        m.add("waste_events_total", &[("category", "repeated_advisory"), ("source", "usage")], 5);
+        m.add("waste_tokens_total", &[("category", "repeated_advisory"), ("source", "usage")], 400);
+    });
+    let b = super::status_block(&t);
+    assert_eq!(b["cache_expiry"], serde_json::json!({"events": 2, "tokens": 120_000}));
+    assert_eq!(b["poke_turn"], serde_json::json!({"events": 3, "tokens": 9_000}));
+    assert_eq!(b["repeated_advisory"], serde_json::json!({"events": 5, "tokens": 400}));
+    assert_eq!(b["total"], serde_json::json!({"events": 10, "tokens": 129_400}));
+}

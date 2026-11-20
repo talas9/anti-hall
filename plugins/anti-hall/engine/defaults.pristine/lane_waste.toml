@@ -339,7 +339,7 @@ doc = "Heading of the block on a bounded wait or watch above the limit. Placehol
 value = "this bounded wait is over the limit ({secs}s; limit {max}s): {cmd}"
 
 [queued_wait.msg_instead_over]
-doc = "What to do instead of a bounded wait above the limit. Placeholders: {max} the limit."
+doc = "What to do instead of a bounded wait above the limit. Placeholders: {max} the part length (cache_wait.split_s)."
 value = "Use {max}s or less, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."
 
 [queued_wait.msg_why]
@@ -351,11 +351,11 @@ doc = "What to do instead of a background heavy command."
 value = "Run the command in the foreground under the shared lock."
 
 [queued_wait.msg_instead_detach]
-doc = "What to do instead of a wait that detaches inside a timeout. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline."
+doc = "What to do instead of a wait that detaches inside a timeout. Placeholders: {max} the part length (cache_wait.split_s). Kept under 115 characters so it stays inline."
 value = "Run the wait attached: `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\"."
 
 [queued_wait.msg_instead_sleep]
-doc = "What to do instead of a long sleep or poll loop. Placeholders: {max} the bounded-wait limit (queued_wait.bounded_max_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification."
+doc = "What to do instead of a long sleep or poll loop. Placeholders: {max} the part length (cache_wait.split_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification."
 value = "Run `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."
 
 [queued_wait.msg_override]
@@ -451,3 +451,83 @@ value = "give the search one project folder."
 [wide_search.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
 value = "tell the agent \"skip wide-search-guard\" (or set guards.allowWideSearch)."
+
+# ---- cache-ttl-wait-guard (one call that waits past the prompt-cache window; GH #884) --------------------------------------------
+# The prompt cache expires a few minutes after the last request. A single tool call that waits longer than that (a sleep, an until
+# loop under a long timeout, a watch, a Monitor or TaskOutput deadline) makes the next turn rebuild the whole context at full price.
+# The guard answers with an ORDER to split the wait; it never blocks. Repeats climb the nudge ladder (nudges.toml kind cache_wait).
+
+[cache_wait.sw]
+doc = "Order a long single wait to be split. Where the guard's on/off switch is read from (guards.cacheWaitGuard, default on): off, no wait is judged."
+value = { section = "guards", key = "cacheWaitGuard", type = "boolean", env = "ANTIHALL_CACHE_WAIT_GUARD", option = "", default = true }
+
+[cache_wait.guard_name]
+doc = "The guard id the cache-wait guard answers to in skip.json, its messages and the nudge ladder."
+value = "cache-ttl-wait-guard"
+
+[cache_wait.summary]
+doc = "One-line description of the cache-ttl-wait-guard check in the generated reference."
+value = "Order long single waits to be split. PreToolUse on Bash (Claude and Codex, every agent), Monitor and TaskOutput (Claude): a sleep, a poll loop or watch under a timeout, or a tool deadline above the prompt-cache limit gets an order to split it into shorter waits. Advisory only: it never blocks."
+
+[cache_wait.limit_s]
+doc = "A single wait above this many seconds is ordered split: it outlives the prompt cache (the TTL is 300 s; this leaves a margin for the turn itself)."
+value = 270
+unit = "s"
+min = 1
+max = 3600
+
+[cache_wait.split_s]
+doc = "The wait length the order asks for: each part at most this many seconds (kept under limit_s, so a part never trips the guard). Also the {max} of the subagent WORKER line and of the queued-wait-guard remedies."
+value = 240
+unit = "s"
+min = 1
+max = 3600
+
+[cache_wait.tool_timeouts]
+doc = "Tools other than Bash whose input holds a wait deadline: tool name to the input field, in milliseconds."
+value = { Monitor = "timeout_ms", TaskOutput = "timeout" }
+
+[cache_wait.event]
+doc = "The hook event name the order is delivered under when the payload does not name one."
+value = "PreToolUse"
+
+[cache_wait.persistent_field]
+doc = "The tool input field that makes a Monitor persistent (it runs for the session and wakes the agent by event, so it is no single wait)."
+value = "persistent"
+
+[cache_wait.bash_timeout_field]
+doc = "The Bash tool input field that holds the call's timeout, in milliseconds. It bounds a poll loop or a watch that has no timeout of its own."
+value = "timeout"
+
+[cache_wait.ms_per_s]
+doc = "Milliseconds per second (tool deadlines are in milliseconds, sleep and timeout in seconds)."
+value = 1000
+min = 1
+
+[cache_wait.bg_field]
+doc = "The Bash tool input field that starts the command in the background (a background command is not a wait in this call)."
+value = "run_in_background"
+
+[cache_wait.metric_kinds]
+doc = "The kind label of cache_wait_orders_total per way a wait was found: sleep (a sleep over the limit), loop (a poll loop or watch bounded above the limit), tool (a Monitor or TaskOutput deadline over the limit)."
+value = { sleep = "sleep", loop = "loop", tool = "tool" }
+
+[cache_wait.msg_what_bash]
+doc = "What the order says about a Bash wait. Placeholders: {secs} the wait (cache_wait.msg_secs, or cache_wait.msg_unbounded), {limit} the limit, {cmd} the command as written."
+value = "this call waits {secs}, past the {limit}s cache limit: {cmd}."
+
+[cache_wait.msg_what_tool]
+doc = "What the order says about a tool deadline. Placeholders: {tool}, {secs} the deadline (cache_wait.msg_secs), {limit} the limit."
+value = "{tool} waits {secs} in one call, past the {limit}s cache limit."
+
+[cache_wait.msg_secs]
+doc = "How a known wait reads in the order. Placeholder: {n} seconds."
+value = "up to {n}s"
+
+[cache_wait.msg_unbounded]
+doc = "The wait shown when a sleep's length cannot be read or is endless (a variable, a typo, infinity). An unreadable length is judged as an endless wait."
+value = "an unbounded time"
+
+[cache_wait.msg_instead]
+doc = "The action of the order. Placeholders: {max} the part length (cache_wait.split_s). Kept under 115 characters so it stays inline."
+value = "Split it into waits of {max}s or less and re-issue until done."

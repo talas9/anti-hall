@@ -435,7 +435,7 @@ fn an_unbounded_wait_is_blocked_with_a_bounded_watch_or_message_the_lead() {
     for cmd in ["while true; do sleep 60; done", "until [ -f /tmp/done ]; do sleep 30; done", "sleep 170"] {
         let (code, out, err) = wait_guard(cmd, "subagent", false, &[]);
         assert_eq!(code, 2, "{cmd}");
-        assert!(out.contains("timeout 540 gh pr checks --watch"), "{cmd}: {out}");
+        assert!(out.contains("timeout 240 gh pr checks --watch"), "{cmd}: {out}");
         assert!(out.contains("SendMessage lead \\\"waiting on <X>; wake me when done\\\""), "{cmd}: {out}");
         assert!(!out.contains("End the turn and wait") && !err.contains("End the turn and wait"), "{cmd}: {out}");
     }
@@ -586,16 +586,139 @@ fn the_depth_bound_is_a_setting() {
 
 #[test]
 fn the_worker_text_and_the_wait_guard_share_one_limit() {
-    // Both texts render the limit from queued_wait.bounded_max_s: the WORKER line carries a placeholder, never the number.
+    // Both texts render the part length from cache_wait.split_s (GH #884: a wait must stay inside the prompt-cache window): the WORKER line carries a placeholder, never the number.
     let toml = std::fs::read_to_string(plugin().join("engine/defaults/verify_first.toml")).unwrap();
     let worker = toml.split("[verify_first.worker]").nth(1).unwrap().split("\n[").next().unwrap();
-    assert!(worker.contains("{max}") && !worker.contains("540"), "the WORKER text must render the limit, not repeat it: {worker}");
+    assert!(worker.contains("{max}") && !worker.contains("240"), "the WORKER text must render the limit, not repeat it: {worker}");
     let start = json!({"session_id": "s1", "cwd": "/tmp", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"});
     let (code, out, _) = run(&["check", "verify-first-subagent"], &[], &start.to_string());
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("within 540s") && out.contains("timeout 540 gh pr checks --watch"), "WORKER text: {out}");
+    assert!(out.contains("within 240s") && out.contains("timeout 240 gh pr checks --watch"), "WORKER text: {out}");
     assert!(out.contains("SendMessage your lead") && out.contains("wake me when done"), "WORKER text: {out}");
     assert!(!out.contains("run long commands in the foreground or poll"), "the old advice is gone: {out}");
     let (_, block, _) = wait_guard("while true; do sleep 60; done", "subagent", false, &[]);
-    assert!(block.contains("timeout 540 gh pr checks --watch") && block.contains("wake me when done"), "guard text: {block}");
+    assert!(block.contains("timeout 240 gh pr checks --watch") && block.contains("wake me when done"), "guard text: {block}");
+}
+
+
+// ---- cache-ttl-wait-guard (GH #884) -----------------------------------------------------------------------------------
+
+/// One tool call of `tool` with `input` from the caller `who`, judged by cache-ttl-wait-guard.
+fn cache_guard(tool: &str, input: Value, who: &str, env_pairs: &[(&str, &str)]) -> (i32, String, String) {
+    let mut p = payload("", who);
+    p["tool_name"] = json!(tool);
+    p["tool_input"] = input;
+    run(&["check", "cache-ttl-wait-guard"], env_pairs, &p.to_string())
+}
+
+fn bash_call(cmd: &str) -> Value {
+    json!({"command": cmd})
+}
+
+fn bash_call_timeout(cmd: &str, ms: u64) -> Value {
+    json!({"command": cmd, "timeout": ms})
+}
+
+/// (tool input, whether the call is ordered to split). The limit is 270 s, the part length 240 s.
+fn cache_table() -> Vec<(&'static str, Value, bool)> {
+    vec![
+        ("plain sleep over the limit", bash_call("sleep 300"), true),
+        ("sleep with a unit", bash_call("sleep 5m"), true),
+        ("sleep operands are summed", bash_call("sleep 200 100"), true),
+        ("endless sleep", bash_call("sleep infinity"), true),
+        ("sleep of a variable", bash_call("sleep $N"), true),
+        ("sleep just over", bash_call("sleep 271"), true),
+        ("sleep at the limit", bash_call("sleep 270"), false),
+        ("short sleep", bash_call("sleep 200"), false),
+        ("sleep in a chain, each short", bash_call("sleep 100 && echo a && sleep 100"), false),
+        ("sleep under a smaller timeout", bash_call("timeout 200 sleep 999"), false),
+        ("sleep under a larger timeout", bash_call("timeout 540 sleep 999"), true),
+        ("watch under a long timeout", bash_call("timeout 540 gh pr checks --watch"), true),
+        ("watch under a short timeout", bash_call("timeout 240 gh pr checks --watch"), false),
+        ("watch with no bound", bash_call("gh pr checks --watch"), false),
+        ("watch bounded by the tool timeout", bash_call_timeout("gh run watch 99", 600_000), true),
+        ("watch inside the tool timeout", bash_call_timeout("gh run watch 99", 200_000), false),
+        ("poll loop bounded by a long tool timeout", bash_call_timeout("until gh pr checks --required; do sleep 20; done", 600_000), true),
+        ("poll loop with a short tool timeout", bash_call_timeout("until gh pr checks --required; do sleep 20; done", 120_000), false),
+        ("poll loop with no bound", bash_call("until gh pr checks --required; do sleep 20; done"), false),
+        ("poll loop under a long timeout wrapper", bash_call("timeout 540 bash -c 'until gh pr checks --required; do sleep 20; done'"), true),
+        ("a build with a long tool timeout is no wait", bash_call_timeout("cargo build", 600_000), false),
+        ("a read-only command", bash_call("git status"), false),
+        ("a background sleep returns at once", json!({"command": "sleep 600", "run_in_background": true}), false),
+    ]
+}
+
+#[test]
+fn the_cache_wait_table_orders_the_split_and_never_blocks() {
+    for who in ["main", "subagent", "codex", "codex-subagent"] {
+        for (name, input, ordered) in cache_table() {
+            let (code, out, err) = cache_guard("Bash", input.clone(), who, &[]);
+            assert_eq!(code, 0, "{who}: {name}: an order is an advisory, never a block: {out}{err}");
+            if ordered {
+                let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{who}: {name}: {e}: {out}"));
+                let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default();
+                assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse", "{who}: {name}");
+                assert!(ctx.contains("cache limit") && ctx.contains("240s or less"), "{who}: {name}: {ctx}");
+                assert!(v.get("decision").is_none(), "{who}: {name}: never a block");
+            } else {
+                assert!(out.trim().is_empty(), "{who}: {name}: must be silent: {out}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_tool_deadline_over_the_limit_is_ordered_for_monitor_and_task_output() {
+    for (tool, field) in [("Monitor", "timeout_ms"), ("TaskOutput", "timeout")] {
+        let over = cache_guard(tool, json!({"command": "tail -f x", field: 600_000}), "main", &[]);
+        assert_eq!(over.0, 0);
+        assert!(over.1.contains(&format!("{tool} waits up to 600s")) && over.1.contains("240s or less"), "{tool}: {}", over.1);
+        let under = cache_guard(tool, json!({"command": "tail -f x", field: 240_000}), "main", &[]);
+        assert!(under.1.trim().is_empty(), "{tool}: a deadline inside the limit is silent: {}", under.1);
+        let none = cache_guard(tool, json!({"command": "tail -f x"}), "main", &[]);
+        assert!(none.1.trim().is_empty(), "{tool}: no deadline, no order");
+    }
+    let persistent = cache_guard("Monitor", json!({"command": "tail -f x", "timeout_ms": 3_600_000, "persistent": true}), "main", &[]);
+    assert!(persistent.1.trim().is_empty(), "a persistent monitor wakes by event, it is no single wait: {}", persistent.1);
+    assert!(cache_guard("Read", json!({"file_path": "/x", "timeout": 600_000}), "main", &[]).1.trim().is_empty(), "only the listed tools are judged");
+}
+
+#[test]
+fn the_cache_wait_limits_are_settings_and_the_guard_is_a_switch() {
+    let ordered = |cmd: &str, env_pairs: &[(&str, &str)]| !cache_guard("Bash", bash_call(cmd), "main", env_pairs).1.trim().is_empty();
+    assert!(ordered("sleep 300", &[]));
+    assert!(!ordered("sleep 300", &[("ANTIHALL_CACHE_WAIT_GUARD", "0")]), "guards.cacheWaitGuard off");
+    // a sleep of a variable and a long one are both unbounded or long: the order names how it reads
+    let (_, out, _) = cache_guard("Bash", bash_call("sleep infinity"), "main", &[]);
+    assert!(out.contains("an unbounded time"), "{out}");
+    let (_, out, _) = cache_guard("Bash", bash_call("sleep 300"), "main", &[]);
+    assert!(out.contains("up to 300s") && out.contains("270s cache limit") && out.contains("sleep 300"), "{out}");
+    let p = json!({"session_id": "s1", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {}});
+    assert_eq!(run(&["check", "cache-ttl-wait-guard"], &[], &p.to_string()).1.trim(), "", "no command: nothing to judge");
+}
+
+#[test]
+fn the_cache_wait_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
+    use ah_engine::dispatch::table as t;
+    let has = |host: &str, tool: &str| t::select(host, "PreToolUse", &json!({"tool_name": tool}), None).iter().any(|e| e.id == "cache-ttl-wait-guard");
+    assert!(has("claude", "Bash") && has("claude", "Monitor") && has("claude", "TaskOutput") && has("codex", "Bash"));
+    assert!(!has("claude", "Read") && !has("codex", "Monitor"), "Codex has no Monitor or TaskOutput");
+    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json"] {
+        let text = std::fs::read_to_string(plugin().join(rel)).unwrap();
+        assert!(text.contains("cache-ttl-wait-guard") && text.contains("ah-hook"), "{rel} routes the guard to the native client");
+    }
+    assert!(!plugin().join("hooks/cache-ttl-wait-guard").exists(), "the native guard needs no fallback no-op");
+    let schema = std::fs::read_to_string(plugin().join("../anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
+    assert!(schema.contains("key: 'cacheWaitGuard'") && schema.contains("ANTIHALL_CACHE_WAIT_GUARD"), "guards.cacheWaitGuard is a registered setting");
+    let nudges = std::fs::read_to_string(plugin().join("engine/defaults/nudges.toml")).unwrap();
+    assert!(nudges.contains("cache_wait = { class = \"escalate\", hooks = [\"cache-ttl-wait-guard\"]"), "repeats climb the nudge ladder");
+}
+
+#[test]
+fn the_part_length_is_one_key_for_the_order_the_worker_line_and_the_wait_block() {
+    let start = json!({"session_id": "s-split", "cwd": "/tmp", "hook_event_name": "SubagentStart", "agent_id": "a-split", "agent_type": "general-purpose"});
+    let (_, worker, _) = run(&["check", "verify-first-subagent"], &[], &start.to_string());
+    assert!(worker.contains("within 240s"), "the WORKER line must not tell an agent to wait longer than the guard allows: {worker}");
+    let (_, block, _) = wait_guard("timeout 600 gh pr checks --watch", "subagent", false, &[]);
+    assert!(block.contains("Use 240s or less"), "the queued-wait remedy asks for the same part length: {block}");
 }

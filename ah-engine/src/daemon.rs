@@ -645,6 +645,8 @@ impl Shared {
                 })
             }),
             "fail_open": crate::failopen::status(&self.telemetry),
+            // token waste by category (GH #884): events and tokens of every waste_* category this daemon has counted
+            defaults::raw("agent_waste.status_words").str_field("key"): crate::agents::waste::status_block(&self.telemetry),
             // answers a request's checks did not give (a guard's is the one to watch): THIS daemon, apart from the lifetime counts
             "answers_dropped": serde_json::json!({
                 "this_daemon": crate::budget::dropped_this_daemon(),

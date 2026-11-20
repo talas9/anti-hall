@@ -271,6 +271,9 @@ pub static UNCOMMITTED_GUARD: Scripted = Scripted::new("uncommitted-guard", "unc
 /// `queued-wait-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "queued_wait.summary");
 
+/// `cache-ttl-wait-guard` (PreToolUse on Bash, Monitor and TaskOutput, every agent; engine-only; GH #884): orders a long single wait to be split.
+pub static CACHE_TTL_WAIT_GUARD: Scripted = Scripted::new("cache-ttl-wait-guard", "cache_wait.summary");
+
 /// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
 

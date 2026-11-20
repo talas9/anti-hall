@@ -4846,3 +4846,130 @@ fn zero_outcome_nudge_uses_the_house_format_without_a_question() {
     );
     assert!(!nd.last_text.contains("Do you want"), "no question: {}", nd.last_text);
 }
+
+
+// ---- spent-token waste categories (GH #884): cache expiry and poke turns -----------------------------------------------------------
+
+/// An assistant line with the full cache usage. `usage` = (new input, output, cache read, cache creation).
+fn asst_cache(ts: u64, mid: &str, usage: (u64, u64, u64, u64), blocks: Value, stop: Option<&str>) -> String {
+    json!({"type": "assistant", "timestamp": iso(ts), "message": {"id": mid, "role": "assistant", "stop_reason": stop, "content": blocks,
+        "usage": {"input_tokens": usage.0, "output_tokens": usage.1, "cache_read_input_tokens": usage.2, "cache_creation_input_tokens": usage.3}}})
+    .to_string()
+}
+
+/// A user line the host sent on its own (a finished background task).
+fn wake(ts: u64, kind: &str) -> String {
+    json!({"type": "user", "timestamp": iso(ts), "origin": {"kind": kind}, "message": {"role": "user", "content": "<task-notification>done</task-notification>"}}).to_string()
+}
+
+fn waste_count(category: &str) -> (u64, u64) {
+    let l = [("category", category), ("source", "transcript")];
+    (crate::metrics::bumped_on_this_thread("waste_events_total", &l), crate::metrics::bumped_on_this_thread("waste_tokens_total", &l))
+}
+
+fn run_waste(tag: &str, lines: Vec<String>, now_shift: u64) {
+    let h = home(tag);
+    let n = now0();
+    write(&sess(&h, "s1"), &lines);
+    crate::metrics::reset_this_thread();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n + now_shift, n + now_shift + MIN]);
+}
+
+#[test]
+fn a_turn_that_rebuilds_its_cache_after_an_idle_gap_is_cache_expiry_waste() {
+    let n = now0();
+    let text = json!([{"type": "text", "text": "ok"}]);
+    let call = |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
+    let dup = asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), text.clone(), Some("end_turn"));
+    run_waste(
+        "cacheexp",
+        vec![
+            prompt(n - 30 * MIN, "/w"),
+            call(n - 20 * MIN, "m1", (10, 30, 60_000, 500)),
+            result(n - 13 * MIN, "u1", "ok", false),
+            // 10 minutes after the previous line: the cache expired and the whole context was written again
+            dup.clone(),
+            dup, // the transcript repeats a message's usage on every line: counted once
+            // 1 minute later, big cache creation but no gap: no expiry
+            asst_cache(n - 9 * MIN, "m3", (10, 50, 2_000, 60_000), text.clone(), None),
+            // a 6 minute gap but the context was read from the cache, not rebuilt: no expiry
+            asst_cache(n - 3 * MIN, "m4", (10, 50, 60_000, 900), text, Some("end_turn")),
+        ],
+        0,
+    );
+    assert_eq!(waste_count("cache_expiry"), (1, 60_000), "one expiry, counted in cache-creation tokens, the repeated line once");
+    assert_eq!(waste_count("poke_turn"), (0, 0));
+}
+
+#[test]
+fn a_gap_inside_the_ttl_and_the_first_turn_of_a_transcript_are_not_cache_expiry() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "ok"}]);
+    run_waste(
+        "cachefresh",
+        vec![
+            prompt(n - 30 * MIN, "/w"),
+            // the first message has nothing before it: its cache creation is the session start, not an expiry
+            asst_cache(n - 20 * MIN, "m1", (10, 30, 0, 90_000), t.clone(), None),
+            asst_cache(n - 17 * MIN, "m2", (10, 30, 0, 90_000), t, Some("end_turn")),
+        ],
+        0,
+    );
+    assert_eq!(waste_count("cache_expiry"), (0, 0));
+}
+
+#[test]
+fn a_transcript_read_long_after_it_was_written_is_not_counted() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "ok"}]);
+    // the engine reads it 3 hours later (agent_waste.limits.count_max_age_ms is 1 hour): history is not news
+    run_waste(
+        "cacheold",
+        vec![
+            prompt(n - 30 * MIN, "/w"),
+            asst_cache(n - 20 * MIN, "m1", (10, 30, 60_000, 500), t.clone(), None),
+            asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), t, Some("end_turn")),
+        ],
+        180 * MIN,
+    );
+    assert_eq!(waste_count("cache_expiry"), (0, 0));
+}
+
+#[test]
+fn a_woken_turn_with_no_tool_call_is_a_poke_turn_and_other_turns_are_not() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "noted"}]);
+    let tool_call = json!([{"type": "tool_use", "id": "u9", "name": "Bash", "input": {"command": "ls"}}]);
+    run_waste(
+        "poke",
+        vec![
+            prompt(n - 40 * MIN, "/w"),
+            asst_cache(n - 39 * MIN, "a1", (10, 20, 1_000, 0), t.clone(), Some("end_turn")),
+            // a wake, answered with text only: a poke (weighted tokens: 100 in + 40 out + 0 created + 10% of 20000 read)
+            wake(n - 30 * MIN, "task-notification"),
+            asst_cache(n - 29 * MIN, "a2", (100, 40, 20_000, 0), t.clone(), Some("end_turn")),
+            // a wake answered with a tool call: it did work, no poke
+            wake(n - 20 * MIN, "task-notification"),
+            asst_cache(n - 19 * MIN, "a3", (100, 40, 20_000, 0), tool_call, None),
+            result(n - 18 * MIN, "u9", "ok", false),
+            asst_cache(n - 17 * MIN, "a4", (100, 40, 20_000, 0), t.clone(), Some("end_turn")),
+            // the owner's own prompt answered with text only: not a wake
+            json!({"type": "user", "timestamp": iso(n - 10 * MIN), "origin": {"kind": "human"}, "message": {"role": "user", "content": "status?"}}).to_string(),
+            asst_cache(n - 9 * MIN, "a5", (100, 40, 20_000, 0), t.clone(), Some("end_turn")),
+            // an automatic continuation answered with text only: a second poke
+            wake(n - 5 * MIN, "auto-continuation"),
+            asst_cache(n - 4 * MIN, "a6", (50, 10, 0, 0), t, Some("end_turn")),
+        ],
+        0,
+    );
+    assert_eq!(waste_count("poke_turn"), (2, (100 + 40 + 2_000) + (50 + 10)), "two pokes, counted in weighted tokens");
+}
+
+#[test]
+fn the_waste_categories_are_registered_and_listed_in_the_status_words() {
+    assert!(crate::metrics::is_registered("waste_events_total") && crate::metrics::is_registered("waste_tokens_total"));
+    let words = defaults::raw("agent_waste.categories");
+    assert_eq!((words.str_field("cache_expiry"), words.str_field("poke_turn")), ("cache_expiry", "poke_turn"));
+    assert_eq!(defaults::raw("agent_waste.status_words").str_field("key"), "waste");
+}
