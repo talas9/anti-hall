@@ -6775,6 +6775,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.foreign_bash` | `bash` |  |  | A foreign PreToolUse matcher that contains this (any case) counts as matching the shell tool. |
 | `doctor.foreign_max_bytes` | `524288` |  |  | The largest settings or hook registration file read when scanning other plugins. |
 | `doctor.foreign_non_script` | `(non-script hook)` |  |  | What is shown for a foreign hook whose command names no script. |
+| `doctor.foreign_observers` | `emit-event.cjs` |  |  | Foreign hook script names that only record events (they append to a log and print no allow/deny; on Stop they print approve): a PreToolUse or Stop registration of one is information, not a competing guard. Checked: claude-session-driver emit-event. |
 | `doctor.foreign_pre` | `PreToolUse` |  |  | The hook event whose foreign shell hooks compete with the guards. |
 | `doctor.foreign_script_re` | `[A-Za-z0-9_-]+\.(?:js\|mjs\|cjs)` |  |  | The script name a foreign hook command runs (its first .js, .mjs or .cjs token); only this name is ever shown, never the command. |
 | `doctor.foreign_stop` | `Stop` |  |  | The hook event whose foreign hooks sit beside the Stop guards. |
@@ -6870,6 +6871,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.proc_version` | `/proc/version` |  |  | The kernel version text on Linux; mentions Microsoft on WSL. |
 | `doctor.project_lock_file` | `ingest-project-{key}.lock` |  |  | The lock file name of a per-project ingest daemon. Placeholder: {key}. |
 | `doctor.quarantine_attr` | `com.apple.quarantine` |  |  | The extended attribute macOS Gatekeeper sets on a downloaded file. |
+| `doctor.reason_max` | `240` |  |  | Longest recorded-failure reason (characters) the report shows inline; a longer one is cut and the report names the file with the full text. |
 | `doctor.registry_file` | `.claude/plugins/installed_plugins.json` |  |  | The host's plugin registry, relative to the home directory. |
 | `doctor.registry_query` | `SELECT worktree_path FROM registry ORDER BY id ASC` |  |  | The query that reads the worktree path of every registry row of a store. |
 | `doctor.repair_orphan_id` | `repair-ingest-orphan-{name}` |  |  | The row id of the orphan repair of one entry. Placeholder: {name}. |
@@ -7107,6 +7109,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.explicit_unloaded` | `UNLOADED ` |  |  | The mark of an unloaded orphan. |
 | `doctor_msg.fail_open_hard` | `the engine failed open {n} times in the last {window}s (most often {top}: {ef...` |  |  | Finding: the engine has failed open more often than the hard limit in the recent window. Placeholders: {n}, {window}, {top}, {effect}. |
 | `doctor_msg.fail_open_soft` | `the engine failed open {n} times in the last {window}s (most often {top}: {ef...` |  |  | Finding: the engine has failed open more often than the soft limit in the recent window. Placeholders: {n}, {window}, {top}, {effect}. |
+| `doctor_msg.failure_reason_cut` | `{head} ... (cut; full text in {path})` |  |  | A recorded failure reason longer than doctor.reason_max, cut. Placeholders: {head}, {path} (the failure record holding the full text). |
 | `doctor_msg.failure_recorded` | `last recorded failure ({class}): {reason} {hint}` |  |  | DMN-11. Placeholders: {class}, {reason}, {hint}. |
 | `doctor_msg.fix_exec` | `made {path} executable` |  |  | Repair row. Placeholder: {path}. |
 | `doctor_msg.fix_heal_dry` | `would add the missing settings to {n} defaults file(s)` |  |  | Dry-run repair row. Placeholder: {n}. |
@@ -7116,6 +7119,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.fix_quarantine` | `removed the quarantine attribute from {path}` |  |  | Repair row. Placeholder: {path}. |
 | `doctor_msg.foreign_additive` | `additive {event} overlap: plugin "{plugin}" also registers {script} (both run...` |  |  | Another plugin hooks the same event without competing. Placeholders: {event}, {plugin}, {script}. |
 | `doctor_msg.foreign_none` | `no foreign hook/skill conflicts detected among enabled plugins` |  |  | No other enabled plugin conflicts. |
+| `doctor_msg.foreign_observer` | `{event} observer: plugin "{plugin}" registers {script}, which only records ev...` |  |  | A foreign PreToolUse/Stop hook that only records events. Placeholders: {event}, {plugin}, {script}. |
 | `doctor_msg.foreign_pre` | `foreign PreToolUse hook on Bash: plugin "{plugin}" registers {script} (matche...` |  |  | Another plugin hooks the shell tool before it runs. Placeholders: {plugin}, {script}, {matcher}. |
 | `doctor_msg.foreign_skill` | `skill-name collision: plugin "{plugin}" also ships a skill named "{skill}" (a...` |  |  | Another plugin ships a skill with the same name. Placeholders: {plugin}, {skill}. |
 | `doctor_msg.foreign_stop` | `foreign Stop hook: plugin "{plugin}" registers {script}{tail}` |  |  | Another plugin has a Stop hook. Placeholders: {plugin}, {script}, {tail}. |
@@ -7177,7 +7181,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.kind_dir` | `a directory` |  |  | What a path turned out to be. |
 | `doctor_msg.kind_file` | `a regular file` |  |  | What a path turned out to be. |
 | `doctor_msg.kind_other` | `not a file` |  |  | What a path turned out to be. |
-| `doctor_msg.last_crash` | `last crash: {crash}` |  |  | DMN-12. Placeholder: {crash}. |
+| `doctor_msg.last_crash` | `last crash: {crash}` |  |  | DMN-12. Placeholder: {crash} (the one-line crash summary). |
 | `doctor_msg.leak_example` | `{hash} -> {worktree}` |  |  | One leaked store. Placeholders: {hash}, {worktree}. |
 | `doctor_msg.leak_more` | `, +{n} more` |  |  | How many more leaked stores are not listed. Placeholder: {n}. |
 | `doctor_msg.leak_summary` | `(warn) leaked test-fixture stores: {count} (run doctor --repair-test-stores t...` |  |  | The leaked stores. Placeholders: {count}, {shown}, {more}. |
@@ -15127,6 +15131,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.client_unavailable` | Printed on stderr when stdin cannot safely be sent to the engine (undecodable or oversized). Guard events exit 2; non-guard events exit 0 with this note. |
 | `msg.client_what_stat` | The step named in msg.client_io when the socket path cannot be examined (a permission or path error, not a missing socket). |
 | `msg.cold_guard_notice` | Printed once per session on stderr when a guard event gave up waiting for a cold-starting daemon and was let through unchecked; {event} is the event name. |
+| `msg.crash_field_missing` | What a crash-summary field shows when the report has no value for it. |
+| `msg.crash_summary` | One-line summary of a crash report. Placeholders: {pid}, {ts} (ISO time), {kind}, {uptime_s}, {mem_mb}, {request} (the request type the daemon was in), {event} (the hook event), {check} (the check it was running), {path} (the full report). |
 | `msg.daemon_already_running` | Printed on stderr when a second daemon start finds an existing daemon/lock holder for the socket. Placeholders: {path}, {pid}, {live_engine}, {answers}. |
 | `msg.dbg_cpu_window` | Debug-log line for one CPU self-check window of the daemon. Placeholders: {ms} (window length), {pct} (percent of one core). |
 | `msg.dbg_hook` | Debug-log line for one finished hook invocation of the client. Placeholders: {code} (exit code), {out} and {err} (bytes written), {us} (microseconds spent). |
@@ -15258,7 +15264,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.log_budget_soft` | Log detail when a request used more thread CPU than its SOFT budget (a warning; nothing was cut). |
 | `msg.log_client_panic` | Log detail when the hook client hit an internal error (a panic) and failed open. |
 | `msg.log_cpu_sustained` | Event-log detail when the daemon CPU self-check observes sustained CPU and backs off scheduled jobs. Placeholders: {pct}, {ms}, {backoff_ms}. |
-| `msg.log_crash_context` | Log detail when a daemon is found dead without a clean exit, with the last breadcrumb. Placeholders: {pid}, {context}. |
+| `msg.log_crash_context` | Log detail when a daemon is found dead without a clean exit. Placeholders: {pid}, {summary} (the one-line crash summary; the full report is in last-crash.json). |
 | `msg.log_crashloop_new_binary` | Log detail when a crash-loop cooldown ends because the binary was replaced. Placeholder: {sha}. |
 | `msg.log_crashloop_rollback` | Log detail added when a crash-loop trip also requested a roll-back. |
 | `msg.log_daemon_killed` | Log detail when the daemon was killed by a signal while starting. |
