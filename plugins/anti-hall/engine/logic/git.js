@@ -2560,9 +2560,12 @@ function pushPrepass(cmd, cwd) {
 // with a push in it, as in one call. A missing, oversized or non-literal path is let through with an advisory.
 function scriptFileVerdict(tok, cdDir, byPath) {
   if (!tok) return null;
-  const raw = tok.raw !== undefined ? tok.raw : tok.text;
-  if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw; return null; }
-  const path = scriptRealPath(tok.text, cdDir || S.procCwd);
+  const raw0 = tok.raw !== undefined ? tok.raw : tok.text;
+  // a leading $HOME / ${HOME} is the user's home directory (as for a heredoc target): a path under it is literal
+  const homeRe = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
+  const raw = raw0.replace(homeRe, '~');
+  if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw0; return null; }
+  const path = scriptRealPath(tok.text.replace(homeRe, '~'), cdDir || S.procCwd);
   if (path === null) { S.scriptUnchecked = tok.text; return null; }
   const size = ah.fs.size(path);
   // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script

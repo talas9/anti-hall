@@ -4595,6 +4595,31 @@ fn rt_fired(step: &str) -> u64 {
     crate::metrics::bumped_on_this_thread("agent_runtime_step_fired", &[("step", step)])
 }
 
+/// Dogfood 2026-11-20: a Primary's own session row (a workspace-kind row the owner is talking to) got "your next Stop is blocked"
+/// about its own runtime. A session whose owner is active is steered by that owner and is never a runtime-nudge target, at any
+/// step.
+#[test]
+fn rt_never_targets_a_session_row_whose_owner_is_active() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("rt-owner-active");
+    let n = now0();
+    devswarm(&h, n, None);
+    let sess_w = h.join(".claude/projects/p/sessW.jsonl");
+    for (k, t) in [(1u64, n + 100 * MIN), (2, n + 125 * MIN)] {
+        append(&sess_w, &[prompt(t - 2 * MIN, "/wt/x"), asst(t - MIN, &format!("o{k}"), 100, 10, json!([{"type": "text", "text": "on it"}]), None)]);
+        let e = nudge_env(&h, t, &[("ANTIHALL_AGENT_NUDGE_RUNTIME", "true")]);
+        arm_wake(&e, "sessW");
+        drained();
+        let mut st = State::default();
+        tick(&e, &mut st);
+        tick(&e, &mut st);
+        let a = agent(&st, "sessW");
+        assert!(a.owner_ms >= t - 2 * MIN, "premise: the owner talked to the session lately: {}", a.owner_ms);
+        assert_eq!(rt_fired("advise") + rt_fired("order") + rt_fired("block"), 0, "no runtime step for an owner-active session at t={t}");
+        assert!(!st.nudges.contains_key("sessW"), "no nudge opened about the session's own row");
+    }
+}
+
 /// A child WITH outcomes (a commit) and tiny spend: nothing before the first step's minutes, then step 1 (advise) at 45 minutes, in the
 /// house format (fact line, then `Do now:`), with no question. The old loop only ever nudged on tokens with no outcome.
 #[test]
