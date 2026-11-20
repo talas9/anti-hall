@@ -102,8 +102,8 @@ doc = "Log detail when a daemon is found dead without a clean exit. Placeholders
 value = "daemon pid {pid} died without a clean exit; {summary}"
 
 [msg.crash_summary]
-doc = "One-line summary of a crash report. Placeholders: {pid}, {ts} (ISO time), {kind}, {uptime_s}, {mem_mb}, {request} (the request type the daemon was in), {path} (the full report)."
-value = "pid {pid} at {ts}, {kind}, up {uptime_s}s, {mem_mb} MB, in request {request}; details: {path}"
+doc = "One-line summary of a crash report. Placeholders: {pid}, {ts} (ISO time), {kind}, {uptime_s}, {mem_mb}, {request} (the request type the daemon was in), {event} (the hook event), {check} (the check it was running), {path} (the full report)."
+value = "pid {pid} at {ts}, {kind}, up {uptime_s}s, {mem_mb} MB, in request {request}, event {event}, check {check}; details: {path}"
 
 [msg.crash_field_missing]
 doc = "What a crash-summary field shows when the report has no value for it."

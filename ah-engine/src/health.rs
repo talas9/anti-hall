@@ -369,6 +369,8 @@ pub fn crash_summary(report: &Value) -> String {
             ("uptime_s", &text(crumb.get("uptime_s"))),
             ("mem_mb", &mem_mb),
             ("request", &text(crumb.get("request"))),
+            ("event", &text(crumb.get("event").filter(|v| v.as_str() != Some("")))),
+            ("check", &text(crumb.get("check").filter(|v| v.as_str() != Some("")))),
             ("path", &state_file("last_crash").display()),
         ],
     )
@@ -1077,9 +1079,10 @@ mod tests {
     fn crash_report_summary_is_one_line_without_the_breadcrumb() {
         crate::defaults::init().unwrap();
         let report = serde_json::json!({"ts": 1795176350967_i64, "kind": "crash", "pid": 56337,
-            "breadcrumb": {"request": "D", "uptime_s": 14, "memory": {"footprint_kb": 77200, "allocator": "jemalloc"}}});
+            "breadcrumb": {"request": "D", "event": "Stop", "check": "task-guard", "uptime_s": 14, "memory": {"footprint_kb": 77200, "allocator": "jemalloc"}}});
         let line = crash_summary(&report);
         assert!(line.contains("pid 56337") && line.contains("up 14s") && line.contains("75 MB") && line.contains("request D"), "{line}");
+        assert!(line.contains("event Stop") && line.contains("check task-guard"), "{line}");
         assert!(line.contains("2026-11-") && line.contains("last-crash.json"), "{line}");
         assert!(!line.contains('{') && !line.contains('\n') && !line.contains("jemalloc"), "{line}");
         assert!(crash_summary(&serde_json::json!({})).contains("pid ?"), "an empty report still gives a line");
