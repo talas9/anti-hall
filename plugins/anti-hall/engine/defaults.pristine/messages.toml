@@ -377,6 +377,10 @@ value = "the engine did not finish"
 doc = "The {why} of the engine-unreachable notice when the engine could not be started."
 value = "the engine could not be started"
 
+[msg.engine_unreachable_why_busy]
+doc = "The {why} of the engine-unreachable notice when the engine had no capacity for the call (the daemon shed it under load, or a check waited past its wall-clock backstop) and dispatch.failure_mode `capacity` let it through."
+value = "the engine was too busy to answer it in time"
+
 [msg.engine_unreachable_why_daemon]
 doc = "The {why} of the engine-unreachable notice when the client could not reach the engine's daemon (down, breaker open, crash-loop stop)."
 value = "the engine daemon could not be reached"

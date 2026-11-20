@@ -638,6 +638,22 @@ pub fn unanswered(name: &str, event: &str) -> Verdict {
     with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
+/// The decision for a call ended by its wall-clock backstop (`script.wall_limit_factor`) before its CPU limit: the interpreter thread
+/// used little CPU because it waited for a core on a loaded machine (time a host function spends blocked is credited back), so the
+/// check had no capacity to answer, which says nothing about the call. Logged and counted as a script failure, as before; with the
+/// capacity path open (`dispatch.failure_mode`, `capacity`) it then allows (told once per session) whatever the check's failure mode,
+/// closed it takes the check's failure policy ([`failed`]). A CPU-limit trip is the script's own runaway and stays a failure.
+/// A call in a hold class of `dispatch.capacity_hold` (a push, merge, delete, deploy) on a guard event is held, never let through
+/// unchecked: [`failed`], the check's own failure policy.
+fn starved_verdict(name: &str, event: &str, payload: &Value, why: &str) -> Verdict {
+    if !crate::dispatch::capacity_open() || (defaults::list("dispatch.guard_events").contains(&event) && crate::dispatch::capacity_hold(payload).is_some()) {
+        return failed(name, event, why);
+    }
+    crate::discard::note("script_error", &format!("{name}: {why}"));
+    crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
+    with_notice(name, why, Verdict::Allow)
+}
+
 /// [`failed`]'s decision for a check with failure mode `mode`.
 fn failure_verdict(name: &str, event: &str, why: &str, mode: &str) -> Verdict {
     if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) {
@@ -1056,6 +1072,7 @@ fn script_options(opts: &Value, st: &Settings) -> Value {
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let mut was_cut = false;
     let mut timed_out = false;
+    let mut starved = false;
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -1086,6 +1103,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
             });
             was_cut = out.is_err() && pool.past_request();
             timed_out = out.is_err() && matches!(Trip::of(pool.deadline.trip.load(Ordering::Relaxed)), Some(Trip::Cpu | Trip::Wall)); // a limit of its own, not the client's deadline
+            starved = out.is_err() && Trip::of(pool.deadline.trip.load(Ordering::Relaxed)) == Some(Trip::Wall); // waited for a core, used no CPU
             pool.note_soft(name, event, limit);
             let out = out.map_err(|e| pool.deadline.explain(&e, limit));
             pool.disarm();
@@ -1098,6 +1116,10 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
     match r {
         Ok(v) => v,
         Err(_) if was_cut => Some(cut(name, event)),
+        Err(e) if starved => {
+            crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
+            Some(starved_verdict(name, event, payload, &e))
+        }
         Err(e) if timed_out => {
             crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
             Some(failed(name, event, &e))

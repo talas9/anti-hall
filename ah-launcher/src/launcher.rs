@@ -495,6 +495,9 @@ impl L {
                         "cold_guard_gave_up event={} cap_ms={cap} kick_cut=1",
                         self.event
                     ));
+                    if self.capacity_held() {
+                        return Some(2);
+                    }
                     self.cold_notice();
                     return Some(0);
                 }
@@ -519,8 +522,80 @@ impl L {
         if hashed {
             limits::bump(Ctr::ColdWaitHashedExpired);
         }
+        if self.capacity_held() {
+            return Some(2);
+        }
         self.cold_notice();
         Some(0)
+    }
+
+    /// #882: no engine answer for lack of capacity (a cold start not up in time, the wall-clock backstop of a late engine): a guard
+    /// call in a hold class of `dispatch.capacity_hold` (a push, a merge, a recursive delete, a deploy) is held with the engine's own
+    /// reason and retry hint (`dispatch.msg_capacity_hold`), as the engine's client holds it (`dispatch::capacity_held`), never let
+    /// through unchecked. Anything else, an unreadable payload or config, or `dispatch.failure_mode` `capacity` not open passes.
+    fn capacity_held(&self) -> bool {
+        let open = self
+            .s
+            .shipped("dispatch.failure_mode")
+            .and_then(|v| v.get("capacity"))
+            .and_then(|v| v.as_str())
+            == Some("open");
+        if !self.guard || !open {
+            return false;
+        }
+        let Some(cfg) = self.s.shipped("dispatch.capacity_hold") else {
+            return false;
+        };
+        let Ok(p) = serde_json::from_slice::<serde_json::Value>(&self.payload) else {
+            return false;
+        };
+        let Some(tool) = p.get("tool_name").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let listed = cfg
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(tool)));
+        let field = cfg
+            .get("field")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let (Some(command), Some(rules)) = (
+            p.get("tool_input")
+                .and_then(|i| i.get(field))
+                .and_then(|v| v.as_str()),
+            cfg.get("rules").and_then(|v| v.as_table()),
+        ) else {
+            return false;
+        };
+        let rule = listed
+            .then(|| {
+                rules.iter().find_map(|(name, pat)| {
+                    // ASCII classes (\b, \s, case folding) on bytes: the launcher's regex is built without the Unicode tables
+                    let re = regex::bytes::RegexBuilder::new(pat.as_str()?)
+                        .unicode(false)
+                        .case_insensitive(true)
+                        .build();
+                    match re {
+                        Ok(re) => re.is_match(command.as_bytes()).then(|| name.clone()),
+                        Err(e) => {
+                            self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
+                            None
+                        }
+                    }
+                })
+            })
+            .flatten();
+        let Some(rule) = rule else {
+            return false;
+        };
+        self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
+        let msg = self.s.msg(
+            "dispatch.msg_capacity_hold",
+            &[("tool", tool), ("rule", &rule)],
+        );
+        write_out(b"", format!("{msg}\n").as_bytes());
+        true
     }
 
     /// dispatch.defer_exit: the engine handed the call back. No hook command exists to run, so the call passes through
@@ -697,6 +772,9 @@ impl L {
                     u8::from(done_marked)
                 ));
                 self.integrity("fail");
+                if self.capacity_held() {
+                    return 2;
+                }
                 self.unreachable_notice_for("msg.launcher_unreachable_why_timed_out");
                 0
             }

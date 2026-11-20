@@ -425,6 +425,69 @@ pub fn infra_answer(event: &str, why: &str) -> Outcome {
     no_node_answer(event, None, "infra", why).unwrap_or_else(|| Outcome { out: String::new(), code: 0, err: String::new() })
 }
 
+/// Whether `dispatch.failure_mode` lets a guard event through on `path` (a path not listed is closed).
+fn path_open(path: &str) -> bool {
+    defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") == "open"
+}
+
+/// Whether a no-answer caused by load lets a guard event through (`dispatch.failure_mode`, path `capacity`): the daemon shed the
+/// request (BUSY), or a script's wall-clock backstop fired while its thread waited for a core. No check failed, so this path decides
+/// instead of each check's failure policy.
+pub(crate) fn capacity_open() -> bool {
+    path_open("capacity")
+}
+
+/// The risk class a guard call falls in when no check could decide it for lack of capacity (`dispatch.capacity_hold`): `Some(rule)`
+/// when its shell command matches a hold rule (an irreversible or shared-remote action: a push, a merge, a recursive delete, a deploy,
+/// a publish), which is held with a reason and a retry hint; `None` for anything else (read-only or a reversible local change), which
+/// passes with the capacity notice. The classes are config, never code; a rule that does not compile is skipped and logged.
+pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
+    let cfg = defaults::raw("dispatch.capacity_hold");
+    let tool = payload.get("tool_name").and_then(Value::as_str)?;
+    let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
+    if !tools.contains(&tool) {
+        return None;
+    }
+    let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
+    let command = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str)?;
+    let rules = cfg.get("rules").and_then(|v| v.as_table())?;
+    for (name, pat) in rules {
+        let Some(pat) = pat.as_str() else { continue };
+        match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
+            Ok(re) if re.is_match(command) => return Some(name.to_string()),
+            Ok(_) => {}
+            Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
+        }
+    }
+    None
+}
+
+/// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
+/// retry hint) when [`capacity_hold`] puts it in a hold class, else `None` (it passes).
+pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
+    let rule = capacity_hold(payload)?;
+    let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity_hold", &format!("{event}: {rule}"));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_capacity_hold", event, &rule);
+    let msg = defaults::render("dispatch.msg_capacity_hold", &[("tool", &tool), ("rule", &rule)]);
+    Some(Outcome { out: String::new(), code: 2, err: format!("{msg}\n") })
+}
+
+/// The defaults key of the {why} told for a no-answer of the capacity path.
+pub(crate) fn capacity_why_key() -> &'static str {
+    "msg.engine_unreachable_why_busy"
+}
+
+/// A guard event let through on the capacity path: counted (`dispatch:capacity`, a telemetry `dispatcher-capacity` allow) and
+/// logged (`dispatch_no_node_open`), as any path the engine could not decide; the caller tells the session once.
+pub(crate) fn capacity_pass(event: &str, why: &str) {
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity", &format!("{event}: {why}"));
+    crate::telemetry::emit::event(crate::telemetry::emit::no_node_path("capacity", event, crate::telemetry::event::Outcome::Allow));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_no_node_open", event, &defaults::render("dispatch.msg_no_node_event", &[("path", &"capacity"), ("why", &why)]));
+}
+
 /// The answer of a path the engine cannot decide (`path`: `budget`, `infra` or `panic`). An event that cannot block skips its
 /// hooks (logged, counted, one stderr line); a guard event follows `dispatch.failure_mode` for the path: `closed` blocks
 /// ([`closed`], bounded on Stop), `open` lets the call through with a loud stderr line. Every answer is logged and counted
@@ -433,7 +496,7 @@ pub fn no_node_answer(event: &str, payload: Option<&Value>, path: &str, why: &st
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("dispatch:{path}"), &format!("{event}: {why}"));
     use crate::telemetry::event::Outcome as T;
     let guard = guarded(event);
-    let closed_mode = guard && defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") != "open";
+    let closed_mode = guard && !path_open(path);
     let (kind, outcome, msg) = if !guard {
         ("dispatch_no_node_skipped", T::Skip, "dispatch.msg_no_node_skipped")
     } else if closed_mode {
@@ -827,10 +890,34 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_| false, &|_, _, _| {}),
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,
+            // a BUSY reply: the daemon shed the request (a full queue or a rate limit), so no check ran. That is no capacity, not a
+            // failed check: the guard event follows the capacity failure mode (open by default, as a daemon that did not answer in
+            // time), never each check's failure policy, which turned every safety guard into a block under load (P0 2026-11-20)
+            None if guard && crate::client::take_busy_reply() && capacity_open() => {
+                crate::client::take_non_ok_reply();
+                if let Some(held) = serde_json::from_str::<Value>(raw).ok().and_then(|p| capacity_held(&args.event, &p)) {
+                    return held;
+                }
+                capacity_pass(&args.event, defaults::text(capacity_why_key()));
+                owe_notice(
+                    if session_id.is_empty() { "none" } else { &session_id },
+                    crate::client::unreachable_text_why(Some(&args.event), capacity_why_key()),
+                    false,
+                );
+                return Outcome { out: String::new(), code: 0, err: String::new() };
+            }
             None if crate::client::take_non_ok_reply() => Vec::new(),
             // no reply (an unreachable daemon, or none within the whole wait window): a missing answer is never a deny, so the call
             // passes with ONE notice per session and event family (roadmap C9; a check that DID answer deny still blocks)
             None if crate::client::take_unavailable() || crate::client::fail_open_unavailable() => {
+                // a daemon that was there but gave no reply in time is load, as BUSY: a guard call in a hold class is held
+                if crate::client::take_slow()
+                    && guard
+                    && capacity_open()
+                    && let Some(held) = serde_json::from_str::<Value>(raw).ok().and_then(|p| capacity_held(&args.event, &p))
+                {
+                    return held;
+                }
                 // a payload without a session id is still told once, under the session `none` (as the unreachable notice always was)
                 owe_notice(if session_id.is_empty() { "none" } else { &session_id }, crate::client::unreachable_text(Some(&args.event)), false);
                 return Outcome { out: String::new(), code: 0, err: String::new() };
@@ -1142,6 +1229,51 @@ fn on_panic(event: &str, guard: bool) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #882: a guard call no check could decide for lack of capacity is held only when it falls in a hold class
+    /// (dispatch.capacity_hold): never-allowed actions in their usual spellings (a force push behind `git -C`/env prefixes/`+ref`,
+    /// a merge through `gh -R` or `gh api` with an implicit POST, a gh text that could carry an AI credit, a money call, deleted
+    /// rows) are held; reads and local changes pass.
+    #[test]
+    fn capacity_hold_catches_risky_spellings_and_passes_reads() {
+        let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        for held in [
+            "git push --force origin main",
+            "git -C /x push -f",
+            "GIT_DIR=x git push origin +main",
+            "git push --force-with-lease",
+            "gh -R o/r pr merge 1",
+            "gh api repos/o/r/pulls/1/merge -f merge_method=merge",
+            "gh api --method=PUT repos/o/r/pulls/1/merge",
+            "gh pr create --title t --body x",
+            "gh issue comment 1 -b x",
+            "rm -v -rf build",
+            "gsutil rm gs://b/o",
+            "stripe refunds create --charge ch_1",
+            "curl -X POST https://api.stripe.com/v1/refunds",
+            "psql -c \"DELETE FROM users\"",
+            "espefuse.py --port /dev/x burn_key K",
+            "espefuse --port /dev/x write-protect-efuse X",
+            "idf.py -p /dev/x efuse-burn-key K",
+        ] {
+            assert!(class(held).is_some(), "held: {held}");
+        }
+        for pass in [
+            "git status --porcelain",
+            "git log --oneline",
+            "gh pr view 1",
+            "gh pr checks 1",
+            "gh api repos/o/r/pulls",
+            "rm a.txt",
+            "espefuse summary",
+            "cargo build",
+            "ls -rf",
+        ] {
+            assert_eq!(class(pass), None, "passes: {pass}");
+        }
+        let write = serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}});
+        assert_eq!(capacity_hold(&write), None, "a tool outside dispatch.capacity_hold.tools passes");
+    }
 
     /// The over-cap tool-name scan (a payload past the stdin cap is spooled and its top-level `tool_name` found structurally, so the
     /// right entries are selected): only the top-level key counts, wherever it sits, whatever text elsewhere looks like one.
