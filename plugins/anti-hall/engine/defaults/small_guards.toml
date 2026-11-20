@@ -1487,6 +1487,14 @@ value = 4096
 doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
 value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose", "help", "verbs", "verb", "pull", "ack", "read"]
 
+[coordinator_work.mesh_read_re]
+doc = "Regex source of a mesh mailbox read, peek or ack call; group 1 is the verb. A call that matches and is not counted as work is counted in coordinator_work_mesh_read_pass (#900)."
+value = '\bmesh\s+inbox\s+(read-primary|peek-primary|ack-primary|drain-primary-legacy|read|peek|ack|pull|count|messages)(?:\s|$)'
+
+[metric.coordinator_work_mesh_read_pass]
+doc = "Mesh mailbox reads, peeks and acks the coordinator-work guard let through as not work (#900), by verb. A Primary reading its own inbox must never trip the step cap."
+value = { kind = "counter", unit = "calls", labels = ["verb"] }
+
 [coordinator_work.never_block_verbs]
 doc = "DevSwarm CLI verbs whose call is never counted as work and never blocked by the coordinator-work window, whatever the rest of the line holds (escalation to the parent must always get through)."
 value = ["send"]
