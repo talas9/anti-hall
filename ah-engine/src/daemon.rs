@@ -2316,6 +2316,10 @@ pub fn serve(start_reason: &str) -> i32 {
         health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));
     }
     crate::memdiag::apply_decay_if_untuned();
+    // our own stale temp entries (named prefixes, older than the configured age) go; a directory of thousands is scanned off the start path
+    std::thread::spawn(|| {
+        crate::tmpsweep::sweep_configured();
+    });
     crate::jev::shared::set_resident();
     health::reap_marker();
     crate::discard::harmless(lock.set_len(0)); // keep: best effort, fail-open

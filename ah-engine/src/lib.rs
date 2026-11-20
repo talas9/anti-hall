@@ -97,6 +97,7 @@ pub mod store;
 pub mod telemetry;
 pub mod threads;
 pub mod tier;
+pub mod tmpsweep;
 pub mod transcript;
 pub mod wakew;
 pub mod watch;
