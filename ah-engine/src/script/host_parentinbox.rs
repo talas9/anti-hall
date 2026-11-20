@@ -37,14 +37,36 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// One archived marker of the group index: the id its file name gives, its parsed value and the real path of the worktree it names.
+type MarkerRow = (String, OVal, String);
+
 thread_local! {
     /// The app database snapshot of this call: not read yet (`None`), read (`Some`) and the snapshot or none.
     static SNAP: RefCell<Option<Option<Snap>>> = const { RefCell::new(None) };
+    /// The archived markers that name a worktree, in file-name order, as this call first listed `archived_dir` (kept with that
+    /// directory): a row with no marker of its own looks its worktree up here instead of reading every marker again. Dropped when
+    /// the next script call starts, so nothing outlives one invocation.
+    /// The app database's builder states, read once per call for every row's verdict (`None`: not read yet; `Some(None)`: no readable
+    /// database). Dropped when the next script call starts.
+    static APP_STATES: RefCell<Option<std::rc::Rc<Option<Vec<crate::meshw::appdb::State>>>>> = const { RefCell::new(None) };
+    static MARKERS: RefCell<Option<(std::path::PathBuf, Vec<MarkerRow>)>> = const { RefCell::new(None) };
 }
 
-/// A new script call starts: no snapshot is held.
+/// A new script call starts: no snapshot and no marker index is held.
 pub(super) fn reset_call() {
     SNAP.with(|s| *s.borrow_mut() = None);
+    MARKERS.with(|m| *m.borrow_mut() = None);
+    APP_STATES.with(|s| *s.borrow_mut() = None);
+}
+
+/// The app database's builder states of this call, read on first use (a read that fails is not kept: the next row asks again).
+fn app_states(inv: &Inv) -> R<std::rc::Rc<Option<Vec<crate::meshw::appdb::State>>>> {
+    if let Some(held) = APP_STATES.with(|s| s.borrow().clone()) {
+        return Ok(held);
+    }
+    let read = std::rc::Rc::new(crate::meshw::appdb::builder_states(&inv.home, &inv.env, inv.now, false)?.map(|f| f.states));
+    APP_STATES.with(|s| *s.borrow_mut() = Some(read.clone()));
+    Ok(read)
 }
 
 fn unsure() -> String {
@@ -233,23 +255,7 @@ fn gate_superseded(w: &Windows, home: &Path, id: &str, desc_wt: Option<&str>, de
         && let Some(dwt) = desc_wt
     {
         let real = ident::realpath(dwt).unwrap_or_else(|| dwt.to_string());
-        let mut names: Vec<String> = match std::fs::read_dir(&archived_dir) {
-            Ok(rd) => rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect(),
-            Err(_) => Vec::new(),
-        };
-        names.sort();
-        let mut hits: Vec<(String, OVal)> = Vec::new();
-        for n in names {
-            let Some(cand) = n.strip_suffix(json_suffix()) else { continue };
-            if !is_safe_id(cand) {
-                continue;
-            }
-            let Some(m) = read_val(&archived_dir.join(&n)) else { continue };
-            let Some(mwt) = marker_wt(&m) else { continue };
-            if ident::realpath(&mwt).unwrap_or(mwt) == real {
-                hits.push((cand.to_string(), m));
-            }
-        }
+        let mut hits: Vec<(String, OVal)> = markers_naming(&archived_dir, &real, &marker_wt);
         if !hits.is_empty() {
             let hit = hits.iter().position(|(h, _)| h != id).unwrap_or(0);
             marker = Some(hits.swap_remove(hit).1);
@@ -290,12 +296,41 @@ fn gate_superseded(w: &Windows, home: &Path, id: &str, desc_wt: Option<&str>, de
     Ok(!(newer && live))
 }
 
+/// The archived markers (file-name order) whose worktree is `real`. The directory is listed, and every marker read and its worktree
+/// resolved, once per script call (`MARKERS`): a roster of n rows with m markers read n x m files before.
+fn markers_naming(archived_dir: &Path, real: &str, marker_wt: &dyn Fn(&OVal) -> Option<String>) -> Vec<(String, OVal)> {
+    MARKERS.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|(dir, _)| dir != archived_dir) {
+            let mut names: Vec<String> = match std::fs::read_dir(archived_dir) {
+                Ok(rd) => rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            names.sort();
+            let mut rows: Vec<MarkerRow> = Vec::new();
+            for n in names {
+                let Some(cand) = n.strip_suffix(json_suffix()) else { continue };
+                if !is_safe_id(cand) {
+                    continue;
+                }
+                let Some(m) = read_val(&archived_dir.join(&n)) else { continue };
+                let Some(mwt) = marker_wt(&m) else { continue };
+                let resolved = ident::realpath(&mwt).unwrap_or(mwt);
+                rows.push((cand.to_string(), m, resolved));
+            }
+            *slot = Some((archived_dir.to_path_buf(), rows));
+        }
+        slot.as_ref().map_or_else(Vec::new, |(_, rows)| rows.iter().filter(|(_, _, w)| w == real).map(|(c, m, _)| (c.clone(), m.clone())).collect())
+    })
+}
+
 fn archive_ignored(home: &Path, id: &str) -> bool {
     std::fs::metadata(devswarm_root(home).join(defaults::text("devswarm_parent.archive_ignore_dir")).join(format!("{id}{}", json_suffix()))).is_ok()
 }
 
 fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key: &str) -> R<Value> {
-    let w = Windows::new(inv, repo_key);
+    let held = app_states(inv)?;
+    let w = Windows::new(inv, repo_key).with_app_states(&held);
     let wt = wt.filter(|s| !s.is_empty());
     // `elig.of({ id, worktreePath, repoKey })` carries no session id: the live descriptor names the occupant
     let marker = marker_archived(&inv.home, id, wt, None)?;
@@ -710,6 +745,104 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::git::util::Settings;
+    use std::collections::HashMap;
+
+    fn scratch(tag: &str) -> crate::db::TempDir {
+        defaults::init().unwrap();
+        crate::db::TempDir::new(tag)
+    }
+
+    /// Every row of one call gets the verdict a fresh read of the app database gives (the database is read once, not per row), with a
+    /// database, with none, and for ids and worktrees the database does or does not name.
+    #[test]
+    fn app_verdicts_from_states_read_once_equal_a_read_per_row() {
+        let t = scratch("pi-app-states");
+        let db = t.0.join("app.db");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, worktreePath TEXT);").unwrap();
+        c.execute_batch(
+            "INSERT INTO builders VALUES ('old', 0, 1, '/gone/old'), ('live', 1, 0, '/live'), ('hidden-live', 1, 1, '/hl'), ('quiet', 0, 0, '/quiet');",
+        )
+        .unwrap();
+        drop(c);
+        let ask = [
+            ("old", Some("/x")),
+            ("live", Some("/live")),
+            ("hidden-live", None),
+            ("quiet", Some("/quiet")),
+            ("nobody", Some("/gone/old")),
+            ("nobody", Some("/nowhere")),
+            ("", Some("/live")),
+            ("nobody", None),
+        ];
+        for with_db in [true, false] {
+            let mut env = HashMap::new();
+            if with_db {
+                env.insert(defaults::text("mesh_write.env_app_db").to_string(), db.to_string_lossy().into_owned());
+            } else {
+                env.insert(defaults::text("mesh_write.env_app_db").to_string(), t.0.join("absent.db").to_string_lossy().into_owned());
+            }
+            let st = Settings { home: t.0.to_string_lossy().into_owned(), env };
+            let inv = inv_of(&st, 1_000.0);
+            reset_call();
+            let held = app_states(&inv).ok().unwrap();
+            let again = app_states(&inv).ok().unwrap();
+            assert!(std::rc::Rc::ptr_eq(&held, &again), "read once per call");
+            for (id, wt) in ask {
+                let direct = Windows::new(&inv, "k").app_archived(id, wt).ok();
+                let cached = Windows::new(&inv, "k").with_app_states(&held).app_archived(id, wt).ok();
+                assert_eq!(direct, cached, "db={with_db} id={id:?} wt={wt:?}");
+            }
+        }
+    }
+
+    /// The marker index of one call names the same markers, in the same order, as a scan of the directory for each row.
+    #[test]
+    fn the_archived_marker_index_equals_a_scan_per_row_and_is_per_call() {
+        let t = scratch("pi-marker-index");
+        let dir = devswarm_root(&t.0).join(defaults::text("mesh_write.dir_archived"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let field = defaults::text("mesh_write.field_worktree_path");
+        let put = |id: &str, wt: Option<&str>| {
+            let body = match wt {
+                Some(w) => format!("{{\"{field}\":\"{w}\"}}"),
+                None => "{}".to_string(),
+            };
+            std::fs::write(dir.join(format!("{id}{}", json_suffix())), body).unwrap();
+        };
+        put("a-one", Some("/wt/a"));
+        put("b-two", Some("/wt/a"));
+        put("c-three", Some("/wt/c"));
+        put("d-none", None);
+        std::fs::write(dir.join(format!("e-broken{}", json_suffix())), "{not json").unwrap();
+        let wt_of = |m: &OVal| match m.get(field) {
+            Some(OVal::Str(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        let scan = |real: &str| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            names.sort();
+            names
+                .into_iter()
+                .filter_map(|n| {
+                    let cand = n.strip_suffix(json_suffix())?.to_string();
+                    let m = read_val(&dir.join(&n))?;
+                    let w = wt_of(&m)?;
+                    (ident::realpath(&w).unwrap_or(w) == real).then_some(cand)
+                })
+                .collect()
+        };
+        reset_call();
+        for real in ["/wt/a", "/wt/c", "/wt/none"] {
+            let indexed: Vec<String> = markers_naming(&dir, real, &wt_of).into_iter().map(|(c, _)| c).collect();
+            assert_eq!(indexed, scan(real), "{real}");
+        }
+        put("f-late", Some("/wt/a"));
+        assert_eq!(markers_naming(&dir, "/wt/a", &wt_of).len(), 2, "within a call the listing taken first stands");
+        reset_call();
+        assert_eq!(markers_naming(&dir, "/wt/a", &wt_of).len(), 3, "the next call lists again");
+    }
 
     /// `realSid(v)` is `String(v)`: an array joins with commas (null as nothing), an object reads as the shipped text, `[]` is empty.
     #[test]
