@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Engine 0.3.2
+
+Engine-only release (hook client 0.3.0 and dashboard 0.2.0 unchanged). Engine fixes merged to dev since 0.3.1:
+
+- Funnel: exact per-check delivery funnel in status, dropped and ignored shares (#848).
+- AFK: presence suspends only the session the owner typed in; scheduled turns are no presence (#850).
+- Claim evidence: a publish tool's own result backs a published claim; a released lock, session or device is no shipped claim (#846).
+
 ## Engine 0.3.1
 
 Engine-only release (hook client 0.3.0 and dashboard 0.2.0 unchanged). Engine fixes merged to dev since the 0.3.0 live build:
