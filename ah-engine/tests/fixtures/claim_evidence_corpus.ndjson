@@ -221,3 +221,15 @@
 {"text": "It is deployed to local only and to prod.", "expect": "block", "source": "r3probe"}
 {"text": "The change is deployed to local and prod.", "expect": "block", "source": "r3probe"}
 {"text": "The change is deployed to localhost and production.", "expect": "block", "source": "r3probe"}
+{"text":"PR to develop, CI green, then merge.","expect":"allow","source":"plan-tense-2026-11-20"}
+{"text":"Next: PR to develop, CI green, review, then merge.","expect":"allow","source":"plan-tense-2026-11-20"}
+{"text":"Plan: open the PR, tests pass, then ship.","expect":"allow","source":"plan-tense-2026-11-20"}
+{"text":"Reverting anything that just loosens a guard to make a test pass.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"I will revert changes made only to make the tests pass.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"We keep the retry so that the build goes green.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"Wait until CI green.","expect":"allow","source":"purpose-2026-11-20"}
+{"text":"CI is green, then merged the PR.","expect":"block","source":"plan-tense-2026-11-20"}
+{"text":"CI is green. Then merge it.","expect":"block","source":"plan-tense-2026-11-20"}
+{"text":"All tests pass.","expect":"block","source":"plan-tense-2026-11-20"}
+{"text":"I changed the guard to make progress. Tests pass.","expect":"block","source":"purpose-2026-11-20"}
+{"text":"The tests pass, to make sure, I reran them.","expect":"block","source":"purpose-2026-11-20"}

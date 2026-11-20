@@ -41,7 +41,7 @@ doc = "Replies the claim-evidence guard held or logged (a claim with no matching
 value = { kind = "counter", unit = "replies", labels = ["rule"] }
 
 [metric.claim_evidence_suppressed]
-doc = "Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, labelled, quoted)."
+doc = "Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, purpose, planned, labelled, quoted)."
 value = { kind = "counter", unit = "claims", labels = ["reason"] }
 
 [claim_evidence.guard_name]
@@ -172,6 +172,20 @@ value = [
 doc = "A requirement whose 'that' opens the claim's own clause (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged'. 'required' as an adjective ('All required tests pass') stays a claim. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = ['\b(?:requires?|requiring|required|ensures?)\s+that\b']
 
+[claim_evidence.purpose_res]
+doc = "A purpose clause that opens the claim's own clause (rule 1): 'to make a test pass', 'so that the build goes green', 'in order to get CI green' name the goal of an action, not a result. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:to|so\s+that|in\s+order\s+to)\s+(?:make|makes|making|get|gets|getting|have|keep|keeps|force|forces|let|lets)\b']
+
+[claim_evidence.suppress_after]
+doc = "Why a claim hit is not a claim, judged from the words AFTER it (checked after claim_evidence.suppress): reason = the label written to the log, list = the config key of the pattern list matched against the rest of the claim's sentence, anchored at the end of the claim. A claim followed by a next step is an item of a plan, not a statement."
+value = [
+  { reason = "planned", list = "claim_evidence.plan_after_res" },
+]
+
+[claim_evidence.plan_after_res]
+doc = "A next step after the claim (suppress_after): 'PR to develop, CI green, then merge' lists steps. The next step is a bare verb after 'then' within 120 characters of the claim in the same sentence ('then merge'; 'then merged' is a past claim and stays one). Regular expressions, case-insensitive, matched against the sentence text after the claim."
+value = ['^[^.!?\n]{0,120}\bthen\s+(?:merge|ship|deploy|release|publish|push|tag|land|promote|proceed|rebase|squash|cut|roll\s+out|open|close|continue|go|start)\b']
+
 [claim_evidence.reach_verb]
 doc = "Most counted words (not gap_skip_re) between a negation or modal (neg_res, modal_res) and the claim it covers: 0 = it must sit on the claim's own verb."
 value = 0
@@ -231,6 +245,7 @@ value = [
   { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", idiom_strict = "claim_evidence.opener_filler_re", chain = true },
   { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
+  { reason = "purpose", list = "claim_evidence.purpose_res", reach = "claim_evidence.reach_clause" },
 ]
 
 [claim_evidence.ack_reason]
@@ -248,7 +263,7 @@ min = 0
 max = 50
 
 [claim_evidence.msg_suppressed]
-doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, reported, criterion, labelled, quoted), {claim} the claim kind, {quote} the words found."
+doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, reported, criterion, purpose, planned, labelled, quoted), {claim} the claim kind, {quote} the words found."
 value = "suppressed ({reason}): \"{quote}\" ({claim})"
 
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------

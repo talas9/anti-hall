@@ -145,6 +145,11 @@ function ceReason(sent, hit, prev) {
   for (var i = 0; i < sup.length; i++) {
     if (ceInReach(ah.cfg(sup[i].list), head, ah.cfgNum(sup[i].reach), sup[i])) return { reason: sup[i].reason, chain: sup[i].chain === true };
   }
+  var aft = ah.cfg('claim_evidence.suppress_after'), tail = sent.slice(hit[1]);
+  for (var a = 0; a < aft.length; a++) {
+    var pl = ah.cfg(aft[a].list);
+    for (var b = 0; b < pl.length; b++) if (ah.re.find(pl[b], 'i', tail)) return { reason: aft[a].reason, chain: false };
+  }
   if (prev !== null && prev.start === from && prev.end <= hit[0] && ceGapWords(sent.slice(prev.end, hit[0])) <= ah.cfgNum('claim_evidence.reach_consequent')) {
     return { reason: prev.reason, chain: true };
   }
