@@ -14101,8 +14101,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `delivery.stage_ignored` | `ignored` |  |  | Stage label: the window after a delivered answer ended without one of the check's `delivery.react` tool calls. |
 | `delivery.stage_lost` | `lost` |  |  | Funnel stage label for an answer that did not reach the agent for a reason other than shedding (hard_deadline, cpu_budget, client_gone, check_deferred, undelivered). |
 | `delivery.stage_shed` | `shed` |  |  | Funnel stage label for an answer shed by the CPU hard limit (the reason named in delivery.reason_shed). |
-| `delivery.stage_undelivered` | `undelivered` |  |  | Funnel stage label for the answers of delivery.stage_lost that the check made and the reply never carried (reason delivery.reason_undelivered): counted with the same session model and project as the answer's decided, so it is never more than decided. The rest of lost are runs dropped before the check answered (not_run). |
 | `delivery.stage_suppressed` | `suppressed` |  |  | Stage label for an answer a check made that the client's hook configuration never emits (the entry's mode is shadow: it runs and is measured, its answer is dropped). Counted as decided and as suppressed, never as delivered, in an output channel, or armed for a reaction. |
+| `delivery.stage_undelivered` | `undelivered` |  |  | Funnel stage label for the answers of delivery.stage_lost that the check made and the reply never carried (reason delivery.reason_undelivered): counted with the same session model and project as the answer's decided, so it is never more than decided. The rest of lost are runs dropped before the check answered (not_run). |
 
 ### diagnostics.toml / diagnostics
 
