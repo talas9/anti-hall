@@ -220,6 +220,18 @@ value = { "verify-first" = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"], "t
 doc = "The tool whose command text a `delivery.act` row's `command_re` is matched against (the host's shell tool)."
 value = "Bash"
 
+[delivery.log_kind]
+doc = "The kind label of the engine log lines the delivery ledger writes."
+value = "delivery"
+
+[delivery.code_bad_command_re]
+doc = "The code of the log line written once per pattern when a `delivery.act` row's `command_re` is not a valid regular expression (the row then counts no shell command, so its acted_on is lower than the agent's real compliance)."
+value = "bad_command_re"
+
+[delivery.msg_bad_command_re]
+doc = "Detail of that log line. Placeholders: {pattern}, {why}."
+value = "delivery.act command_re is not a valid regex and matches nothing: {pattern} ({why})"
+
 [delivery.react_window_calls]
 doc = "Tool calls of the session after a delivered answer within which a reaction counts. 0 turns compliance tracking off (decided, delivered and lost are still counted)."
 value = 8
