@@ -69,8 +69,8 @@ doc = "The versioned model id sent to the direct TypeSafe API, so a provider ali
 value = "jev-1.14.0"
 
 [jev.model_pin_released]
-doc = "Release date (YYYY-MM-DD) of the model version jev.model_pin names (jev-1.14.0: 2026-10-14, per docs/KB-jev-classifier.md). The doctor compares it with the release dates the provider lists and warns when a non-preview model is newer. Bump it together with jev.model_pin."
-value = "2026-10-14"
+doc = "Release date (YYYY-MM-DD) of the model version jev.model_pin names (jev-1.14.0: the provider lists jev-latest, which answered jev-1.14.0 on 2026-11-20, as released 2026-10-22). The doctor compares it with the release dates the provider lists; for a newer-dated entry it makes one call to that id and warns only when the answered model id differs from the pin (date-only warning when no id comes back). Bump it together with jev.model_pin."
+value = "2026-10-22"
 
 [jev.models_path]
 doc = "Path, on the origin of jev.endpoint_typesafe, of the provider's model list the doctor reads (one read-only GET with the TypeSafe key). Verified live 2026-11-20: it answers {\"models\":[{\"name\",\"description\",\"release_date\"}]} and lists only the aliases jev-latest and jev-preview, not versioned ids."

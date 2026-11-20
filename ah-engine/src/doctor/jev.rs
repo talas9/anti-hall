@@ -107,7 +107,16 @@ fn newer_model(doc: &mut Doc, s: &JevSettings, transport: &Arc<dyn Transport>, p
         })
         .collect();
     newer.sort_by(|a, b| b.1.cmp(a.1));
+    let question = Question::noul(defaults::text("doctor.jev_question"), defaults::text("doctor.jev_yes"), defaults::text("doctor.jev_no"));
     for (id, date) in newer {
+        // A moving alias is only "newer" when it answers a different model id than the pin: one cheap call, doctor only.
+        let mut probe = s.clone();
+        probe.model_pin = Some(id.to_string());
+        let r = JevClient::new(transport.clone(), Arc::new(SystemClock)).decide(&probe, &question, defaults::text("doctor.jev_state"), Some(s.timeout_ms));
+        if r.transport == Some(Vendor::Typesafe) && r.model.as_deref() == Some(pin) {
+            doc.infol(defaults::render("doctor_msg.jev_model_alias_same", &[("model", &id), ("pin", &pin)]));
+            continue;
+        }
         doc.warnl(defaults::render("doctor_msg.jev_model_newer", &[("model", &id), ("date", &date), ("pin", &pin), ("pin_date", &released)]));
     }
 }
@@ -144,15 +153,35 @@ mod tests {
 
     #[test]
     fn a_newer_non_preview_model_warns_and_the_key_stays_in_the_header() {
-        let body = r#"{"models":[{"name":"jev-latest","release_date":"2026-10-22T02:00:00+00:00"},{"name":"jev-preview","release_date":"2026-11-01T00:00:00+00:00"}]}"#;
-        let (doc, f) = run(&TS, models(body));
+        let body = r#"{"models":[{"name":"jev-latest","release_date":"2026-10-23T02:00:00+00:00"},{"name":"jev-preview","release_date":"2026-11-01T00:00:00+00:00"}]}"#;
+        let (doc, f) = run(&TS, with_probe(body, "jev-1.15.0"));
         assert_eq!(doc.warn, 1, "only jev-latest counts; the preview is skipped");
         let t = texts(&doc);
-        assert!(t.iter().any(|m| m.contains("newer model available: jev-latest 2026-10-22")), "{t:?}");
+        assert!(t.iter().any(|m| m.contains("newer model available: jev-latest 2026-10-23")), "{t:?}");
         assert!(t.iter().all(|m| !m.contains("tk-secret")));
         let seen = f.seen.lock().unwrap();
         assert_eq!(seen[0].0, "https://api.typesafe.ai/v1/models");
         assert_eq!((seen[0].1.as_str(), seen[0].2.clone()), ("tk-secret", None), "a GET with the key as bearer");
+    }
+
+    fn with_probe(body: &str, answered: &str) -> Vec<Result<crate::jev::transport::RawResponse, crate::jev::transport::NetError>> {
+        vec![ok(200, body), ok(200, &format!(r#"{{"model":"{answered}","answers":{{"decision":{{"noul":0.9}}}}}}"#)), ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]
+    }
+
+    #[test]
+    fn an_alias_dated_after_the_pin_that_answers_the_pinned_id_does_not_warn() {
+        let body = r#"{"models":[{"name":"jev-latest","release_date":"2026-10-23T02:00:00+00:00"}]}"#;
+        let (doc, f) = run(&TS, with_probe(body, "jev-1.14.0"));
+        assert_eq!(doc.warn, 0, "{:?}", texts(&doc));
+        assert!(texts(&doc).iter().any(|m| m.contains("answers the pinned model jev-1.14.0")));
+        assert!(f.seen.lock().unwrap()[1].2.as_deref().is_some_and(|b| b.contains(r#""model":"jev-latest""#)), "the probe asked for the alias");
+    }
+
+    #[test]
+    fn an_alias_that_answers_no_id_falls_back_to_the_date_warning() {
+        let body = r#"{"models":[{"name":"jev-latest","release_date":"2026-10-23T02:00:00+00:00"}]}"#;
+        let (doc, _) = run(&TS, models(body).into_iter().take(1).chain([ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#), ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]).collect());
+        assert_eq!(doc.warn, 1);
     }
 
     #[test]
