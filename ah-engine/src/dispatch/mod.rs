@@ -437,6 +437,43 @@ pub(crate) fn capacity_open() -> bool {
     path_open("capacity")
 }
 
+/// The risk class a guard call falls in when no check could decide it for lack of capacity (`dispatch.capacity_hold`): `Some(rule)`
+/// when its shell command matches a hold rule (an irreversible or shared-remote action: a push, a merge, a recursive delete, a deploy,
+/// a publish), which is held with a reason and a retry hint; `None` for anything else (read-only or a reversible local change), which
+/// passes with the capacity notice. The classes are config, never code; a rule that does not compile is skipped and logged.
+pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
+    let cfg = defaults::raw("dispatch.capacity_hold");
+    let tool = payload.get("tool_name").and_then(Value::as_str)?;
+    let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
+    if !tools.contains(&tool) {
+        return None;
+    }
+    let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
+    let command = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str)?;
+    let rules = cfg.get("rules").and_then(|v| v.as_table())?;
+    for (name, pat) in rules {
+        let Some(pat) = pat.as_str() else { continue };
+        match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
+            Ok(re) if re.is_match(command) => return Some(name.to_string()),
+            Ok(_) => {}
+            Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
+        }
+    }
+    None
+}
+
+/// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
+/// retry hint) when [`capacity_hold`] puts it in a hold class, else `None` (it passes).
+pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
+    let rule = capacity_hold(payload)?;
+    let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity_hold", &format!("{event}: {rule}"));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_capacity_hold", event, &rule);
+    let msg = defaults::render("dispatch.msg_capacity_hold", &[("tool", &tool), ("rule", &rule)]);
+    Some(Outcome { out: String::new(), code: 2, err: format!("{msg}\n") })
+}
+
 /// The defaults key of the {why} told for a no-answer of the capacity path.
 pub(crate) fn capacity_why_key() -> &'static str {
     "msg.engine_unreachable_why_busy"
@@ -858,6 +895,9 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             // time), never each check's failure policy, which turned every safety guard into a block under load (P0 2026-11-20)
             None if guard && crate::client::take_busy_reply() && capacity_open() => {
                 crate::client::take_non_ok_reply();
+                if let Some(held) = serde_json::from_str::<Value>(raw).ok().and_then(|p| capacity_held(&args.event, &p)) {
+                    return held;
+                }
                 capacity_pass(&args.event, defaults::text(capacity_why_key()));
                 owe_notice(
                     if session_id.is_empty() { "none" } else { &session_id },
@@ -870,6 +910,14 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             // no reply (an unreachable daemon, or none within the whole wait window): a missing answer is never a deny, so the call
             // passes with ONE notice per session and event family (roadmap C9; a check that DID answer deny still blocks)
             None if crate::client::take_unavailable() || crate::client::fail_open_unavailable() => {
+                // a daemon that was there but gave no reply in time is load, as BUSY: a guard call in a hold class is held
+                if crate::client::take_slow()
+                    && guard
+                    && capacity_open()
+                    && let Some(held) = serde_json::from_str::<Value>(raw).ok().and_then(|p| capacity_held(&args.event, &p))
+                {
+                    return held;
+                }
                 // a payload without a session id is still told once, under the session `none` (as the unreachable notice always was)
                 owe_notice(if session_id.is_empty() { "none" } else { &session_id }, crate::client::unreachable_text(Some(&args.event)), false);
                 return Outcome { out: String::new(), code: 0, err: String::new() };

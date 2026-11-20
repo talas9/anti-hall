@@ -26,6 +26,8 @@ thread_local! {
     /// The last non-OK reply was BUSY (load shedding: a full queue or a rate limit), not ERR: the daemon had no capacity for the
     /// request, which says nothing about the call, so it follows the capacity failure mode, not the failure policy of each check.
     static LAST_BUSY_REPLY: Cell<bool> = const { Cell::new(false) };
+    /// The last call's daemon was there but gave no reply within the whole wait window (`Exch::Slow`): late under load, not down.
+    static LAST_SLOW: Cell<bool> = const { Cell::new(false) };
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
@@ -61,6 +63,11 @@ pub(crate) fn take_busy_reply() -> bool {
 fn note_non_ok(kind: Kind) {
     LAST_NON_OK_REPLY.set(true);
     LAST_BUSY_REPLY.set(kind == Kind::Busy);
+}
+
+/// Whether the last call's daemon answered nothing within the wait window although it was there (load, not down), once.
+pub(crate) fn take_slow() -> bool {
+    LAST_SLOW.replace(false)
 }
 
 pub(crate) fn take_unavailable() -> bool {
@@ -847,6 +854,7 @@ pub(crate) fn release_wait_marker() {
 fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_on_ok: bool) -> Option<String> {
     LAST_NON_OK_REPLY.set(false);
     LAST_BUSY_REPLY.set(false);
+    LAST_SLOW.set(false);
     LAST_UNAVAILABLE.set(false);
     if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
         note_unavailable();
@@ -889,6 +897,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             // hooks too would count the call twice, so this call fails open (the unavailable path), never to Node
             wait_marker(false);
             note_unavailable();
+            LAST_SLOW.set(true);
             health::log_event("client_slow", "daemon", &why);
             if slow_streak_tripped() {
                 mark_daemon_down(&why); // wedged: later clients skip it
@@ -1023,6 +1032,9 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
     }
     wait_marker(false);
     note_unavailable();
+    // a daemon that is starting but not up within the wait is load (a loaded machine starts it slowly), not a broken install (a
+    // failed spawn returned above): a guard call in a hold class (dispatch.capacity_hold) is held, as for a late reply
+    LAST_SLOW.set(true);
     health::log_event("client_down", "daemon", "cold_start");
     None
 }
@@ -1257,9 +1269,20 @@ fn run_bytes(raw: Vec<u8>, unaskable: bool, fail_closed_unavailable: bool) -> Ou
             && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
             && crate::dispatch::capacity_open()
         {
+            if let Some(held) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| crate::dispatch::capacity_held(ev, &p)) {
+                return held;
+            }
             let why_key = crate::dispatch::capacity_why_key();
             crate::dispatch::capacity_pass(ev, defaults::text(why_key));
             return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice_why(raw, Some(ev), why_key) };
+        }
+        // a daemon that was there but late (load) passes a guard call like a BUSY one: a call in a hold class is held, never let through
+        if take_slow()
+            && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
+            && crate::dispatch::capacity_open()
+            && let Some(held) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| crate::dispatch::capacity_held(ev, &p))
+        {
+            return held;
         }
         if !non_ok_reply && unavailable && raw.len() as u64 <= defaults::num("daemon.max_request") {
             return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice(raw, event_name.as_deref()) };

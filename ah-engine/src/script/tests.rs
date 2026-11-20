@@ -423,12 +423,19 @@ fn a_starved_closed_guard_lets_the_call_through_but_a_failed_one_still_blocks() 
     assert_eq!(super::failure_mode("git"), defaults::text("script.failure_mode_closed"));
     assert!(crate::dispatch::capacity_open(), "the shipped capacity path is open");
     for event in defaults::list("dispatch.guard_events") {
-        assert_eq!(without_notice(super::starved_verdict("git", event, "wall")), Verdict::Allow, "{event}: a starved guard is no-capacity, not a failure");
+        let read = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "git status --porcelain"}});
+        let push = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        assert_eq!(
+            without_notice(super::starved_verdict("git", event, &read, "wall")),
+            Verdict::Allow,
+            "{event}: a starved guard on a read is no-capacity, not a failure"
+        );
+        assert!(matches!(super::starved_verdict("git", event, &push, "wall"), Verdict::Block(_)), "{event}: a starved guard still holds a force push");
         assert!(matches!(failed("git", event, "TypeError: boom"), Verdict::Block(m) if m.contains("boom")), "{event}: a script exception still fails closed");
     }
     // still counted as a script failure (one telemetry error event), only the verdict changed
     crate::telemetry::emit::take_queued();
-    super::starved_verdict("git", "PreToolUse", "wall");
+    super::starved_verdict("git", "PreToolUse", &serde_json::json!({}), "wall");
     let evs = crate::telemetry::emit::take_queued();
     assert_eq!(evs.len(), 1, "one counter event");
     assert_eq!(evs[0].o, crate::telemetry::event::Outcome::Error);

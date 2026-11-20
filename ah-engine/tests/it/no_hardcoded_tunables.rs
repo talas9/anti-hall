@@ -255,6 +255,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/client.rs", "static LAST_NON_OK_REPLY", "a thread-local boolean marker initialised false: state, not a tunable"),
     ("src/client.rs", "static LAST_UNAVAILABLE", "a thread-local boolean marker initialised false: state, not a tunable"),
     ("src/client.rs", "static LAST_BUSY_REPLY", "a thread-local boolean marker initialised false: state, not a tunable"),
+    ("src/client.rs", "static LAST_SLOW", "a thread-local boolean marker initialised false: state, not a tunable"),
     ("src/dispatch/mod.rs", "static OWED_NOTICE", "a thread-local slot initialised empty (None): state, the notice text comes from defaults"),
     (
         "src/deadline.rs",

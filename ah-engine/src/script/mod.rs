@@ -643,8 +643,10 @@ pub fn unanswered(name: &str, event: &str) -> Verdict {
 /// check had no capacity to answer, which says nothing about the call. Logged and counted as a script failure, as before; with the
 /// capacity path open (`dispatch.failure_mode`, `capacity`) it then allows (told once per session) whatever the check's failure mode,
 /// closed it takes the check's failure policy ([`failed`]). A CPU-limit trip is the script's own runaway and stays a failure.
-fn starved_verdict(name: &str, event: &str, why: &str) -> Verdict {
-    if !crate::dispatch::capacity_open() {
+/// A call in a hold class of `dispatch.capacity_hold` (a push, merge, delete, deploy) on a guard event is held, never let through
+/// unchecked: [`failed`], the check's own failure policy.
+fn starved_verdict(name: &str, event: &str, payload: &Value, why: &str) -> Verdict {
+    if !crate::dispatch::capacity_open() || (defaults::list("dispatch.guard_events").contains(&event) && crate::dispatch::capacity_hold(payload).is_some()) {
         return failed(name, event, why);
     }
     crate::discard::note("script_error", &format!("{name}: {why}"));
@@ -1116,7 +1118,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         Err(_) if was_cut => Some(cut(name, event)),
         Err(e) if starved => {
             crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
-            Some(starved_verdict(name, event, &e))
+            Some(starved_verdict(name, event, payload, &e))
         }
         Err(e) if timed_out => {
             crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
