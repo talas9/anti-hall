@@ -134,6 +134,8 @@ resource_watch.sw_enabled	- resource_watch.msg: Resource use is high: ....
 	- failure_nudge.msg: this command failed....
 	- merge_gate.msg: the merge is paused while recent work remains unverified.
 	- edit_guard.launcher: an edit to the managed launcher folder was stopped.
+	- edit_guard.cap: ... of ... lines is over the ...-line limit for the main thread at ...% usage.
+transcript_protect.sw	- transcript_protect.write: that write to a session transcript was stopped: transcripts are append-only for the harness, never the agent.
 	- inbox_read.inbox: reading the raw DevSwarm inbox file directly is blocked.
 	- devswarm_comms.main: target "main" points back to this session.
 	- devswarm_comms.block: target "..." belongs to a DevSwarm workspace.

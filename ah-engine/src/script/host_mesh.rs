@@ -39,6 +39,17 @@ thread_local! {
     static APP: RefCell<Option<AppRead>> = const { RefCell::new(None) };
     /// Repository identity only; mailbox, reader and inbox state are never cached.
     static IDENT: RefCell<std::collections::HashMap<(String, bool), Result<ident::Ctx, ident::Defer>>> = RefCell::new(std::collections::HashMap::new());
+    /// The stores this call opened, by database file: a gate that asks about every workspace of a project opens its store once, not once
+    /// per workspace. Handles only: every read still goes to the database. Dropped when the next call starts and when this call writes.
+    static STORES: RefCell<std::collections::HashMap<std::path::PathBuf, std::rc::Rc<crate::mesh::MeshReader>>> = RefCell::new(std::collections::HashMap::new());
+    /// The roster rows of those stores as this call first read them, by database file (the roster is the same for every workspace).
+    static ROSTERS: RefCell<std::collections::HashMap<std::path::PathBuf, std::rc::Rc<Vec<ident::Row>>>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// Forget the stores and rosters this call holds: the call is about to change one (`register-primary`), so a later read must see it.
+pub(super) fn drop_store_cache() {
+    STORES.with(|s| s.borrow_mut().clear());
+    ROSTERS.with(|r| r.borrow_mut().clear());
 }
 
 /// One read of the app database's builder states, for the `cache` flag it was made with.
@@ -52,6 +63,7 @@ pub(super) fn reset_call() {
     OWED.with(|o| o.borrow_mut().clear());
     APP.with(|a| *a.borrow_mut() = None);
     IDENT.with(|i| i.borrow_mut().clear());
+    drop_store_cache();
 }
 
 /// Why an answer cannot be given exactly.
@@ -118,7 +130,7 @@ fn ident_of(cwd: &str) -> Result<Value, No> {
 
 /// The store a partition's reads go through (`openStoreForUnread` with a repo key): `Ok(None)` is Node's null (no database
 /// file and nothing that makes it another backend).
-fn open_store(st: &Settings, key: &str) -> Result<Option<crate::mesh::MeshReader>, No> {
+fn open_store(st: &Settings, key: &str) -> Result<Option<std::rc::Rc<crate::mesh::MeshReader>>, No> {
     if st.env.contains_key(defaults::text("mesh_write.env_store_backend")) {
         return Err(No);
     }
@@ -138,7 +150,23 @@ fn open_store(st: &Settings, key: &str) -> Result<Option<crate::mesh::MeshReader
     if !db.exists() {
         return if std::fs::symlink_metadata(&db).is_ok() { Err(No) } else { Ok(None) };
     }
-    crate::mesh::MeshReader::open(&db).map(Some).map_err(|_| No)
+    if let Some(held) = STORES.with(|s| s.borrow().get(&db).cloned()) {
+        return Ok(Some(held));
+    }
+    let opened = std::rc::Rc::new(crate::mesh::MeshReader::open(&db).map_err(|_| No)?);
+    STORES.with(|s| s.borrow_mut().insert(db, opened.clone()));
+    Ok(Some(opened))
+}
+
+/// The roster rows of `store` (opened from `key`), read once per call.
+fn roster_rows(st: &Settings, key: &str, store: &crate::mesh::MeshReader) -> Result<std::rc::Rc<Vec<ident::Row>>, No> {
+    let db = crate::meshw::union::store_dir(Path::new(&st.home), key).join(defaults::text("mesh_write.store_file"));
+    if let Some(held) = ROSTERS.with(|r| r.borrow().get(&db).cloned()) {
+        return Ok(held);
+    }
+    let rows = std::rc::Rc::new(ident::rows_of(&store.roster().map_err(|_| No)?));
+    ROSTERS.with(|r| r.borrow_mut().insert(db, rows.clone()));
+    Ok(rows)
 }
 
 /// The reader key of the hook that sent this request (`readerKey(deriveReaderNonce({ home }))`): its nearest harness ancestor,
@@ -352,7 +380,7 @@ fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     }
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
     // the partition's identity family (`recipientFamilyIds`): the gate leaves its own sends out of the count, as peek does
-    let family: Vec<String> = crate::meshw::tick::family_of(id, &ident::rows_of(&store.roster().map_err(|_| No)?)).into_iter().collect();
+    let family: Vec<String> = crate::meshw::tick::family_of(id, &roster_rows(st, key, &store)?).into_iter().collect();
     Ok(
         json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r) && !poke(r)).collect::<Vec<_>>(), "age": age, "family": family}),
     )
@@ -722,6 +750,65 @@ mod shared_count_tests {
             "child-b: 4 rows, cursor 1, its own send left out, primary-x's 8 rows never counted"
         );
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
+    }
+
+    /// One script call opens a project's store and reads its roster once for every workspace it asks about; the answers are the ones a
+    /// fresh read gives, and a write the call makes (`drop_store_cache`) or the next call is seen.
+    #[test]
+    fn a_call_reuses_the_store_and_roster_and_every_answer_equals_a_fresh_read() {
+        defaults::init().unwrap();
+        let t = crate::db::TempDir::new("host-mesh-store-cache");
+        let home = t.0.to_string_lossy().into_owned();
+        let key = "proj-key";
+        let dir = crate::meshw::union::store_dir(&t.0, key);
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        for (id, wt) in [("primary-x", "/wt/p"), ("child-a", "/wt/a"), ("child-b", "/wt/b")] {
+            let row = RegistryRow {
+                id: id.into(),
+                worktree_path: Some(wt.into()),
+                session_id: Some(format!("s-{id}")),
+                inbox_path: None,
+                cursor_path: None,
+                nudge_command: None,
+            };
+            assert!(w.upsert_registry(&row, 1, |_, _| true).unwrap());
+        }
+        for i in 0..3 {
+            w.append_message_from("child-a", 10 + i, Some(&format!("a-{i}")), "mail", Some("primary-x")).unwrap();
+        }
+        let st = Settings { home, env: std::collections::HashMap::new() };
+        let ids = ["primary-x", "child-a", "child-b", "unregistered"];
+        reset_call();
+        let first = open_store(&st, key).ok().flatten().unwrap();
+        let again = open_store(&st, key).ok().flatten().unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first, &again), "the second workspace gets the handle the first one opened");
+        assert!(std::rc::Rc::ptr_eq(&roster_rows(&st, key, &first).ok().unwrap(), &roster_rows(&st, key, &again).ok().unwrap()), "one roster read per call");
+        let cached: Vec<String> = ids.iter().map(|id| format!("{:?}", union_of(&st, key, id, None, None, false, 100.0).ok())).collect();
+        drop_store_cache();
+        let fresh: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                drop_store_cache();
+                format!("{:?}", union_of(&st, key, id, None, None, false, 100.0).ok())
+            })
+            .collect();
+        assert_eq!(cached, fresh, "the cache changes no answer");
+        // a registry row the call writes after its first read is seen once the cache is dropped, and by the next call
+        let row = RegistryRow {
+            id: "child-c".into(),
+            worktree_path: Some("/wt/c".into()),
+            session_id: None,
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
+        assert!(w.upsert_registry(&row, 2, |_, _| true).unwrap());
+        drop_store_cache();
+        let rows = roster_rows(&st, key, &open_store(&st, key).ok().flatten().unwrap()).ok().unwrap();
+        assert!(rows.iter().any(|r| r.id == "child-c"));
+        reset_call();
+        assert!(STORES.with(|s| s.borrow().is_empty()) && ROSTERS.with(|r| r.borrow().is_empty()), "a new call starts with nothing held");
     }
 
     /// PR #428: the wake prefix alone is not provenance. A native-ingested row (no `mtype`) with the prefix is a wake prompt; a

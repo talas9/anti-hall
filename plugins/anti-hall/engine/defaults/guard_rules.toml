@@ -131,6 +131,8 @@ value = [
   { id = "failure_nudge.msg", setting = "", tier = "skill", source = "failure_nudge.msg_what" },
   { id = "merge_gate.msg", setting = "", tier = "skill", source = "merge_gate.msg_what" },
   { id = "edit_guard.launcher", setting = "", tier = "skill", source = "edit_guard.msg_launcher_what" },
+  { id = "edit_guard.cap", setting = "", tier = "skill", source = "edit_guard.msg_cap_what" },
+  { id = "transcript_protect.write", setting = "guards.transcriptProtect", tier = "skill", source = "transcript_protect.msg_what" },
   { id = "inbox_read.inbox", setting = "", tier = "skill", source = "inbox_read.msg_inbox_what" },
   { id = "devswarm_comms.main", setting = "", tier = "skill", source = "devswarm_comms.msg_main_what" },
   { id = "devswarm_comms.block", setting = "", tier = "skill", source = "devswarm_comms.msg_block_what" },

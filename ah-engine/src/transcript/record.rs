@@ -324,7 +324,7 @@ fn collect_tool_uses<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
 
 fn block_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
-    R.get_or_init(|| crate::checks::lit_re(r"(?s)<task-notification>(.*?)</task-notification>"))
+    R.get_or_init(|| crate::checks::lit_re(defaults::text("agent_scan.re_notification_block")))
 }
 
 fn wrapped_re() -> std::sync::Arc<Regex> {

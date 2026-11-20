@@ -3305,6 +3305,35 @@ mod claim_evidence_guard {
     }
 
     #[test]
+    fn a_process_is_live_claim_is_backed_by_a_process_listing_of_this_turn() {
+        let reply = "The kit process is live.";
+        let run = |sid: &str, cmd: &str| {
+            let l = [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("4242"),
+                assistant("m2", reply, &[]),
+            ];
+            stop(sid, &l, reply, &[], json!({})).0
+        };
+        assert_eq!(run("ce-live-pgrep", "pgrep -fl kit"), ALLOW);
+        assert_eq!(run("ce-live-ps", "ps aux | grep kit"), ALLOW);
+        assert!(blocked(&run("ce-live-ls", "ls -la")).is_some(), "an unrelated command still holds it");
+        // a process listing backs only the process claim: a merge or deploy claim still needs its own evidence
+        let shipped = |sid: &str, cmd: &str, reply: &str| {
+            let l = [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                assistant("m1", "", &[cmd]),
+                result("4242"),
+                assistant("m2", reply, &[]),
+            ];
+            stop(sid, &l, reply, &[], json!({})).0
+        };
+        assert!(blocked(&shipped("ce-merged-ps", "ps aux | grep kit", "The PR is merged.")).is_some(), "ps does not back a merge claim");
+        assert!(blocked(&shipped("ce-deployed-pgrep", "pgrep -fl kit", "The site is deployed and live.")).is_some(), "pgrep does not back a deploy claim");
+    }
+
+    #[test]
     fn a_test_claim_backed_by_a_runner_this_turn_passes_and_one_backed_by_an_unrelated_command_is_held() {
         let reply = "All tests pass.";
         let ok = [

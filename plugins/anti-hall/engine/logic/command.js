@@ -4595,7 +4595,7 @@ function mainFlow(payload) {
       const kind = tp.bashHit(scans[i], payload);
       if (kind) {
         ah.metric('transcript_write_blocked', ['kind', kind]);
-        return blockExact(text.message('block', ah.cfg('command.guard_name'), { what: ah.cfg('transcript_protect.msg_what') }));
+        return blockExact(text.message('block', ah.cfg('command.guard_name'), { what: ah.cfg('transcript_protect.msg_what'), why: ah.cfg('transcript_protect.msg_why'), instead: ah.cfg('transcript_protect.msg_instead') }));
       }
     }
     return undefined;
