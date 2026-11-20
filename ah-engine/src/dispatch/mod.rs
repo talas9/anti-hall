@@ -1230,6 +1230,49 @@ fn on_panic(event: &str, guard: bool) -> Outcome {
 mod tests {
     use super::*;
 
+    /// #882: a guard call no check could decide for lack of capacity is held only when it falls in a hold class
+    /// (dispatch.capacity_hold): never-allowed actions in their usual spellings (a force push behind `git -C`/env prefixes/`+ref`,
+    /// a merge through `gh -R` or `gh api` with an implicit POST, a gh text that could carry an AI credit, a money call, deleted
+    /// rows) are held; reads and local changes pass.
+    #[test]
+    fn capacity_hold_catches_risky_spellings_and_passes_reads() {
+        let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        for held in [
+            "git push --force origin main",
+            "git -C /x push -f",
+            "GIT_DIR=x git push origin +main",
+            "git push --force-with-lease",
+            "gh -R o/r pr merge 1",
+            "gh api repos/o/r/pulls/1/merge -f merge_method=merge",
+            "gh api --method=PUT repos/o/r/pulls/1/merge",
+            "gh pr create --title t --body x",
+            "gh issue comment 1 -b x",
+            "rm -v -rf build",
+            "gsutil rm gs://b/o",
+            "stripe refunds create --charge ch_1",
+            "curl -X POST https://api.stripe.com/v1/refunds",
+            "psql -c \"DELETE FROM users\"",
+            "espefuse.py --port /dev/x burn_key K",
+        ] {
+            assert!(class(held).is_some(), "held: {held}");
+        }
+        for pass in [
+            "git status --porcelain",
+            "git log --oneline",
+            "gh pr view 1",
+            "gh pr checks 1",
+            "gh api repos/o/r/pulls",
+            "rm a.txt",
+            "espefuse summary",
+            "cargo build",
+            "ls -rf",
+        ] {
+            assert_eq!(class(pass), None, "passes: {pass}");
+        }
+        let write = serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}});
+        assert_eq!(capacity_hold(&write), None, "a tool outside dispatch.capacity_hold.tools passes");
+    }
+
     /// The over-cap tool-name scan (a payload past the stdin cap is spooled and its top-level `tool_name` found structurally, so the
     /// right entries are selected): only the top-level key counts, wherever it sits, whatever text elsewhere looks like one.
     fn scanned(json: &str) -> Result<Option<String>, ()> {
