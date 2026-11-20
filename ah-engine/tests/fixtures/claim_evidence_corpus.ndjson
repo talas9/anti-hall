@@ -233,3 +233,8 @@
 {"text":"All tests pass.","expect":"block","source":"plan-tense-2026-11-20"}
 {"text":"I changed the guard to make progress. Tests pass.","expect":"block","source":"purpose-2026-11-20"}
 {"text":"The tests pass, to make sure, I reran them.","expect":"block","source":"purpose-2026-11-20"}
+{"text":"I haven't verified this commit.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"I haven’t verified this commit yet.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"I didn't run the tests, so nothing is confirmed.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"Not verified this commit.","expect":"allow","source":"negation-2026-11-20"}
+{"text":"I verified this commit.","expect":"block","source":"negation-2026-11-20"}
