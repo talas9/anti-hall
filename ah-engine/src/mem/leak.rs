@@ -8,6 +8,11 @@
 //!   still climbs (it did not flatten), or
 //! * a holder stays at or over its own soft limit, or grows in each of several consecutive windows (never plateaus).
 //!
+//! The slope is fitted to the series' FLOOR, not its raw samples: the window is cut into `mem.leak_floor_buckets` time slices and each
+//! keeps its lowest reading. A daemon that works in bursts (interpreters grow to their working size while hooks run and fall back
+//! to a few MB when idle) is a sawtooth, and the raw median slope of a sawtooth that ends in a burst reads as a climb of the
+//! burst's own size; a real leak lifts the floor, a burst does not.
+//!
 //! The report names the top-growing part and the share of the growth it explains; heap no holder claims, and footprint outside the
 //! counted heap, are candidates too. The sentinel only reports: it never restarts or kills. Every number and text comes from
 //! `defaults/mem.toml` (`mem.leak_*`).
@@ -72,6 +77,8 @@ pub struct Params {
     pub holder_window_s: u64,
     /// KB/h a holder must grow by in each of them.
     pub holder_slope_kb_per_h: f64,
+    /// Time slices of the window whose lowest readings the slope is fitted to (under 2: the raw samples).
+    pub floor_buckets: usize,
 }
 
 impl Params {
@@ -89,6 +96,7 @@ impl Params {
             holder_windows: n("mem.leak_holder_windows") as usize,
             holder_window_s: n("mem.leak_holder_window_s"),
             holder_slope_kb_per_h: n("mem.leak_holder_slope_kb_per_h") as f64,
+            floor_buckets: n("mem.leak_floor_buckets") as usize,
         }
     }
 }
@@ -175,11 +183,36 @@ fn slope_of<'a>(samples: impl Iterator<Item = &'a Sample>, f: impl Fn(&Sample) -
     theil_sen(&pts)
 }
 
-/// Slope in MB/h of `f` over the window and over its newer half.
-fn window_slopes(win: &[&Sample], f: impl Fn(&Sample) -> f64 + Copy) -> (f64, f64) {
-    let all = slope_of(win.iter().copied(), f).unwrap_or(0.0) / mb();
-    let late = slope_of(win[win.len() / 2..].iter().copied(), f).unwrap_or(0.0) / mb();
-    (all, late)
+/// The floor of `f` over `win`: the window's time span is cut into `buckets` equal slices and each non-empty one contributes its lowest
+/// reading (at the time it was read). Fewer than 2 buckets: every sample (no floor).
+fn floor_points(win: &[&Sample], buckets: usize, f: impl Fn(&Sample) -> f64) -> Vec<(f64, f64)> {
+    let (Some(first), Some(last)) = (win.first(), win.last()) else { return Vec::new() };
+    let raw = || win.iter().map(|s| (s.t_s as f64 / hour_s(), f(s))).collect::<Vec<_>>();
+    let span = last.t_s.saturating_sub(first.t_s);
+    if buckets < 2 || span == 0 {
+        return raw();
+    }
+    let mut low: Vec<Option<(u64, f64)>> = vec![None; buckets];
+    for s in win {
+        let i = (((s.t_s - first.t_s) as u128 * buckets as u128) / (span as u128 + 1)) as usize;
+        let v = f(s);
+        if let Some(slot) = low.get_mut(i.min(buckets - 1))
+            && slot.is_none_or(|(_, cur)| v < cur)
+        {
+            *slot = Some((s.t_s, v));
+        }
+    }
+    low.into_iter().flatten().map(|(t, v)| (t as f64 / hour_s(), v)).collect()
+}
+
+/// Slope in MB/h of the floor of `f` over `win`.
+fn floor_slope(win: &[&Sample], buckets: usize, f: impl Fn(&Sample) -> f64) -> f64 {
+    theil_sen(&floor_points(win, buckets, f)).unwrap_or(0.0) / mb()
+}
+
+/// Slope in MB/h of the floor of `f` over the window and over its newer half.
+fn window_slopes(win: &[&Sample], buckets: usize, f: impl Fn(&Sample) -> f64 + Copy) -> (f64, f64) {
+    (floor_slope(win, buckets, f), floor_slope(&win[win.len() / 2..], buckets.div_ceil(2), f))
 }
 
 fn holder_bytes(s: &Sample, name: &str) -> f64 {
@@ -232,8 +265,8 @@ pub fn evaluate(ring: &[&Sample], now_s: u64, p: &Params) -> Verdict {
         _ => 0,
     };
     let trusted = win.len() >= p.min_samples;
-    let (fp, fp_late) = if win.len() >= 3 { window_slopes(&win, |s| s.footprint as f64) } else { (0.0, 0.0) };
-    let (hp, hp_late) = if win.len() >= 3 { window_slopes(&win, |s| s.heap as f64) } else { (0.0, 0.0) };
+    let (fp, fp_late) = if win.len() >= 3 { window_slopes(&win, p.floor_buckets, |s| s.footprint as f64) } else { (0.0, 0.0) };
+    let (hp, hp_late) = if win.len() >= 3 { window_slopes(&win, p.floor_buckets, |s| s.heap as f64) } else { (0.0, 0.0) };
     let full = span_s as f64 >= p.window_s as f64 * p.full_pct as f64 / 100.0;
     let climbing = |all: f64, late: f64| all >= p.slope_mb_per_h && late >= p.slope_mb_per_h * p.flatten_pct / 100.0;
     let fp_hit = climbing(fp, fp_late);
@@ -257,12 +290,9 @@ pub fn evaluate(ring: &[&Sample], now_s: u64, p: &Params) -> Verdict {
     if win.len() >= 3 {
         let names: BTreeSet<&str> = win.iter().flat_map(|s| s.holders.iter().map(|h| h.name.as_str())).collect();
         let mut cands: Vec<(String, f64)> =
-            names.into_iter().map(|n| (n.to_string(), slope_of(win.iter().copied(), |s| holder_bytes(s, n)).unwrap_or(0.0) / mb())).collect();
-        cands.push((defaults::text("mem.leak_name_other").to_string(), slope_of(win.iter().copied(), other_bytes).unwrap_or(0.0) / mb()));
-        cands.push((
-            defaults::text("mem.leak_name_outside").to_string(),
-            slope_of(win.iter().copied(), |s| s.footprint as f64 - s.heap as f64).unwrap_or(0.0) / mb(),
-        ));
+            names.into_iter().map(|n| (n.to_string(), floor_slope(&win, p.floor_buckets, |s| holder_bytes(s, n)))).collect();
+        cands.push((defaults::text("mem.leak_name_other").to_string(), floor_slope(&win, p.floor_buckets, other_bytes)));
+        cands.push((defaults::text("mem.leak_name_outside").to_string(), floor_slope(&win, p.floor_buckets, |s| s.footprint as f64 - s.heap as f64)));
         let best = if trend || level != Level::Suspected {
             cands.into_iter().max_by(|a, b| a.1.total_cmp(&b.1))
         } else {

@@ -311,3 +311,80 @@ fn a_shrink_counts_the_measured_extra_a_value_holds_not_only_its_weight() {
     let kept: usize = c.values().iter().map(|v| v.load(SeqCst)).sum();
     assert!(c.bytes() + kept <= 800_000, "weights {} plus extra {kept} are at the low-water target", c.bytes());
 }
+
+/// A daemon that works in bursts: every 60 s sample of a 2 h window, memory at `base` plus `climb` per hour, plus `burst` while a hook is running.
+fn burst_series(base: u64, climb_per_h: u64, burst: u64, bursts: &[(u64, u64)]) -> Vec<leak::Sample> {
+    (0..=120u64)
+        .map(|i| {
+            let t = i * 60;
+            let held = base + climb_per_h * t / 3600 + if bursts.iter().any(|(a, b)| t >= *a && t < *b) { burst } else { 0 };
+            leak::Sample { t_s: t, footprint: held, heap: held, holders: Vec::new() }
+        })
+        .collect()
+}
+
+fn judge(samples: &[leak::Sample]) -> serde_json::Value {
+    let ring: Vec<&leak::Sample> = samples.iter().collect();
+    leak::evaluate(&ring, 7200, &leak::Params::from_defaults()).to_json()
+}
+
+const MB: u64 = 1024 * 1024;
+
+/// The two 2 h windows of the live daemon (see the fixture's note): an idle floor near 135 MB with bursts of the QuickJS interpreters (back to
+/// 1.3 MB when idle), judged as a leak by the raw median slope (7.3 and 13.8 MB/h against the 6 MB/h limit) and flat on the floor.
+fn live_windows() -> Vec<Vec<leak::Sample>> {
+    let doc: serde_json::Value = serde_json::from_str(include_str!("leak_windows.json")).unwrap();
+    doc["windows"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|w| {
+            w.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| leak::Sample { t_s: r[0].as_u64().unwrap(), footprint: r[1].as_u64().unwrap(), heap: r[2].as_u64().unwrap(), holders: Vec::new() })
+                .collect()
+        })
+        .collect()
+}
+
+fn judge_with(samples: &[leak::Sample], params: &leak::Params) -> serde_json::Value {
+    let ring: Vec<&leak::Sample> = samples.iter().collect();
+    leak::evaluate(&ring, samples.last().unwrap().t_s, params).to_json()
+}
+
+#[test]
+fn bursts_on_a_flat_floor_are_not_a_leak() {
+    for w in live_windows() {
+        let v = judge_with(&w, &leak::Params::from_defaults());
+        assert_eq!(v["trend"], false, "a flat floor with bursts is not a climb: {v}");
+        assert_ne!(v["state"], "suspected", "{v}");
+    }
+}
+
+/// The same windows on raw samples (floor off) are the false report the live daemon wrote: this is what the floor fixes.
+#[test]
+fn the_raw_slope_of_those_bursts_read_as_a_leak() {
+    let raw = leak::Params { floor_buckets: 0, ..leak::Params::from_defaults() };
+    for w in live_windows() {
+        assert_eq!(judge_with(&w, &raw)["trend"], true, "the fixture must reproduce the false positive");
+    }
+}
+
+/// A real leak on top of the same bursts: every sample of the live windows plus 12 MB per hour lifts the floor, and is still caught.
+#[test]
+fn a_floor_that_climbs_under_the_live_bursts_is_a_leak() {
+    for w in live_windows() {
+        let lifted: Vec<leak::Sample> =
+            w.iter().map(|s| leak::Sample { footprint: s.footprint + 12 * MB * s.t_s / 3600, heap: s.heap + 12 * MB * s.t_s / 3600, ..s.clone() }).collect();
+        let v = judge_with(&lifted, &leak::Params::from_defaults());
+        assert_eq!(v["state"], "suspected", "{v}");
+    }
+}
+
+#[test]
+fn a_floor_that_climbs_is_a_leak_even_with_bursts_on_top() {
+    let v = judge(&burst_series(100 * MB, 12 * MB, 25 * MB, &[(1800, 2100), (6000, 7200)]));
+    assert_eq!(v["state"], "suspected", "a floor rising 12 MB/h must still be caught: {v}");
+    assert_eq!(v["trend"], true, "{v}");
+}
