@@ -1218,7 +1218,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             if shadowed {
                 crate::delivery::suppressed(&sh.telemetry, check, &who);
             } else {
-                crate::delivery::decided(&sh.telemetry, session, check, &who);
+                crate::delivery::decided_with(&sh.telemetry, session, check, &who, &block_text_of(r));
                 crate::funnel::channels(&sh.telemetry, check, &meta.event, r, &who);
             }
         }
