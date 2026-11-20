@@ -19,6 +19,8 @@ pub(crate) struct Env {
     pending: std::cell::RefCell<Option<(String, u32, String)>>,
     /// The session id the child's live descriptor names (`None`: it records none).
     desc_sid: std::cell::RefCell<Option<String>>,
+    /// The clock the fixture is laid out at: the pinned `NOW_MS` (a 2030 date) unless a test asks for the real one.
+    now: std::cell::Cell<u64>,
 }
 
 impl Env {
@@ -34,7 +36,21 @@ impl Env {
         };
         git(&["init", "-q"]);
         let key = ah_engine::meshw::ident::repo_key_for_worktree(repo.to_str().unwrap()).unwrap().expect("a repo key");
-        Env { dir, repo, key, pending: std::cell::RefCell::new(None), desc_sid: std::cell::RefCell::new(Some("sess-1".into())) }
+        Env {
+            dir,
+            repo,
+            key,
+            pending: std::cell::RefCell::new(None),
+            desc_sid: std::cell::RefCell::new(Some("sess-1".into())),
+            now: std::cell::Cell::new(NOW_MS),
+        }
+    }
+
+    /// Lays the fixture out at the real clock (the engine under test reads it), so a time window can be tested on both sides; returns it.
+    pub(crate) fn real_clock(&self) -> u64 {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        self.now.set(n);
+        n
     }
 
     pub(crate) fn dsdir(&self) -> PathBuf {
@@ -75,7 +91,7 @@ impl Env {
         let home = self.dir.join("home");
         let st = MeshStore::open(&self.dsdir().join("store").join(&self.key).join("devswarm.db")).unwrap();
         let row = RegistryRow { id: CHILD.into(), worktree_path: Some(wt.clone()), session_id: Some("sess-1".into()), ..RegistryRow::default() };
-        st.upsert_registry(&row, NOW_MS as i64, |a, b| a == b).unwrap();
+        st.upsert_registry(&row, self.now.get() as i64, |a, b| a == b).unwrap();
         let desc_path = self.dsdir().join(format!("workspaces/{CHILD}.json"));
         if !desc_path.exists() {
             let mut d = serde_json::json!({"id": CHILD, "worktreePath": wt});
@@ -87,7 +103,7 @@ impl Env {
         for i in 0..unread {
             let m = MeshRow {
                 workspace_id: CHILD.into(),
-                ts: (NOW_MS - 40 * 86_400_000u64) as i64 + i64::from(i),
+                ts: (self.now.get() - 40 * 86_400_000u64) as i64 + i64::from(i),
                 hash: Some(format!("h{i}")),
                 body: format!("message {i}"),
                 sender: Some("someone-else".into()),
@@ -105,7 +121,7 @@ impl Env {
             home: home.clone(),
             env: Default::default(),
             cwd: self.repo.to_string_lossy().to_string(),
-            now: NOW_MS as i64,
+            now: self.now.get() as i64,
             stdin: None,
             write_home: home,
             store_override: None,

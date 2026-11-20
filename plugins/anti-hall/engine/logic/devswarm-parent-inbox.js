@@ -255,25 +255,29 @@ function piNormTable(t) {
   }).join('\n');
 }
 
-// GH: a child that ran `inbox read` after its oldest unread mail arrived, within devswarm_parent.read_seen_window_ms, is draining: the cursor only
-// moves when it acks the read receipt, so a child that read, acted and replied without the ack still shows the mail as unread. True when one of
-// the newest devswarm_parent.read_seen_scan receipts of `id` (the file name sorts by time) was created at or after `oldestTs`, inside the window,
-// and delivered at least one row (a read that found nothing proves nothing about this mail).
-function piReadSince(home, id, oldestTs, now) {
-  if (!piSafeId(id)) return false;
+// GH: a child that ran `inbox read` after its oldest unread mail arrived, within devswarm_parent.read_seen_window_ms, read the backlog but has not
+// acked it: the cursor only moves when it acks the read receipt, so the mail stays unread. This is the child's fault to fix (it must run the ack), so
+// the row stays flagged and is relabelled with the receipt to ack; it is NOT treated as draining. A child that re-reads in a loop makes a fresh receipt
+// each time and stays flagged. Returns the id of the newest UNACKED receipt among the newest devswarm_parent.read_seen_scan of `id` (the file name
+// sorts by time) created at or after `oldestTs`, inside the window, that delivered at least one row; null for none.
+function piReadUnacked(home, id, oldestTs, now) {
+  if (!piSafeId(id)) return null;
   var dir = piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_read_receipts') + '/' + id;
   var names = piNames(dir);
-  if (names === null || !names.length) return false;
+  if (names === null || !names.length) return null;
   names = names.filter(function (n) { return /\.json$/.test(n); }).sort().reverse().slice(0, ah.cfgNum('devswarm_parent.read_seen_scan'));
   var floor = Math.max(oldestTs, now - ah.cfgNum('devswarm_parent.read_seen_window_ms'));
   for (var i = 0; i < names.length; i++) {
     var r = piJson(dir + '/' + names[i]);
-    if (!r || !piFinite(r.createdAt) || r.createdAt < floor || !Array.isArray(r.ops)) continue;
+    if (!r || !piFinite(r.createdAt) || r.createdAt < floor || !Array.isArray(r.ops) || (r.ackedAt !== null && r.ackedAt !== undefined)) continue;
     for (var j = 0; j < r.ops.length; j++) {
-      if (r.ops[j] && piFinite(r.ops[j].delivered) && r.ops[j].delivered > 0) { ah.metric('devswarm_unread_read_seen', ['reason', 'receipt']); return true; }
+      if (r.ops[j] && piFinite(r.ops[j].delivered) && r.ops[j].delivered > 0) {
+        ah.metric('devswarm_unread_read_seen', ['reason', 'receipt']);
+        return typeof r.receiptId === 'string' && r.receiptId !== '' ? r.receiptId : names[i].replace(/\.json$/, '');
+      }
     }
   }
-  return false;
+  return null;
 }
 
 // `normalizeInboxVolatile`: the oldest age and the trend of the nudge are dropped before the text is hashed.
@@ -338,6 +342,7 @@ function piUnreadSegment(list, home, cli, now) {
     if (w.unread > 0) parts.push(text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread }));
     if (piStuck(w.status)) parts.push(w.status);
     if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
+    else if (w.readUnacked) parts.push(text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked }));
     else if (w.notDraining) parts.push(ah.cfg('devswarm_parent.part_not_draining'));
     if (piFinite(w.oldestUnreadTs)) parts.push(text.render(ah.cfg('devswarm_parent.part_oldest'), { age: piRelative(w.oldestUnreadTs, now) }));
     var trend = piTrend(home, w.id, w.unread);
@@ -349,7 +354,8 @@ function piUnreadSegment(list, home, cli, now) {
   var body = text.render(ah.cfg('devswarm_parent.unread_head'), { count: list.length, shown: shown.join(ah.cfg('devswarm_parent.shown_joiner')), extra: extra });
   if (list.some(function (w) { return w.parked; })) body += ah.cfg('devswarm_parent.parked_unread_body');
   else {
-    body += anyUnread ? text.render(ah.cfg('devswarm_parent.unread_body_drain'), { cli: cli }) : ah.cfg('devswarm_parent.unread_body_read');
+    var allUnacked = anyUnread && list.every(function (w) { return !(w.unread > 0) || !!w.readUnacked; }); // every unread backlog was read, none acked: the child's fix, not a poke
+    body += allUnacked ? ah.cfg('devswarm_parent.unread_body_read_unacked') : anyUnread ? text.render(ah.cfg('devswarm_parent.unread_body_drain'), { cli: cli }) : ah.cfg('devswarm_parent.unread_body_read');
     body += ah.cfg('devswarm_parent.unread_tail');
   }
   return body;
@@ -365,13 +371,15 @@ function piUrgentSegment(list, home, cli) {
     var parts = [text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread })];
     if (piStuck(w.status)) parts.push(w.status);
     if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
+    else if (w.readUnacked) parts.push(text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked }));
     else if (w.notDraining) parts.push(ah.cfg('devswarm_parent.part_not_draining'));
     var trend = piTrend(home, w.id, w.unread);
     if (trend) parts.push(trend);
     return text.render(ah.cfg('devswarm_parent.urgent_part'), { id: w.id, parts: parts.join(ah.cfg('devswarm_parent.part_joiner')) });
   });
   var extra = list.length > max ? text.render(ah.cfg('devswarm_parent.unread_extra'), { n: list.length - max }) : '';
-  return text.render(ah.cfg(list.some(function (w) { return w.parked; }) ? 'devswarm_parent.parked_urgent_head' : 'devswarm_parent.urgent_head'), { count: list.length, shown: shown.join(ah.cfg('devswarm_parent.shown_joiner')), extra: extra, cli: cli });
+  var urgentKey = list.some(function (w) { return w.parked; }) ? 'devswarm_parent.parked_urgent_head' : list.every(function (w) { return !!w.readUnacked; }) ? 'devswarm_parent.urgent_head_read_unacked' : 'devswarm_parent.urgent_head';
+  return text.render(ah.cfg(urgentKey), { count: list.length, shown: shown.join(ah.cfg('devswarm_parent.shown_joiner')), extra: extra, cli: cli });
 }
 
 // `buildArchiveSegment(ids)`.
@@ -615,12 +623,12 @@ function piRoster(ctx, summary) {
     var total = piFinite(entry.total) ? entry.total : 0;
     var cursor = piFinite(entry.cursor) ? entry.cursor : 0;
     var urgencyMax = entry.urgencyMax || null;
-    var childRead = unread > 0 && piFinite(entry.oldestDirectUnreadTs) && piReadSince(home, id, entry.oldestDirectUnreadTs, now);
+    var readUnacked = unread > 0 && piFinite(entry.oldestDirectUnreadTs) ? piReadUnacked(home, id, entry.oldestDirectUnreadTs, now) : null;
     var vv = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_liveness') + '/' + id + '.json');
     var verdict = vv && typeof vv === 'object' ? vv : null;
     var status = entry && typeof entry.status === 'string' ? entry.status : (verdict && typeof verdict.status === 'string' ? verdict.status : null);
     var stuck = status !== null && piStuck(status);
-    var notDraining = !!(verdict && verdict.notDraining) && !childRead; // a child that ran `inbox read` on the backlog is draining, only its ack is missing
+    var notDraining = !!(verdict && verdict.notDraining);
     // a backlog that does not drain on a child running an older build is a build problem, not neglect
     var staleBuild = null;
     if (notDraining) {
@@ -645,8 +653,7 @@ function piRoster(ctx, summary) {
     var graced = false;
     if (unread > 0 && oldestForGate !== null) {
       var ageMs = now - oldestForGate;
-      if (childRead) graced = true; // read, replied, not acked: nothing for the Primary to poke
-      else if (ageMs >= graceMs) graced = false;
+      if (ageMs >= graceMs) graced = false;
       else if (senderRaw != null && ctx.primaryId != null && String(senderRaw) !== String(ctx.primaryId)) graced = false;
       else graced = true;
     }
@@ -675,7 +682,7 @@ function piRoster(ctx, summary) {
       var reportUnread = graced ? 0 : unread;
       out.attention.push({
         id: id, parked: rowParked, unread: reportUnread, cursor: cursor, total: total, status: rowParked ? null : status, urgencyMax: graced ? null : urgencyMax, wsName: wsName,
-        oldestUnreadTs: graced ? null : oldestForGate, notDraining: notDrainingForLabel, staleAntiHallMessage: staleBuild ? staleBuild.message : null,
+        oldestUnreadTs: graced ? null : oldestForGate, notDraining: notDrainingForLabel, readUnacked: graced ? null : readUnacked, staleAntiHallMessage: staleBuild ? staleBuild.message : null,
       });
     }
     if (archiveReady && !appArchivedRow && !ownerFocused && !st.ignored && piArchiveCooldown(home, id, now) && !piAutoArchiveOwns(home, id, now)
