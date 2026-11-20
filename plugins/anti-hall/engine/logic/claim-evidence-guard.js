@@ -168,7 +168,10 @@ function ceFindClaim(scan, seen) {
     var hits = [];
     for (var i = 0; i < rows.length; i++) {
       var all = ah.re.findAll(rows[i].re, 'i', sents[k]);
-      for (var j = 0; j < all.length; j++) hits.push([all[j][0], all[j][1], i]);
+      for (var j = 0; j < all.length; j++) {
+        if (typeof rows[i].not_after === 'string' && ah.re.find(rows[i].not_after, 'i', sents[k].slice(0, all[j][0]))) { seen.push([ah.cfg('claim_evidence.nonsoftware_reason'), sents[k].slice(all[j][0], all[j][1]), rows[i].id]); continue; }
+        hits.push([all[j][0], all[j][1], i]);
+      }
     }
     hits.sort(function (x, y) { return x[0] - y[0] || x[2] - y[2]; });
     var prev = null;
@@ -267,6 +270,30 @@ function ceLogReadBacks(claim, tp, tools) {
     if (passHave[want] !== true) return false;
   }
   return true;
+}
+
+// The tool uses since the last OWNER prompt of the transcript: the evidence walk restarts its tool count at every user line that is
+// no tool result, so a task notification, system reminder or teammate message that lands between a check and the reply made the
+// check vanish ("no matching check run this turn"). A user line that matches block_cap.injected_re (the engine's list of non-owner
+// text) is no turn boundary here. Returns null when the transcript cannot be read.
+function ceToolsSinceOwner(tp) {
+  var lines = ah.fs.tailLines(tp, ah.cfgNum('claim_ledger.window_bytes'), true, ['tool_use', ah.cfg('claim_evidence.user_line_needle')]);
+  if (lines === null) return null;
+  var n = 0, injected = ah.cfg('block_cap.injected_re');
+  for (var i = 0; i < lines.length; i++) {
+    var e;
+    try { e = JSON.parse(lines[i]); } catch (x) { continue; }
+    var m = e && e.message, c = m && m.content;
+    if (!m || (e.type !== 'user' && m.role !== 'user')) {
+      if (Array.isArray(c)) for (var a = 0; a < c.length; a++) if (c[a] && c[a].type === 'tool_use') n++;
+      continue;
+    }
+    var text = typeof c === 'string' ? c : Array.isArray(c) ? c.map(function (b) { return b && b.type === 'tool_result' ? null : b && typeof b.text === 'string' ? b.text : ''; }).join('\n') : '';
+    if (Array.isArray(c) && c.some(function (b) { return b && b.type === 'tool_result'; })) continue;
+    if (!text.trim() || ah.re.find(injected, 'i', text)) continue;
+    n = 0;
+  }
+  return n;
 }
 
 // claim_evidence.tool_evidence: true when a tool call of this turn that is not a shell command backs the claim by its OWN success result.
@@ -395,6 +422,7 @@ function decide(p) {
   if (ev === null || ev.unsure || !ev.walked) return 'allow';
   var inLast = ev.lastText !== '' && ceCollapse(reply).indexOf(ceCollapse(ev.lastText)) >= 0;
   var tools = inLast ? ev.toolsThisTurn : ev.toolsAtEnd;
+  if (claim !== null && tools === 0) { var since = ceToolsSinceOwner(tpOpen); if (since !== null && since > 0) tools = since; }
   var cmds = null, what = null;
   if (done && tools > 0) {
     cmds = ceCommands(tpOpen, tools);

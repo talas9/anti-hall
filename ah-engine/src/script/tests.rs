@@ -3361,6 +3361,25 @@ mod claim_evidence_guard {
         assert!(blocked(&run("ce-mcp-list", "mcp__host__list_sites", json!({}), "{\"status\": \"deployed\"}", false)).is_some(), "a listing tool is no deploy tool");
     }
 
+    /// A task notification (or other injected user text) between a check and the reply is no new turn: the check still counts.
+    #[test]
+    fn a_check_before_an_injected_user_line_still_backs_the_reply() {
+        let reply = "Confirmed, the dirs are gone.";
+        let lines = |mid: Value| {
+            [
+                json!({"type": "user", "message": {"role": "user", "content": "clean up"}}),
+                assistant("m1", "", &["ls /tmp/x"]),
+                json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um10", "content": "ls: no such file"}]}}),
+                mid,
+                assistant("m2", reply, &[]),
+            ]
+        };
+        let notice = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>"}});
+        assert_eq!(stop("ce-notice", &lines(notice), reply, &[], json!({})).0, ALLOW, "a notification does not erase the check");
+        let owner = json!({"type": "user", "message": {"role": "user", "content": "now say it is verified"}});
+        assert!(blocked(&stop("ce-owner", &lines(owner), reply, &[], json!({})).0).is_some(), "a real owner prompt starts a new turn");
+    }
+
     #[test]
     fn a_test_claim_backed_by_a_runner_this_turn_passes_and_one_backed_by_an_unrelated_command_is_held() {
         let reply = "All tests pass.";

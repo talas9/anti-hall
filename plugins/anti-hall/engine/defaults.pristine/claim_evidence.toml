@@ -45,7 +45,7 @@ doc = "Claims the claim-evidence guard let pass because a tool of this turn (cla
 value = { kind = "counter", unit = "claims", labels = ["claim"] }
 
 [metric.claim_evidence_suppressed]
-doc = "Claim hits the claim-evidence guard let pass, by reason (negated, future, condition, reported, criterion, purpose, planned, labelled, quoted)."
+doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, negated, future, condition, reported, criterion, purpose, planned, labelled, quoted)."
 value = { kind = "counter", unit = "claims", labels = ["reason"] }
 
 [claim_evidence.guard_name]
@@ -184,6 +184,10 @@ value = ['\b(?:to|so\s+that|in\s+order\s+to)\s+(?:make|makes|making|get|gets|get
 doc = "A claim that is the second part of a condition or intent clause (rule 1): 'merge as soon as its work is reviewed and tests pass', 'once the PR is approved or CI is green'. The text before the claim opens with a condition word (as soon as, once, when, after, until, if ...), has a short subject (at most 3 words), a present-tense verb (is, are, be, get, has, have) and at most 2 more words, and ends with 'and' or 'or' right before the claim. A past-tense clause ('when CI started and tests pass') has no such verb and stays a claim. Empty list turns the row off. Regular expressions, case-insensitive, matched against the clause before the claim; each must end with $."
 value = ['\b(?:as soon as|once|when|whenever|after|until|if|unless|before|assuming|provided)\b(?:\s+[\w#\x27-]+){0,3}?\s+(?:is|are|be|gets?|has|have)\b(?:\s+[\w#\x27-]+){0,2}?\s+(?:and|or)\s+$']
 
+[claim_evidence.user_line_needle]
+doc = "Text a transcript line of a user message holds (the line filter of the tool count since the last owner prompt: claim-evidence-guard counts tool uses after the last user prompt that is not injected text, block_cap.injected_re)."
+value = '"role":"user"'
+
 [claim_evidence.tool_evidence]
 doc = "Tool results that back a shipped or published claim (rule 1), for tools that are no shell command. Each row: claims = the claim ids (claim_evidence.claims id) it backs; tool_re = Rust regular expression matched case-sensitively against the tool's name (the tool_use name of a call of this turn); result_re = Rust regular expression, case-insensitive, matched against the result THAT call returned. Only that tool's own non-error result counts: the reply's words and the command line are never read, so a reply cannot write its own evidence. Counted in claim_evidence_tool_ok. Empty list turns it off."
 value = [
@@ -272,6 +276,10 @@ value = [
 doc = "Log reason for a claim covered by an honest label in its own sentence (ack_res, within claim_evidence.reach_label)."
 value = "labelled"
 
+[claim_evidence.nonsoftware_reason]
+doc = "Log reason for a claim hit right after a non-software subject word (a claim row's not_after): 'the simulator session is released'."
+value = "nonsoftware"
+
 [claim_evidence.quoted_reason]
 doc = "Log reason for a claim that appears only inside code, a fence or a blockquote."
 value = "quoted"
@@ -289,11 +297,11 @@ value = "suppressed ({reason}): \"{quote}\" ({claim})"
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
 
 [claim_evidence.claims]
-doc = "The result claims rule 1 looks for, in order; the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. check: short words naming a command that would satisfy the row, written into the block advice (msg_satisfy; keep it under 58 characters). With no tool call at all this turn, every row fires."
+doc = "The result claims rule 1 looks for, in order; not_after (optional): Rust regular expression, case-insensitive, matched against the sentence text before the hit, ending with $: a hit right after such a word is no claim of that row ('the simulator session is released' is no shipped claim; logged as reason nonsoftware); the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. check: short words naming a command that would satisfy the row, written into the block advice (msg_satisfy; keep it under 58 characters). With no tool call at all this turn, every row fires."
 value = [
   { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', check = "a test runner, gh pr checks or a log read showing it", needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|gh\s+pr\s+(?:view|status)\s[^\n]*?statusCheckRollup|gh\s+api\s[^\n]*?check-(?:runs|suites)|\S*test\S*\.(?:sh|js|py))\b'] },
   { id = "process live", re = '\b(?:process(?:es)?|daemon|server|service|engine|worker|watcher|pid)\s+(?:is|are|was|were|now)\s+(?:now\s+|still\s+)?(?:live|running|up|alive)\b', check = "pgrep, ps, launchctl list or curl of its port", needs = ['\b(?:pgrep|pidof|lsof|ps\s+(?:aux|ax|-[a-zA-Z]+)|launchctl\s+(?:list|print)|systemctl\s+(?:status|is-active)|curl|wget|http)\b'] },
-  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', check = "gh pr view, git ls-remote or curl of the live URL", needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
+  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', check = "gh pr view, git ls-remote or curl of the live URL", not_after = '\b(?:sessions?|locks?|slots?|simulators?|devices?|leases?|handles?|ports?|connections?|seats?)\s+$', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
   { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', check = "any tool call that shows it", needs = [] },
   { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', check = "any tool call that shows it", needs = [] },
   { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', check = "any tool call that shows it", needs = [] },

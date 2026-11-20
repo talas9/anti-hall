@@ -248,3 +248,7 @@
 {"text":"The PR was reviewed and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
 {"text":"Once again CI is up and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
 {"text":"When the PR was reviewed and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
+{"text":"The simulator session is released.","expect":"allow","source":"nonsoftware-2026-11-20"}
+{"text":"The device lock was released.","expect":"allow","source":"nonsoftware-2026-11-20"}
+{"text":"The PR is released.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The new version is released.","expect":"block","source":"nonsoftware-2026-11-20"}
