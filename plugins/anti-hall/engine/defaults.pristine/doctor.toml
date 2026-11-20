@@ -289,6 +289,10 @@ value = "Repair"
 doc = "The heading of the repair section in a preview."
 value = "Repair (dry-run — no changes written)"
 
+[doctor_msg.repair_only_none]
+doc = "`--only <id>` found no pending repair step with that id. Placeholders: {id}, {ids}."
+value = "no pending repair step '{id}' (step ids: {ids}); nothing was changed"
+
 [doctor_msg.repair_none]
 doc = "The repair pass found no rows and nothing failed."
 value = "nothing to repair"
@@ -1414,6 +1418,18 @@ value = "PreToolUse"
 [doctor.foreign_stop]
 doc = "The hook event whose foreign hooks sit beside the Stop guards."
 value = "Stop"
+
+[doctor.pristine_pinned]
+doc = "Defaults files whose pristine copy is a pinned released fallback (it lags the edited copy on purpose; new keys go to the edited copy only). The unknown-setting check skips them: a key the pristine copy lacks is expected there, not a typo."
+value = ["flags.toml", "roles.toml", "script.toml", "telemetry.toml"]
+
+[doctor.repair_only_flag]
+doc = "The flag that limits `doctor --repair` to ONE repair step, named by its id (`--only units-heal`). Nothing else is repaired, migrated or swept."
+value = "--only"
+
+[doctor.repair_ids]
+doc = "The ids of the repair steps, listed when `--only` names none that is pending."
+value = ["units-heal", "config-heal", "engine-binary-exec", "engine-binary-quarantine", "state-dir-create", "state-dir-private"]
 
 [doctor.foreign_additive]
 doc = "The hook events where a foreign hook only adds to anti-hall's (reported as information)."

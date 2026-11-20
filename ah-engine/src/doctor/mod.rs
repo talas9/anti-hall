@@ -190,6 +190,8 @@ struct Flags {
     explicit: Vec<&'static str>,
     /// `--apply`: the explicit repairs act instead of only previewing.
     apply: bool,
+    /// `--only <id>`: run just this one repair step (the units heal, or one fix).
+    only: Option<String>,
 }
 
 fn flags(p: &Parsed) -> Flags {
@@ -202,6 +204,7 @@ fn flags(p: &Parsed) -> Flags {
         quiet: has("--quiet"),
         explicit: defaults::list("doctor.explicit_flags").into_iter().filter(|f| has(f)).collect(),
         apply: has(defaults::text("doctor.apply_flag")),
+        only: p.rest.iter().position(|a| a == defaults::text("doctor.repair_only_flag")).and_then(|i| p.rest.get(i + 1)).cloned(),
     }
 }
 
@@ -397,14 +400,18 @@ fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result
 
 fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], root: Option<&Path>) {
     doc.head(defaults::text(if f.dry_run { "doctor_msg.repair_heading_dry" } else { "doctor_msg.repair_heading" }));
-    let rows = migrate::run(ctx);
+    // `--only <id>`: one step, so no migration rows and no sweep run
+    let only = f.only.as_deref();
+    let rows = if only.is_some() { Vec::new() } else { migrate::run(ctx) };
     crate::telemetry::emit::add_items(rows.iter().filter(|r| r.status == "fixed").count() as u64);
     let mut done = 0u64;
     let mut seen: Vec<&Fix> = Vec::new();
+    let mut matched = false;
     for fix in fixes {
-        if seen.contains(&fix) {
+        if seen.contains(&fix) || only.is_some_and(|id| apply_fix(fix, true, root).0 != id) {
             continue;
         }
+        matched = true;
         seen.push(fix);
         let (id, outcome) = apply_fix(fix, f.dry_run, root);
         match outcome {
@@ -417,11 +424,16 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
         }
     }
     // the legacy sweep (old install files and artefacts moved aside, state migrations): fail-open, idempotent, never deletes
-    let swept = crate::operator::sweep::for_doctor(f.dry_run, &mut |l| doc.infol(l));
+    let swept = if only.is_some() { Default::default() } else { crate::operator::sweep::for_doctor(f.dry_run, &mut |l| doc.infol(l)) };
     done += (swept.files + swept.legacy + swept.migrated) as u64;
     crate::telemetry::emit::add_items(done);
-    let units = crate::setup::units::heal_changes(f.dry_run);
-    if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
+    let units = if only.is_none_or(|id| id == defaults::text("units.doctor_id")) { crate::setup::units::heal_changes(f.dry_run) } else { None };
+    if let Some(id) = only
+        && !matched
+        && units.is_none()
+    {
+        doc.infol(defaults::render("doctor_msg.repair_only_none", &[("id", &id), ("ids", &defaults::list("doctor.repair_ids").join(", "))]));
+    } else if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {
