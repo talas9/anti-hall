@@ -405,7 +405,7 @@ mod tests {
         let combos = default_cap + 100;
         for i in 0..combos {
             m.inc("delivery_funnel", &[("check", "c"), ("model", "opus"), ("project", &format!("p{i}")), ("stage", "decided")]);
-            m.inc("delivery_lost", &[("check", "c"), ("reason", &format!("r{i}"))]); // a metric with no override of its own
+            m.inc("answers_dropped", &[("check", "c"), ("reason", &format!("r{i}"))]); // a metric with no override of its own
         }
         for i in 0..combos {
             let n = m.counter("delivery_funnel", &[("check", "c"), ("model", "opus"), ("project", &format!("p{i}")), ("stage", "decided")]);
@@ -413,7 +413,7 @@ mod tests {
         }
         let other = defaults::text("telemetry.overflow_label");
         assert_eq!(m.counter("delivery_funnel", &[("check", other), ("model", other), ("project", other), ("stage", other)]), 0, "nothing collapsed");
-        assert_eq!(m.counter("delivery_lost", &[("check", "c"), ("reason", other)]), 100, "control: a metric on the global cap collapses its extra series");
+        assert_eq!(m.counter("answers_dropped", &[("check", "c"), ("reason", other)]), 100, "control: a metric on the global cap collapses its extra series");
     }
 
     #[test]

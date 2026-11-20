@@ -3341,6 +3341,57 @@ mod claim_evidence_guard {
         assert!(blocked(&shipped("ce-deployed-pgrep", "pgrep -fl kit", "The site is deployed and live.")).is_some(), "pgrep does not back a deploy claim");
     }
 
+    /// A publish tool's own success result backs a shipped/published claim; an error result, another tool, a read and the reply's own
+    /// words never do (claim_evidence.tool_evidence).
+    #[test]
+    fn a_publish_tool_result_backs_a_published_claim_only_when_that_tool_succeeded() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let reply = "The page is published.";
+        let run = |sid: &str, name: &str, input: Value, out: &str, is_error: bool| {
+            let l = [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": name, "input": input}]}}),
+                json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "is_error": is_error, "content": out}]}}),
+                assistant("m2", reply, &[]),
+            ];
+            stop_unlocked(sid, &l, reply, &[], json!({})).0
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let publish = json!({"action": "publish", "file_path": "/x/index.html"});
+        assert_eq!(run("ce-art-ok", "Artifact", publish.clone(), "Published https://x/y (Version 2)", false), ALLOW);
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("claim_evidence_tool_ok", &[("claim", "shipped")]), 1, "the pass is counted");
+        assert!(blocked(&run("ce-art-err", "Artifact", publish.clone(), "Published nothing, failed", true)).is_some(), "an errored result backs nothing");
+        assert!(blocked(&run("ce-art-read", "Artifact", json!({"action": "read"}), "Version 2 of the page", false)).is_some(), "a read result is no publish");
+        assert!(blocked(&run("ce-bash-published", "Bash", json!({"command": "echo Published ok"}), "Published ok", false)).is_some(), "another tool's text never counts");
+        assert_eq!(run("ce-mcp-deploy", "mcp__host__deploy_site", json!({}), "{\"status\": \"deployed\"}", false), ALLOW);
+        assert!(blocked(&run("ce-mcp-list", "mcp__host__list_sites", json!({}), "{\"status\": \"deployed\"}", false)).is_some(), "a listing tool is no deploy tool");
+    }
+
+    /// A task notification (or other injected user text) between a check and the reply is no new turn: the check still counts.
+    #[test]
+    fn a_check_before_an_injected_user_line_still_backs_the_reply() {
+        let reply = "Confirmed, the dirs are gone.";
+        let lines = |mid: Value| {
+            [
+                json!({"type": "user", "message": {"role": "user", "content": "clean up"}}),
+                assistant("m1", "", &["ls /tmp/x"]),
+                json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um10", "content": "ls: no such file"}]}}),
+                mid,
+                assistant("m2", reply, &[]),
+            ]
+        };
+        let notice = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>"}});
+        assert_eq!(stop("ce-notice", &lines(notice), reply, &[], json!({})).0, ALLOW, "a notification does not erase the check");
+        let owner = json!({"type": "user", "message": {"role": "user", "content": "now say it is verified"}});
+        assert!(blocked(&stop("ce-owner", &lines(owner), reply, &[], json!({})).0).is_some(), "a real owner prompt starts a new turn");
+        // no owner prompt in the read window: the turn's start is unknown, so the earlier check does not count
+        let notice = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b2</task-id>\n</task-notification>"}});
+        let unbounded: Vec<Value> = lines(notice).into_iter().skip(1).collect();
+        assert!(blocked(&stop("ce-no-owner", &unbounded, reply, &[], json!({})).0).is_some(), "no turn boundary in the window: nothing backs the reply");
+    }
+
     #[test]
     fn a_test_claim_backed_by_a_runner_this_turn_passes_and_one_backed_by_an_unrelated_command_is_held() {
         let reply = "All tests pass.";
@@ -4172,6 +4223,62 @@ mod afk_mode {
         assert!(out(&run(&h, "PostToolUse", json!({"tool_name": "Bash"}), &[])).is_empty());
         assert!(out(&run(&h, "Stop", json!({"last_assistant_message": long}), &[])).is_empty());
         assert_eq!(drained().counter("afk_stale_injection_suppressed", &[("event", "PreToolUse")]), 1);
+    }
+
+    /// A live owner prompt typed after AFK started suspends the question block of THAT session for afk.presentMinutes; the prompt that
+    /// turned AFK on, a teammate/system prompt, a scheduled turn, a prompt older than the window and an owner prompt in another session do not.
+    #[test]
+    fn a_live_owner_prompt_after_afk_started_suspends_the_question_block_for_the_window() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-present");
+        drained();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {}});
+        let denied = |h: &str| out(&run(h, "PreToolUse", ask.clone(), &[])).contains("deny");
+        let held = |h: &str| out(&run(h, "Stop", json!({"last_assistant_message": "Done.\nShall I deploy now?"}), &[])).contains("block");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        assert!(denied(&h) && held(&h), "AFK just turned on by the typed prompt: questions are blocked");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // a teammate or system prompt is not the owner
+        for p in ["<teammate-message teammate_id=\"x\">hi</teammate-message>", "<system-reminder>x</system-reminder>", "<cross-session-message from=\"y\">z"] {
+            run(&h, "UserPromptSubmit", json!({"prompt": p}), &[]);
+            assert!(denied(&h), "a non-owner prompt is no presence: {p}");
+        }
+        // a cron tick (the host scheduler's turn, whatever its text) is not the owner either
+        let tick = "check the deploy and report";
+        std::fs::write(format!("{h}/t.jsonl"), json!({"type": "user", "turnOrigin": "scheduled", "message": {"role": "user", "content": tick}}).to_string() + "\n").unwrap();
+        run(&h, "UserPromptSubmit", json!({"prompt": tick}), &[]);
+        assert!(denied(&h), "a scheduled turn is no presence");
+        std::fs::remove_file(format!("{h}/t.jsonl")).unwrap();
+        // a real owner prompt lifts the block, AFK stays on
+        run(&h, "UserPromptSubmit", json!({"prompt": "ok please deploy all to develop"}), &[]);
+        assert!(!denied(&h), "the live owner can be asked");
+        assert!(!held(&h), "a turn ending on a question is not held for a live owner");
+        run(&h, "Stop", json!({"last_assistant_message": "Done."}), &[]);
+        assert_eq!(flag(&h)["on"], json!(true), "AFK itself stays on");
+        let m = drained();
+        assert_eq!(m.counter("afk_question_present_allowed", &[("where", "pre")]), 1);
+        assert_eq!(m.counter("afk_question_present_allowed", &[("where", "stop")]), 1, "only a turn ending on a question is counted");
+        // another session (a parallel workspace) is still blocked: the owner typed in s1, not there
+        let ask2 = |h: &str| out(&run(h, "PreToolUse", json!({"session_id": "s2", "tool_name": "AskUserQuestion", "tool_input": {}}), &[])).contains("deny");
+        assert!(ask2(&h), "an owner prompt in one session never lifts the block of another");
+        // the window passed: blocked again
+        let (now, sess) = (crate::checks::taskkit::time::now_ms(), format!("{h}/.anti-hall/afk-sess-s1.json"));
+        let old = now - 11 * 60_000;
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "prompt", "since": old - 5000, "epoch": "e", "counted": true}).to_string()).unwrap();
+        std::fs::write(&sess, json!({"epoch": "e", "present": old}).to_string()).unwrap();
+        assert!(denied(&h), "an owner prompt older than the window no longer counts");
+        // the machine-wide presence alone (a prompt in any session) is no presence in this one
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": now}).to_string()).unwrap();
+        assert!(denied(&h), "a fresh prompt elsewhere does not suspend this session's block");
+        // a mark of an earlier AFK period does not count
+        std::fs::write(&sess, json!({"epoch": "older", "present": now}).to_string()).unwrap();
+        assert!(denied(&h), "a mark of another AFK period is no presence");
+        // the setting off: never suspended
+        std::fs::write(&sess, json!({"epoch": "e", "present": now}).to_string()).unwrap();
+        assert!(!denied(&h), "a fresh prompt suspends it again");
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"presentMinutes": 0}}).to_string()).unwrap();
+        assert!(denied(&h), "presentMinutes 0 restores the old block");
+        drained();
     }
 
     /// GH #509: AFK on, then `back`: the next question-tool and Stop hooks inject and hold nothing.

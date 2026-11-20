@@ -28,16 +28,16 @@ doc = "Most distinct label combinations kept per metric; further combinations ke
 value = 128
 
 [telemetry.max_series_by_metric]
-doc = "Per metric, a larger label-combination cap than telemetry.max_series. delivery_funnel and delivery_channel carry check x model x project x stage (or channel), which would collapse into the overflow label at 128 series and erase the split the funnel exists for; both stay bounded by delivery.project_slots and the model families, and by this cap; past it model and project fold into the overflow label and the check and stage stay (telemetry.overflow_keep_by_metric)."
-value = { delivery_funnel = 768, delivery_channel = 512, stop_channel = 512 }
+doc = "Per metric, a larger label-combination cap than telemetry.max_series. delivery_funnel and delivery_channel carry check x model x project x stage (or channel), which would collapse into the overflow label at 128 series and erase the split the funnel exists for; both stay bounded by delivery.project_slots and the model families, and by this cap; past it model and project fold into the overflow label and the check and stage stay (telemetry.overflow_keep_by_metric). delivery_stage (check x stage) and delivery_lost (check x reason) outgrew 128 live (152 and 173 series, 2026-11-20): past it the stage and reason folded into the overflow label, `status` delivery lost complied and ignored for most checks, and the pending table dropped new delivery_lost series between drains; their own cap keeps both exact."
+value = { delivery_funnel = 768, delivery_channel = 512, stop_channel = 512, delivery_stage = 512, delivery_lost = 512 }
 
 [telemetry.overflow_keep_labels]
 doc = "Label names that keep their own value once a metric has more than max_series label combinations: the other labels of the series collapse into the overflow label, so the cost per check stays readable (the pre-fix cap folded every label into `other` and hid 1.8 GB of transcript reads). The series that keep a value are bounded by max_series_kept."
 value = ["check"]
 
 [telemetry.overflow_keep_by_metric]
-doc = "Per metric, the label names that keep their own value once the metric passes its series cap, instead of telemetry.overflow_keep_labels: the other labels fold into the overflow label. Series kept this way are never cut by max_series_kept (they are bounded by the number of checks times the stage or channel words), so no count of these metrics is ever lost. delivery_funnel keeps check and stage, delivery_channel keeps check and channel, so a total per check and stage stays exact and only model and project fold."
-value = { delivery_funnel = ["check", "stage"], delivery_channel = ["check", "channel"], stop_channel = ["counter", "check"] }
+doc = "Per metric, the label names that keep their own value once the metric passes its series cap, instead of telemetry.overflow_keep_labels: the other labels fold into the overflow label. Series kept this way are never cut by max_series_kept (they are bounded by the number of checks times the stage or channel words), so no count of these metrics is ever lost. delivery_funnel keeps check and stage, delivery_channel keeps check and channel, so a total per check and stage stays exact and only model and project fold. delivery_stage and delivery_lost keep all their labels (check and stage, check and reason): none folds."
+value = { delivery_funnel = ["check", "stage"], delivery_channel = ["check", "channel"], stop_channel = ["counter", "check"], delivery_stage = ["check", "stage"], delivery_lost = ["check", "reason"] }
 
 [telemetry.max_series_kept]
 doc = "Most series per metric that keep an overflow_keep_labels value past max_series; beyond it every label collapses into the overflow label."

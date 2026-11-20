@@ -241,3 +241,19 @@
 {"text":"All tests pass, then merge.","expect":"block","source":"review-825-plan-context"}
 {"text":"CI is green, then merge.","expect":"block","source":"review-825-plan-context"}
 {"text":"The PR is merged, then ship it.","expect":"block","source":"review-825-plan-context"}
+{"text":"I've told every workspace to merge to develop as soon as its work is reviewed and tests pass.","expect":"allow","source":"condition-intent-2026-11-20"}
+{"text":"Merge once the PR is approved and tests pass.","expect":"allow","source":"condition-intent-2026-11-20"}
+{"text":"Ship it if CI is green and all tests pass.","expect":"allow","source":"condition-intent-2026-11-20"}
+{"text":"The build is green and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
+{"text":"The PR was reviewed and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
+{"text":"Once again CI is up and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
+{"text":"When the PR was reviewed and tests pass.","expect":"block","source":"condition-intent-2026-11-20"}
+{"text":"The simulator session is released.","expect":"allow","source":"nonsoftware-2026-11-20"}
+{"text":"The device lock was released.","expect":"allow","source":"nonsoftware-2026-11-20"}
+{"text":"The PR is released.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The new version is released.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The fix for the device is deployed.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The patch for this session is merged.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The firmware for the device is released.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The device is deployed.","expect":"block","source":"nonsoftware-2026-11-20"}
+{"text":"The simulator is released.","expect":"allow","source":"nonsoftware-2026-11-20"}

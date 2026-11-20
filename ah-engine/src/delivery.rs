@@ -175,10 +175,51 @@ struct Row {
     shed: u64,
     lost: u64,
     suppressed: u64,
+    /// The part of `lost` that a check said and the reply never carried (reason `delivery.reason_undelivered`).
+    undelivered: u64,
+}
+
+/// `n` of `d` as a percentage rounded to `delivery.pct_decimals`, `null` when `d` is 0.
+fn pct(n: u64, d: u64) -> serde_json::Value {
+    if d == 0 {
+        return serde_json::Value::Null;
+    }
+    let scale = 10f64.powi(defaults::num("delivery.pct_decimals") as i32);
+    serde_json::json!((n as f64 * 100.0 / d as f64 * scale).round() / scale)
+}
+
+/// The funnel's per-check rows (`delivery_funnel` summed over model and project): exact per check and stage, since that metric keeps
+/// both labels past its series cap (`telemetry.overflow_keep_by_metric`). The unsplit `delivery_stage` series folded the stage of the
+/// checks that came after its cap into the overflow label, which is what left `complied` and `ignored` at 0 for most checks.
+fn funnel_rows(report: &serde_json::Value) -> std::collections::BTreeMap<String, Row> {
+    use serde_json::Value;
+    let mut out = std::collections::BTreeMap::new();
+    for r in report.pointer("/funnel/rows").and_then(Value::as_array).cloned().unwrap_or_default() {
+        let n = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let check = r.get("check").and_then(Value::as_str).unwrap_or_default().to_string();
+        let row = Row {
+            decided: n("decided"),
+            delivered: n("delivered"),
+            complied: n("acted_on"),
+            ignored: n("ignored"),
+            shed: n("shed"),
+            lost: n("lost"),
+            suppressed: n("suppressed"),
+            undelivered: 0,
+        };
+        out.insert(check, row);
+    }
+    out
 }
 
 /// The ledger as `status` shows it: per check the counts of every stage (a stage never reached is 0; `complied` and `ignored` are
-/// `null` for a check with no `delivery.react` row), and the spills per event.
+/// `null` for a check with no `delivery.act` / `delivery.react` row), its dropped and ignored shares, and the spills per event.
+/// A check the funnel counted takes its stages from the funnel ([`funnel_rows`]); the others from the unsplit series.
+/// * `undelivered`: answers the check made that the reply never carried (certain drops);
+/// * `not_run`: runs dropped before the check answered (shed, client_gone, hard_deadline, cpu_budget, check_deferred): most of them
+///   would have been a quiet allow, so they are not answers; `lost` = undelivered + not_run less shed;
+/// * `dropped_pct` = undelivered of decided; `dropped_max_pct` = (undelivered + not_run) of (decided + not_run), the bound if every
+///   dropped run would have answered; `ignored_pct` = ignored of (acted_on + ignored).
 pub fn status(t: &Telemetry) -> serde_json::Value {
     use serde_json::{Map, Value, json};
     let snap = t.with_metrics(|m| m.snapshot(""));
@@ -188,7 +229,7 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
         defaults::text("delivery.stage_complied"),
         defaults::text("delivery.stage_ignored"),
     );
-    let shed = defaults::text("delivery.reason_shed");
+    let (shed, undelivered) = (defaults::text("delivery.reason_shed"), defaults::text("delivery.reason_undelivered"));
     let suppressed = defaults::text("delivery.stage_suppressed");
     let mut checks: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
     let mut spills = Map::new();
@@ -212,12 +253,15 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
                 }
             }
             "delivery_lost" => {
-                let shed_reason = label("reason") == shed;
+                let reason = label("reason");
                 let row = checks.entry(label("check")).or_default();
-                if shed_reason {
+                if reason == shed {
                     row.shed += n;
                 } else {
                     row.lost += n;
+                }
+                if reason == undelivered {
+                    row.undelivered += n;
                 }
             }
             "context_spills" => {
@@ -228,8 +272,17 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
             _ => {}
         }
     }
+    let report = funnel::report(&t.with_metrics(|m| m.export()), None, true, &[], None);
+    // the funnel's exact stages replace the unsplit ones of every check it counted; the undelivered part stays the unsplit reason's
+    for (check, f) in funnel_rows(&report) {
+        let row = checks.entry(check).or_default();
+        let kept = row.undelivered;
+        *row = Row { undelivered: kept.min(f.lost), ..f };
+    }
     let never: Vec<&str> = defaults::raw("diagnostics.shed_never").as_table().map(|t| t.iter().map(|(k, _)| *k).collect()).unwrap_or_default();
     let mut essential_shed = 0u64;
+    // (decided, undelivered, not_run) and (acted_on, ignored) of the measured checks, over every check
+    let (mut total, mut measured_total) = ((0u64, 0u64, 0u64), (0u64, 0u64));
     let rows: Map<String, Value> = checks
         .into_iter()
         .map(|(check, r)| {
@@ -238,20 +291,36 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
             if never.contains(&check.as_str()) {
                 essential_shed += shd;
             }
+            let not_run = (lost + shd).saturating_sub(r.undelivered);
+            total = (total.0 + dec, total.1 + r.undelivered, total.2 + not_run);
+            if measured {
+                measured_total.0 += com;
+                measured_total.1 += ign;
+            }
             let row = json!({
                 "decided": dec, "delivered": del,
                 "complied": if measured { json!(com) } else { Value::Null },
                 "acted_on": if measured { json!(com) } else { Value::Null },
                 "ignored": if measured { json!(ign) } else { Value::Null },
                 "shed": shd, "lost": lost, "suppressed": r.suppressed,
+                "undelivered": r.undelivered, "not_run": not_run,
+                "dropped_pct": pct(r.undelivered, dec),
+                "dropped_max_pct": pct(r.undelivered + not_run, dec + not_run),
+                "ignored_pct": if measured { pct(ign, com + ign) } else { Value::Null },
             });
             (check, row)
         })
         .collect();
-    let funnel = t.with_metrics(|m| m.export());
-    let totals = funnel::report(&funnel, None, true, &[], None).get("funnel").and_then(|f| f.get("totals")).cloned().unwrap_or_default();
+    let totals = report.get("funnel").and_then(|f| f.get("totals")).cloned().unwrap_or_default();
+    let ((dec, undel, not_run), (com, ign)) = (total, measured_total);
     json!({
         "per_check": rows, "essential_shed": essential_shed, "spills_by_event": spills, "pinned_spills": pinned_spills,
+        "summary": {
+            "decided": dec, "undelivered": undel, "not_run": not_run,
+            "dropped_pct": pct(undel, dec),
+            "dropped_max_pct": pct(undel + not_run, dec + not_run),
+            "acted_on": com, "ignored": ign, "ignored_pct": pct(ign, com + ign),
+        },
         "funnel": { "enabled": funnel::enabled(), "totals": totals },
     })
 }
@@ -315,6 +384,48 @@ mod tests {
         assert_eq!(count(&t, "task-tracker", "delivery.stage_complied") + count(&t, "task-tracker", "delivery.stage_ignored"), 0, "nothing was armed");
         let s = status(&t);
         assert_eq!((s["per_check"]["task-tracker"]["decided"].as_u64(), s["per_check"]["task-tracker"]["suppressed"].as_u64()), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn status_reads_each_checks_stages_from_the_funnel_past_the_series_cap_and_shows_its_dropped_and_ignored_shares() {
+        let t = Telemetry::new();
+        // more checks than the global series cap: each keeps its own stages (the unsplit series folded them into the overflow label)
+        let n = defaults::num("telemetry.max_series") as usize + 72;
+        for i in 0..n {
+            deliver(&t, &format!("s-cap-{i}"), &format!("cap-check-{i}"));
+        }
+        let s = status(&t);
+        for i in 0..n {
+            let r = &s["per_check"][format!("cap-check-{i}")];
+            assert_eq!((r["decided"].as_u64(), r["delivered"].as_u64(), r["dropped_pct"].as_f64()), (Some(1), Some(1), Some(0.0)), "cap-check-{i}: {r}");
+        }
+        let check = "task-tracker";
+        let window =
+            defaults::raw("delivery.act").get(check).and_then(|r| r.get("window")).and_then(defaults::V::as_integer).expect("task-tracker has an act row");
+        deliver(&t, "s-share-1", check);
+        observe_tool(&t, "s-share-1", "TaskUpdate");
+        deliver(&t, "s-share-2", check);
+        for _ in 0..window {
+            observe_tool(&t, "s-share-2", "Bash");
+        }
+        decided(&t, "s-share-3", check, &ctx());
+        settle(&t, false);
+        let s = status(&t);
+        let r = &s["per_check"][check];
+        assert_eq!(
+            (r["decided"].as_u64(), r["delivered"].as_u64(), r["acted_on"].as_u64(), r["ignored"].as_u64(), r["undelivered"].as_u64(), r["not_run"].as_u64()),
+            (Some(3), Some(2), Some(1), Some(1), Some(1), Some(0)),
+            "{r}"
+        );
+        assert_eq!((r["dropped_pct"].as_f64(), r["dropped_max_pct"].as_f64(), r["ignored_pct"].as_f64()), (Some(33.3), Some(33.3), Some(50.0)), "{r}");
+        assert!(s["per_check"]["cap-check-0"]["ignored_pct"].is_null(), "a check without an acted-on row has no ignored share");
+        let sum = &s["summary"];
+        assert_eq!(
+            (sum["decided"].as_u64(), sum["undelivered"].as_u64(), sum["acted_on"].as_u64(), sum["ignored"].as_u64()),
+            (Some(n as u64 + 3), Some(1), Some(1), Some(1)),
+            "{sum}"
+        );
+        assert_eq!(sum["ignored_pct"].as_f64(), Some(50.0));
     }
 
     #[test]
