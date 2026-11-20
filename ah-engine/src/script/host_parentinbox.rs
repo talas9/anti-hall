@@ -55,6 +55,11 @@ thread_local! {
 /// A new script call starts: no snapshot and no marker index is held.
 pub(super) fn reset_call() {
     SNAP.with(|s| *s.borrow_mut() = None);
+    end_call();
+}
+
+/// A script call ended: the marker index and the app states it read are released, not held by an idle worker thread.
+pub(super) fn end_call() {
     MARKERS.with(|m| *m.borrow_mut() = None);
     APP_STATES.with(|s| *s.borrow_mut() = None);
 }
