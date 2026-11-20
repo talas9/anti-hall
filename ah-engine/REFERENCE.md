@@ -1460,13 +1460,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.jq_safe_flags` | `9 items` |  |  | jq flags the narrow gcloud read accepts. |
 | `command.launcher_marker` | `.anti-hall` |  |  | A command without this text cannot name a stable launcher. |
 | `command.launcher_scripts` | `devswarm.js, wake-watch.js` |  |  | The old stable launcher scripts under ~/.anti-hall/bin (retired: the engine no longer creates them). Kept only so the command guard still recognises a leftover file by name; no text advertises them. |
-| `command.light_exceptions` | `18 items` |  |  | Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\s\|$)` is written as `(?:\s\|$)`). |
+| `command.light_exceptions` | `19 items` |  |  | Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\s\|$)` is written as `(?:\s\|$)`). |
 | `command.light_exceptions_neg` | `3 entries, 3 entries, 3 entries` |  |  | LIGHT_EXCEPTIONS entries of the form HEAD`\b(?![^\n]*NOT)`: the segment is light when some match of `head` ends (at a word boundary, right after the text `end`) where `not_after` does not match before the end of that line (jev-report.js, doctor.js and `go env`). |
 | `command.mailbox_flag_skip` | `(?:-\S+(?:\s+[^-\s]\S*)?\s+)*` |  |  | Regex source: optional flags (with an optional value each) before a ah-engine mesh verb. |
 | `command.mailbox_guard` | `devswarm-subagent-mailbox-guard` |  |  | The skip id of the subagent mailbox guard. |
 | `command.mailbox_js_prefix` | `(?:node\s+)?(?:\S*[\\/])?scripts[\\/]devswarm\.js` |  |  | Regex source: an invocation of the old devswarm.js shim CLI (kept so the guard still recognises it). |
 | `command.max_classify_len` | `65536` |  |  | Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it). |
 | `command.max_depth` | `3` |  |  | Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`). |
+| `command.msg_brief_rule` | `Rule: {kind} ({label}).` |  |  | The rule the visible heavy-command block names ({kind} is msg_heavy_remote or msg_heavy_plain, {label} the verb or category that matched, e.g. flutter or gh pr merge). |
+| `command.msg_brief_rule_remote` | `Rule: {kind}.` |  |  | The rule the visible block names for a state-changing remote command (git push/pull/fetch, a gh write): {kind} is msg_heavy_remote. |
 | `command.msg_dsread_inbox_cmd_prefix` | `read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or ` |  |  | Added before the text above when a consumer-configured inbox command is set. |
 | `command.msg_dsread_instead` | `read the inbox through the mesh CLI.` |  |  | What to do instead of a native read. |
 | `command.msg_dsread_monitor_what` | ``hivecontrol workspace monitor` is blocked.` |  |  | Heading of the monitor block. |
@@ -2735,7 +2737,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.endpoint_vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` |  |  | Vercel AI Gateway TypeSafe passthrough that serves the Jev system-one API (Node: jev-client.js GATEWAY.endpoint). |
 | `jev.env_cache_cap` | `8` |  |  | Distinct session environments whose resolved settings are kept (the engine serves many sessions, each with its own environment); the oldest is dropped first. |
 | `jev.fallback_reserve_ms` | `600` |  | ms | Budget held back from the primary for the fallback when one is configured (Node: FALLBACK_RESERVE_MS). |
-| `jev.fallback_reserve_pct` | `40` |  |  | The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). |
+| `jev.fallback_reserve_pct` | `25` |  |  | The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). 25 (was 40): the primary gets the timeout minus this reserve, and 40 starved it of budget. |
 | `jev.gate_background_ask` | `0` |  |  | 1 also sends the question of an unflagged Stop out in the background (its answer lands in the cache and the log for a later turn, adding no Stop latency); 0 (default) does not ask at all. |
 | `jev.gate_enabled` | `1` |  |  | 1 (default) gates the Stop/SubagentStop Jev wait: a check that passes `flagged` (its cheap rule layer found a likely unverified claim, with the evidence in hand) waits for Jev within jev.stop_soft_ms / jev.stop_hard_ms; an unflagged one keeps its baseline without asking synchronously. 0 asks on every Stop, as before the gate. |
 | `jev.hash_len` | `16` |  |  | Hex characters of the SHA-256 content hash kept as the cache key and the log's h field (Node: slice(0, 16)). |
@@ -2743,6 +2745,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.key_file_roots` | `.config, .anti-hall` |  |  | Directories under the home directory a key file must really live in once symlinks are resolved (Node: readKeyFile). |
 | `jev.key_file_typesafe` | `.config/typesafe/key` |  |  | Default key file for the TypeSafe vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
 | `jev.key_file_vercel` | `.config/vercel/ai-gateway-key` |  |  | Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
+| `jev.key_source_file` | `a key file` |  |  | Plain-words name of a key that came from a key file (jev.allowLegacyKeyRead on). |
+| `jev.key_source_generic` | `the generic plugin option` |  |  | Plain-words name of a key that came from the generic (vendor-less) plugin option. |
+| `jev.key_source_own` | `the vendor's own plugin option` |  |  | Plain-words name of a key that came from the vendor's own plugin option. |
 | `jev.latency_samples_max` | `4096` |  |  | Most call-latency samples held between two metrics flushes; past it new samples are dropped until the flush drains them (a bound on memory if the flush stalls). |
 | `jev.legacy_file` | `jev.json` |  |  | The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json). |
 | `jev.legacy_on_default` | `speculation, triage` |  |  | Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT). |
@@ -2756,12 +2761,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.max_timeout_ms` | `3000` |  | ms | Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS). |
 | `jev.min_fallback_ms` | `150` |  | ms | Below this much remaining budget no real call can finish, so the fallback is skipped (Node: MIN_FALLBACK_MS). |
 | `jev.model_pin` | `jev-1.14.0` |  |  | The versioned model id sent to the direct TypeSafe API, so a provider alias move (jev-latest) cannot change the model under tuned thresholds; the provider advises pinning a versioned id. Override with the jev.modelPin setting (set it to jev-latest to follow the moving alias; the doctor warns). An empty shipped value falls back to jev.model_typesafe. Not applied to the Vercel gateway id (jev.model_vercel): the gateway docs do not document a versioned id there. |
+| `jev.model_pin_released` | `2026-10-14` |  |  | Release date (YYYY-MM-DD) of the model version jev.model_pin names (jev-1.14.0: 2026-10-14, per docs/KB-jev-classifier.md). The doctor compares it with the release dates the provider lists and warns when a non-preview model is newer. Bump it together with jev.model_pin. |
 | `jev.model_typesafe` | `jev-latest` |  |  | The moving alias sent to the direct TypeSafe transport only when the shipped jev.model_pin is emptied; the doctor warns while it is in use (Node: TYPESAFE.model). |
 | `jev.model_vercel` | `typesafe-ai/jev` |  |  | Model name sent to the Vercel transport (Node: GATEWAY.model). |
+| `jev.models_date_field` | `release_date` |  |  | Field of one listed model that holds its release date (ISO 8601; only the leading YYYY-MM-DD is compared). |
+| `jev.models_list_field` | `models` |  |  | Field of the model-list answer that holds the array of models. |
+| `jev.models_name_field` | `name` |  |  | Field of one listed model that holds its id. |
+| `jev.models_path` | `/v1/models` |  |  | Path, on the origin of jev.endpoint_typesafe, of the provider's model list the doctor reads (one read-only GET with the TypeSafe key). Verified live 2026-11-20: it answers {"models":[{"name","description","release_date"}]} and lists only the aliases jev-latest and jev-preview, not versioned ids. |
+| `jev.models_preview_marker` | `preview` |  |  | A listed model whose id contains this text is a preview and never counts as a newer release. |
 | `jev.price_usd_per_m_input` | `0.042` |  |  | USD per million input tokens used when a response reports tokens but no cost; Jev's own published rate (Node: jev.priceUsdPerMInput). |
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
-| `jev.queue_cap` | `64` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). |
+| `jev.queue_cap` | `128` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). 128 (was 64): busy overflow was observed on 2026-11-08 and 2026-11-12 at 64. |
 | `jev.reason_fail_open` | `fail_open` |  |  | The reason a flagged Stop reports when its wait for Jev ran out and the check kept its baseline (fail-open). |
 | `jev.relax_sync_cap_ms` | `1500` |  | ms | Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS). |
 | `jev.retry_status_min` | `500` |  |  | An HTTP status at or above this one is a retry-eligible failure of the primary (Node: status >= 500). |
@@ -7150,8 +7161,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.inbox_corrupt` | `{n} of the last {m} lines of {file} are not JSON` |  |  | LG-04. Placeholders: {n}, {m}, {file}. |
 | `doctor_msg.inbox_huge` | `{file} is {mb} MB (cap {cap_mb} MB) - Fix: ah-engine maintain` |  |  | LG-03. Placeholders: {file}, {mb}, {cap_mb}. |
 | `doctor_msg.jev_fail` | `Jev call failed via {transport}: {why} (after {ms} ms)` |  |  | Finding: the Jev test call failed. Placeholders: {why}, {ms}, {transport}. |
+| `doctor_msg.jev_key_file_unread` | `a {vendor} key file exists at {path} but is not read; enable jev.allowLegacyK...` |  |  | Warning: a Jev key file exists but is not read because jev.allowLegacyKeyRead is off. Placeholders: {vendor}, {path}. |
+| `doctor_msg.jev_key_source` | `Jev key for {vendor}: {source}` |  |  | Info: where the Jev key of a vendor was found; never the key. Placeholders: {vendor}, {source}. |
 | `doctor_msg.jev_model` | `Jev model: {models}` |  |  | Finding: the model id each Jev vendor is sent. Placeholders: {models} (vendor=model pairs, primary first). An alias (jev-latest) is flagged by the doctor as moving. |
 | `doctor_msg.jev_model_alias` | `Jev model {model} is a moving alias; set jev.modelPin to a versioned id` |  |  | Warning: the direct TypeSafe vendor is sent a moving alias, so thresholds tuned on one version can silently meet another. Placeholders: {model}. |
+| `doctor_msg.jev_model_newer` | `newer model available: {model} {date} (pinned {pin} {pin_date}); re-check the...` |  |  | Warning: the provider lists a non-preview model released after the pinned one. Placeholders: {model} (listed id), {date} (its release date), {pin}, {pin_date}. |
+| `doctor_msg.jev_models_unreachable` | `Jev model list not checked ({why})` |  |  | Info (fail-open): the model list could not be read, so the newer-model check was skipped. Placeholders: {why}. |
 | `doctor_msg.jev_no_key` | `Jev is enabled but has no API key for {transport}` |  |  | Finding: Jev is enabled but no API key resolves for its transport, so the test call was not made. Placeholder: {transport}. |
 | `doctor_msg.jev_ok` | `Jev answered in {ms} ms ({transport})` |  |  | Finding: the Jev test call answered in time. Placeholders: {ms}, {transport}, {limit}. |
 | `doctor_msg.jev_slow_fail` | `Jev is too slow: {ms} ms via {transport} (limit {limit} ms)` |  |  | Finding: the Jev test call answered, but past the fail limit. Placeholders: {ms}, {transport}, {limit}. |
@@ -14091,7 +14106,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `delivery.report_note_partial` | `the oldest metrics snapshot is newer than the window start, so the figures co...` |  |  | Printed in the funnel report's window block when no metrics snapshot is as old as the window: the figures cover only what the oldest snapshot and the live counters hold. |
 | `delivery.report_overflow_stage` | `unlisted` |  |  | Report key for answers counted under a stage label the report does not list (an older series whose stage label was folded into the overflow label): they stay in the row and the totals under this key instead of being dropped. |
 | `delivery.report_rollup` | `hour` |  |  | The metrics rollup resolution (telemetry.rollups) whose stored snapshots give the start of a windowed funnel report. |
-| `delivery.report_stages` | `7 items` |  |  | The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label. |
+| `delivery.report_stages` | `8 items` |  |  | The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label. |
 | `delivery.report_verb` | `funnel` |  |  | The `telemetry` subcommand that prints the funnel (`ah-engine telemetry funnel --by model,project --window 7d`; `--since` is accepted for `--window`). |
 | `delivery.session_models_max` | `256` |  |  | Sessions whose resolved model the funnel remembers; past it the oldest is forgotten (and resolved again if it reappears). |
 | `delivery.stage_acted_on` | `acted_on` |  |  | Funnel stage label for a delivered answer whose acted-on condition (delivery.act, else delivery.react) was met within its window. The unsplit delivery_stage counter keeps the older label `complied` (delivery.stage_complied) so restored counters stay valid. |
@@ -14102,6 +14117,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `delivery.stage_lost` | `lost` |  |  | Funnel stage label for an answer that did not reach the agent for a reason other than shedding (hard_deadline, cpu_budget, client_gone, check_deferred, undelivered). |
 | `delivery.stage_shed` | `shed` |  |  | Funnel stage label for an answer shed by the CPU hard limit (the reason named in delivery.reason_shed). |
 | `delivery.stage_suppressed` | `suppressed` |  |  | Stage label for an answer a check made that the client's hook configuration never emits (the entry's mode is shadow: it runs and is measured, its answer is dropped). Counted as decided and as suppressed, never as delivered, in an output channel, or armed for a reaction. |
+| `delivery.stage_undelivered` | `undelivered` |  |  | Funnel stage label for the answers of delivery.stage_lost that the check made and the reply never carried (reason delivery.reason_undelivered): counted with the same session model and project as the answer's decided, so it is never more than decided. The rest of lost are runs dropped before the check answered (not_run). |
 
 ### diagnostics.toml / diagnostics
 

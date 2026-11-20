@@ -68,6 +68,42 @@ value = "jev-latest"
 doc = "The versioned model id sent to the direct TypeSafe API, so a provider alias move (jev-latest) cannot change the model under tuned thresholds; the provider advises pinning a versioned id. Override with the jev.modelPin setting (set it to jev-latest to follow the moving alias; the doctor warns). An empty shipped value falls back to jev.model_typesafe. Not applied to the Vercel gateway id (jev.model_vercel): the gateway docs do not document a versioned id there."
 value = "jev-1.14.0"
 
+[jev.model_pin_released]
+doc = "Release date (YYYY-MM-DD) of the model version jev.model_pin names (jev-1.14.0: 2026-10-14, per docs/KB-jev-classifier.md). The doctor compares it with the release dates the provider lists and warns when a non-preview model is newer. Bump it together with jev.model_pin."
+value = "2026-10-14"
+
+[jev.models_path]
+doc = "Path, on the origin of jev.endpoint_typesafe, of the provider's model list the doctor reads (one read-only GET with the TypeSafe key). Verified live 2026-11-20: it answers {\"models\":[{\"name\",\"description\",\"release_date\"}]} and lists only the aliases jev-latest and jev-preview, not versioned ids."
+value = "/v1/models"
+
+[jev.models_list_field]
+doc = "Field of the model-list answer that holds the array of models."
+value = "models"
+
+[jev.models_name_field]
+doc = "Field of one listed model that holds its id."
+value = "name"
+
+[jev.models_date_field]
+doc = "Field of one listed model that holds its release date (ISO 8601; only the leading YYYY-MM-DD is compared)."
+value = "release_date"
+
+[jev.models_preview_marker]
+doc = "A listed model whose id contains this text is a preview and never counts as a newer release."
+value = "preview"
+
+[jev.key_source_own]
+doc = "Plain-words name of a key that came from the vendor's own plugin option."
+value = "the vendor's own plugin option"
+
+[jev.key_source_generic]
+doc = "Plain-words name of a key that came from the generic (vendor-less) plugin option."
+value = "the generic plugin option"
+
+[jev.key_source_file]
+doc = "Plain-words name of a key that came from a key file (jev.allowLegacyKeyRead on)."
+value = "a key file"
+
 [jev.state_max_tokens]
 doc = "Per-question input cap in estimated tokens: the state text is cut to this many tokens (jev.chars_per_token characters each) before it is sent, because the provider rejects a question over its default 32k-token limit (the long-context header is not used). Override with the jev.stateMaxTokens setting."
 value = 30000
@@ -159,8 +195,8 @@ value = 3000
 unit = "ms"
 
 [jev.queue_cap]
-doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15)."
-value = 64
+doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). 128 (was 64): busy overflow was observed on 2026-11-08 and 2026-11-12 at 64."
+value = 128
 min = 1
 max = 4096
 
@@ -207,8 +243,8 @@ value = 600
 unit = "ms"
 
 [jev.fallback_reserve_pct]
-doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4))."
-value = 40
+doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). 25 (was 40): the primary gets the timeout minus this reserve, and 40 starved it of budget."
+value = 25
 min = 0
 max = 100
 

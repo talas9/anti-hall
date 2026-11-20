@@ -213,8 +213,8 @@ doc = "The hook event whose tool calls are watched for an agent's reaction to a 
 value = "PreToolUse"
 
 [delivery.react]
-doc = "Per check, the tool names whose use within the window counts as the agent reacting to the check's delivered answer (`complied`). Only a check with a row here has a compliance figure; a reaction that is not a tool call (answering in text, changing a plan) cannot be seen, so those checks show null. Tool names are the host's. verify-first: a verification lookup. task-tracker and tasklist-guard: a task-list change. devswarm-parent-inbox and devswarm-child-gate: a message or a mail read."
-value = { "verify-first" = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"], "task-tracker" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "tasklist-guard" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "devswarm-parent-inbox" = ["SendMessage", "Read"], "devswarm-child-gate" = ["SendMessage", "Read"] }
+doc = "Per check, the tool names whose use within the window counts as the agent reacting to the check's delivered answer (`complied`). Only a check with a row here has a compliance figure; a reaction that is not a tool call (answering in text, changing a plan) cannot be seen, so those checks show null. Tool names are the host's. verify-first has no row: it is a per-prompt reminder with nothing to act on, so its compliance reads null. task-tracker: a task-list change. tasklist-guard: a task-list change or a write of the progress file (Write, Edit, MultiEdit; Codex reports edits as apply_patch). devswarm-parent-inbox and devswarm-child-gate: a message or a mail read."
+value = { "task-tracker" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "tasklist-guard" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite", "Write", "Edit", "MultiEdit", "apply_patch"], "devswarm-parent-inbox" = ["SendMessage", "Read"], "devswarm-child-gate" = ["SendMessage", "Read"] }
 
 [delivery.command_tool]
 doc = "The tool whose command text a `delivery.act` row's `command_re` is matched against (the host's shell tool)."
@@ -575,6 +575,10 @@ value = "acted_on"
 doc = "Funnel stage label for an answer that did not reach the agent for a reason other than shedding (hard_deadline, cpu_budget, client_gone, check_deferred, undelivered)."
 value = "lost"
 
+[delivery.stage_undelivered]
+doc = "Funnel stage label for the answers of delivery.stage_lost that the check made and the reply never carried (reason delivery.reason_undelivered): counted with the same session model and project as the answer's decided, so it is never more than decided. The rest of lost are runs dropped before the check answered (not_run)."
+value = "undelivered"
+
 [delivery.stage_suppressed]
 doc = "Stage label for an answer a check made that the client's hook configuration never emits (the entry's mode is shadow: it runs and is measured, its answer is dropped). Counted as decided and as suppressed, never as delivered, in an output channel, or armed for a reaction."
 value = "suppressed"
@@ -631,7 +635,7 @@ value = ["model", "project"]
 
 [delivery.report_stages]
 doc = "The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label."
-value = ["decided", "delivered", "acted_on", "ignored", "lost", "shed", "suppressed"]
+value = ["decided", "delivered", "acted_on", "ignored", "lost", "undelivered", "shed", "suppressed"]
 
 [delivery.report_note_overflow]
 doc = "Printed in the funnel report's window.overflow when some counts sit in the overflow bucket (a series past telemetry.max_series_by_metric kept its check and stage and folded its model and project into the overflow label), and on each row that is such a bucket. Placeholders: {counts}."
