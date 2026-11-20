@@ -1460,13 +1460,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.jq_safe_flags` | `9 items` |  |  | jq flags the narrow gcloud read accepts. |
 | `command.launcher_marker` | `.anti-hall` |  |  | A command without this text cannot name a stable launcher. |
 | `command.launcher_scripts` | `devswarm.js, wake-watch.js` |  |  | The old stable launcher scripts under ~/.anti-hall/bin (retired: the engine no longer creates them). Kept only so the command guard still recognises a leftover file by name; no text advertises them. |
-| `command.light_exceptions` | `18 items` |  |  | Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\s\|$)` is written as `(?:\s\|$)`). |
+| `command.light_exceptions` | `19 items` |  |  | Patterns over the raw segment (and the segment without a leading `timeout N`) that make it light (command-guard.js LIGHT_EXCEPTIONS, the entries without a negative lookahead; a trailing `(?=\s\|$)` is written as `(?:\s\|$)`). |
 | `command.light_exceptions_neg` | `3 entries, 3 entries, 3 entries` |  |  | LIGHT_EXCEPTIONS entries of the form HEAD`\b(?![^\n]*NOT)`: the segment is light when some match of `head` ends (at a word boundary, right after the text `end`) where `not_after` does not match before the end of that line (jev-report.js, doctor.js and `go env`). |
 | `command.mailbox_flag_skip` | `(?:-\S+(?:\s+[^-\s]\S*)?\s+)*` |  |  | Regex source: optional flags (with an optional value each) before a ah-engine mesh verb. |
 | `command.mailbox_guard` | `devswarm-subagent-mailbox-guard` |  |  | The skip id of the subagent mailbox guard. |
 | `command.mailbox_js_prefix` | `(?:node\s+)?(?:\S*[\\/])?scripts[\\/]devswarm\.js` |  |  | Regex source: an invocation of the old devswarm.js shim CLI (kept so the guard still recognises it). |
 | `command.max_classify_len` | `65536` |  |  | Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it). |
 | `command.max_depth` | `3` |  |  | Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`). |
+| `command.msg_brief_rule` | `Rule: {kind} ({label}).` |  |  | The rule the visible heavy-command block names ({kind} is msg_heavy_remote or msg_heavy_plain, {label} the verb or category that matched, e.g. flutter or gh pr merge). |
+| `command.msg_brief_rule_remote` | `Rule: {kind}.` |  |  | The rule the visible block names for a state-changing remote command (git push/pull/fetch, a gh write): {kind} is msg_heavy_remote. |
 | `command.msg_dsread_inbox_cmd_prefix` | `read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or ` |  |  | Added before the text above when a consumer-configured inbox command is set. |
 | `command.msg_dsread_instead` | `read the inbox through the mesh CLI.` |  |  | What to do instead of a native read. |
 | `command.msg_dsread_monitor_what` | ``hivecontrol workspace monitor` is blocked.` |  |  | Heading of the monitor block. |
