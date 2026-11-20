@@ -440,6 +440,7 @@ mod tests {
                 "queued-wait-guard",
                 "lane-test-guard",
                 "wide-search-guard",
+                "cache-ttl-wait-guard",
                 "switch-notice"
             ]
         );

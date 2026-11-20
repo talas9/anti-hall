@@ -608,6 +608,7 @@ value = [
   { id = "queued-wait-guard", matcher = "Bash", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", timeout = 10, check = "lane-test-guard" },
   { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
+  { id = "cache-ttl-wait-guard", matcher = "Bash|Monitor|TaskOutput", timeout = 10, check = "cache-ttl-wait-guard" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
   { id = "advisor-guard", matcher = "Write|Edit|MultiEdit|ExitPlanMode", timeout = 10, check = "advisor-guard" },
   { id = "advisor-guard:dispatch", matcher = "Agent|Task", timeout = 10, check = "advisor-guard" },
@@ -721,6 +722,7 @@ value = [
   { id = "queued-wait-guard", matcher = "Bash", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", timeout = 10, check = "lane-test-guard" },
   { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
+  { id = "cache-ttl-wait-guard", matcher = "Bash", timeout = 10, check = "cache-ttl-wait-guard" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
 ]
 

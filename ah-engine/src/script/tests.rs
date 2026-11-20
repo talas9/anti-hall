@@ -576,6 +576,13 @@ fn ship_it_guard_script_matches_the_compiled_port() {
     assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
 }
 
+#[test]
+fn cache_ttl_wait_guard_script_matches_its_corpus() {
+    golden_report("cache-ttl-wait-guard", 12);
+    let kinds: std::collections::BTreeSet<String> = golden::load("cache-ttl-wait-guard").iter().filter_map(|c| c["expect"]["v"].as_str().map(str::to_string)).collect();
+    assert!(kinds.contains("advisory") && kinds.contains("allow") && !kinds.contains("block"), "an order is never a block: {kinds:?}");
+}
+
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
 pub(super) fn golden_report(check: &str, limit: usize) {
     golden::regen_defers_local(check);

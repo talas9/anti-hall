@@ -914,12 +914,16 @@ doc = "Mailbox-cron decisions of a Primary (devswarm.wakeCronOnlyWithChild), by 
 value = { kind = "counter", unit = "decisions", labels = ["action"] }
 
 [metric.waste_events_total]
-doc = "Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level; usage, pair, disk, subagent, orchestration: unchanged tool-hook advisory fingerprints). Counts only while the daemon holds the counter."
+doc = "Token-waste events avoided or seen (#709), by category (repeated_advisory: an unchanged advisory the old rule would have shown again) and source (keepalive_scheduled: the keepalive of an emit-dedupe block no longer counts a scheduled turn; disk_unchanged: the low-disk warning at an unchanged level; usage, pair, disk, subagent, orchestration: unchanged tool-hook advisory fingerprints). Two categories count SPENT tokens, read from the agent transcripts (GH #884, source transcript): cache_expiry (an assistant turn that rebuilt its prompt cache after an idle gap above agent_waste.cache_expiry.ttl_ms) and poke_turn (a turn woken by the host that made no tool call). Counts only while the daemon holds the counter."
 value = { kind = "counter", unit = "events", labels = ["category", "source"] }
 
 [metric.waste_tokens_total]
-doc = "Estimated tokens of the text the smarter rules did not send (#709), by category and source: the bytes of the left-out advisory divided by waste.bytes_per_token. An estimate of the advisory text only, not of the model turn it would have joined (that needs the transcript usage the engine does not expose to scripts). Counts only while the daemon holds the counter."
+doc = "Estimated tokens of the text the smarter rules did not send (#709), by category and source: the bytes of the left-out advisory divided by waste.bytes_per_token. For the avoided-advisory categories this is an estimate of the advisory text only, not of the model turn it would have joined. For cache_expiry it is the cache-creation tokens of the turn that rebuilt the cache; for poke_turn the weighted tokens of the woken turn (cache reads at agent_tracker.limits.cache_read_pct), both measured from the transcript usage (GH #884). Counts only while the daemon holds the counter."
 value = { kind = "counter", unit = "tokens", labels = ["category", "source"] }
+
+[metric.cache_wait_orders_total]
+doc = "Orders to split a long single wait (GH #884, cache-ttl-wait-guard), by tool (Bash, Monitor, TaskOutput) and kind (sleep, loop, tool). Each is a call that would have waited past the prompt-cache window."
+value = { kind = "counter", unit = "orders", labels = ["tool", "kind"] }
 
 [metric.waste_warnings_total]
 doc = "Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose."
