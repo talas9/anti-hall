@@ -159,8 +159,8 @@ value = 3000
 unit = "ms"
 
 [jev.queue_cap]
-doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15)."
-value = 64
+doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). 128 (was 64): busy overflow was observed on 2026-11-08 and 2026-11-12 at 64."
+value = 128
 min = 1
 max = 4096
 
@@ -207,8 +207,8 @@ value = 600
 unit = "ms"
 
 [jev.fallback_reserve_pct]
-doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4))."
-value = 40
+doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). 25 (was 40): the primary gets the timeout minus this reserve, and 40 starved it of budget."
+value = 25
 min = 0
 max = 100
 

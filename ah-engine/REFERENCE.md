@@ -2735,7 +2735,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.endpoint_vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` |  |  | Vercel AI Gateway TypeSafe passthrough that serves the Jev system-one API (Node: jev-client.js GATEWAY.endpoint). |
 | `jev.env_cache_cap` | `8` |  |  | Distinct session environments whose resolved settings are kept (the engine serves many sessions, each with its own environment); the oldest is dropped first. |
 | `jev.fallback_reserve_ms` | `600` |  | ms | Budget held back from the primary for the fallback when one is configured (Node: FALLBACK_RESERVE_MS). |
-| `jev.fallback_reserve_pct` | `40` |  |  | The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). |
+| `jev.fallback_reserve_pct` | `25` |  |  | The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). 25 (was 40): the primary gets the timeout minus this reserve, and 40 starved it of budget. |
 | `jev.gate_background_ask` | `0` |  |  | 1 also sends the question of an unflagged Stop out in the background (its answer lands in the cache and the log for a later turn, adding no Stop latency); 0 (default) does not ask at all. |
 | `jev.gate_enabled` | `1` |  |  | 1 (default) gates the Stop/SubagentStop Jev wait: a check that passes `flagged` (its cheap rule layer found a likely unverified claim, with the evidence in hand) waits for Jev within jev.stop_soft_ms / jev.stop_hard_ms; an unflagged one keeps its baseline without asking synchronously. 0 asks on every Stop, as before the gate. |
 | `jev.hash_len` | `16` |  |  | Hex characters of the SHA-256 content hash kept as the cache key and the log's h field (Node: slice(0, 16)). |
@@ -2761,7 +2761,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.price_usd_per_m_input` | `0.042` |  |  | USD per million input tokens used when a response reports tokens but no cost; Jev's own published rate (Node: jev.priceUsdPerMInput). |
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
-| `jev.queue_cap` | `64` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). |
+| `jev.queue_cap` | `128` |  |  | Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). 128 (was 64): busy overflow was observed on 2026-11-08 and 2026-11-12 at 64. |
 | `jev.reason_fail_open` | `fail_open` |  |  | The reason a flagged Stop reports when its wait for Jev ran out and the check kept its baseline (fail-open). |
 | `jev.relax_sync_cap_ms` | `1500` |  | ms | Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS). |
 | `jev.retry_status_min` | `500` |  |  | An HTTP status at or above this one is a retry-eligible failure of the primary (Node: status >= 500). |
