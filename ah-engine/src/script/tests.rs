@@ -3087,6 +3087,46 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);
 }
 
+/// The engine's own wake prompts stay pending in the native queue (a `task` nothing accepts), so the strict native probe counts them
+/// for ever. The child's pull records how many of its pending messages are wake prompts in the fresh wake-tick marker, and the gate
+/// subtracts them: a child whose only pending natives are wake prompts is not blocked as having unread parent mail (GH wake-pings).
+/// Native count 2 with 2 wake prompts: clear; 3 with 2: still blocks; the same 2 with no recorded wake count, or a stale marker: blocks.
+#[test]
+fn a_child_gate_does_not_count_wake_prompts_as_unread_native_mail() {
+    let field = defaults::text("mesh_write.marker_native_wake_field");
+    // (tag, native count, marker age ms, the marker's wake count, expect a block)
+    let cases: [(&str, u32, i64, Option<u32>, bool); 4] = [
+        ("only-wakes", 2, 5_000, Some(2), false),
+        ("one-real-message", 3, 5_000, Some(2), true),
+        ("no-wake-count", 2, 5_000, None, true),
+        ("stale-marker", 2, 3_000_000, Some(2), true),
+    ];
+    for (tag, native, age, wakes, blocks) in cases {
+        let marker = match wakes {
+            Some(w) => format!("{{\"ts\":{{MS:-{age}}},\"unreadTotal\":0,\"meshGapWithheld\":false,\"known\":true,\"{field}\":{w}}}"),
+            None => format!("{{\"ts\":{{MS:-{age}}},\"unreadTotal\":0,\"meshGapWithheld\":false,\"known\":true}}"),
+        };
+        let probe = format!("#!/bin/sh\necho '{{\"count\": {native}}}'\n");
+        let case = golden::lay(&json!({
+            "env": {"HOME": "{HOME}", "PATH": "{HOME}/bin:/usr/bin:/bin", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "feat/x",
+                    "DEVSWARM_BUILDER_ID": "b-1", "DEVSWARM_AI_AGENT": "codex"},
+            "event": "Stop", "opts": {"payload_sha1": "wake-pings"},
+            "payload": {"hook_event_name": "Stop", "session_id": format!("wake-{tag}"), "cwd": "{HOME}"},
+            "files": {
+                ".anti-hall/devswarm/workspaces/b-1.json": "{}",
+                ".anti-hall/devswarm/wake-tick/b-1.json": marker,
+                "bin/hivecontrol": {"text": probe, "mode": 0o755}
+            }
+        }));
+        let got = golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate");
+        match (got, blocks) {
+            (Some(Verdict::Exact(out)), true) => assert!(out.out.contains("unread"), "{tag}: {}", out.out),
+            (None | Some(Verdict::Allow), false) => {}
+            (other, _) => panic!("{tag}: expected block={blocks}, got {other:?}"),
+        }
+    }
+}
+
 /// The parent's neglected-child gate also reaches its decision without a root argument (doctor and direct Stop forms).
 #[test]
 fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
