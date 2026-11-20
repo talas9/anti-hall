@@ -358,11 +358,21 @@ pub fn daemon_section(doc: &mut Doc) {
         doc.warnl(defaults::render("doctor_msg.breaker", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));
     }
     if let Some(f) = health::read_json("failure") {
-        let (class, reason, hint) = (f["class"].as_str().unwrap_or(""), f["reason"].as_str().unwrap_or(""), f["hint"].as_str().unwrap_or(""));
+        let (class, hint) = (f["class"].as_str().unwrap_or(""), f["hint"].as_str().unwrap_or(""));
+        let full = f["reason"].as_str().unwrap_or("");
+        let max = defaults::num("doctor.reason_max") as usize;
+        // records written before the crash summary carry the whole breadcrumb: cut them and name the file
+        let reason = if full.chars().count() > max {
+            let head: String = full.chars().take(max).collect();
+            let path = paths::dir().join(defaults::text("files.failure")).display().to_string();
+            defaults::render("doctor_msg.failure_reason_cut", &[("head", &head), ("path", &path)])
+        } else {
+            full.to_string()
+        };
         doc.warnl(defaults::render("doctor_msg.failure_recorded", &[("class", &class), ("reason", &reason), ("hint", &hint)]));
     }
     if let Some(c) = health::last_crash() {
-        doc.warnl(defaults::render("doctor_msg.last_crash", &[("crash", &c)]));
+        doc.warnl(defaults::render("doctor_msg.last_crash", &[("crash", &health::crash_summary(&c))]));
     }
 }
 

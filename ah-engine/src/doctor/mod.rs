@@ -190,6 +190,8 @@ struct Flags {
     explicit: Vec<&'static str>,
     /// `--apply`: the explicit repairs act instead of only previewing.
     apply: bool,
+    /// `--only <id>`: run just this one repair step (the units heal, or one fix).
+    only: Option<String>,
 }
 
 fn flags(p: &Parsed) -> Flags {
@@ -202,6 +204,7 @@ fn flags(p: &Parsed) -> Flags {
         quiet: has("--quiet"),
         explicit: defaults::list("doctor.explicit_flags").into_iter().filter(|f| has(f)).collect(),
         apply: has(defaults::text("doctor.apply_flag")),
+        only: p.rest.iter().position(|a| a == defaults::text("doctor.repair_only_flag")).and_then(|i| p.rest.get(i + 1)).cloned(),
     }
 }
 
@@ -363,24 +366,24 @@ fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result
     };
     match fix {
         Fix::MakeExecutable(p) => {
-            let id = "engine-binary-exec";
+            let id = defaults::raw("doctor.fix_ids").str_field("exec");
             let msg = defaults::render("doctor_msg.fix_exec", &[("path", &p.display())]);
             (id, if dry { Ok(msg) } else { add_mode(p, defaults::num("doctor.owner_exec_bit") as u32).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Unquarantine(p) => {
             let msg = defaults::render("doctor_msg.fix_quarantine", &[("path", &p.display())]);
-            ("engine-binary-quarantine", if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (defaults::raw("doctor.fix_ids").str_field("quarantine"), if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Mkdir(p) => {
             let msg = defaults::render("doctor_msg.fix_mkdir", &[("dir", &p.display())]);
-            ("state-dir-create", if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (defaults::raw("doctor.fix_ids").str_field("mkdir"), if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Private(p) => {
             let msg = defaults::render("doctor_msg.fix_private", &[("dir", &p.display())]);
-            ("state-dir-private", if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (defaults::raw("doctor.fix_ids").str_field("private"), if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
         }
         Fix::Heal => {
-            let id = "config-heal";
+            let id = defaults::raw("doctor.fix_ids").str_field("heal");
             let (Some(r), Some(report)) = (root.map(Path::to_path_buf).or_else(defaults::root), defaults::load_report()) else {
                 return (id, Err(defaults::text("doctor_msg.fix_heal_nothing").to_string()));
             };
@@ -395,16 +398,26 @@ fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result
     }
 }
 
+/// The ids of every repair step `--only` accepts: the fixes and the units heal.
+fn repair_ids() -> Vec<&'static str> {
+    let fixes = defaults::raw("doctor.fix_ids").as_table().unwrap_or_default().iter().filter_map(|(_, v)| v.as_str());
+    fixes.chain([defaults::text("units.doctor_id")]).collect()
+}
+
 fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], root: Option<&Path>) {
     doc.head(defaults::text(if f.dry_run { "doctor_msg.repair_heading_dry" } else { "doctor_msg.repair_heading" }));
-    let rows = migrate::run(ctx);
+    // `--only <id>`: one step, so no migration rows and no sweep run
+    let only = f.only.as_deref();
+    let rows = if only.is_some() { Vec::new() } else { migrate::run(ctx) };
     crate::telemetry::emit::add_items(rows.iter().filter(|r| r.status == "fixed").count() as u64);
     let mut done = 0u64;
     let mut seen: Vec<&Fix> = Vec::new();
+    let mut matched = false;
     for fix in fixes {
-        if seen.contains(&fix) {
+        if seen.contains(&fix) || only.is_some_and(|id| apply_fix(fix, true, root).0 != id) {
             continue;
         }
+        matched = true;
         seen.push(fix);
         let (id, outcome) = apply_fix(fix, f.dry_run, root);
         match outcome {
@@ -417,11 +430,16 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
         }
     }
     // the legacy sweep (old install files and artefacts moved aside, state migrations): fail-open, idempotent, never deletes
-    let swept = crate::operator::sweep::for_doctor(f.dry_run, &mut |l| doc.infol(l));
+    let swept = if only.is_some() { Default::default() } else { crate::operator::sweep::for_doctor(f.dry_run, &mut |l| doc.infol(l)) };
     done += (swept.files + swept.legacy + swept.migrated) as u64;
     crate::telemetry::emit::add_items(done);
-    let units = crate::setup::units::heal_changes(f.dry_run);
-    if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
+    let units = if only.is_none_or(|id| id == defaults::text("units.doctor_id")) { crate::setup::units::heal_changes(f.dry_run) } else { None };
+    if let Some(id) = only
+        && !matched
+        && units.is_none()
+    {
+        doc.infol(defaults::render("doctor_msg.repair_only_none", &[("id", &id), ("ids", &repair_ids().join(", "))]));
+    } else if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {
@@ -490,6 +508,11 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     };
     let root = plugin_root(p, &ctx.env);
     let root_path = root.as_deref().map(Path::new);
+    // the flag/variable root fed `ctx`; the root the doctor resolved itself (install record, snapshot cache) names the plugin version too
+    let mut ctx = ctx;
+    if ctx.version.is_none() {
+        ctx.version = root.as_deref().and_then(|r| migrate::plugin_version(&ctx, r));
+    }
     let version = ctx.version.clone().unwrap_or_else(|| defaults::text("doctor_msg.unknown_version").to_string());
     let mut doc = Doc::default();
     let mut fixes: Vec<Fix> = Vec::new();

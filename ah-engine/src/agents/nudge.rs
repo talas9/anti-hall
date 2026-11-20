@@ -218,6 +218,11 @@ fn primary_of(env: &Env, a: &Agent) -> Option<String> {
     super::sources::json_of(&p)?.get(f.str_field("session")).and_then(Value::as_str).map(str::to_string)
 }
 
+/// Whether `a` is a workspace-kind row whose Primary is that very session: its own row, never a child of anything.
+fn own_parent(env: &Env, a: &Agent) -> bool {
+    a.kind == kind_name("workspace") && primary_of(env, a).is_some_and(|p| p == a.id)
+}
+
 /// The direct parent of `a` (a session id), when it can be told.
 fn direct_parent(env: &Env, st: &State, a: &Agent) -> Option<String> {
     if super::is_child(a) {
@@ -566,6 +571,10 @@ fn open_runtime(env: &Env, st: &mut State) {
                 && !(hold_snooze && st.nudge_snooze.get(&snooze_key(&a.id, rt_trigger())).is_some_and(|s| s.until > now))
                 && state_of(a) == state_name("running")
                 && !done_held(env, st, a, now)
+                // a session its owner is steering is no runtime target, nor is a session row that is its own parent (a Primary the app
+                // registered as a workspace): the nudge would land on the session it is about
+                && !super::signals::owner_active(env, a, now)
+                && !own_parent(env, a)
                 && rt_reached(a, now, &steps) > 0
         })
         .map(|a| a.id.clone())
@@ -650,6 +659,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             || st.nudge_hold.get(&a.id).is_some_and(|t| *t > now)
             || done_held(env, st, a, now)
             || super::signals::owner_active(env, a, now)
+            || own_parent(env, a)
         {
             continue;
         }

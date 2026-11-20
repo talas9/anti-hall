@@ -795,6 +795,28 @@ fn a_script_run_by_path_is_scanned_for_credit_lines() {
     }
 }
 
+/// A program run by a path under $HOME (an engine verb such as `mesh send`) is no script: no "not checked" advisory. A script under
+/// $HOME is still read and a credit line in it still blocks.
+#[test]
+fn a_home_path_program_is_not_advised_unchecked_but_a_home_path_script_is_still_scanned() {
+    let e = Env::new("homepath");
+    let home = e.dir.join("home");
+    std::fs::create_dir_all(home.join("bin")).unwrap();
+    // a binary: not a shell script, larger than script_scan_max_bytes
+    let mut bin = vec![0x7fu8, b'E', b'L', b'F'];
+    bin.resize(300_000, 0);
+    std::fs::write(home.join("bin/tool"), bin).unwrap();
+    std::fs::write(home.join("bin/credited.sh"), format!("#!/bin/sh\ngit commit -q --allow-empty -m \"x\\n\\n{CO}\"\n")).unwrap();
+    let _ = e.hook("echo warm");
+    let w = home.to_str().unwrap();
+    for cmd in ["$HOME/bin/tool mesh send --message hi", "${HOME}/bin/tool mesh ack --message hi"] {
+        let (out, err, code) = e.hook_in(cmd, w);
+        assert!(code == 0 && !out.contains("not checked") && err.is_empty(), "{cmd}: silent: code={code} stdout={out} stderr={err}");
+    }
+    let (out, err, code) = e.hook_in("$HOME/bin/credited.sh", w);
+    assert!(code == 2 && err.contains("credited.sh"), "credited script under $HOME is blocked: code={code} stdout={out} stderr={err}");
+}
+
 /// An inert mention of credit text (a comment line, a grep of a pattern, a script that never commits or pushes) is no credit
 /// line: only a script that commits, tags, merges or pushes AND carries the text where it can reach a message is refused.
 #[test]
