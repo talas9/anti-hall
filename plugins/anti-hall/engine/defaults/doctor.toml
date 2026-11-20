@@ -2205,6 +2205,22 @@ value = "Jev model: {models}"
 doc = "Warning: the direct TypeSafe vendor is sent a moving alias, so thresholds tuned on one version can silently meet another. Placeholders: {model}."
 value = "Jev model {model} is a moving alias; set jev.modelPin to a versioned id"
 
+[doctor_msg.jev_model_newer]
+doc = "Warning: the provider lists a non-preview model released after the pinned one. Placeholders: {model} (listed id), {date} (its release date), {pin}, {pin_date}."
+value = "newer model available: {model} {date} (pinned {pin} {pin_date}); re-check the thresholds, then bump jev.model_pin"
+
+[doctor_msg.jev_models_unreachable]
+doc = "Info (fail-open): the model list could not be read, so the newer-model check was skipped. Placeholders: {why}."
+value = "Jev model list not checked ({why})"
+
+[doctor_msg.jev_key_source]
+doc = "Info: where the Jev key of a vendor was found; never the key. Placeholders: {vendor}, {source}."
+value = "Jev key for {vendor}: {source}"
+
+[doctor_msg.jev_key_file_unread]
+doc = "Warning: a Jev key file exists but is not read because jev.allowLegacyKeyRead is off. Placeholders: {vendor}, {path}."
+value = "a {vendor} key file exists at {path} but is not read; enable jev.allowLegacyKeyRead (anti-hall:settings, needs --confirmed) to use it, or move the key into the plugin option"
+
 [doctor_msg.jev_ok]
 doc = "Finding: the Jev test call answered in time. Placeholders: {ms}, {transport}, {limit}."
 value = "Jev answered in {ms} ms ({transport})"
