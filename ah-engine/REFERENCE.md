@@ -14091,7 +14091,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `delivery.report_note_partial` | `the oldest metrics snapshot is newer than the window start, so the figures co...` |  |  | Printed in the funnel report's window block when no metrics snapshot is as old as the window: the figures cover only what the oldest snapshot and the live counters hold. |
 | `delivery.report_overflow_stage` | `unlisted` |  |  | Report key for answers counted under a stage label the report does not list (an older series whose stage label was folded into the overflow label): they stay in the row and the totals under this key instead of being dropped. |
 | `delivery.report_rollup` | `hour` |  |  | The metrics rollup resolution (telemetry.rollups) whose stored snapshots give the start of a windowed funnel report. |
-| `delivery.report_stages` | `7 items` |  |  | The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label. |
+| `delivery.report_stages` | `8 items` |  |  | The funnel stages the report lists, in order; each names a `delivery.stage_<name>` label. |
 | `delivery.report_verb` | `funnel` |  |  | The `telemetry` subcommand that prints the funnel (`ah-engine telemetry funnel --by model,project --window 7d`; `--since` is accepted for `--window`). |
 | `delivery.session_models_max` | `256` |  |  | Sessions whose resolved model the funnel remembers; past it the oldest is forgotten (and resolved again if it reappears). |
 | `delivery.stage_acted_on` | `acted_on` |  |  | Funnel stage label for a delivered answer whose acted-on condition (delivery.act, else delivery.react) was met within its window. The unsplit delivery_stage counter keeps the older label `complied` (delivery.stage_complied) so restored counters stay valid. |
@@ -14102,6 +14102,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `delivery.stage_lost` | `lost` |  |  | Funnel stage label for an answer that did not reach the agent for a reason other than shedding (hard_deadline, cpu_budget, client_gone, check_deferred, undelivered). |
 | `delivery.stage_shed` | `shed` |  |  | Funnel stage label for an answer shed by the CPU hard limit (the reason named in delivery.reason_shed). |
 | `delivery.stage_suppressed` | `suppressed` |  |  | Stage label for an answer a check made that the client's hook configuration never emits (the entry's mode is shadow: it runs and is measured, its answer is dropped). Counted as decided and as suppressed, never as delivered, in an output channel, or armed for a reaction. |
+| `delivery.stage_undelivered` | `undelivered` |  |  | Funnel stage label for the answers of delivery.stage_lost that the check made and the reply never carried (reason delivery.reason_undelivered): counted with the same session model and project as the answer's decided, so it is never more than decided. The rest of lost are runs dropped before the check answered (not_run). |
 
 ### diagnostics.toml / diagnostics
 
