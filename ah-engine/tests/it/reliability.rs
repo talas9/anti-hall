@@ -15,6 +15,9 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const RULES: &str = r#"{"version":1,"rules":[{"id":"force","events":["PreToolUse"],"tools":["Bash"],"field":"command","pattern":"git push --force","action":"deny","message":"engine-blocked"}]}"#;
 const DENY_IN: &str =
     r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
+/// A read-only guard call: it always passes when no check could decide it for lack of capacity.
+const READ_IN: &str =
+    r#"{"session_id":"s1","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git -C /tmp status --porcelain"}}"#;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -156,6 +159,15 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
         let mut ch = c.spawn().unwrap();
         ch.stdin.take().unwrap().write_all(br#"{"hook_event_name":"Notification","message":"prime"}"#).unwrap();
         ah_engine::discard::harmless(ch.wait());
+    }
+    /// `hook --event <event>` (the dispatcher, the live path): (stdout, stderr, exit code)
+    fn dispatch(&self, event: &str, input: &str) -> (String, String, i32) {
+        let mut c = self.cmd();
+        c.args(["hook", "--event", event]);
+        let mut ch = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1))
     }
     /// (stdout, exit code, elapsed)
     fn hook(&self, input: &str, fallback: bool) -> (String, String, i32, Duration) {
@@ -401,16 +413,26 @@ fn fake_server(e: &Env, reply: impl Fn() -> Option<Vec<u8>> + Send + 'static) {
 }
 
 fn wrapper_child(e: &Env) -> std::process::Child {
+    wrapper_child_in(e, DENY_IN)
+}
+
+fn wrapper_child_in(e: &Env, input: &str) -> std::process::Child {
     let mut c = e.wrapper_cmd();
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut ch = c.spawn().unwrap();
-    ch.stdin.take().unwrap().write_all(DENY_IN.as_bytes()).unwrap();
+    ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     ch
 }
 
+/// A read: the fail-open timing checks of a missing, late or restarting daemon. A late or cold daemon is load, so a call in a hold
+/// class (dispatch.capacity_hold, the force push of DENY_IN) is held there by the client and by the ah-hook launcher (#882).
 fn wrapper_once(e: &Env) -> (i32, String, Duration) {
+    wrapper_once_in(e, READ_IN)
+}
+
+fn wrapper_once_in(e: &Env, input: &str) -> (i32, String, Duration) {
     let t = Instant::now();
-    let o = wrapper_child(e).wait_with_output().unwrap();
+    let o = wrapper_child_in(e, input).wait_with_output().unwrap();
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), t.elapsed())
 }
 
@@ -444,7 +466,7 @@ fn clamped_num(key: &str, value: u64) -> u64 {
 }
 
 fn assert_twenty_wrappers_exit(e: &Env) {
-    let mut children: Vec<_> = (0..20).map(|_| wrapper_child(e)).collect();
+    let mut children: Vec<_> = (0..20).map(|_| wrapper_child_in(e, READ_IN)).collect();
     std::thread::sleep(Duration::from_secs(2));
     for (i, ch) in children.iter_mut().enumerate() {
         assert!(ch.try_wait().unwrap().is_some(), "wrapper child {i} still alive after 2s");
@@ -472,7 +494,7 @@ fn ah_hook_wrapper_failfast_no_daemon_hung_daemon_and_restart_loop() {
 
     let hung = Env::new("wrap-hung", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&hung, || None);
-    let (code, out, dt) = wrapper_once(&hung);
+    let (code, out, dt) = wrapper_once_in(&hung, READ_IN);
     println!("TIMING wrapper hung-daemon wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     // no reply in the whole wait window: the call fails open and runs no Node hook (the daemon may have processed it already)
     assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
@@ -528,16 +550,84 @@ fn bad_replies_fail_open_never_block() {
 #[test]
 fn healthy_non_ok_replies_follow_the_guard_events_failure_mode() {
     use ah_engine::frame::{Kind, encode};
-    for (name, reply) in [("busy", encode(Kind::Busy, "")), ("err", encode(Kind::Err, "boom"))] {
+    // ERR (the engine could not evaluate the request) is no verdict: a guard event follows its infra failure mode (closed: exit 2 with
+    // the engine's own line). BUSY (the daemon shed the request under load) is no capacity: the capacity path (open) lets the call
+    // through, told once per session, as a daemon that did not answer in time (P0 2026-11-20: closed, it blocked every tool call).
+    // A force push is in a hold class (dispatch.capacity_hold): shed, it is held with a retry hint, never let through unchecked.
+    for (name, reply, input, want) in
+        [("busy", encode(Kind::Busy, ""), READ_IN, 0), ("busy-push", encode(Kind::Busy, ""), DENY_IN, 2), ("err", encode(Kind::Err, "boom"), DENY_IN, 2)]
+    {
         let e = Env::new("non-ok", &[("AH_ENGINE_NOSPAWN", "1")]);
         fake_server(&e, move || Some(reply.clone()));
-        let (out, err, code, elapsed) = e.hook(DENY_IN, true);
-        // no hook command is launched any more: a healthy refusal is no verdict, and a guard event follows its configured
-        // infra failure mode (closed: exit 2 with the engine's own line)
-        assert_eq!((out.as_str(), code), ("", 2), "case {name}: {err:?}");
-        assert!(err.contains("could not run the guards") && !err.contains("NODE-FALLBACK"), "case {name}: {err:?}");
+        let (out, err, code, elapsed) = e.hook(input, true);
+        assert_eq!((out.as_str(), code), ("", want), "case {name}: {err:?}");
+        assert!(!err.contains("NODE-FALLBACK"), "case {name}: {err:?}");
+        if name == "busy-push" {
+            assert!(
+                err.contains("too risky") && err.contains("git-push") && err.contains("Retry"),
+                "case {name}: held with the rule and a retry hint: {err:?}"
+            );
+        } else if want == 2 {
+            assert!(err.contains("could not run the guards"), "case {name}: {err:?}");
+        } else {
+            assert!(err.contains("too busy") && err.contains("went through unchecked"), "case {name}: the session is told: {err:?}");
+            let (_, again, code, _) = e.hook(input, true);
+            assert_eq!(code, 0, "case {name}");
+            assert!(again.is_empty(), "case {name}: told once per session: {again:?}");
+            assert!(e.health_log().contains("dispatch_no_node_open"), "case {name}: logged: {}", e.health_log());
+        }
         assert!(elapsed < common::scaled(Duration::from_secs(1)), "case {name} took {elapsed:?}");
     }
+}
+
+/// P0 2026-11-20, the live path: the dispatcher (`hook --event`) asked a daemon that shed the call (BUSY, a full queue). No check ran,
+/// so the guard event follows the capacity path (open): the call passes with one notice, never "BLOCKED" by every fail-closed
+/// safety guard's failure policy (before: git, command, merge-gate, api-guard and compact-declaration-guard each refused it). An ERR
+/// reply still fails closed.
+#[test]
+fn the_dispatcher_lets_a_shed_guard_call_through_and_still_fails_closed_on_err() {
+    use ah_engine::frame::{Kind, encode};
+    for (name, reply, input, want) in
+        [("busy", encode(Kind::Busy, ""), READ_IN, 0), ("busy-push", encode(Kind::Busy, ""), DENY_IN, 2), ("err", encode(Kind::Err, "boom"), DENY_IN, 2)]
+    {
+        let e = Env::new("disp-non-ok", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DISPATCH_IN_PROCESS", "0")]);
+        fake_server(&e, move || Some(reply.clone()));
+        let (out, err, code) = e.dispatch("PreToolUse", input);
+        assert_eq!(code, want, "case {name}: out {out:?} err {err:?}");
+        if name == "busy-push" {
+            assert!(err.contains("too risky") && err.contains("git-push"), "case {name}: {err:?}");
+            assert!(e.health_log().contains("dispatch_capacity_hold"), "case {name}: logged: {}", e.health_log());
+        } else if want == 0 {
+            assert!(!err.contains("BLOCKED") && err.contains("too busy"), "case {name}: {err:?}");
+            assert!(e.health_log().contains("dispatch_no_node_open"), "case {name}: logged: {}", e.health_log());
+        } else {
+            assert!(!err.contains("too busy") && err.to_lowercase().contains("blocked"), "case {name}: out {out:?} err {err:?}");
+        }
+    }
+}
+
+/// Under load the daemon is there but late (no reply within the wait window): a never-allowed action (a force push) is still held,
+/// with a reason and a retry hint, on the dispatcher and the engine-hook path; a read-only call passes.
+#[test]
+fn a_force_push_is_held_when_the_daemon_is_too_loaded_to_answer_and_a_read_passes() {
+    let env = [
+        ("AH_ENGINE_NOSPAWN", "1"),
+        ("AH_ENGINE_DISPATCH_IN_PROCESS", "0"),
+        ("AH_ENGINE_DEADLINE_MS", "150"),
+        ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "300"),
+        ("AH_ENGINE_SLOW_DOWN_N", "9"),
+        ("AH_ENGINE_BREAKER_N", "9"),
+    ];
+    let e = Env::new("late-push", &env);
+    fake_server(&e, || None); // never replies
+    let (_, err, code) = e.dispatch("PreToolUse", DENY_IN);
+    assert_eq!(code, 2, "dispatcher: a force push is held: {err:?}");
+    assert!(err.contains("too risky") && err.contains("git-push"), "{err:?}");
+    let (_, err, code) = e.dispatch("PreToolUse", READ_IN);
+    assert_eq!(code, 0, "dispatcher: a read passes: {err:?}");
+    let (_, err, code, _) = e.hook(DENY_IN, true);
+    assert_eq!(code, 2, "engine hook: a force push is held: {err:?}");
+    assert_eq!(e.hook(READ_IN, true).2, 0, "engine hook: a read passes");
 }
 
 #[test]
@@ -615,7 +705,8 @@ fn hung_engine_times_out_then_falls_back() {
     // the wait window equals the deadline (slow_fallback_max_ms 0): the call gives up at the clamped deadline
     let e = Env::new("hang", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "400"), ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "0")]);
     fake_server(&e, || None);
-    let (out, _, code, dt) = e.hook(DENY_IN, true);
+    // a read: a held call (a push, dispatch.capacity_hold) is a_force_push_is_held_when_the_daemon_is_too_loaded_to_answer_and_a_read_passes
+    let (out, _, code, dt) = e.hook(READ_IN, true);
     println!("TIMING client hung-daemon wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((out.as_str(), code), ("", 0), "no reply in the window fails open; the Node hook does not run (the daemon may have processed the call)");
     // Gave up at the configured, clamped client deadline rather than waiting for the server's 30 s hang.
@@ -627,7 +718,7 @@ fn default_client_deadline_is_under_one_second() {
     // the deadline (300 ms) is what a call waits when no wait window is configured
     let e = Env::new("hang2", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "0")]);
     fake_server(&e, || None);
-    let (out, _, code, dt) = e.hook(DENY_IN, true);
+    let (out, _, code, dt) = e.hook(READ_IN, true);
     assert_eq!((out.as_str(), code), ("", 0));
     assert!(dt >= Duration::from_millis(300) && dt < common::scaled(Duration::from_secs(1)), "took {dt:?}");
 }
@@ -636,7 +727,7 @@ fn default_client_deadline_is_under_one_second() {
 fn wrapper_fails_open_under_one_second_with_no_daemon() {
     let _timing = wrapper_timing_lock();
     let e = Env::new_no_prime("wrapdown", &[("AH_ENGINE_NOSPAWN", "1")]);
-    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    let (out, code, dt) = e.wrapper_hook(READ_IN);
     println!("TIMING wrapper no-daemon separate wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((out.as_str(), code), ("", 0));
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
@@ -647,7 +738,7 @@ fn wrapper_fails_open_under_one_second_when_daemon_accepts_and_never_replies() {
     let _timing = wrapper_timing_lock();
     let e = Env::new("wraphung", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&e, || None);
-    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    let (out, code, dt) = e.wrapper_hook(READ_IN);
     println!("TIMING wrapper hung-daemon separate wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((code, out.as_str()), (0, ""), "no reply in the window fails open, no Node hook");
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
@@ -661,7 +752,7 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
     let _timing = wrapper_timing_lock();
     let high = Env::new("wrapenvdeadline-high", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "5000"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&high, || None);
-    let (out, code, dt) = high.wrapper_hook(DENY_IN);
+    let (out, code, dt) = high.wrapper_hook(READ_IN);
     println!("TIMING wrapper hung-daemon env-deadline-5000-clamped wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
@@ -671,7 +762,7 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
 
     let lower = Env::new("wrapenvdeadline-low", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "200"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
     fake_server(&lower, || None);
-    let (out, code, dt) = lower.wrapper_hook(DENY_IN);
+    let (out, code, dt) = lower.wrapper_hook(READ_IN);
     println!("TIMING wrapper hung-daemon env-deadline-200 wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
@@ -1184,11 +1275,11 @@ fn a_non_slow_reply_between_slow_ones_breaks_the_slow_streak() {
             });
         }
     });
-    for (i, want_down, node) in [(0, false, false), (1, false, true), (2, false, false)] {
-        let (out, err, code, _) = e.hook(DENY_IN, true);
-        // a slow call fails open; the completed BUSY reply is a refusal, so its guard call follows the infra failure mode (closed)
-        assert_eq!((out.as_str(), code), ("", if node { 2 } else { 0 }), "call {i}: {err:?}");
-        assert_eq!(err.contains("could not run the guards"), node, "call {i}: {err:?}");
+    for (i, want_down) in [(0, false), (1, false), (2, false)] {
+        let (out, err, code, _) = e.hook(READ_IN, true);
+        // a slow call fails open; the completed BUSY reply is load shedding, so its guard call follows the capacity path (open, P0 2026-11-20)
+        assert_eq!((out.as_str(), code), ("", 0), "call {i}: {err:?}");
+        assert!(!err.contains("could not run the guards"), "call {i}: {err:?}");
         assert_eq!(e.fresh_down_marker(), want_down, "slow, BUSY, slow must not mark the daemon down (call {i})");
     }
     // two slow replies in a row still do (the streak itself works)
@@ -1317,7 +1408,7 @@ fn a_reply_that_never_comes_fails_open_within_the_window_without_node() {
     // `a_live_daemon_that_shows_no_progress_fails_the_call_open_within_a_second`)
     let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
     fake_heartbeat(&e, stand_in.id(), true);
-    let (out, err, code, dt) = e.hook(DENY_IN, true);
+    let (out, err, code, dt) = e.hook(READ_IN, true);
     ah_engine::discard::harmless(stand_in.kill());
     ah_engine::discard::harmless(stand_in.wait());
     assert_eq!((code, out.as_str()), (0, ""), "{err:?}");
@@ -1548,13 +1639,14 @@ fn queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode() {
     let (mut out, mut err, mut code, mut dt) = (String::new(), String::new(), 0, Duration::ZERO);
     while t.elapsed() < common::scaled(Duration::from_secs(6)) {
         (out, err, code, dt) = e.hook(DENY_IN, true);
-        if code == 2 && out.is_empty() && err.contains("could not run the guards") && dt < common::scaled(Duration::from_secs(1)) {
+        // a shed force push is held (dispatch.capacity_hold, P0 2026-11-20): a read would pass, see healthy_non_ok_replies_*
+        if code == 2 && out.is_empty() && err.contains("too risky") && dt < common::scaled(Duration::from_secs(1)) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!((out.as_str(), code), ("", 2), "overflow must be refused at once and follow the failure mode: {err:?}");
-    assert!(err.contains("could not run the guards"), "the engine's own line: {err:?}");
+    assert!(err.contains("too risky") && err.contains("git-push"), "held with its rule: {err:?}");
     // a refused hook is answered at once: far below the sleepers' 8 s, with an allowance for a loaded machine
     assert!(dt < common::scaled(Duration::from_secs(3)), "took {dt:?}");
     for s in sleepers {
@@ -1771,7 +1863,8 @@ fn rate_limited_session_gets_busy_so_it_follows_the_failure_mode() {
     let mut fell_back = false;
     for _ in 0..6 {
         let (out, err, code, _) = e.hook(DENY_IN, true);
-        if code == 2 && out.is_empty() && err.contains("could not run the guards") {
+        // a shed force push is held with its rule (dispatch.capacity_hold)
+        if code == 2 && out.is_empty() && err.contains("too risky") {
             fell_back = true;
         }
     }
@@ -2114,11 +2207,14 @@ fn a_live_daemon_that_shows_no_progress_fails_the_call_open_within_a_second() {
         let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
         fake_heartbeat_with(&e, stand_in.id(), true, progress);
         fake_server(&e, || None); // accepts and never replies
-        let (out, code, dt) = e.wrapper_hook(DENY_IN);
+        let (out, code, dt) = e.wrapper_hook(READ_IN);
         println!("TIMING no-progress ({name}) wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
+        // the same late daemon on the ah-hook path holds a force push (dispatch.capacity_hold), never lets it through unchecked
+        let (_, held, _) = e.wrapper_hook(DENY_IN);
         ah_engine::discard::harmless(stand_in.kill());
         ah_engine::discard::harmless(stand_in.wait());
         assert_eq!((code, out.as_str()), (0, ""), "{name}: no verdict, no block: {}", e.health_log());
+        assert_eq!(held, 2, "{name}: a force push is held on the ah-hook path: {}", e.health_log());
         assert!(dt < common::scaled(Duration::from_secs(1)), "{name}: failed open after {dt:?}");
         let log = e.health_log();
         assert!(log.contains("client_slow") && log.contains("not working on the request"), "{name}: the client counted a slow call by itself: {log}");

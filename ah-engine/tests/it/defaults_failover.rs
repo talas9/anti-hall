@@ -45,6 +45,7 @@ fn the_pristine_copy_preserves_the_released_defaults() {
         names(&b),
         "the pristine copy must hold the same files (sync: cp plugins/anti-hall/engine/defaults/*.toml plugins/anti-hall/engine/defaults.pristine/)"
     );
+    let mut pinned_here: Vec<String> = Vec::new();
     for ((n, x), (_, y)) in a.iter().zip(&b) {
         let released_sha256 = match n.as_str() {
             "flags.toml" => Some("9abf4808365204cfb9987d5650ad61af92d1c8391627bace7fc9f846261029c4"),
@@ -54,6 +55,7 @@ fn the_pristine_copy_preserves_the_released_defaults() {
             _ => None,
         };
         if let Some(expected) = released_sha256 {
+            pinned_here.push(n.clone());
             let digest = ring::digest::digest(&ring::digest::SHA256, y);
             let actual: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
             assert_eq!(actual, expected, "{n}: immutable pristine fallback changed");
@@ -61,6 +63,17 @@ fn the_pristine_copy_preserves_the_released_defaults() {
             assert_eq!(x, y, "{n}: unexpected divergence from the released fallback");
         }
     }
+    // doctor.pristine_pinned (the unknown-setting check's skip list) must name exactly the SHA-pinned files above.
+    let doctor: toml::Value = toml::from_str(&std::fs::read_to_string(plugin_src().join("engine/defaults/doctor.toml")).unwrap()).unwrap();
+    let mut listed: Vec<String> = doctor["doctor"]["pristine_pinned"]["value"]
+        .as_array()
+        .expect("doctor.pristine_pinned.value is a list")
+        .iter()
+        .map(|v| v.as_str().expect("a file name").to_string())
+        .collect();
+    listed.sort();
+    pinned_here.sort();
+    assert_eq!(listed, pinned_here, "doctor.pristine_pinned must list exactly the SHA-pinned pristine files");
 }
 
 struct Env {

@@ -646,6 +646,8 @@ impl Shared {
                 })
             }),
             "fail_open": crate::failopen::status(&self.telemetry),
+            // token waste by category (GH #884): events and tokens of every waste_* category this daemon has counted
+            defaults::raw("agent_waste.status_words").str_field("key"): crate::agents::waste::status_block(&self.telemetry),
             // answers a request's checks did not give (a guard's is the one to watch): THIS daemon, apart from the lifetime counts
             "answers_dropped": serde_json::json!({
                 "this_daemon": crate::budget::dropped_this_daemon(),
@@ -1219,7 +1221,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             if shadowed {
                 crate::delivery::suppressed(&sh.telemetry, check, &who);
             } else {
-                crate::delivery::decided(&sh.telemetry, session, check, &who);
+                crate::delivery::decided_with(&sh.telemetry, session, check, &who, &block_text_of(r));
                 crate::funnel::channels(&sh.telemetry, check, &meta.event, r, &who);
             }
         }
@@ -1250,7 +1252,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         over
     };
     // #312: the agent's reaction to what was delivered; B1: any event can advance an armed window (a turn end, a prompt)
-    crate::delivery::observe(&sh.telemetry, session, &meta.event, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""));
+    let (tool, command) = crate::delivery::call_fields(&p);
+    let reply = p.get("last_assistant_message").and_then(|v| v.as_str()).unwrap_or("");
+    crate::delivery::observe_full(&sh.telemetry, session, &meta.event, tool, command, reply);
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
     if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
@@ -2322,6 +2326,10 @@ pub fn serve(start_reason: &str) -> i32 {
         health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));
     }
     crate::memdiag::apply_decay_if_untuned();
+    // our own stale temp entries (named prefixes, older than the configured age) go; a directory of thousands is scanned off the start path
+    std::thread::spawn(|| {
+        crate::tmpsweep::sweep_configured();
+    });
     crate::jev::shared::set_resident();
     health::reap_marker();
     crate::discard::harmless(lock.set_len(0)); // keep: best effort, fail-open

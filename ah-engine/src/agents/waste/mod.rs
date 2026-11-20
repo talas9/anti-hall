@@ -31,6 +31,9 @@ pub struct Mark {
     pub verdict: String,
     /// The judge's confidence.
     pub confidence: f64,
+    /// The Jev decision hash of the cached verdict (empty when none): a nudge it raises reports its outcome against it.
+    #[serde(default)]
+    pub hash: String,
     /// Who decided: `judge` or `formula`.
     pub source: String,
     /// The one-line reason (the signal values).
@@ -275,6 +278,7 @@ fn judge(env: &Env, a: &mut Agent, i: &Input, score: f64) -> bool {
     a.waste.judge_calls += 1;
     a.waste.verdict = verdict;
     a.waste.confidence = o.confidence.unwrap_or(0.0);
+    a.waste.hash = if a.waste.verdict.is_empty() { String::new() } else { o.hash.clone() };
     a.waste.source = word("judge").into();
     rec(
         env,
@@ -455,4 +459,34 @@ pub(crate) fn cell(a: &Agent) -> String {
 /// Judge calls one tick may make.
 pub(crate) fn judge_budget() -> u64 {
     lim("max_judge_per_tick")
+}
+
+/// The waste block of `ah-engine status` (GH #884): per category, the events and the tokens counted on `waste_events_total` and
+/// `waste_tokens_total` (every source summed), and the total over all categories.
+pub fn status_block(t: &crate::telemetry::Telemetry) -> serde_json::Value {
+    let words = defaults::raw("agent_waste.status_words");
+    let (ev, tok, total) = (words.str_field("events"), words.str_field("tokens"), words.str_field("total"));
+    let mut by: std::collections::BTreeMap<String, (u64, u64)> = std::collections::BTreeMap::new();
+    let snap = t.with_metrics(|m| m.snapshot(""));
+    for c in snap.get("counters").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let name = c.get("name").and_then(serde_json::Value::as_str).unwrap_or_default();
+        if name != "waste_events_total" && name != "waste_tokens_total" {
+            continue;
+        }
+        let cat = c.get("labels").and_then(|l| l.get("category")).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+        let n = c.get("value").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let e = by.entry(cat).or_default();
+        if name == "waste_events_total" {
+            e.0 += n;
+        } else {
+            e.1 += n;
+        }
+    }
+    let sum = by.values().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let mut out = serde_json::Map::new();
+    for (cat, (e, k)) in &by {
+        out.insert(cat.clone(), json!({ ev: e, tok: k }));
+    }
+    out.insert(total.to_string(), json!({ ev: sum.0, tok: sum.1 }));
+    serde_json::Value::Object(out)
 }

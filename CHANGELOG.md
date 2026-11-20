@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Unreleased
+
+- Token waste (#884, items 1 and 5): new `cache-ttl-wait-guard` orders a single call that waits past the prompt-cache window (default 270 s) to be split into waits of 240 s or less (advisory, never a block; Claude and Codex). Waste telemetry gains `cache_expiry` and `poke_turn` categories on `waste_events_total` and `waste_tokens_total`, shown in `ah-engine status`.
+- The subagent WORKER line and the queued-wait-guard remedies now ask for waits of 240 s or less (one key, `cache_wait.split_s`) instead of 540 s; the queued-wait block limit is unchanged.
+
+## Engine 0.3.4 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.3 are listed under Unreleased.
+
 ## Engine 0.3.3 (local integration build)
 
 Engine-only local build. Beyond dev it carries:

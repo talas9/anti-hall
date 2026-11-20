@@ -918,6 +918,29 @@ function piWatcherLive(home, id, now) {
   return false;
 }
 
+// The Stop payload's cron list (Claude Code 2.1.145+, devswarm.cronFromPayload), as the child Stop gate reads it: true when one of the
+// session's scheduled jobs is the live recurring mailbox tick job (a job created this turn counts before its first fire is due), false
+// when the list is present and holds none, null when the switch is off, the payload carries no list or its entries are not recognised.
+function piPayloadCron(p) {
+  if (!ah.settings.bool('devswarm_gates.sw_cron_from_payload') || !jx.isObj(p)) return null;
+  var list = p[ah.cfg('devswarm_gates.cg_payload_crons_field')];
+  if (!Array.isArray(list)) return null;
+  var pf = ah.cfg('devswarm_gates.cg_payload_cron_prompt_field'), rf = ah.cfg('devswarm_gates.cg_payload_cron_recurring_field'), sf = ah.cfg('devswarm_gates.cg_payload_cron_schedule_field');
+  var known = list.filter(function (c) { return jx.isObj(c) && typeof c[pf] === 'string' && typeof c[rf] === 'boolean'; });
+  if (list.length > 0 && known.length === 0) return null;
+  var re = new RegExp(ah.cfg('devswarm_gates.cg_cron_prompt_re'));
+  return known.some(function (c) { return c[rf] === true && typeof c[sf] === 'string' && c[sf].trim() !== '' && re.test(c[pf]); });
+}
+
+// The wake-episode record of a session (state: the last wake-path state, when it was asked; cronSeen: when a Stop payload last listed
+// the mailbox tick job, so the prompt line that has no cron list in its own payload still knows it).
+function piWakeCtlRel(sid) { return piRel(ah.cfg('devswarm_parent.dir_wake_ctl') + '/' + String(sid).replace(/[^A-Za-z0-9_.-]/g, '_') + '.json'); }
+function piWakeCtlRead(sid) {
+  var raw = ah.state.readText(piWakeCtlRel(sid)), rec = null;
+  try { rec = raw === null ? null : JSON.parse(raw); } catch (e) { /* absent record */ }
+  return rec && typeof rec === 'object' && !Array.isArray(rec) ? rec : {};
+}
+
 // The age in minutes of the Primary's last inbox tick, or null (no marker). With devswarm.wakeCronOnlyWithChild a marker that predates the
 // order to delete the cron counts as absent: the cron it came from is gone, so the first live child must be asked for the cron at once,
 // not when the old marker has aged past cronMissingWarnMin.
@@ -947,6 +970,10 @@ function piWakeLine(ctx, cwd, cli, opts, lc) {
   var tick = piJson(piDevswarmDir(ctx.home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ctx.primaryId + '.json');
   var ageMin = piTickAge(tick, ctx.now, ctx.sid);
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
+  // a tick cron a Stop payload listed lately (a job whose first fire is not yet due leaves no marker) stands in for the tick marker
+  var seen = ctx.sid ? piWakeCtlRead(ctx.sid).cronSeen : null;
+  if (piPayloadCron(ctx.p) === true) ageMin = 0;
+  else if (piFinite(seen) && ctx.now - seen <= warn * ah.cfgNum('devswarm_prompt.ms_per_minute') && (ageMin === null || ageMin > warn)) ageMin = 0;
   if (!(ageMin === null || ageMin > warn)) { piWakeEpisode(ctx, live ? 'live' : 'tick'); return null; }
   var ask = piWakeEpisode(ctx, state);
   var noWatcher = wanted && !live;
@@ -965,14 +992,12 @@ function piWakeLine(ctx, cwd, cli, opts, lc) {
 // A recovery resets the episode, while the TOML-backed setting bounds rapid live/missing flaps.
 function piWakeEpisode(ctx, state) {
   if (!ctx.sid) return false;
-  var rel = piRel(ah.cfg('devswarm_parent.dir_wake_ctl') + '/' + String(ctx.sid).replace(/[^A-Za-z0-9_.-]/g, '_') + '.json');
-  var raw = ah.state.readText(rel), prev = null;
-  try { prev = raw === null ? null : JSON.parse(raw); } catch (e) { /* absent episode */ }
-  if (!prev || typeof prev !== 'object' || Array.isArray(prev)) prev = {};
+  var rel = piWakeCtlRel(ctx.sid), prev = piWakeCtlRead(ctx.sid);
   var last = typeof prev.lastPrompt === 'number' && isFinite(prev.lastPrompt) ? prev.lastPrompt : null;
   var same = prev.state === state;
   var ask = state === 'missing' && !(same && prev.prompted === true) && (last === null || ctx.now - last >= ah.settings.num('devswarm_parent.set_wake_rearm_cooldown'));
   var rec = { state: state, prompted: ask || (same && prev.prompted === true), lastPrompt: ask ? ctx.now : last };
+  if (piFinite(prev.cronSeen)) rec.cronSeen = prev.cronSeen;
   if (!same || ask) ctx.wakeCtl = { rel: rel, rec: rec };
   return ask;
 }
@@ -1611,7 +1636,7 @@ function piDecide(p, opts) {
       }
     }
     if (roster !== null && roster.rows.length) banner = piIngest(health, key, now, sid, tp);
-    var wctx = { home: home, key: key, primaryId: primaryId, now: now, sid: sid, closedRows: roster && roster.closedRows };
+    var wctx = { home: home, key: key, primaryId: primaryId, now: now, sid: sid, p: p, closedRows: roster && roster.closedRows };
     var wlc = piClaudePrimary() ? piLiveChildren(wctx, cwd) : null; // one read of the live children for the wake line and the cron order
     if (wlc !== null) {
       wakeLine = piWakeLine(wctx, cwd, cli, opts, wlc);

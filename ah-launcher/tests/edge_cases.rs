@@ -186,6 +186,59 @@ fn absent_socket_counts_as_cold_and_asks_for_one_start() {
     assert_eq!(env.read("kicks").lines().count(), 1);
 }
 
+/// #882: a guard call the engine could not decide for lack of capacity (a cold start not up within the wait, a late engine cut by the
+/// wall-clock backstop) is held when it falls in a hold class of dispatch.capacity_hold (a force push), as the engine's client holds
+/// it; a read still passes with the notice.
+#[test]
+fn a_force_push_with_no_engine_answer_under_load_is_held_and_a_read_passes() {
+    const PUSH: &[u8] = b"{\"session_id\":\"s-1\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C /x push --force origin main\"}}";
+    const READ: &[u8] = b"{\"session_id\":\"s-2\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git status\"}}";
+    // a cold start that never comes up
+    let env = Env::new("cap-cold");
+    quick_cold(&env);
+    let e = cold_engine(&env);
+    let o = env.run(
+        "PreToolUse",
+        PUSH,
+        Some(&e),
+        &[("AH_HOOK_TIMEOUT_MS", "1000")],
+    );
+    assert_eq!(o.code, 2, "cold: a force push is held: {}", o.err);
+    assert!(
+        o.err.contains("too risky") && o.err.contains("git-push"),
+        "{}",
+        o.err
+    );
+    let o = env.run(
+        "PreToolUse",
+        READ,
+        Some(&e),
+        &[("AH_HOOK_TIMEOUT_MS", "1000")],
+    );
+    assert_eq!(o.code, 0, "cold: a read passes: {}", o.err);
+    assert!(o.err.contains("was not checked"), "{}", o.err);
+    // a live daemon socket, an engine that never answers in time
+    let env = Env::new("cap-late");
+    quick_cold(&env);
+    let _daemon = UnixListener::bind(env.state.join("e.sock")).unwrap();
+    let e = engine(&env, "exec sleep 60");
+    let o = env.run(
+        "PreToolUse",
+        PUSH,
+        Some(&e),
+        &[("AH_HOOK_TIMEOUT_MS", "800")],
+    );
+    assert_eq!(o.code, 2, "late: a force push is held: {}", o.err);
+    assert!(o.err.contains("too risky"), "{}", o.err);
+    let o = env.run(
+        "PreToolUse",
+        READ,
+        Some(&e),
+        &[("AH_HOOK_TIMEOUT_MS", "800")],
+    );
+    assert_eq!(o.code, 0, "late: a read passes: {}", o.err);
+}
+
 #[test]
 fn live_socket_means_no_start_request_and_the_engine_decides() {
     let env = Env::new("sock-live");

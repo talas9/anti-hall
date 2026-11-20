@@ -98,8 +98,16 @@ doc = "Log detail when a daemon is found gone without a clean exit AND the opera
 value = "daemon pid {pid} was ended by the system stopping (its last sign of life {last_alive_ms} ms, the system booted at {boot_ms} ms): not a crash"
 
 [msg.log_crash_context]
-doc = "Log detail when a daemon is found dead without a clean exit, with the last breadcrumb. Placeholders: {pid}, {context}."
-value = "daemon pid {pid} died without a clean exit; last context {context}"
+doc = "Log detail when a daemon is found dead without a clean exit. Placeholders: {pid}, {summary} (the one-line crash summary; the full report is in last-crash.json)."
+value = "daemon pid {pid} died without a clean exit; {summary}"
+
+[msg.crash_summary]
+doc = "One-line summary of a crash report. Placeholders: {pid}, {ts} (ISO time), {kind}, {uptime_s}, {mem_mb}, {request} (the request type the daemon was in), {event} (the hook event), {check} (the check it was running), {path} (the full report)."
+value = "pid {pid} at {ts}, {kind}, up {uptime_s}s, {mem_mb} MB, in request {request}, event {event}, check {check}; details: {path}"
+
+[msg.crash_field_missing]
+doc = "What a crash-summary field shows when the report has no value for it."
+value = "?"
 
 [msg.panic_payload_unknown]
 doc = "Panic payload text when Rust did not carry a string."
@@ -380,6 +388,10 @@ value = "the engine did not finish"
 [msg.launcher_unreachable_why_not_started]
 doc = "The {why} of the engine-unreachable notice when the engine could not be started."
 value = "the engine could not be started"
+
+[msg.engine_unreachable_why_busy]
+doc = "The {why} of the engine-unreachable notice when the engine had no capacity for the call (the daemon shed it under load, or a check waited past its wall-clock backstop) and dispatch.failure_mode `capacity` let it through."
+value = "the engine was too busy to answer it in time"
 
 [msg.engine_unreachable_why_daemon]
 doc = "The {why} of the engine-unreachable notice when the client could not reach the engine's daemon (down, breaker open, crash-loop stop)."

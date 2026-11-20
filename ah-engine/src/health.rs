@@ -350,6 +350,33 @@ pub fn cli_crash() -> Option<Value> {
     read_json("cli_crash")
 }
 
+/// One line for a crash report (`last-crash.json`): pid, time, kind, uptime, memory, the request it was in, and where the full report is.
+pub fn crash_summary(report: &Value) -> String {
+    let missing = defaults::text("msg.crash_field_missing");
+    let text = |v: Option<&Value>| match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) if !v.is_null() => v.to_string(),
+        _ => missing.to_string(),
+    };
+    let crumb = &report["breadcrumb"];
+    let ts = report.get("ts").and_then(Value::as_i64).map_or_else(|| missing.to_string(), crate::checks::taskkit::time::iso);
+    let mem_mb = crumb["memory"]["footprint_kb"].as_u64().map_or_else(|| missing.to_string(), |kb| (kb / 1024).to_string());
+    defaults::render(
+        "msg.crash_summary",
+        &[
+            ("pid", &text(report.get("pid"))),
+            ("ts", &ts),
+            ("kind", &text(report.get("kind"))),
+            ("uptime_s", &text(crumb.get("uptime_s"))),
+            ("mem_mb", &mem_mb),
+            ("request", &text(crumb.get("request"))),
+            ("event", &text(crumb.get("event").filter(|v| v.as_str() != Some("")))),
+            ("check", &text(crumb.get("check").filter(|v| v.as_str() != Some("")))),
+            ("path", &state_file("last_crash").display()),
+        ],
+    )
+}
+
 /// The last recorded crash report.
 pub fn last_crash() -> Option<Value> {
     read_json("last_crash")
@@ -649,7 +676,7 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
         }
         let report = json!({"ts": now_ms(), "kind": "crash", "code": "unknown", "pid": pid, "breadcrumb": breadcrumb});
         write_crash_report(&report);
-        let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("context", &report)]);
+        let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("summary", &crash_summary(&report))]);
         log_event("crash", "unknown", &detail);
         record_failure("crash", "unknown", &detail);
     }
@@ -1048,6 +1075,20 @@ mod tests {
     }
 
     use super::*;
+
+    /// A crash report is one line (pid, time, kind, uptime, memory, request, path), never the breadcrumb JSON.
+    #[test]
+    fn crash_report_summary_is_one_line_without_the_breadcrumb() {
+        crate::defaults::init().unwrap();
+        let report = serde_json::json!({"ts": 1795176350967_i64, "kind": "crash", "pid": 56337,
+            "breadcrumb": {"request": "D", "event": "Stop", "check": "task-guard", "uptime_s": 14, "memory": {"footprint_kb": 77200, "allocator": "jemalloc"}}});
+        let line = crash_summary(&report);
+        assert!(line.contains("pid 56337") && line.contains("up 14s") && line.contains("75 MB") && line.contains("request D"), "{line}");
+        assert!(line.contains("event Stop") && line.contains("check task-guard"), "{line}");
+        assert!(line.contains("2026-11-") && line.contains("last-crash.json"), "{line}");
+        assert!(!line.contains('{') && !line.contains('\n') && !line.contains("jemalloc"), "{line}");
+        assert!(crash_summary(&serde_json::json!({})).contains("pid ?"), "an empty report still gives a line");
+    }
 
     fn ev(ts: u64, kind: &str, code: &str, detail: &str) -> Event {
         Event { ts, kind: kind.into(), code: code.into(), detail: detail.into() }

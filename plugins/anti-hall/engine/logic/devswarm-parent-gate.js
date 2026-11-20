@@ -824,7 +824,7 @@ function pgGate(p, root, l) {
     // a pass that only deferred unread mail keeps the loop state and skips the wake-coverage line; only a clean pass clears the state,
     // after the wake-coverage line (which needs a live child of this project) is known to be silent
     if (!busyAdvisoryHeld) {
-      if (own.id !== null && pgWakeBlock(home, cwd, own.id, now, l, stateFile, stateRel, fx, entries, typeof sidRaw === 'string' && sidRaw !== '' ? sidRaw : null)) return fx;
+      if (own.id !== null && pgWakeBlock(home, cwd, own.id, now, l, stateFile, stateRel, fx, entries, typeof sidRaw === 'string' && sidRaw !== '' ? sidRaw : null, p)) return fx;
       fx.unlink = stateRel;
     }
     return fx;
@@ -1063,7 +1063,7 @@ function pgRawName(home, id) {
 // The clean pass's mailbox-wake block (`wakeCoverage` + `noWakePathLine`): a Claude Primary with a live child of this project, no live
 // watcher and no recent cron tick is told to arm both, under its own loop-state signature and the same forced-acknowledgement cap,
 // then quiet. True when it decided (a block written to `fx`, or the spent cap's quiet pass); false when nothing is missing.
-function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries, sid) {
+function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries, sid, payload) {
   if (!pgSafeId(ownId)) return false; // wakeCoverage: an id it cannot use is "unknown"
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
   if ((raw === null ? '' : raw.trim().toLowerCase()) !== ah.cfg('devswarm_role.claude_agent')) return false;
@@ -1077,6 +1077,12 @@ function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries,
   var tick = piJson(pgDir(home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ownId + '.json');
   var ageMin = piTickAge(tick, now, sid);
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
+  // the Stop payload lists the tick job (devswarm.cronFromPayload): it exists even though its first fire is not yet due, so no tick marker
+  // is expected; the sighting is kept for the prompt line, whose own payload has no cron list
+  if (piPayloadCron(payload) === true) {
+    ageMin = 0;
+    if (sid) fx.extra.push({ rel: piWakeCtlRel(sid), body: JSON.stringify(Object.assign(piWakeCtlRead(sid), { cronSeen: now })) });
+  }
   if (!(ageMin === null || ageMin > warn)) return false;
   if (ah.settings.bool('wake_watch.set_enabled') === false) return false;
   if (piWatcherLive(home, ownId, now)) return false;

@@ -471,6 +471,12 @@ pub fn content_hash(parts: &[&str]) -> String {
     hex[..(defaults::num("jev.hash_len") as usize).min(hex.len())].to_string()
 }
 
+/// The hash a request's decision row will carry (`h`), known before the ask runs: a later outcome joins on it.
+pub fn decision_hash(req: &AskRequest) -> String {
+    let qv = defaults::text("jev.question_version");
+    content_hash(&[&req.id, qv, req.cache_key.as_deref().unwrap_or(&req.state)])
+}
+
 /// Node's `computeFinal` with this engine's trust rules (see the module docs).
 fn compute_final(trust: Trust, baseline: &Value, jev: &Value, confident: bool) -> Value {
     let t = Value::Bool(true);
@@ -1020,8 +1026,7 @@ impl Jev {
     }
 
     fn hash_of(&self, req: &AskRequest) -> String {
-        let qv = defaults::text("jev.question_version");
-        content_hash(&[&req.id, qv, req.cache_key.as_deref().unwrap_or(&req.state)])
+        decision_hash(req)
     }
 
     /// Apply the mode and trust rule, count it and write the one log row (Node: `finalize`).

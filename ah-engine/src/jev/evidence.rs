@@ -381,6 +381,8 @@ pub struct Outcome {
     pub tier: String,
     /// The first rung's answer was weak (failed, low confidence or a long pack) and the next rung was asked.
     pub escalated: bool,
+    /// The content hash of the Jev decision that gave the answer (empty for a rule or Claude-rung answer): the key a later outcome joins on.
+    pub hash: String,
 }
 
 impl Outcome {
@@ -399,6 +401,7 @@ impl Outcome {
             ms: 0,
             tier: String::new(),
             escalated: false,
+            hash: String::new(),
         }
     }
 
@@ -550,6 +553,7 @@ fn ask_jev(home: &Path, env: &Env, cfg: &Cfg, q: Question, pack: &str, blocking:
     };
     let d = lane.ask(&req);
     o.ms = d.ms;
+    o.hash = d.hash.clone();
     let answer = match &d.jev {
         Value::Bool(b) => Some(Answer::Bool(*b)),
         Value::String(s) => Some(Answer::Label(s.clone())),

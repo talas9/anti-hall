@@ -1164,6 +1164,42 @@ fn timings_obj(fields: &[(&str, i64)]) -> OVal {
     o.done()
 }
 
+/// The configured source branch (`devswarm.spawnSource`) a create with no -s / --source branches from; none when the create names its
+/// source or no source is configured.
+fn default_source(inv: &Inv, rest: &[&str]) -> Option<String> {
+    if flag_value(rest, &tl("devswarm_cli.sp_flag_source")).is_some() {
+        return None;
+    }
+    let configured = setting(inv, "devswarm_cli.sp_set_default_source").as_str().map(|v| js_trim(v).to_string()).unwrap_or_default();
+    (!configured.is_empty()).then_some(configured)
+}
+
+#[cfg(test)]
+mod default_source_tests {
+    use super::*;
+
+    fn inv_with(src: Option<&str>) -> Inv {
+        let mut env: crate::meshw::ident::Env = Default::default();
+        if let Some(s) = src {
+            env.insert("ANTIHALL_DEVSWARM_SPAWN_SOURCE".into(), s.into());
+        }
+        let home = std::env::temp_dir().join(format!("ah-spawn-src-{}", std::process::id()));
+        Inv { home: home.clone(), write_home: home, env, cwd: "/".into(), now: 1, stdin: None, store_override: None }
+    }
+
+    /// Dogfood 2026-11-20: a create with no -s took the Primary's checked-out branch. The configured source stands in; a named
+    /// source (either form) and an unset or blank setting leave the create as it was.
+    #[test]
+    fn a_create_with_no_source_takes_the_configured_one_and_a_named_source_wins() {
+        assert_eq!(default_source(&inv_with(Some("dev")), &["-t", "x"]).as_deref(), Some("dev"));
+        assert_eq!(default_source(&inv_with(Some(" dev ")), &[]).as_deref(), Some("dev"));
+        assert_eq!(default_source(&inv_with(Some("dev")), &["-s", "main"]), None);
+        assert_eq!(default_source(&inv_with(Some("dev")), &["--source=main"]), None);
+        assert_eq!(default_source(&inv_with(None), &["-t", "x"]), None);
+        assert_eq!(default_source(&inv_with(Some("  ")), &["-t", "x"]), None);
+    }
+}
+
 /// `spawn <branch> [create options]` past the option checks: the create path (see the module header).
 pub fn create(inv: &Inv, rest: &[&str], branch: &str) -> R<Answer> {
     create_with(inv, rest, branch, &System::configured())
@@ -1171,6 +1207,14 @@ pub fn create(inv: &Inv, rest: &[&str], branch: &str) -> R<Answer> {
 
 /// [`create`] with the runner of the git and probe commands given.
 pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) -> R<Answer> {
+    // no source named: the repository's configured source branch (devswarm.spawnSource, its integration branch) stands in for the Primary's
+    // checked-out branch, which hivecontrol would otherwise branch from
+    let configured = default_source(inv, rest);
+    let injected: Vec<&str> = match configured.as_deref() {
+        Some(src) => rest.iter().copied().chain([nth(&tl("devswarm_cli.sp_flag_source"), 0), src]).collect(),
+        None => rest.to_vec(),
+    };
+    let rest: &[&str] = &injected;
     // from here the verb may fetch and fast-forward: nothing defers any more
     crate::meshw::mark_committed();
     let wall_start = clock(inv);

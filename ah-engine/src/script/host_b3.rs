@@ -251,6 +251,9 @@ fn jev_ask(spec: &str) -> rquickjs::Result<Option<String>> {
     req.compare = v.get("compare").and_then(serde_json::Value::as_bool);
     let (home, env) = jev_env()?;
     let home = std::path::Path::new(&home);
+    if let Some(sid) = req.session_id.as_deref() {
+        crate::delivery::note_jev(sid, &req.id, crate::jev::assist::decision_hash(&req), home, &env, req.project.as_deref());
+    }
     let flag = |k: &str| v.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
     let shape = |d: &crate::jev::Decision| if flag("full") { decision_json(d) } else { d.outcome.to_string() };
     if flag("relax") {

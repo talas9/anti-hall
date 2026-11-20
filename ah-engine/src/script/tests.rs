@@ -4,8 +4,7 @@ use super::*;
 use serde_json::json;
 
 fn home(tag: &str) -> String {
-    let d = crate::testtmp::path(format!("ah-script-{tag}-{}", std::process::id()));
-    crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
+    let d = crate::tmpsweep::scratch("ah-script-", tag); // removed when the test process exits
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     d.to_string_lossy().to_string()
 }
@@ -415,6 +414,32 @@ fn only_pre_tool_use_guards_fail_closed_and_a_stop_or_session_start_check_never_
     assert_eq!(without_notice(failed("git", "SessionStart", "boom")), Verdict::Allow, "never block a non-guard event");
 }
 
+/// P0 2026-11-20: a scripted guard whose call hit its wall-clock backstop (its thread waited for a core on a loaded machine) had no
+/// capacity to answer; it follows the capacity path (dispatch.failure_mode, open), never the guard's own fail-closed policy. A real
+/// script failure of the same fail-closed guard (an exception, its CPU limit) still blocks.
+#[test]
+fn a_starved_closed_guard_lets_the_call_through_but_a_failed_one_still_blocks() {
+    assert_eq!(super::failure_mode("git"), defaults::text("script.failure_mode_closed"));
+    assert!(crate::dispatch::capacity_open(), "the shipped capacity path is open");
+    for event in defaults::list("dispatch.guard_events") {
+        let read = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "git status --porcelain"}});
+        let push = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        assert_eq!(
+            without_notice(super::starved_verdict("git", event, &read, "wall")),
+            Verdict::Allow,
+            "{event}: a starved guard on a read is no-capacity, not a failure"
+        );
+        assert!(matches!(super::starved_verdict("git", event, &push, "wall"), Verdict::Block(_)), "{event}: a starved guard still holds a force push");
+        assert!(matches!(failed("git", event, "TypeError: boom"), Verdict::Block(m) if m.contains("boom")), "{event}: a script exception still fails closed");
+    }
+    // still counted as a script failure (one telemetry error event), only the verdict changed
+    crate::telemetry::emit::take_queued();
+    super::starved_verdict("git", "PreToolUse", &serde_json::json!({}), "wall");
+    let evs = crate::telemetry::emit::take_queued();
+    assert_eq!(evs.len(), 1, "one counter event");
+    assert_eq!(evs[0].o, crate::telemetry::event::Outcome::Error);
+}
+
 #[test]
 fn a_fail_closed_check_blocks_on_a_guard_event_only() {
     let closed = defaults::text("script.failure_mode_closed");
@@ -575,6 +600,13 @@ fn ship_it_guard_script_matches_the_compiled_port() {
         assert!(kinds.get(k).copied().unwrap_or(0) > 5, "a corpus that exercises {k}: {kinds:?}");
     }
     assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
+}
+
+#[test]
+fn cache_ttl_wait_guard_script_matches_its_corpus() {
+    golden_report("cache-ttl-wait-guard", 12);
+    let kinds: std::collections::BTreeSet<String> = golden::load("cache-ttl-wait-guard").iter().filter_map(|c| c["expect"]["v"].as_str().map(str::to_string)).collect();
+    assert!(kinds.contains("advisory") && kinds.contains("allow") && !kinds.contains("block"), "an order is never a block: {kinds:?}");
 }
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
