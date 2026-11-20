@@ -25,7 +25,7 @@ use std::sync::Mutex;
 
 thread_local! {
     /// (session, check) of every answer with a message or a block that this thread's request produced.
-    static DECIDED: RefCell<Vec<(String, String, Ctx)>> = const { RefCell::new(Vec::new()) };
+    static DECIDED: RefCell<Vec<(String, String, Ctx, String)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// One armed check of a session.
@@ -34,6 +34,8 @@ struct Armed {
     ctx: Ctx,
     calls: u64,
     since_ms: u64,
+    /// The delivered answer's text: it picks the row's `variants` entry (which block reason this was).
+    text: String,
 }
 
 /// A check's acted-on condition (`delivery.act`, else `delivery.react`).
@@ -101,8 +103,13 @@ fn stage(t: &Telemetry, check: &str, which: &str, funnel_which: &str, ctx: &Ctx)
 
 /// A check answered with a message or a block while this thread served a request; `ctx` is whose session and project it was.
 pub fn decided(t: &Telemetry, session: &str, check: &str, ctx: &Ctx) {
+    decided_with(t, session, check, ctx, "");
+}
+
+/// [`decided`] with the answer's text, so a row with `variants` is judged by the reason the answer gave.
+pub fn decided_with(t: &Telemetry, session: &str, check: &str, ctx: &Ctx, text: &str) {
     stage(t, check, "delivery.stage_decided", "delivery.stage_decided", ctx);
-    DECIDED.with(|d| d.borrow_mut().push((session.to_string(), check.to_string(), ctx.clone())));
+    DECIDED.with(|d| d.borrow_mut().push((session.to_string(), check.to_string(), ctx.clone(), text.to_string())));
 }
 
 /// A check answered with a message or a block that the client's hook configuration never emits (a shadowed entry: it ran, its
@@ -116,7 +123,7 @@ pub fn suppressed(t: &Telemetry, check: &str, ctx: &Ctx) {
 /// waited), else lost for the reason `delivery.reason_undelivered`. Delivered answers of checks with a `delivery.react` row are armed.
 pub fn settle(t: &Telemetry, delivered: bool) {
     let answers = DECIDED.with(|d| std::mem::take(&mut *d.borrow_mut()));
-    for (session, check, ctx) in answers {
+    for (session, check, ctx, text) in answers {
         if !delivered {
             t.with_metrics(|m| m.inc("delivery_lost", &[("check", check.as_str()), ("reason", defaults::text("delivery.reason_undelivered"))]));
             funnel::stage(t, &check, &ctx, "delivery.stage_lost");
@@ -125,7 +132,7 @@ pub fn settle(t: &Telemetry, delivered: bool) {
             continue;
         }
         stage(t, &check, "delivery.stage_delivered", "delivery.stage_delivered", &ctx);
-        arm(&session, &check, ctx);
+        arm(&session, &check, ctx, text);
     }
 }
 
@@ -135,20 +142,31 @@ fn react_tools(check: &str) -> Option<Vec<&'static str>> {
 
 /// The acted-on condition of `check`: its `delivery.act` row, else its `delivery.react` row (tool calls, polarity do), else none.
 fn cond(check: &str) -> Option<Cond> {
+    cond_for(check, "")
+}
+
+/// [`cond`] for an answer with `text`: the first of the row's `variants` whose `when_re` matches the text replaces the row's `tools`,
+/// `command_re`, `polarity`, `window` and `window_event` (each only where the variant sets it) - one check, one condition per reason.
+fn cond_for(check: &str, text: &str) -> Option<Cond> {
     let (calls, event) = (defaults::num("delivery.react_window_calls"), defaults::text("delivery.react_event"));
-    if let Some(row) = defaults::raw("delivery.act").get(check) {
+    if let Some(base) = defaults::raw("delivery.act").get(check) {
+        let variant = (!text.is_empty())
+            .then(|| base.get("variants").and_then(defaults::V::as_array))
+            .flatten()
+            .and_then(|vs| vs.iter().find(|v| v.get("when_re").and_then(defaults::V::as_str).and_then(command_regex).is_some_and(|re| re.is_match(text))));
+        let pick = |k: &str| variant.and_then(|v| v.get(k)).or_else(|| base.get(k));
         return Some(Cond {
-            tools: row.get("tools").map(defaults::V::strings).unwrap_or_default(),
-            avoid: row.str_field("polarity") == defaults::text("delivery.polarity_avoid"),
-            window: row.get("window").and_then(defaults::V::as_integer).map_or(calls, |n| n.max(1) as u64),
-            window_event: row.get("window_event").and_then(defaults::V::as_str).unwrap_or(event),
-            command_re: row.get("command_re").and_then(defaults::V::as_str).and_then(command_regex),
+            tools: pick("tools").map(defaults::V::strings).unwrap_or_default(),
+            avoid: pick("polarity").and_then(defaults::V::as_str).unwrap_or("") == defaults::text("delivery.polarity_avoid"),
+            window: pick("window").and_then(defaults::V::as_integer).map_or(calls, |n| n.max(1) as u64),
+            window_event: pick("window_event").and_then(defaults::V::as_str).unwrap_or(event),
+            command_re: pick("command_re").and_then(defaults::V::as_str).and_then(command_regex),
         });
     }
     react_tools(check).map(|tools| Cond { tools, avoid: false, window: calls, window_event: event, command_re: None })
 }
 
-fn arm(session: &str, check: &str, ctx: Ctx) {
+fn arm(session: &str, check: &str, ctx: Ctx, text: String) {
     if session.is_empty() || defaults::num("delivery.react_window_calls") == 0 || cond(check).is_none() {
         return;
     }
@@ -166,7 +184,7 @@ fn arm(session: &str, check: &str, ctx: Ctx) {
         return; // one open question per check: its window is already running
     }
     if list.len() < defaults::num("delivery.pending_per_session_max") as usize {
-        list.push(Armed { check: check.to_string(), ctx, calls: 0, since_ms: crate::health::now_ms() });
+        list.push(Armed { check: check.to_string(), ctx, calls: 0, since_ms: crate::health::now_ms(), text });
     }
 }
 
@@ -195,7 +213,7 @@ pub fn observe_call(t: &Telemetry, session: &str, event: &str, tool: &str, comma
     let now = crate::health::now_ms();
     let mut results: Vec<(String, Ctx, bool)> = Vec::new();
     list.retain_mut(|a| {
-        let Some(c) = cond(&a.check) else { return false }; // its row left the defaults on a reload: nothing to measure
+        let Some(c) = cond_for(&a.check, &a.text) else { return false }; // its row left the defaults on a reload: nothing to measure
         if event == c.window_event {
             a.calls += 1;
         }
@@ -587,6 +605,32 @@ mod tests {
             observe_call(&t, "s-other-tool", defaults::text("delivery.react_event"), "Edit", good);
             assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "{check}: a command on another tool is no reaction");
         }
+    }
+
+    /// Ignored-rules 3/6: the `command` check is judged per block reason: a stash block by a WIP commit, a native-send block by a mesh send,
+    /// a heavy-command block by an agent spawn - and not by each other's reaction.
+    #[test]
+    fn the_command_check_is_judged_by_the_reaction_its_block_reason_asks_for() {
+        let (check, bash, ev) = ("command", defaults::text("delivery.command_tool"), defaults::text("delivery.react_event"));
+        let acted = |t: &Telemetry| funnel_count(t, check, &ctx(), "delivery.stage_acted_on");
+        let n = std::cell::Cell::new(0);
+        let run = |text: &str, tool: &str, cmd: &str| {
+            n.set(n.get() + 1);
+            let session = format!("s-variant-{}", n.get()); // the pending map is process-wide: one open window per session and check
+            let t = Telemetry::new();
+            decided_with(&t, &session, check, &ctx(), text);
+            settle(&t, true);
+            observe_call(&t, &session, ev, tool, cmd);
+            acted(&t)
+        };
+        let (stash, send, heavy) =
+            ("`git stash push` is blocked for a subagent.", "`hivecontrol workspace send` is blocked.", "a heavy command (cargo) was stopped");
+        assert_eq!(run(stash, bash, "git commit -m wip"), 1, "stash block: a WIP commit");
+        assert_eq!(run(stash, "Agent", ""), 0, "stash block: a spawn is not its reaction");
+        assert_eq!(run(send, bash, "~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file m"), 1, "native send: a mesh send");
+        assert_eq!(run(send, bash, "git commit -m wip"), 0, "native send: a commit is not its reaction");
+        assert_eq!(run(heavy, "Agent", ""), 1, "heavy: a spawn");
+        assert_eq!(run(heavy, bash, "git commit -m wip"), 0, "heavy: a commit is not its reaction");
     }
 
     /// An invalid `command_re` matches nothing (it would zero the row's acted_on), so it is logged once per pattern, never silently.
