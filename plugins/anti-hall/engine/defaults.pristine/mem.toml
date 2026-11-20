@@ -517,6 +517,11 @@ value = 90
 min = 1
 max = 100
 
+[mem.leak_floor_buckets]
+doc = "The footprint, heap and holder slopes are fitted to the series' floor: the trend window is cut into this many equal time slices and each keeps its lowest reading. A burst (interpreters growing to their working size while hooks run, then falling back when idle) is not a climb; a leak lifts the floor. Under 2 fits the raw samples. A newer-half slope uses half as many slices."
+value = 8
+min = 0
+
 [mem.leak_min_samples]
 doc = "Fewest samples in a window for any slope to be trusted."
 value = 10
