@@ -289,6 +289,10 @@ value = "Repair"
 doc = "The heading of the repair section in a preview."
 value = "Repair (dry-run — no changes written)"
 
+[doctor_msg.repair_only_none]
+doc = "`--only <id>` found no pending repair step with that id. Placeholders: {id}, {ids}."
+value = "no pending repair step '{id}' (step ids: {ids}); nothing was changed"
+
 [doctor_msg.attribution_advice]
 doc = "The user's Claude Code settings do not turn off the AI credit line. The doctor only advises; it never edits the file. Placeholders: {path}, {key}."
 value = "Claude Code adds an AI credit line to commits and pull requests unless {path} sets {form}. Use this object form: a boolean \"{key}\": false makes older Claude Code versions skip the whole settings file. git-guard blocks those lines. Add it yourself; the doctor never edits your settings"
@@ -1438,6 +1442,19 @@ value = "PreToolUse"
 [doctor.foreign_stop]
 doc = "The hook event whose foreign hooks sit beside the Stop guards."
 value = "Stop"
+
+[doctor.pristine_pinned]
+doc = "Defaults files whose pristine copy is a pinned released fallback (it lags the edited copy on purpose; new keys go to the edited copy only). The unknown-setting check skips them: a key the pristine copy lacks is expected there, not a typo."
+value = ["flags.toml", "roles.toml", "script.toml", "telemetry.toml"]
+
+[doctor.fix_ids]
+doc = "The id of each repair step: the id in the repair report and the name `--only <id>` takes. The units heal has its own, units.doctor_id."
+value = { exec = "engine-binary-exec", quarantine = "engine-binary-quarantine", mkdir = "state-dir-create", private = "state-dir-private", heal = "config-heal" }
+
+[doctor.repair_only_flag]
+doc = "The flag that limits `doctor --repair` to ONE repair step, named by its id (`--only units-heal`). Nothing else is repaired, migrated or swept."
+value = "--only"
+
 
 [doctor.foreign_observers]
 doc = "Foreign hook script names that only record events (they append to a log and print no allow/deny; on Stop they print approve): a PreToolUse or Stop registration of one is information, not a competing guard. Checked: claude-session-driver emit-event."

@@ -50,7 +50,7 @@ pub fn config_section(doc: &mut Doc, fixes: &mut Vec<Fix>, ctx: &Ctx) {
     } else if let Ok(rd) = std::fs::read_dir(&edited) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(defaults::text("doctor.toml_ext")) {
+            if !name.ends_with(defaults::text("doctor.toml_ext")) || defaults::list("doctor.pristine_pinned").contains(&name.as_str()) {
                 continue;
             }
             let (Ok(mine), Ok(theirs)) = (std::fs::read_to_string(e.path()), std::fs::read_to_string(pristine.join(&name))) else { continue };
