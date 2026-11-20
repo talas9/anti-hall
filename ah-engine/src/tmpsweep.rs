@@ -11,7 +11,7 @@
 //! The prefixes and the age live in `disk_watch.toml`; nothing here decides a name or a number.
 use crate::defaults;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 /// Remove the entries of `dir` that start with one of `prefixes` and were last changed at least `max_age` before `now`.
@@ -52,7 +52,7 @@ pub fn sweep_configured() -> usize {
 }
 
 static LIVE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-static REGISTER: Once = Once::new();
+static REGISTER: OnceLock<()> = OnceLock::new();
 
 extern "C" fn at_exit() {
     remove_registered();
@@ -69,7 +69,7 @@ pub fn remove_registered() {
 /// A fresh scratch directory `<temp>/<prefix><tag>-<pid>` (any older one of that name is replaced), removed when this process
 /// exits. A process killed before exit leaves it for [`sweep_configured`], which this runs once per process when the defaults are loaded.
 pub fn scratch(prefix: &str, tag: &str) -> PathBuf {
-    REGISTER.call_once(|| {
+    REGISTER.get_or_init(|| {
         if defaults::is_loaded() {
             sweep_configured();
         }
