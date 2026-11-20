@@ -490,6 +490,11 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     };
     let root = plugin_root(p, &ctx.env);
     let root_path = root.as_deref().map(Path::new);
+    // the flag/variable root fed `ctx`; the root the doctor resolved itself (install record, snapshot cache) names the plugin version too
+    let mut ctx = ctx;
+    if ctx.version.is_none() {
+        ctx.version = root.as_deref().and_then(|r| migrate::plugin_version(&ctx, r));
+    }
     let version = ctx.version.clone().unwrap_or_else(|| defaults::text("doctor_msg.unknown_version").to_string());
     let mut doc = Doc::default();
     let mut fixes: Vec<Fix> = Vec::new();
