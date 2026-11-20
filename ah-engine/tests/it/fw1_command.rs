@@ -93,6 +93,24 @@ fn gh_pr_ready_runs_inline_close_takes_the_unlisted_path_and_merge_stays_blocked
 }
 
 #[test]
+fn a_heavy_block_names_the_rule_that_fired_and_flutter_clean_is_light() {
+    let cwd = scratch("rule");
+    let cwd = cwd.to_str().unwrap();
+    let all: Vec<(&str, &str)> = DEVSWARM.to_vec();
+    let text = |cmd: &str| {
+        let (code, out, err) = run(&["check", "command"], &all, &main_bash(cmd, cwd).to_string());
+        (code, format!("{out}{err}"))
+    };
+    let (code, msg) = text("flutter build apk");
+    assert_eq!(code, 2, "{msg}");
+    assert!(msg.contains("Rule: a heavy command (flutter)."), "the visible text names the heavy verb: {msg}");
+    let (code, msg) = text("gh pr merge 836 --squash");
+    assert_eq!(code, 2, "{msg}");
+    assert!(msg.contains("Rule: a command that changes a shared remote."), "the visible text names the remote rule: {msg}");
+    assert_eq!(text("flutter clean").0, 0, "flutter clean is light, like cargo clean");
+}
+
+#[test]
 fn a_shell_wrapper_gets_the_verdict_of_its_script_body() {
     // #547: `bash run.sh` is judged by what run.sh runs, so a wrapper and its raw command agree
     let dir = scratch("wrap");
