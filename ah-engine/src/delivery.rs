@@ -48,6 +48,9 @@ struct Cond {
     /// The row's `command_re`: a call of `delivery.command_tool` whose command text matches counts like a listed tool (compliance run
     /// through the shell the message prescribes, e.g. `ah-engine mesh send`).
     command_re: Option<regex::Regex>,
+    /// The row's `reply_re`: the reply of the turn that ends the window (`last_assistant_message` of a Stop that is the row's
+    /// `window_event`) restating the claim as unverified counts as the reaction, which no tool call shows.
+    reply_re: Option<regex::Regex>,
 }
 
 /// The compiled `command_re` of a row (one compile per distinct pattern; an invalid pattern matches nothing and is logged once).
@@ -126,9 +129,10 @@ fn cond_for(check: &str, text: &str) -> Option<Cond> {
             window: pick("window").and_then(defaults::V::as_integer).map_or(calls, |n| n.max(1) as u64),
             window_event: pick("window_event").and_then(defaults::V::as_str).unwrap_or(event),
             command_re: pick("command_re").and_then(defaults::V::as_str).and_then(command_regex),
+            reply_re: pick("reply_re").and_then(defaults::V::as_str).and_then(command_regex),
         });
     }
-    react_tools(check).map(|tools| Cond { tools, avoid: false, window: calls, window_event: event, command_re: None })
+    react_tools(check).map(|tools| Cond { tools, avoid: false, window: calls, window_event: event, command_re: None, reply_re: None })
 }
 
 fn arm(session: &str, check: &str, ctx: Ctx, text: String) {
@@ -169,6 +173,12 @@ pub fn observe(t: &Telemetry, session: &str, event: &str, tool: &str) {
 /// [`observe`] with the call's shell command text (`tool_input.command` of a `delivery.command_tool` call): a row with a `command_re`
 /// also counts a call of that tool whose command matches it as the reaction.
 pub fn observe_call(t: &Telemetry, session: &str, event: &str, tool: &str, command: &str) {
+    observe_full(t, session, event, tool, command, "");
+}
+
+/// [`observe_call`] with the reply the agent just ended its turn with (`last_assistant_message` of a Stop): a row with a `reply_re`
+/// counts a reply that matches it, at the row's own `window_event`, as the reaction.
+pub fn observe_full(t: &Telemetry, session: &str, event: &str, tool: &str, command: &str, reply: &str) {
     if session.is_empty() {
         return;
     }
@@ -183,7 +193,8 @@ pub fn observe_call(t: &Telemetry, session: &str, event: &str, tool: &str, comma
             a.calls += 1;
         }
         let by_command = !command.is_empty() && tool == defaults::text("delivery.command_tool") && c.command_re.as_ref().is_some_and(|re| re.is_match(command));
-        let hit = event == react_event && (c.tools.contains(&tool) || by_command);
+        let by_reply = !reply.is_empty() && event == c.window_event && event != react_event && c.reply_re.as_ref().is_some_and(|re| re.is_match(reply));
+        let hit = (event == react_event && (c.tools.contains(&tool) || by_command)) || by_reply;
         let spent = a.calls >= c.window || now.saturating_sub(a.since_ms) > max_age;
         if hit || spent {
             results.push((a.check.clone(), a.ctx.clone(), if hit { !c.avoid } else { c.avoid }));
@@ -571,6 +582,25 @@ mod tests {
         assert_eq!(run(send, bash, "git commit -m wip"), 0, "native send: a commit is not its reaction");
         assert_eq!(run(heavy, "Agent", ""), 1, "heavy: a spawn");
         assert_eq!(run(heavy, bash, "git commit -m wip"), 0, "heavy: a commit is not its reaction");
+    }
+
+    /// Ignored-rules 4/6: a reply that restates the claim as unverified is the reaction to a claim-evidence block (configurable
+    /// `reply_re`); an ordinary reply, or the same words on another check's row, is not.
+    #[test]
+    fn a_reply_restating_the_claim_as_unverified_is_the_claim_evidence_reaction() {
+        let check = "claim-evidence-guard";
+        let acted = |t: &Telemetry| funnel_count(t, check, &ctx(), "delivery.stage_acted_on");
+        let (t, ev) = (Telemetry::new(), defaults::text("delivery.react_event"));
+        deliver(&t, "s-reply-1", check);
+        observe_full(&t, "s-reply-1", "Stop", "", "", "Done. All tests pass and the deploy is live.");
+        assert_eq!((acted(&t), funnel_count(&t, check, &ctx(), "delivery.stage_ignored")), (0, 1), "a plain reply is not the reaction");
+        deliver(&t, "s-reply-2", check);
+        observe_full(&t, "s-reply-2", "Stop", "", "", "Correction: I haven't verified the tests pass; that is unverified.");
+        assert_eq!(acted(&t), 1, "an unverified restatement is");
+        deliver(&t, "s-reply-3", check);
+        observe_full(&t, "s-reply-3", ev, "NoSuchToolForTheFunnel", "", "not verified");
+        observe_full(&t, "s-reply-3", "Stop", "", "", "");
+        assert_eq!(acted(&t), 1, "a tool call event never carries a reply");
     }
 
     #[test]
