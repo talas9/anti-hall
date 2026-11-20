@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Engine 0.3.3 (local integration build)
+
+Engine-only local build. Beyond dev it carries:
+
+- Command guard: the matching rule is named in the block message (#858).
+- Scheduling: a slow check no longer starves the guards behind it (#778).
+- Child gate: empty wake pings are ignored (fix/child-gate-wake-pings).
+- QuickJS: memory growth fixed (fix/quickjs-mem-growth).
+
 ## Engine 0.3.2
 
 Engine-only release (hook client 0.3.0 and dashboard 0.2.0 unchanged). Engine fixes merged to dev since 0.3.1:
