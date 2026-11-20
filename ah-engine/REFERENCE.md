@@ -13013,7 +13013,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.t_cost_per_call` | `${v}/call` |  |  | Real cost per call. Placeholder: {v}. |
 | `jevrep.t_cost_per_changed` | `${v}/changed` |  |  | Real cost per changed decision. Placeholder: {v}. |
 | `jevrep.t_cost_title` | `\nreal cost (gateway/price-table-reported, not the manual costPerCall estimate):` |  |  | Heading of the real-cost section. |
-| `jevrep.t_cost_unset` | `\ncost: n/a — set jev.json "costPerCall" (owner-supplied $/call estimate) to ...` |  |  | Said under the table when no costPerCall estimate is set. |
+| `jevrep.t_cost_unset` | `\ncost: n/a — set jev.json "costPerCall" (owner-supplied $/call estimate) to ...` |  |  | Said under the table when neither a real row cost, a jev.json costPerCall nor the shipped default is available. |
 | `jevrep.t_credit_balance` | `\ncredit balance (vercel): ${balance}{cached}` |  |  | The credit balance line. Placeholders: {balance}, {cached}. |
 | `jevrep.t_credit_cached` | ` (cached)` |  |  | Marks a balance served from the cache. |
 | `jevrep.t_credit_failed` | `\ncredit balance (vercel): n/a ({reason})` |  |  | The balance could not be read. Placeholder: {reason}. |
@@ -13090,6 +13090,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.t_window_none` | `(none)` |  |  | No excluded window. |
 | `jevrep.table_header` | `14 items` |  |  | The column headers of the per-integration table. |
 | `jevrep.thr_bad_outcome_re` | `^(user-override\|false-positive\|wrong\|bad\|reverted\|repeat-speculation)` |  |  | Case-insensitive pattern of the outcome names that count as evidence a changed decision was wrong; every other outcome is good. |
+| `jevrep.thr_cost_per_call_default` | `0.000019` |  |  | Fallback USD per fresh call for the cost column when no row carries a real cost and jev.json has no "costPerCall" (a decimal number in a string; jev.json wins). Measured mean costUsd of 46085 live jev-assist.ndjson rows (2026-10-01 to 2026-11-21) = 0.0000191 USD per call (median 0.0000208, p90 0.0000363), rounded to 0.000019; an estimate only, real row costs always win. |
 | `jevrep.thr_day_ms` | `86400000` |  | ms | Length of a day, for the windows and the rollups. |
 | `jevrep.thr_failure_reasons` | `timeout, network-error, parse-error, bad-response, error` |  |  | The reasons of a baseline-only row that count as a real failure (as against off, disabled or not-applicable). `no-key` is not listed (#764): an integration that is on but has no model key is configured off in effect, so it is reported by kind (errorsByKind) and never counted as a failed call that sends the verdict to REVIEW or REMOVE. |
 | `jevrep.thr_http_failure_prefix` | `http-` |  |  | A baseline-only row whose reason starts with this counts as a failure. |
@@ -13097,6 +13098,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jevrep.thr_keep_good_outcome_rate` | `0.80` |  |  | KEEP needs a good-outcome rate of at least this fraction (a decimal number in a string). |
 | `jevrep.thr_low_yield_changed_rate` | `0.01` |  |  | A changed-decision rate below this fraction is noted as low yield, never a REMOVE reason (a decimal number in a string). |
 | `jevrep.thr_low_yield_pct` | `1` |  |  | The same threshold as a whole percent, for the texts. |
+| `jevrep.thr_low_yield_rate_digits` | `2` |  |  | Decimals of the changed rate printed in the low-yield note (2 so 0.995% does not print as 1.0% next to a 1% threshold). Only the display: the comparison uses the exact rate. |
 | `jevrep.thr_min_calls` | `50` |  |  | Below this many calls an integration is always REVIEW (not enough data). |
 | `jevrep.thr_min_labeled` | `20` |  |  | Labelled outcomes (true and false positives, human and automatic) needed before KEEP or REMOVE can be given. |
 | `jevrep.thr_over_ms` | `1000` |  | ms | A fresh call slower than this counts as slow in the overhead figures. |

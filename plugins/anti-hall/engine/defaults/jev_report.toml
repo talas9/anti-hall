@@ -51,8 +51,8 @@ doc = "Decimals of the changed rate printed in the low-yield note (2 so 0.995% d
 value = 2
 
 [jevrep.thr_cost_per_call_default]
-doc = "Fallback USD per fresh call for the cost column when no row carries a real cost and jev.json has no \"costPerCall\" (a decimal number in a string; jev.json wins). A rough Jev-gateway figure, an estimate only; real row costs always win."
-value = "0.0004"
+doc = "Fallback USD per fresh call for the cost column when no row carries a real cost and jev.json has no \"costPerCall\" (a decimal number in a string; jev.json wins). Measured mean costUsd of 46085 live jev-assist.ndjson rows (2026-10-01 to 2026-11-21) = 0.0000191 USD per call (median 0.0000208, p90 0.0000363), rounded to 0.000019; an estimate only, real row costs always win."
+value = "0.000019"
 
 [jevrep.thr_low_yield_pct]
 doc = "The same threshold as a whole percent, for the texts."

@@ -545,7 +545,9 @@ mod issue_466_tests {
         let now = now_ms();
         let real = [costed("realOne", now - 10, Some(0.25)), costed("realOne", now - 20, Some(0.5))].join("\n");
         let est: Vec<String> = (0..4).map(|i| costed("estOne", now - 10 - i, None)).collect();
-        let r = run(&["--json"], &[real, est.join("\n")].join("\n"), now);
+        let mut lines = vec![real];
+        lines.extend(est);
+        let r = run(&["--json"], &lines.join("\n"), now);
         let by = |id: &str| r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
         assert!((by("realOne")["costEstimate"].as_f64().unwrap() - 0.75).abs() < 1e-9, "{}", by("realOne"));
         let per: f64 = defaults::text("jevrep.thr_cost_per_call_default").parse().unwrap();
