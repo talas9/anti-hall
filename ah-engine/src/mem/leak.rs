@@ -289,8 +289,7 @@ pub fn evaluate(ring: &[&Sample], now_s: u64, p: &Params) -> Verdict {
     let mut top = None;
     if win.len() >= 3 {
         let names: BTreeSet<&str> = win.iter().flat_map(|s| s.holders.iter().map(|h| h.name.as_str())).collect();
-        let mut cands: Vec<(String, f64)> =
-            names.into_iter().map(|n| (n.to_string(), floor_slope(&win, p.floor_buckets, |s| holder_bytes(s, n)))).collect();
+        let mut cands: Vec<(String, f64)> = names.into_iter().map(|n| (n.to_string(), floor_slope(&win, p.floor_buckets, |s| holder_bytes(s, n)))).collect();
         cands.push((defaults::text("mem.leak_name_other").to_string(), floor_slope(&win, p.floor_buckets, other_bytes)));
         cands.push((defaults::text("mem.leak_name_outside").to_string(), floor_slope(&win, p.floor_buckets, |s| s.footprint as f64 - s.heap as f64)));
         let best = if trend || level != Level::Suspected {
