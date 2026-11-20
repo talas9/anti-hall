@@ -215,6 +215,30 @@ value = "-?\\d+"
 doc = "Headline of the child gate block."
 value = "workspace reporting or inbox duties are unfinished."
 
+[devswarm_gates.cg_headline_duties]
+doc = "Headline of the child gate block when the unmet duties are known; {duties} is their names joined by cg_duty_sep. Kept short: the visible line is cut near 115 units."
+value = "workspace duty unfinished: {duties}."
+
+[devswarm_gates.cg_duty_sep]
+doc = "Joins the duty names in the child gate headline."
+value = "; "
+
+[devswarm_gates.cg_duty_cron]
+doc = "Duty name in the child gate headline: the mailbox tick cron job is not scheduled."
+value = "the mailbox tick cron is not armed"
+
+[devswarm_gates.cg_duty_report]
+doc = "Duty name in the child gate headline: no heartbeat or report was sent this episode."
+value = "no heartbeat or report sent"
+
+[devswarm_gates.cg_duty_inbox]
+doc = "Duty name in the child gate headline: unread parent mail."
+value = "unread parent messages"
+
+[devswarm_gates.cg_duty_unknown]
+doc = "Duty name in the child gate headline: the unread count could not be read."
+value = "inbox state unreadable"
+
 [devswarm_gates.cg_why]
 doc = "Why line of the child gate block."
 value = "Your parent orchestrator relies on your heartbeat and a drained inbox."
