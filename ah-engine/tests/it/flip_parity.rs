@@ -491,8 +491,16 @@ impl Rig {
             plugin,
             root,
         };
-        let launcher =
-            std::env::var_os("AH_HOOK_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ah-engine")).with_file_name("ah-hook"));
+        // The thin client is its own crate (ah-launcher), not a bin of this one: AH_HOOK_BIN, else its release or debug build in this
+        // checkout. Without one the symlink below would dangle and every thin row would read "engine not installed", so say so here.
+        let launcher = std::env::var_os("AH_HOOK_BIN").map(PathBuf::from).filter(|p| p.is_file()).unwrap_or_else(|| {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
+            ["release", "debug"]
+                .iter()
+                .map(|b| root.join(b).join("ah-hook"))
+                .find(|p| p.is_file())
+                .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN")
+        });
         let bin = rig.root.join("h-new/.anti-hall/ah-engine/bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(launcher, bin.join("ah-hook")).unwrap();

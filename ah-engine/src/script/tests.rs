@@ -1582,6 +1582,14 @@ mod sibling {
     fn a_200k_line_transcript_is_answered_within_the_script_limit() {
         for (tag, big) in [("long", false), ("long-big", true)] {
             let h = h(tag);
+            // the big transcript is ~412 MB: removed when the iteration ends, a failed assertion included
+            struct Cleanup(String);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    crate::discard::harmless(std::fs::remove_dir_all(&self.0)); // keep: cleanup
+                }
+            }
+            let _cleanup = Cleanup(h.clone());
             let t = long_transcript(&h, &format!("{tag}.jsonl"), big);
             for event in ["Stop", "SubagentStop"] {
                 let mut p = stop(&h, &t, CAUSE);

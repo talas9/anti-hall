@@ -4023,7 +4023,12 @@
    "node": {
     "tasklist-guard": "block"
    },
-   "kept": {}
+   "kept": {
+    "tasklist-guard": {
+     "engine": "allow",
+     "reason": "tasklist_guard.file_count_setting (guards.tasklistCountFiles, #794): the work count is distinct project files written; a shell redirect into the temp dir is scratch and counts nothing, so the engine needs no task list where Node (command counting) blocked; added after the Oct 22-24 shadow window"
+    }
+   }
   },
   {
    "id": "tl-scratchpad-cwd",
@@ -4322,7 +4327,12 @@
    "node": {
     "tasklist-guard": "block"
    },
-   "kept": {}
+   "kept": {
+    "tasklist-guard": {
+     "engine": "allow",
+     "reason": "tasklist_guard.file_count_setting (guards.tasklistCountFiles, #794): the work count is distinct project files written; git commit names no file and counts nothing, so the engine needs no task list where Node (command counting) blocked; added after the Oct 22-24 shadow window"
+    }
+   }
   },
   {
    "id": "tl-housekeeping",
@@ -5716,7 +5726,12 @@
    "node": {
     "tasklist-guard": "block"
    },
-   "kept": {}
+   "kept": {
+    "tasklist-guard": {
+     "engine": "allow",
+     "reason": "tasklist_guard.file_count_setting (guards.tasklistCountFiles, #794): the work count is distinct project files written; writes outside the project (here the memory folder under the home) count nothing, so the engine needs no task list where Node (command counting) blocked; added after the Oct 22-24 shadow window"
+    }
+   }
   },
   {
    "id": "tl-sidechain",

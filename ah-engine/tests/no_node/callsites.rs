@@ -5,7 +5,7 @@
 //! with placeholders are inventoried in the report. Unit files the runs leave in HOME are checked too (surface `unit/<file>`).
 
 use crate::expected;
-use crate::harness::{self, Seen, World, cfg_int, cfg_list, note};
+use crate::harness::{self, Seen, World, cfg_int, cfg_list, cfg_str, note};
 
 use std::path::Path;
 use std::time::Duration;
@@ -152,7 +152,10 @@ fn skill_and_agent_call_sites_run_without_node() {
     let rows: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|(surface, at, mut row)| {
-            let node: Vec<String> = w.hits_of(&at).iter().map(|h| w.script_key(&h.argv)).collect();
+            // api-guard's own `node -e` module probe, run by the doctor's canary rows, is the guard under test using the interpreter
+            let prefix = cfg_str(&w.cfg, "allowed_starts", "argv_prefix");
+            let probe = cfg_list(&w.cfg, "allowed_starts", "surfaces").contains(&surface) && !prefix.is_empty();
+            let node: Vec<String> = w.hits_of(&at).iter().filter(|h| !(probe && h.argv.starts_with(&prefix))).map(|h| w.script_key(&h.argv)).collect();
             for k in &node {
                 note(&mut seen, &surface, k, &at);
             }
