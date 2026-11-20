@@ -3341,6 +3341,57 @@ mod claim_evidence_guard {
         assert!(blocked(&shipped("ce-deployed-pgrep", "pgrep -fl kit", "The site is deployed and live.")).is_some(), "pgrep does not back a deploy claim");
     }
 
+    /// A publish tool's own success result backs a shipped/published claim; an error result, another tool, a read and the reply's own
+    /// words never do (claim_evidence.tool_evidence).
+    #[test]
+    fn a_publish_tool_result_backs_a_published_claim_only_when_that_tool_succeeded() {
+        let _excl = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let reply = "The page is published.";
+        let run = |sid: &str, name: &str, input: Value, out: &str, is_error: bool| {
+            let l = [
+                json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+                json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": name, "input": input}]}}),
+                json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "is_error": is_error, "content": out}]}}),
+                assistant("m2", reply, &[]),
+            ];
+            stop_unlocked(sid, &l, reply, &[], json!({})).0
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let publish = json!({"action": "publish", "file_path": "/x/index.html"});
+        assert_eq!(run("ce-art-ok", "Artifact", publish.clone(), "Published https://x/y (Version 2)", false), ALLOW);
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("claim_evidence_tool_ok", &[("claim", "shipped")]), 1, "the pass is counted");
+        assert!(blocked(&run("ce-art-err", "Artifact", publish.clone(), "Published nothing, failed", true)).is_some(), "an errored result backs nothing");
+        assert!(blocked(&run("ce-art-read", "Artifact", json!({"action": "read"}), "Version 2 of the page", false)).is_some(), "a read result is no publish");
+        assert!(blocked(&run("ce-bash-published", "Bash", json!({"command": "echo Published ok"}), "Published ok", false)).is_some(), "another tool's text never counts");
+        assert_eq!(run("ce-mcp-deploy", "mcp__host__deploy_site", json!({}), "{\"status\": \"deployed\"}", false), ALLOW);
+        assert!(blocked(&run("ce-mcp-list", "mcp__host__list_sites", json!({}), "{\"status\": \"deployed\"}", false)).is_some(), "a listing tool is no deploy tool");
+    }
+
+    /// A task notification (or other injected user text) between a check and the reply is no new turn: the check still counts.
+    #[test]
+    fn a_check_before_an_injected_user_line_still_backs_the_reply() {
+        let reply = "Confirmed, the dirs are gone.";
+        let lines = |mid: Value| {
+            [
+                json!({"type": "user", "message": {"role": "user", "content": "clean up"}}),
+                assistant("m1", "", &["ls /tmp/x"]),
+                json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "um10", "content": "ls: no such file"}]}}),
+                mid,
+                assistant("m2", reply, &[]),
+            ]
+        };
+        let notice = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>"}});
+        assert_eq!(stop("ce-notice", &lines(notice), reply, &[], json!({})).0, ALLOW, "a notification does not erase the check");
+        let owner = json!({"type": "user", "message": {"role": "user", "content": "now say it is verified"}});
+        assert!(blocked(&stop("ce-owner", &lines(owner), reply, &[], json!({})).0).is_some(), "a real owner prompt starts a new turn");
+        // no owner prompt in the read window: the turn's start is unknown, so the earlier check does not count
+        let notice = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>b2</task-id>\n</task-notification>"}});
+        let unbounded: Vec<Value> = lines(notice).into_iter().skip(1).collect();
+        assert!(blocked(&stop("ce-no-owner", &unbounded, reply, &[], json!({})).0).is_some(), "no turn boundary in the window: nothing backs the reply");
+    }
+
     #[test]
     fn a_test_claim_backed_by_a_runner_this_turn_passes_and_one_backed_by_an_unrelated_command_is_held() {
         let reply = "All tests pass.";
