@@ -1814,6 +1814,49 @@ fn fw3_the_codex_installer_pattern_covers_both_node_era_command_shapes() {
     assert!(!re.is_match("node \"/h/other-tool/hooks/lint.js\""));
 }
 
+/// `--only <id>` limits a repair run to one step; an id with nothing pending names the step ids and changes nothing.
+#[test]
+fn repair_only_an_unknown_step_lists_the_ids_and_runs_no_other_repair() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let d = sc.doctor_raw(&["--dry-run", "--only", "nonesuch"]);
+    d.has("info", &["no pending repair step 'nonesuch'", "units-heal", "config-heal", "engine-binary-exec", "nothing was changed"]);
+    // no migration row and no sweep ran for it
+    assert!(!d.text.contains("skipped ["), "no migration rows with --only\n{}", d.text);
+    assert!(!d.text.contains("heal-registry-rows"), "{}", d.text);
+}
+
+/// Only a named step runs: on a legacy interval-only unit `--only units-heal` rewrites the unit and nothing else.
+#[cfg(target_os = "macos")]
+#[test]
+fn repair_only_units_heal_rewrites_just_the_unit() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.1.0");
+    let unit = sc.put("Library/LaunchAgents/com.anti-hall.engine.plist", b"<plist><dict><key>StartInterval</key><integer>300</integer></dict></plist>");
+    let d = sc.doctor_raw(&["--dry-run", "--only", "units-heal"]);
+    d.has("info", &["units-heal", "would have write"]);
+    assert!(!d.text.contains("skipped ["), "no migration rows with --only\n{}", d.text);
+    assert!(fs::read_to_string(&unit).unwrap().contains("StartInterval"), "a dry run leaves the unit alone");
+}
+
+/// The pristine fallback of the pinned files lags the edited copy on purpose: their extra settings are not reported as unknown, while any
+/// other file's still are.
+#[test]
+fn pinned_pristine_files_do_not_report_unknown_settings() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    for (f, key) in [("telemetry.toml", "zz_probe_a"), ("doctor.toml", "zz_probe_b")] {
+        let p = sc.plugin.join("engine/defaults").join(f);
+        let mut t = fs::read_to_string(&p).unwrap();
+        t.push_str(&format!("\n[{key}.extra]\ndoc = \"A setting only the edited copy has.\"\nvalue = 1\n"));
+        fs::write(&p, t).unwrap();
+    }
+    let d = sc.doctor(&[]);
+    d.lacks("telemetry.toml: unknown setting");
+    d.has("info", &["doctor.toml: unknown setting(s)", "zz_probe_b.extra"]);
+}
+
 /// A foreign hook that only records events (`doctor.foreign_observers`) is information; a foreign Stop gate that can block still warns.
 #[test]
 fn foreign_observer_hooks_are_info_and_a_blocking_gate_still_warns() {
