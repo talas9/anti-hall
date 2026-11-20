@@ -425,6 +425,32 @@ pub fn infra_answer(event: &str, why: &str) -> Outcome {
     no_node_answer(event, None, "infra", why).unwrap_or_else(|| Outcome { out: String::new(), code: 0, err: String::new() })
 }
 
+/// Whether `dispatch.failure_mode` lets a guard event through on `path` (a path not listed is closed).
+fn path_open(path: &str) -> bool {
+    defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") == "open"
+}
+
+/// Whether a no-answer caused by load lets a guard event through (`dispatch.failure_mode`, path `capacity`): the daemon shed the
+/// request (BUSY), or a script's wall-clock backstop fired while its thread waited for a core. No check failed, so this path decides
+/// instead of each check's failure policy.
+pub(crate) fn capacity_open() -> bool {
+    path_open("capacity")
+}
+
+/// The defaults key of the {why} told for a no-answer of the capacity path.
+pub(crate) fn capacity_why_key() -> &'static str {
+    "msg.engine_unreachable_why_busy"
+}
+
+/// A guard event let through on the capacity path: counted (`dispatch:capacity`, a telemetry `dispatcher-capacity` allow) and
+/// logged (`dispatch_no_node_open`), as any path the engine could not decide; the caller tells the session once.
+pub(crate) fn capacity_pass(event: &str, why: &str) {
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity", &format!("{event}: {why}"));
+    crate::telemetry::emit::event(crate::telemetry::emit::no_node_path("capacity", event, crate::telemetry::event::Outcome::Allow));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_no_node_open", event, &defaults::render("dispatch.msg_no_node_event", &[("path", &"capacity"), ("why", &why)]));
+}
+
 /// The answer of a path the engine cannot decide (`path`: `budget`, `infra` or `panic`). An event that cannot block skips its
 /// hooks (logged, counted, one stderr line); a guard event follows `dispatch.failure_mode` for the path: `closed` blocks
 /// ([`closed`], bounded on Stop), `open` lets the call through with a loud stderr line. Every answer is logged and counted
@@ -433,7 +459,7 @@ pub fn no_node_answer(event: &str, payload: Option<&Value>, path: &str, why: &st
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("dispatch:{path}"), &format!("{event}: {why}"));
     use crate::telemetry::event::Outcome as T;
     let guard = guarded(event);
-    let closed_mode = guard && defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") != "open";
+    let closed_mode = guard && !path_open(path);
     let (kind, outcome, msg) = if !guard {
         ("dispatch_no_node_skipped", T::Skip, "dispatch.msg_no_node_skipped")
     } else if closed_mode {
@@ -827,6 +853,19 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_| false, &|_, _, _| {}),
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,
+            // a BUSY reply: the daemon shed the request (a full queue or a rate limit), so no check ran. That is no capacity, not a
+            // failed check: the guard event follows the capacity failure mode (open by default, as a daemon that did not answer in
+            // time), never each check's failure policy, which turned every safety guard into a block under load (P0 2026-11-20)
+            None if guard && crate::client::take_busy_reply() && capacity_open() => {
+                crate::client::take_non_ok_reply();
+                capacity_pass(&args.event, defaults::text(capacity_why_key()));
+                owe_notice(
+                    if session_id.is_empty() { "none" } else { &session_id },
+                    crate::client::unreachable_text_why(Some(&args.event), capacity_why_key()),
+                    false,
+                );
+                return Outcome { out: String::new(), code: 0, err: String::new() };
+            }
             None if crate::client::take_non_ok_reply() => Vec::new(),
             // no reply (an unreachable daemon, or none within the whole wait window): a missing answer is never a deny, so the call
             // passes with ONE notice per session and event family (roadmap C9; a check that DID answer deny still blocks)

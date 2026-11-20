@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 
 thread_local! {
     static LAST_NON_OK_REPLY: Cell<bool> = const { Cell::new(false) };
+    /// The last non-OK reply was BUSY (load shedding: a full queue or a rate limit), not ERR: the daemon had no capacity for the
+    /// request, which says nothing about the call, so it follows the capacity failure mode, not the failure policy of each check.
+    static LAST_BUSY_REPLY: Cell<bool> = const { Cell::new(false) };
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
@@ -47,6 +50,17 @@ pub(crate) fn set_guard_call(on: bool) {
 
 pub(crate) fn take_non_ok_reply() -> bool {
     LAST_NON_OK_REPLY.replace(false)
+}
+
+/// Whether the last non-OK reply was BUSY (load shedding), once. Read it before [`take_non_ok_reply`], which it does not clear.
+pub(crate) fn take_busy_reply() -> bool {
+    LAST_BUSY_REPLY.replace(false)
+}
+
+/// A complete, valid reply that is not OK: BUSY (load shedding) or ERR.
+fn note_non_ok(kind: Kind) {
+    LAST_NON_OK_REPLY.set(true);
+    LAST_BUSY_REPLY.set(kind == Kind::Busy);
 }
 
 pub(crate) fn take_unavailable() -> bool {
@@ -459,6 +473,11 @@ fn exchange_for(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
 /// file as the launcher's, so a call that went through both is told once. The call itself passes through. Empty when this session
 /// already heard it, or when the notice cannot be written (never a second notice for a failed write).
 pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
+    unreachable_notice_why(raw, event, "msg.engine_unreachable_why_daemon")
+}
+
+/// [`unreachable_notice`] with the {why} of the defaults key `why_key` (the same once-per-session state file).
+pub(crate) fn unreachable_notice_why(raw: &str, event: Option<&str>, why_key: &str) -> String {
     let sid = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
@@ -469,13 +488,18 @@ pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
     }
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
     crate::discard::logged("unreachable_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
-    unreachable_text(event)
+    unreachable_text_why(event, why_key)
 }
 
 /// The text of the engine-unreachable notice (`msg.engine_unreachable_notice`) for `event`, without any once-per-session stamp:
 /// the dispatcher stamps it per session and event family itself.
 pub(crate) fn unreachable_text(event: Option<&str>) -> String {
-    defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text("msg.engine_unreachable_why_daemon"))])
+    unreachable_text_why(event, "msg.engine_unreachable_why_daemon")
+}
+
+/// [`unreachable_text`] with the {why} of the defaults key `why_key`.
+pub(crate) fn unreachable_text_why(event: Option<&str>, why_key: &str) -> String {
+    defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text(why_key))])
 }
 
 fn state_file(key: &str) -> PathBuf {
@@ -822,6 +846,7 @@ pub(crate) fn release_wait_marker() {
 
 fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_on_ok: bool) -> Option<String> {
     LAST_NON_OK_REPLY.set(false);
+    LAST_BUSY_REPLY.set(false);
     LAST_UNAVAILABLE.set(false);
     if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
         note_unavailable();
@@ -841,10 +866,10 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             clear_slow_streak();
             Some(body)
         }
-        Exch::Reply(_, _) => {
+        Exch::Reply(kind, _) => {
             // a completed valid reply (BUSY / ERR) is not a slow one: the streak counts consecutive slow replies only
             clear_slow_streak();
-            LAST_NON_OK_REPLY.set(true);
+            note_non_ok(kind);
             None
         }
         Exch::Failed(why) => {
@@ -962,9 +987,9 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                     clear_daemon_down_marker();
                     Some(body)
                 }
-                Exch::Reply(_, _) => {
+                Exch::Reply(kind, _) => {
                     wait_marker(false);
-                    LAST_NON_OK_REPLY.set(true);
+                    note_non_ok(kind);
                     None
                 }
                 _ => {
@@ -1222,8 +1247,20 @@ fn run_bytes(raw: Vec<u8>, unaskable: bool, fail_closed_unavailable: bool) -> Ou
         {
             return o;
         }
+        // read before take_non_ok_reply, which does not clear it
+        let busy = take_busy_reply();
         let non_ok_reply = take_non_ok_reply();
         let unavailable = take_unavailable() || fail_open_unavailable();
+        // a BUSY reply (the daemon shed the request: a full queue or a rate limit) is no capacity, not a failed check: a guard event
+        // follows the capacity failure mode, as a daemon that did not answer in time does, never each check's failure policy
+        if busy
+            && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
+            && crate::dispatch::capacity_open()
+        {
+            let why_key = crate::dispatch::capacity_why_key();
+            crate::dispatch::capacity_pass(ev, defaults::text(why_key));
+            return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice_why(raw, Some(ev), why_key) };
+        }
         if !non_ok_reply && unavailable && raw.len() as u64 <= defaults::num("daemon.max_request") {
             return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice(raw, event_name.as_deref()) };
         }

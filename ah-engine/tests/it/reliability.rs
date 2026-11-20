@@ -157,6 +157,15 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
         ch.stdin.take().unwrap().write_all(br#"{"hook_event_name":"Notification","message":"prime"}"#).unwrap();
         ah_engine::discard::harmless(ch.wait());
     }
+    /// `hook --event <event>` (the dispatcher, the live path): (stdout, stderr, exit code)
+    fn dispatch(&self, event: &str, input: &str) -> (String, String, i32) {
+        let mut c = self.cmd();
+        c.args(["hook", "--event", event]);
+        let mut ch = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).trim().to_string(), String::from_utf8_lossy(&o.stderr).trim().to_string(), o.status.code().unwrap_or(-1))
+    }
     /// (stdout, exit code, elapsed)
     fn hook(&self, input: &str, fallback: bool) -> (String, String, i32, Duration) {
         let mut c = self.cmd();
@@ -528,15 +537,46 @@ fn bad_replies_fail_open_never_block() {
 #[test]
 fn healthy_non_ok_replies_follow_the_guard_events_failure_mode() {
     use ah_engine::frame::{Kind, encode};
-    for (name, reply) in [("busy", encode(Kind::Busy, "")), ("err", encode(Kind::Err, "boom"))] {
+    // ERR (the engine could not evaluate the request) is no verdict: a guard event follows its infra failure mode (closed: exit 2 with
+    // the engine's own line). BUSY (the daemon shed the request under load) is no capacity: the capacity path (open) lets the call
+    // through, told once per session, as a daemon that did not answer in time (P0 2026-11-20: closed, it blocked every tool call).
+    for (name, reply, want) in [("busy", encode(Kind::Busy, ""), 0), ("err", encode(Kind::Err, "boom"), 2)] {
         let e = Env::new("non-ok", &[("AH_ENGINE_NOSPAWN", "1")]);
         fake_server(&e, move || Some(reply.clone()));
         let (out, err, code, elapsed) = e.hook(DENY_IN, true);
-        // no hook command is launched any more: a healthy refusal is no verdict, and a guard event follows its configured
-        // infra failure mode (closed: exit 2 with the engine's own line)
-        assert_eq!((out.as_str(), code), ("", 2), "case {name}: {err:?}");
-        assert!(err.contains("could not run the guards") && !err.contains("NODE-FALLBACK"), "case {name}: {err:?}");
+        assert_eq!((out.as_str(), code), ("", want), "case {name}: {err:?}");
+        assert!(!err.contains("NODE-FALLBACK"), "case {name}: {err:?}");
+        if want == 2 {
+            assert!(err.contains("could not run the guards"), "case {name}: {err:?}");
+        } else {
+            assert!(err.contains("too busy") && err.contains("went through unchecked"), "case {name}: the session is told: {err:?}");
+            let (_, again, code, _) = e.hook(DENY_IN, true);
+            assert_eq!(code, 0, "case {name}");
+            assert!(again.is_empty(), "case {name}: told once per session: {again:?}");
+            assert!(e.health_log().contains("dispatch_no_node_open"), "case {name}: logged: {}", e.health_log());
+        }
         assert!(elapsed < common::scaled(Duration::from_secs(1)), "case {name} took {elapsed:?}");
+    }
+}
+
+/// P0 2026-11-20, the live path: the dispatcher (`hook --event`) asked a daemon that shed the call (BUSY, a full queue). No check ran,
+/// so the guard event follows the capacity path (open): the call passes with one notice, never "BLOCKED" by every fail-closed
+/// safety guard's failure policy (before: git, command, merge-gate, api-guard and compact-declaration-guard each refused it). An ERR
+/// reply still fails closed.
+#[test]
+fn the_dispatcher_lets_a_shed_guard_call_through_and_still_fails_closed_on_err() {
+    use ah_engine::frame::{Kind, encode};
+    for (name, reply, want) in [("busy", encode(Kind::Busy, ""), 0), ("err", encode(Kind::Err, "boom"), 2)] {
+        let e = Env::new("disp-non-ok", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DISPATCH_IN_PROCESS", "0")]);
+        fake_server(&e, move || Some(reply.clone()));
+        let (out, err, code) = e.dispatch("PreToolUse", DENY_IN);
+        assert_eq!(code, want, "case {name}: out {out:?} err {err:?}");
+        if want == 0 {
+            assert!(!err.contains("BLOCKED") && err.contains("too busy"), "case {name}: {err:?}");
+            assert!(e.health_log().contains("dispatch_no_node_open"), "case {name}: logged: {}", e.health_log());
+        } else {
+            assert!(!err.contains("too busy") && err.to_lowercase().contains("blocked"), "case {name}: out {out:?} err {err:?}");
+        }
     }
 }
 
@@ -1184,11 +1224,11 @@ fn a_non_slow_reply_between_slow_ones_breaks_the_slow_streak() {
             });
         }
     });
-    for (i, want_down, node) in [(0, false, false), (1, false, true), (2, false, false)] {
+    for (i, want_down) in [(0, false), (1, false), (2, false)] {
         let (out, err, code, _) = e.hook(DENY_IN, true);
-        // a slow call fails open; the completed BUSY reply is a refusal, so its guard call follows the infra failure mode (closed)
-        assert_eq!((out.as_str(), code), ("", if node { 2 } else { 0 }), "call {i}: {err:?}");
-        assert_eq!(err.contains("could not run the guards"), node, "call {i}: {err:?}");
+        // a slow call fails open; the completed BUSY reply is load shedding, so its guard call follows the capacity path (open, P0 2026-11-20)
+        assert_eq!((out.as_str(), code), ("", 0), "call {i}: {err:?}");
+        assert!(!err.contains("could not run the guards"), "call {i}: {err:?}");
         assert_eq!(e.fresh_down_marker(), want_down, "slow, BUSY, slow must not mark the daemon down (call {i})");
     }
     // two slow replies in a row still do (the streak itself works)
