@@ -295,6 +295,7 @@ an optional `turnRef` (the transcript's last-line ISO timestamp, or a
 line-count fallback) pointing at which turn the decision was about. A row
 from BEFORE this feature existed, or from an integration that genuinely has
 no session, groups under `unknown` — not an error, not dropped.
+Outcome writers also include the agent nudges (a closed nudge reports `acted_*`, `finished`, `ignored`, `said_not_done`, `child_died` ... against `agentWaste` / `nudgeReason` / `nudgeReply`, source `nudge`) and the delivery ledger (`outputVerifyGuard`: `acted` or `ignored`, source `delivery`); the bad names are `jevrep.thr_bad_outcome_re`.
 `recordOutcome()`'s `type:'outcome'` rows (e.g. `triage`'s answer-latency
 join, `speculation`'s evidence-added/user-override outcomes) now carry
 `project` the same way (v0.108.3 fix — they used to have none at all); an

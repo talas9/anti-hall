@@ -60,7 +60,7 @@ value = 1
 
 [jevrep.thr_bad_outcome_re]
 doc = "Case-insensitive pattern of the outcome names that count as evidence a changed decision was wrong; every other outcome is good."
-value = "^(user-override|false-positive|wrong|bad|reverted|repeat-speculation)"
+value = "^(user-override|false-positive|wrong|bad|reverted|repeat-speculation|ignored|said_not_done|child_died|escalated)"
 
 [jevrep.thr_http_failure_prefix]
 doc = "A baseline-only row whose reason starts with this counts as a failure."

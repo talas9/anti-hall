@@ -31,6 +31,9 @@ pub struct Mark {
     pub verdict: String,
     /// The judge's confidence.
     pub confidence: f64,
+    /// The Jev decision hash of the cached verdict (empty when none): a nudge it raises reports its outcome against it.
+    #[serde(default)]
+    pub hash: String,
     /// Who decided: `judge` or `formula`.
     pub source: String,
     /// The one-line reason (the signal values).
@@ -275,6 +278,7 @@ fn judge(env: &Env, a: &mut Agent, i: &Input, score: f64) -> bool {
     a.waste.judge_calls += 1;
     a.waste.verdict = verdict;
     a.waste.confidence = o.confidence.unwrap_or(0.0);
+    a.waste.hash = if a.waste.verdict.is_empty() { String::new() } else { o.hash.clone() };
     a.waste.source = word("judge").into();
     rec(
         env,
