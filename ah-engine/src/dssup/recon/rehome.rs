@@ -141,7 +141,7 @@ fn fresh_repo_key(d: &OVal) -> Option<String> {
 
 /// The two paths name the same worktree (the registry's id-collision guard): equal, or equal once resolved.
 pub(super) fn same_worktree(a: &str, b: &str) -> bool {
-    a == b || ident::realpath(a).is_some_and(|ra| ident::realpath(b) == Some(ra))
+    ident::same_registry_worktree(a, b)
 }
 
 /// `rehomeAcrossStores(home, id, fromKey, toKey)` with the id's lock HELD by the caller.

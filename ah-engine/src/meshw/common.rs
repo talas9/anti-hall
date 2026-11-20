@@ -516,7 +516,7 @@ pub fn sender_has_plan(inv: &Inv, from: &str) -> R<bool> {
 }
 
 /// `devswarm-sender-alias.js` `readAliases(home)`: label -> the id it now stands for.
-pub fn read_aliases(home: &Path) -> Vec<(String, String)> {
+pub fn read_aliases(home: &Path, env: &ident::Env) -> Vec<(String, String)> {
     let Some(j) = read_json(&devswarm_root(home).join(defaults::text("mesh_write.alias_file"))) else { return Vec::new() };
     let Some(OVal::Obj(a)) = j.get(defaults::text("mesh_write.alias_key")) else { return Vec::new() };
     let mut out: Vec<(String, String)> = Vec::new();
@@ -531,11 +531,28 @@ pub fn read_aliases(home: &Path) -> Vec<(String, String)> {
             Some(_) => continue,
         };
         if crate::meshw::idlock::is_safe_id(k) && v.truthy() && crate::meshw::idlock::is_safe_id(&to) && &to != k {
+            if poisoned_primary_alias(home, env, k, &to) {
+                crate::metrics::bump("mesh_alias_poisoned_ignored", &[]);
+                continue;
+            }
             out.retain(|(x, _)| x != k);
             out.push((k.clone(), to));
         }
     }
     out
+}
+
+/// An alias an older build wrote for a child registered in a subdirectory of the Primary's checkout: its source label is the real
+/// ROOT's label (the Primary's) and its target is that child. Read as it stands it makes every reader attribute the Primary's
+/// broadcasts to the child (#767). Idempotent repair: the entry is ignored on read and never deleted from the file.
+fn poisoned_primary_alias(home: &Path, env: &ident::Env, label: &str, to: &str) -> bool {
+    let Some(desc) = ident::read_descriptor(home, to) else { return false };
+    let Some(OVal::Str(wp)) = desc.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy()) else { return false };
+    let Ok(Some((_, root))) = ident::strict_subdir_of_root(wp) else { return false };
+    // only the PRIMARY's checkout root poisons: a child in its own linked worktree W (registered at W/pkg) legitimately aliases W's
+    // label to itself, and W is not the Primary's checkout
+    ident::mesh_id_for_real_path(&root) == label
+        && ident::resolve_context(&root, true).is_ok_and(|c| ident::is_primary_checkout(&root, c.main_worktree.as_deref(), home, env).unwrap_or(false))
 }
 
 /// The sender alias of a child caller (`senderIdentityDetailed` -> `writeAlias(home, label, child, worktree)`): the worktree label the
@@ -546,7 +563,7 @@ pub fn ensure_alias(inv: &Inv, who: &ident::Caller, cwd: &str) {
         return;
     }
     let Some(label) = who.mesh_id.as_deref() else { return };
-    if read_aliases(&inv.home).into_iter().any(|(k, v)| k == label && v == who.identity) {
+    if read_aliases(&inv.home, &inv.env).into_iter().any(|(k, v)| k == label && v == who.identity) {
         return;
     }
     let worktree = ident::resolve_caller_worktree(cwd).ok().flatten();

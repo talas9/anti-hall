@@ -60,6 +60,7 @@ pub mod send;
 pub mod simple;
 pub mod spawnverb;
 pub mod store;
+mod subdir;
 pub mod summary;
 pub mod tick;
 pub mod tickarm;

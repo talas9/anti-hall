@@ -1014,7 +1014,7 @@ pub(crate) fn ensure_locked(inv: &Inv, p: &Plan) -> bool {
     precreate(&p.ensured);
     // the id-collision guard: an ensure over an existing registration may not move the id to another worktree (Node skips that write
     // and says so on stderr); a registration the ensure creates may
-    let same = |a: &str, b: &str| a == b || ident::realpath(a).is_some_and(|x| ident::realpath(b) == Some(x));
+    let same = ident::same_registry_worktree;
     let upserted = if p.create { p.store.upsert_registry(&p.row, inv.now, |_, _| true) } else { p.store.upsert_registry(&p.row, inv.now, same) };
     if upserted.is_err() {
         return false;

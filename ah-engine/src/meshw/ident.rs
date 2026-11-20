@@ -592,6 +592,83 @@ pub struct Caller {
     pub mesh_id: Option<String>,
 }
 
+/// The registry's id-collision guard: whether two paths name ONE worktree: equal, resolving to the same directory, or one is the
+/// checkout root the other resolves to (`<root>` and `<root>/<subdir>` of a monorepo child, #767).
+pub fn same_registry_worktree(existing: &str, incoming: &str) -> bool {
+    if existing == incoming {
+        return true;
+    }
+    let real = |p: &str| realpath(p).unwrap_or_else(|| resolve_abs(p));
+    let (ra, rb) = (real(existing), real(incoming));
+    if ra == rb {
+        return true;
+    }
+    let root = |p: &str| resolve_context(p, false).ok().and_then(|c| c.worktree_root);
+    let (xa, xb) = (root(existing), root(incoming));
+    xa.as_deref().is_some_and(|x| x == rb) || xb.as_deref().is_some_and(|x| x == ra) || (xa.is_some() && xa == xb)
+}
+
+/// A worktree path that is a STRICT subdirectory of the checkout root it resolves to (a child workspace registered at
+/// `<root>/<subdir>` inside a monorepo): `(its real path, the root)`. `None` for the root itself, a path outside any checkout or a
+/// deleted one.
+pub fn strict_subdir_of_root(p: &str) -> R<Option<(String, String)>> {
+    if p.is_empty() {
+        return Ok(None);
+    }
+    let c = resolve_context(p, false)?;
+    if c.kind == defaults::text("mesh_write.kind_deleted") {
+        return Ok(None);
+    }
+    let Some(root) = c.worktree_root else { return Ok(None) };
+    let real = worktree_real_path(p)?;
+    Ok((real != root && under(&real, &root)).then_some((real, root)))
+}
+
+/// The mesh label of a REGISTRY row's worktree path. Rows share a label when their paths resolve to one checkout root
+/// ([`canonical_mesh_id`]); a row registered at a strict subdirectory of a root that ANOTHER row occupies is a workspace of its own
+/// (a child in a monorepo subdirectory), so it keeps the label of its own path instead of collapsing onto the occupant's (#767).
+pub fn registry_mesh_id(rows: &[Row], p: &str) -> R<Option<String>> {
+    if let Some((real, root)) = strict_subdir_of_root(p)? {
+        for r in rows {
+            let Some(wp) = r.worktree_path.as_deref().filter(|w| !w.is_empty()) else { continue };
+            if worktree_real_path(wp)? == root {
+                return Ok(Some(mesh_id_for_real_path(&real)));
+            }
+        }
+    }
+    canonical_mesh_id(p)
+}
+
+/// A child workspace whose worktree is a strict subdirectory of the checkout root the caller stands in: its `DEVSWARM_BUILDER_ID`,
+/// when its descriptor names such a path and the caller's directory is at or under it. The root's own workspace (the Primary) has a
+/// descriptor at the root itself, so it is never taken for this child.
+pub fn subdir_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<(String, String)>> {
+    let Some(bid) = env_nonempty(env, defaults::text("mesh_write.env_builder_id")) else { return Ok(None) };
+    if !crate::meshw::idlock::is_safe_id(bid) {
+        return Ok(None);
+    }
+    let Some(desc) = read_descriptor(home, bid) else { return Ok(None) };
+    let Some(wp) = str_field(&desc, defaults::text("mesh_write.field_worktree_path")).filter(|w| !w.is_empty()) else { return Ok(None) };
+    let Some((sub, root)) = strict_subdir_of_root(&wp)? else { return Ok(None) };
+    let Some(caller_root) = resolve_caller_worktree(cwd)? else { return Ok(None) };
+    let cwd_real = worktree_real_path(cwd)?;
+    Ok((caller_root == root && under(&cwd_real, &sub)).then(|| (bid.to_string(), mesh_id_for_real_path(&sub))))
+}
+
+/// [`caller_identity_detailed`] that knows a child registered at a subdirectory of a checkout: it is the child, not the label of the
+/// root it stands in, which is the Primary's (#767). Every verb that decides ownership, reads a mailbox or heartbeats uses this.
+pub fn caller_identity_for(env: &Env, cwd: &str, home: &Path) -> R<Caller> {
+    let d = caller_identity_detailed(env, cwd)?;
+    if d.kind == defaults::text("mesh_write.kind_resolved")
+        && let Some((child, own_label)) = subdir_child_id(env, cwd, home)?
+    {
+        // the child's OWN label (its subdirectory's), never the Primary's: an alias or a self-target check on the Primary's label
+        // would attribute the Primary's mail to the child (#767)
+        return Ok(Caller { identity: child, kind: defaults::text("mesh_write.kind_child").into(), mesh_id: Some(own_label) });
+    }
+    Ok(d)
+}
+
 /// `callerIdentityDetailed(env, cwd)`.
 pub fn caller_identity_detailed(env: &Env, cwd: &str) -> R<Caller> {
     if let Some(wt) = resolve_caller_worktree(cwd)? {
@@ -840,7 +917,7 @@ pub fn child_sender_id(env: &Env, cwd: &str, rows: &[Row], home: &Path) -> R<Opt
 
 /// `senderIdentityDetailed(env, cwd, registry, home)`; the child case also returns the alias to record.
 pub fn sender_identity_detailed(env: &Env, cwd: &str, rows: &[Row], home: &Path) -> R<Caller> {
-    let d = caller_identity_detailed(env, cwd)?;
+    let d = caller_identity_for(env, cwd, home)?;
     if d.kind != defaults::text("mesh_write.kind_resolved") {
         return Ok(d);
     }

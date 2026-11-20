@@ -868,7 +868,7 @@ fn seed_registry(inv: &Inv, mesh_id: &str, wt: &str, now: i64) -> bool {
     }
     let Ok(st) = common::open_store(inv, &repo_key) else { return false };
     let row = crate::meshw::store::RegistryRow { id: mesh_id.to_string(), worktree_path: Some(wt.to_string()), ..Default::default() };
-    let same = |a: &str, b: &str| a == b || ident::realpath(a).is_some_and(|x| ident::realpath(b).is_some_and(|y| x == y));
+    let same = ident::same_registry_worktree;
     if st.upsert_registry(&row, now, same).is_err() {
         return false;
     }
