@@ -35,8 +35,10 @@ impl fmt::Debug for Key {
 /// Where a key came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
-    /// A plugin option.
-    PluginOption,
+    /// The vendor's own plugin option.
+    OwnOption,
+    /// The vendor-less generic plugin option, bound to this vendor.
+    GenericOption,
     /// A legacy key file (opt-in).
     LegacyFile,
 }
@@ -71,20 +73,40 @@ fn own_option_var(vendor: Vendor) -> &'static str {
     }
 }
 
+/// The key file consulted for `vendor`. The configured key file is as ambiguous as the generic option, so it applies only
+/// to the vendor that option is bound to; every other vendor reads its own default file.
+pub fn key_file_path(settings: &JevSettings, vendor: Vendor) -> PathBuf {
+    match &settings.key_file {
+        Some(f) if settings.generic_key_vendor == vendor => f.clone(),
+        _ => default_key_file(vendor, settings.home()),
+    }
+}
+
+impl KeySource {
+    /// The plain-words name of the source (from `defaults`), for a log or the doctor; never the key.
+    pub fn label(self) -> &'static str {
+        defaults::text(match self {
+            KeySource::OwnOption => "jev.key_source_own",
+            KeySource::GenericOption => "jev.key_source_generic",
+            KeySource::LegacyFile => "jev.key_source_file",
+        })
+    }
+}
+
 /// Resolve the key for `vendor` (Node: `resolveCredential`). Never logs or returns key material outside `key`.
 pub fn resolve_key(settings: &JevSettings, vendor: Vendor) -> KeyLookup {
     let env = settings.env();
     let mut out = KeyLookup::default();
     if let Some(own) = env.get_nonempty(own_option_var(vendor)) {
         out.key = Some(Key(own));
-        out.source = Some(KeySource::PluginOption);
+        out.source = Some(KeySource::OwnOption);
         return out;
     }
     if let Some(generic) = env.get_nonempty(defaults::text("env.jev_key_generic")) {
         let bound = settings.generic_key_vendor;
         if bound == vendor {
             out.key = Some(Key(generic));
-            out.source = Some(KeySource::PluginOption);
+            out.source = Some(KeySource::GenericOption);
             return out;
         }
         let option = format!("jev_{}_api_key", vendor.as_str());
@@ -93,12 +115,7 @@ pub fn resolve_key(settings: &JevSettings, vendor: Vendor) -> KeyLookup {
     if !settings.allow_legacy_key_read {
         return out;
     }
-    // The configured key file is as ambiguous as the generic option, so it applies only to the vendor that option is
-    // bound to; every other vendor reads its own default file.
-    let file = match &settings.key_file {
-        Some(f) if settings.generic_key_vendor == vendor => f.clone(),
-        _ => default_key_file(vendor, settings.home()),
-    };
+    let file = key_file_path(settings, vendor);
     match read_key_file(&file, settings.home()) {
         Ok(Some(k)) => {
             out.key = Some(Key(k));
@@ -161,6 +178,22 @@ mod tests {
         std::fs::create_dir_all(d.join(".config/vercel")).unwrap();
         std::fs::create_dir_all(d.join(".config/typesafe")).unwrap();
         d
+    }
+
+    #[test]
+    fn the_source_of_each_resolved_key_is_named() {
+        let h = Path::new("/nowhere");
+        let own = settings(&[("CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY", "k")], json!({}), h);
+        assert_eq!(resolve_key(&own, Vendor::Typesafe).source, Some(KeySource::OwnOption));
+        let generic = settings(&[("CLAUDE_PLUGIN_OPTION_JEV_API_KEY", "k")], json!({}), h);
+        assert_eq!(resolve_key(&generic, Vendor::Vercel).source, Some(KeySource::GenericOption));
+        assert_eq!(resolve_key(&generic, Vendor::Typesafe).source, None);
+        let d = home();
+        std::fs::write(d.join(".config/typesafe/key"), "file-key\n").unwrap();
+        let file = settings(&[], json!({"allowLegacyKeyRead": true}), &d);
+        let r = resolve_key(&file, Vendor::Typesafe);
+        assert_eq!(r.source, Some(KeySource::LegacyFile));
+        assert!(!r.source.unwrap().label().is_empty());
     }
 
     #[test]

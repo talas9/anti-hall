@@ -463,6 +463,15 @@ fn bin_07_08_09_marker_digest_and_versions() {
         d.section("Engine install").into_iter().filter(|l| !l.contains("this doctor is engine")).collect::<Vec<_>>(),
         sc2.shell().section("Engine install")
     );
+    // a NEWER engine than the pin (a local or later build) is not a problem, with or without a marker
+    let mut sc3 = Sc::new();
+    sc3.own_plugin();
+    sc3.stub_engine("0.2.0");
+    sc3.doctor(&[]).lacks("but the plugin pins");
+    sc3.marker("0.2.0");
+    let d = sc3.doctor(&[]);
+    d.lacks("but the plugin pins");
+    d.has("ok", &["runs and reports 0.2.0"]);
 }
 
 #[test]
@@ -798,7 +807,37 @@ fn dmn_12_doctor_reports_last_crash_breadcrumb() {
     let state = sc.state();
     fs::create_dir_all(&state).unwrap();
     fs::write(state.join("last-crash.json"), r#"{"kind":"crash","code":"unknown","breadcrumb":{"request":"D","event":"Stop","check":"task-guard"}}"#).unwrap();
-    sc.doctor(&[]).has("warn", &["last crash:", "\"request\":\"D\"", "\"event\":\"Stop\"", "\"check\":\"task-guard\""]);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["last crash:", "pid ?", "request D", "event Stop", "check task-guard", "last-crash.json"]);
+    d.lacks("\"request\":\"D\"");
+}
+
+/// A recorded failure whose reason is the whole breadcrumb (older records) is cut at doctor.reason_max and names the file.
+#[test]
+fn dmn_11_long_failure_reason_is_cut_and_names_the_file() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let state = sc.state();
+    fs::create_dir_all(&state).unwrap();
+    let reason = format!("daemon pid 1 died without a clean exit; last context {{{}}}", "x".repeat(2000));
+    fs::write(state.join("failure.json"), serde_json::json!({"class": "permanent", "reason": reason, "hint": ""}).to_string()).unwrap();
+    let d = sc.doctor(&[]);
+    d.has("warn", &["last recorded failure (permanent): daemon pid 1 died", "(cut; full text in", "failure.json"]);
+    d.lacks(&"x".repeat(400));
+}
+
+/// With no `--plugin-root` and no engine variable, the root the doctor resolves itself names the plugin version.
+#[test]
+fn the_header_shows_the_plugin_version_from_a_root_found_by_the_host_variable() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--check");
+    sc.env(&mut c);
+    c.env_remove("AH_ENGINE_PLUGIN_ROOT").env("CLAUDE_PLUGIN_ROOT", &sc.plugin);
+    let d = sc.finish(c);
+    d.lacks("(unknown)");
+    d.has("ok", &["anti-hall plugin version 0."]);
 }
 
 /// A process that looks like an engine daemon to the pid check (`<name> serve` on its command line).
@@ -1816,4 +1855,32 @@ fn pinned_pristine_files_do_not_report_unknown_settings() {
     let d = sc.doctor(&[]);
     d.lacks("telemetry.toml: unknown setting");
     d.has("info", &["doctor.toml: unknown setting(s)", "zz_probe_b.extra"]);
+}
+
+/// A foreign hook that only records events (`doctor.foreign_observers`) is information; a foreign Stop gate that can block still warns.
+#[test]
+fn foreign_observer_hooks_are_info_and_a_blocking_gate_still_warns() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let hooks = |script: &str| {
+        let cmd = format!("node ${{CLAUDE_PLUGIN_ROOT}}/hooks/{script}");
+        format!(
+            r#"{{"hooks":{{"PreToolUse":[{{"matcher":"*","hooks":[{{"type":"command","command":"{cmd}"}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":"{cmd}"}}]}}]}}}}"#
+        )
+    };
+    let (obs, gate) = (sc.root.join("observer"), sc.root.join("gate"));
+    for (dir, script) in [(&obs, "emit-event.cjs"), (&gate, "stop-review-gate-hook.mjs")] {
+        fs::create_dir_all(dir.join("hooks")).unwrap();
+        fs::write(dir.join("hooks/hooks.json"), hooks(script)).unwrap();
+    }
+    let p = sc.plugin.clone();
+    let v = plugin_version(&sc);
+    registry(&sc, &[("anti-hall@anti-hall", &p, &v), ("claude-session-driver@m", &obs, "1.0.0"), ("codex@m", &gate, "1.0.0")]);
+    enabled(&sc, &[("anti-hall@anti-hall", true), ("claude-session-driver@m", true), ("codex@m", true)]);
+    let d = sc.doctor(&[]);
+    d.has("info", &["PreToolUse observer", "claude-session-driver", "emit-event.cjs", "never blocks"]);
+    d.has("info", &["Stop observer", "claude-session-driver", "emit-event.cjs"]);
+    d.has("warn", &["foreign Stop hook", "codex", "stop-review-gate-hook.mjs"]);
+    d.has("warn", &["foreign PreToolUse hook on Bash", "codex", "stop-review-gate-hook.mjs"]);
+    assert!(!d.text.lines().any(|l| l.starts_with("  ⚠️ ") && l.contains("emit-event.cjs")), "the observer is never a warning\n{}", d.text);
 }
