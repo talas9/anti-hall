@@ -487,12 +487,12 @@ mod tests {
     fn verify_first_has_no_compliance_row_and_a_progress_file_write_answers_tasklist_guard() {
         assert!(cond("verify-first").is_none(), "verify-first has no acted-on condition");
         let (t, check) = (Telemetry::new(), "tasklist-guard");
-        for tool in ["Write", "Edit"] {
+        for tool in ["Write", "Edit", "MultiEdit", "apply_patch"] {
             let session = format!("s-{tool}");
             deliver(&t, &session, check);
             observe_tool(&t, &session, tool);
         }
-        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 2);
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 4, "Claude edits and the Codex apply_patch both count");
     }
 
     #[test]
