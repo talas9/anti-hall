@@ -293,6 +293,22 @@ value = "Repair (dry-run — no changes written)"
 doc = "`--only <id>` found no pending repair step with that id. Placeholders: {id}, {ids}."
 value = "no pending repair step '{id}' (step ids: {ids}); nothing was changed"
 
+[doctor_msg.attribution_advice]
+doc = "The user's Claude Code settings do not turn off the AI credit line. The doctor only advises; it never edits the file. Placeholders: {path}, {key}."
+value = "Claude Code adds an AI credit line to commits and pull requests unless {path} sets {form}. Use this object form: a boolean \"{key}\": false makes older Claude Code versions skip the whole settings file. git-guard blocks those lines. Add it yourself; the doctor never edits your settings"
+
+[doctor.user_settings_rel]
+doc = "The user's Claude Code settings file, relative to the home directory (read-only: the attribution advice checks it)."
+value = ".claude/settings.json"
+
+[doctor.attribution_key]
+doc = "The Claude Code settings key that turns off the commit/PR credit line (value false)."
+value = "attribution"
+
+[doctor.attribution_fields]
+doc = "The fields of the object form of the attribution setting that must all be empty strings to hide the credit line (the advised form is an object with these fields set to \"\"). A boolean false also counts as off."
+value = ["commit", "pr"]
+
 [doctor_msg.repair_none]
 doc = "The repair pass found no rows and nothing failed."
 value = "nothing to repair"

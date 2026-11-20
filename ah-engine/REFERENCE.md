@@ -6683,6 +6683,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.apple_silicon_name` | `aarch64` |  |  | The architecture name of Apple Silicon and 64-bit ARM. |
 | `doctor.apply_flag` | `--apply` |  |  | The flag that makes an explicit repair act instead of only previewing. |
 | `doctor.arch_aliases` | `2 entries` |  |  | Machine names mapped to the architecture names the release assets use. |
+| `doctor.attribution_fields` | `commit, pr` |  |  | The fields of the object form of the attribution setting that must all be empty strings to hide the credit line (the advised form is an object with these fields set to ""). A boolean false also counts as off. |
+| `doctor.attribution_key` | `attribution` |  |  | The Claude Code settings key that turns off the commit/PR credit line (value false). |
 | `doctor.backend_journal` | `journal` |  |  | The name of the journal store backend. |
 | `doctor.backend_marker` | `BACKEND` |  |  | The file in a store directory that pins its backend. |
 | `doctor.backend_sqlite` | `sqlite` |  |  | The name of the SQLite store backend. |
@@ -6932,6 +6934,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.unit_hash_re` | `^([0-9a-fA-F]{8})$` |  |  | The suffix of a legacy per-worktree unit name: eight hexadecimal digits. |
 | `doctor.unit_key_re` | `^([a-z0-9-]{1,40}-[0-9a-f]{6})$` |  |  | The suffix of a per-project unit name: a project key. |
 | `doctor.unknown_name` | `(unknown)` |  |  | What an orphan row shows for an entry with no name. |
+| `doctor.user_settings_rel` | `.claude/settings.json` |  |  | The user's Claude Code settings file, relative to the home directory (read-only: the attribution advice checks it). |
 | `doctor.version_alert_check` | `version-alert` |  |  | The built-in check the version-alert self-test runs. |
 | `doctor.version_alert_env` | `ANTIHALL_VERSION_ALERT=` |  |  | Environment pairs of the version-alert self-test (the off switch is cleared so an inherited one cannot fake a pass). |
 | `doctor.version_alert_payload` | `{"hook_event_name":"SessionStart","session_id":"{SID}"}` |  |  | The SessionStart payload of the version-alert self-test; {SID} is a unique session id. |
@@ -7031,6 +7034,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `doctor_msg.attribution_advice` | `Claude Code adds an AI credit line to commits and pull requests unless {path}...` |  |  | The user's Claude Code settings do not turn off the AI credit line. The doctor only advises; it never edits the file. Placeholders: {path}, {key}. |
 | `doctor_msg.bin_corrupt` | `{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} --d...` |  |  | BIN-04. Placeholders: {path}, {why}, {bootstrap}. |
 | `doctor_msg.bin_hash_differs` | `{path} differs from the build the bootstrap installed (sha256 {have}... vs {w...` |  |  | BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}. |
 | `doctor_msg.bin_missing` | `engine binary not installed at {path}: hook calls pass through unchecked, so ...` |  |  | BIN-01. Placeholders: {path}, {bootstrap}. |

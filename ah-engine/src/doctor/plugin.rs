@@ -81,8 +81,26 @@ pub fn config_section(doc: &mut Doc, fixes: &mut Vec<Fix>, ctx: &Ctx) {
         }
         Err(_) => {}
     }
+    advise_attribution(doc, ctx);
     if clean {
         doc.ok(defaults::render("doctor_msg.config_ok", &[("n", &defaults::all().len())]));
+    }
+}
+
+/// Advise (never edit) when the user's Claude Code settings do not switch off the AI credit line on commits and pull requests.
+fn advise_attribution(doc: &mut Doc, ctx: &Ctx) {
+    let path = Path::new(&ctx.home).join(defaults::text("doctor.user_settings_rel"));
+    let key = defaults::text("doctor.attribution_key");
+    let Ok(v) = std::fs::read_to_string(&path).map_err(drop).and_then(|t| serde_json::from_str::<Value>(&t).map_err(drop)) else { return };
+    let fields = defaults::list("doctor.attribution_fields");
+    let off = match v.get(key) {
+        Some(Value::Bool(false)) => true,
+        Some(o @ Value::Object(_)) => !fields.is_empty() && fields.iter().all(|f| o.get(*f).and_then(Value::as_str) == Some("")),
+        _ => false,
+    };
+    if !off {
+        let form = format!("\"{key}\": {{{}}}", fields.iter().map(|f| format!("\"{f}\": \"\"")).collect::<Vec<_>>().join(", "));
+        doc.infol(defaults::render("doctor_msg.attribution_advice", &[("path", &path.display()), ("key", &key), ("form", &form)]));
     }
 }
 

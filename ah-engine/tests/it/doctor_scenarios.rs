@@ -1857,6 +1857,27 @@ fn pinned_pristine_files_do_not_report_unknown_settings() {
     d.has("info", &["doctor.toml: unknown setting(s)", "zz_probe_b.extra"]);
 }
 
+/// The doctor only advises about the AI credit line: it names the line to add when `~/.claude/settings.json` lacks it, says nothing
+/// when it is set, and never edits the file.
+#[test]
+fn attribution_advice_appears_only_when_the_setting_is_missing_and_never_edits() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let path = sc.put(".claude/settings.json", b"{\"theme\":\"dark\"}");
+    sc.doctor(&[]).has("info", &["AI credit line", "\"attribution\": {\"commit\": \"\", \"pr\": \"\"}", "older Claude Code", "never edits your settings"]);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "{\"theme\":\"dark\"}", "the settings file is untouched");
+    // satisfied: the boolean form and the object form with both bylines empty
+    for ok in ["{\"attribution\":false}", "{\"attribution\":{\"commit\":\"\",\"pr\":\"\"}}"] {
+        fs::write(&path, ok).unwrap();
+        sc.doctor(&[]).lacks("AI credit line");
+    }
+    // still advised: only one of the two bylines is empty, or one is not empty, or the value is true
+    for bad in ["{\"attribution\":{\"commit\":\"\"}}", "{\"attribution\":{\"commit\":\"\",\"pr\":\"x\"}}", "{\"attribution\":true}"] {
+        fs::write(&path, bad).unwrap();
+        sc.doctor(&[]).has("info", &["AI credit line"]);
+    }
+}
+
 /// A foreign hook that only records events (`doctor.foreign_observers`) is information; a foreign Stop gate that can block still warns.
 #[test]
 fn foreign_observer_hooks_are_info_and_a_blocking_gate_still_warns() {
