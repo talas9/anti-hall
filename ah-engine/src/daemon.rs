@@ -1204,7 +1204,11 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
                 crate::hookio::Observer::route(&obs, check, &meta.event, r);
             }
         }
+        // a check cut at the hard deadline answered by its failure policy (an allow or its guard-down notice): the rule's own answer is
+        // already counted lost as hard_deadline (`budget::note_dropped`), so the notice is not counted again as decided and then undelivered
+        let cut = matches!(a, Answer::Decided(..)) && crate::budget::take_drop_reason().is_some();
         if let Answer::Decided(r, _) = a
+            && !cut
             && (!r.out.is_empty() || r.code == Some(2))
         {
             // #312: it said something (a message or a block): delivery is counted at the end of the request. B1: with the session's model and project
