@@ -181,8 +181,11 @@ fn a_chain_with_one_heavy_part_names_it_and_still_blocks() {
     let cmd = "git log --oneline -3 && cat VERSION && git status && for t in a b; do node tests/x.test.js; done";
     let (out, blocked) = command(&h, cmd);
     assert!(blocked, "the heavy part still blocks the chain: {out}");
-    assert!(out.contains("Heavy: node tests/x.test.js"), "names the heavy segment: {out}");
-    assert!(out.contains("are fine alone"), "says the rest is fine: {out}");
+    // The visible block text is capped (two lines, 250 units) and the owner-run hint takes the room the note used to have, so the note is
+    // asserted where the full text lives: the saved details the block links to.
+    let details = std::fs::read_to_string(h.join(".anti-hall/block-details/command-guard-s.md")).expect("the block saves its details");
+    assert!(details.contains("Heavy: node tests/x.test.js"), "names the heavy segment: {details}");
+    assert!(details.contains("are fine alone"), "says the rest is fine: {details}");
     assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 1);
 }
 

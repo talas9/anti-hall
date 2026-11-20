@@ -17,16 +17,16 @@ var tp = {
   esc: function (s) { return s.replace(/[.+^${}()|[\]\\\/]/g, '\\$&'); },
   // a glob (`*` one part, `**` any depth, `?` one character) as a regular expression source
   globRe: function (g) {
-    var out = '', i = 0;
+    var out = [], i = 0;
     while (i < g.length) {
       var c = g.charAt(i);
       if (c === '*') {
         if (g.charAt(i + 1) === '*') {
-          if (g.charAt(i + 2) === '/') { out += '(?:.*/)?'; i += 3; } else { out += '.*'; i += 2; }
-        } else { out += '[^/]*'; i++; }
-      } else if (c === '?') { out += '[^/]'; i++; } else { out += tp.esc(c); i++; }
+          if (g.charAt(i + 2) === '/') { out.push('(?:.*/)?'); i += 3; } else { out.push('.*'); i += 2; }
+        } else { out.push('[^/]*'); i++; }
+      } else if (c === '?') { out.push('[^/]'); i++; } else { out.push(tp.esc(c)); i++; }
     }
-    return out;
+    return out.join('');
   },
   // {res: [RegExp], roots: [dir], exact: [path]} for this payload: the protected globs under every spelling of the home, and the payload's own transcript
   build: function (payload) {
@@ -429,23 +429,23 @@ var tp = {
   },
   // the arguments (top-level, comma-separated, string-aware) of the call whose `(` is at `at`; null when the call never closes
   callArgs: function (text, at) {
-    var out = [], depth = 0, cur = '', q = '', i;
+    var out = [], depth = 0, cur = [], q = '', i;
     for (i = at; i < text.length; i++) {
       var c = text.charAt(i);
       if (q !== '') {
-        cur += c;
-        if (c === '\\' && i + 1 < text.length) { cur += text.charAt(++i); } else if (c === q) q = '';
+        cur.push(c);
+        if (c === '\\' && i + 1 < text.length) { cur.push(text.charAt(++i)); } else if (c === q) q = '';
         continue;
       }
-      if (c === '"' || c === "'" || c === '`') { q = c; cur += c; continue; }
-      if (c === '(' || c === '[' || c === '{') { depth++; if (depth > 1) cur += c; continue; }
+      if (c === '"' || c === "'" || c === '`') { q = c; cur.push(c); continue; }
+      if (c === '(' || c === '[' || c === '{') { depth++; if (depth > 1) cur.push(c); continue; }
       if (c === ')' || c === ']' || c === '}') {
         depth--;
-        if (depth === 0) { out.push(cur); return out; }
-        cur += c; continue;
+        if (depth === 0) { out.push(cur.join('')); return out; }
+        cur.push(c); continue;
       }
-      if (c === ',' && depth === 1) { out.push(cur); cur = ''; continue; }
-      cur += c;
+      if (c === ',' && depth === 1) { out.push(cur.join('')); cur = []; continue; }
+      cur.push(c);
     }
     return null;
   },

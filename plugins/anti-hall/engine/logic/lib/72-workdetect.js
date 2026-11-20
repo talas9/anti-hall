@@ -182,26 +182,26 @@ var wd = {
   // One simple command read as words and redirect targets: {words: [text], redirects: [text]}. Quotes are removed, a backslash escapes
   // the next character, fd redirects (`2>&1`, `>&2`) and input redirects (`< f`, `<<EOF`) name no written file.
   words: function (seg) {
-    var words = [], redirects = [], cur = '', has = false, i = 0, len = seg.length;
-    function flush() { if (has) words.push(cur); cur = ''; has = false; }
+    var words = [], redirects = [], cur = [], has = false, i = 0, len = seg.length;
+    function flush() { if (has) words.push(cur.join('')); cur = []; has = false; }
     function readWord() {
       while (i < len && /\s/.test(seg.charAt(i))) i++;
-      var w = '', any = false;
+      var w = [], any = false;
       while (i < len && !/\s/.test(seg.charAt(i))) {
         var c = seg.charAt(i);
-        if (c === "'") { i++; while (i < len && seg.charAt(i) !== "'") w += seg.charAt(i++); i++; any = true; }
-        else if (c === '"') { i++; while (i < len && seg.charAt(i) !== '"') { if (seg.charAt(i) === '\\' && i + 1 < len) i++; w += seg.charAt(i++); } i++; any = true; }
-        else if (c === '\\' && i + 1 < len) { w += seg.charAt(i + 1); i += 2; any = true; }
+        if (c === "'") { i++; while (i < len && seg.charAt(i) !== "'") w.push(seg.charAt(i++)); i++; any = true; }
+        else if (c === '"') { i++; while (i < len && seg.charAt(i) !== '"') { if (seg.charAt(i) === '\\' && i + 1 < len) i++; w.push(seg.charAt(i++)); } i++; any = true; }
+        else if (c === '\\' && i + 1 < len) { w.push(seg.charAt(i + 1)); i += 2; any = true; }
         else if (c === '>' || c === '<') break;
-        else { w += c; i++; any = true; }
+        else { w.push(c); i++; any = true; }
       }
-      return any ? w : null;
+      return any ? w.join('') : null;
     }
     while (i < len) {
       var ch = seg.charAt(i);
       if (/\s/.test(ch)) { flush(); i++; continue; }
       if (ch === '>') {
-        if (has && !/^(?:\d*|&)$/.test(cur)) flush(); else { cur = ''; has = false; }
+        if (has && !/^(?:\d*|&)$/.test(cur.join(''))) flush(); else { cur = []; has = false; }
         i++;
         if (seg.charAt(i) === '>') i++;
         if (seg.charAt(i) === '|') i++;
@@ -216,8 +216,8 @@ var wd = {
         readWord();
         continue;
       }
-      if (ch === "'" || ch === '"' || ch === '\\') { var q = readWord(); if (q !== null) { cur += q; has = true; } continue; }
-      cur += ch; has = true; i++;
+      if (ch === "'" || ch === '"' || ch === '\\') { var q = readWord(); if (q !== null) { cur.push(q); has = true; } continue; }
+      cur.push(ch); has = true; i++;
     }
     flush();
     return { words: words, redirects: redirects };
