@@ -45,7 +45,7 @@ doc = "Claims the claim-evidence guard let pass because a tool of this turn (cla
 value = { kind = "counter", unit = "claims", labels = ["claim"] }
 
 [metric.claim_evidence_suppressed]
-doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, negated, future, condition, reported, criterion, purpose, planned, labelled, quoted)."
+doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, planned, labelled, quoted)."
 value = { kind = "counter", unit = "claims", labels = ["reason"] }
 
 [claim_evidence.guard_name]
@@ -279,6 +279,10 @@ value = "labelled"
 [claim_evidence.nonsoftware_reason]
 doc = "Log reason for a claim hit right after a non-software subject word (a claim row's not_after): 'the simulator session is released'."
 value = "nonsoftware"
+
+[claim_evidence.featurename_reason]
+doc = "Log reason for a claim hit directly followed by a capitalised word where the hit itself ends in a capitalised word (a claim row's not_before): 'the Live Activity feature' is a name, not 'is Live'."
+value = "featurename"
 
 [claim_evidence.quoted_reason]
 doc = "Log reason for a claim that appears only inside code, a fence or a blockquote."
