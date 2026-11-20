@@ -111,6 +111,32 @@ fn a_heavy_block_names_the_rule_that_fired_and_flutter_clean_is_light() {
 }
 
 #[test]
+fn the_rule_stays_visible_with_a_real_length_session_id_and_a_details_link() {
+    // #857: a real session id (a UUID) makes the details link 30 chars longer than the goldens' "s1"; the rule must still show
+    let cwd = scratch("rule-uuid");
+    let cwd = cwd.to_str().unwrap();
+    let all: Vec<(&str, &str)> = DEVSWARM.to_vec();
+    let sid = "0b7a2f4e-3c1d-4e5f-9a8b-7c6d5e4f3a2b";
+    for (cmd, rule) in [
+        ("flutter build apk", "Rule: a heavy command (flutter)."),
+        ("gh pr merge 836 --squash", "Rule: a command that changes a shared remote."),
+        ("make ; timeout 5 node scripts/devswarm.js inbox ack w", "Rule: a heavy command (make)."),
+        ("env A=1 gh pr merge 2 && echo $(cargo build) | tail -3 ; timeout 5 python3 scripts/chk.py ", "Rule: a command that changes a shared remote."),
+        ("timeout 5 gh pr merge 2 ; timeout 5 git status ; echo $(env A=1 docker ps)", "Rule: a command that changes a shared remote."),
+        ("gcloud run services delete svc --format=json", "Rule: a heavy command (gcloud)."),
+        ("npm run deploy\nnpm test", "Rule: a heavy command (npm)."),
+    ] {
+        let mut p = main_bash(cmd, cwd);
+        p["session_id"] = json!(sid);
+        let (code, out, err) = run(&["check", "command"], &all, &p.to_string());
+        let msg = format!("{out}{err}");
+        eprintln!("--- {cmd}\n{msg}");
+        assert_eq!(code, 2, "{msg}");
+        assert!(msg.contains(rule), "{cmd}: the visible block names its rule with a real session id: {msg}");
+    }
+}
+
+#[test]
 fn a_shell_wrapper_gets_the_verdict_of_its_script_body() {
     // #547: `bash run.sh` is judged by what run.sh runs, so a wrapper and its raw command agree
     let dir = scratch("wrap");
