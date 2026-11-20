@@ -38,7 +38,7 @@ doc = "The afk.idleMinutes setting: minutes without an owner prompt (any session
 value = { section = "afk", key = "idleMinutes", kind = "num", env = "", aliases = [], option = "", manifest_default = "", default = 20, min = 1, max = 1440 }
 
 [afk.set_present_minutes]
-doc = "The afk.presentMinutes setting: minutes after an owner prompt typed while AFK is on during which the question block is suspended (the question tool passes, a turn ending on a question is not held), so a live owner can be asked. AFK itself stays on; a prompt that is not the owner (afk.non_owner_prompt_res) never counts, and the prompt that turned AFK on does not. 0 = off."
+doc = "The afk.presentMinutes setting: minutes an owner prompt lifts its session's question block. While AFK is on, an owner prompt typed in a session suspends that session's question block for this long (the question tool passes, a turn ending on a question is not held), so a live owner can be asked; other sessions stay blocked. AFK itself stays on; a prompt that is not the owner (afk.non_owner_prompt_res, a scheduled turn) never counts, and the prompt that turned AFK on does not. 0 = off."
 value = { section = "afk", key = "presentMinutes", kind = "num", env = "", aliases = [], option = "", manifest_default = "", default = 10, min = 0, max = 1440 }
 
 [afk.where_pre]

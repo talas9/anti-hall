@@ -248,16 +248,36 @@ function afkOwnerBack(p, f, now, ev) {
   return off;
 }
 
-// An owner prompt typed AFTER this AFK period started, within afk.presentMinutes (0 = off), means the owner is at the keyboard: the
-// question block is suspended for the session's own (non-subagent) calls, though AFK stays on. Only a real owner prompt records
-// presence (afkPrompt skips afk.non_owner_prompt_res), and the prompt that turned AFK on has presence == since, never greater.
+// An owner prompt typed in THIS session after this AFK period started, within afk.presentMinutes (0 = off), means the owner is at
+// this session's keyboard: its question block is suspended for its own (non-subagent) calls, though AFK stays on. The mark lives in
+// the session's state for the period (afkSessPresent), never in the machine-wide presence file: an owner typing in one session must
+// not let a parallel session ask a question nobody there will answer. Only an owner prompt marks it (afkOwnerPrompt), and the
+// prompt that turned AFK on is answered by the hook and marks nothing.
 function afkOwnerPresent(p, f, now) {
   if (!afkOn(f) || afkIsAgent(p)) return false;
   var win = ah.settings.num('afk.set_present_minutes');
   if (!(win > 0)) return false;
-  var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
-  if (pr === null || typeof pr.last !== 'number') return false;
-  return pr.last > Number(f.since) && now - pr.last < win * 60000;
+  var sid = afkSid(p);
+  if (!sid) return false;
+  var s = afkReadJson(afkSessRel(sid));
+  if (s === null || s.epoch !== f.epoch || typeof s.present !== 'number') return false;
+  return s.present > Number(f.since) && now - s.present < win * 60000;
+}
+
+// An owner prompt of this session while AFK is on: marked in the session's state for this period (afkOwnerPresent reads it).
+function afkSessPresent(p, f, now) {
+  var se = afkSession(p, f, now);
+  if (se === null) return;
+  se.s.present = now;
+  afkWrite(se.rel, se.s);
+}
+
+// Whether a prompt is the owner typing: not a harness, teammate or hook text (afk.non_owner_prompt_res) and not a turn the host
+// scheduler delivered (a cron tick, any text; emit_dedupe.uncounted_origins).
+function afkOwnerPrompt(p) {
+  var prompt = typeof p.prompt === 'string' ? p.prompt : '';
+  if (ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); })) return false;
+  return !dedupe.scheduledTurn(p.transcript_path, prompt);
 }
 
 function afkIdleTrip(f, now) {
@@ -287,10 +307,9 @@ function afkDigestHere(f) {
 
 function afkFmt(ms) { return new Date(Number(ms) || 0).toISOString(); }
 
-function afkPrompt(p, f, now) {
+function afkPrompt(p, f, now, owner) {
   var prompt = typeof p.prompt === 'string' ? p.prompt : '';
-  var notOwner = ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); });
-  if (notOwner) return null;
+  if (!owner) return null;
   afkPresent(now);
   var word = prompt.trim().toLowerCase(), reply = null;
   if (ah.settings.bool('afk.set_prompt_commands')) {
@@ -345,9 +364,9 @@ function afkTurnTokens(tp) {
 // A turn that ends on a plain-text question while AFK: held with the ladder at most afk.question_max_holds times (null = not held).
 function afkQuestionHold(p, f, now, reply) {
   if (!ah.settings.bool('afk.set_no_questions')) return null;
-  if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_stop') }); return null; }
   var last = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).pop();
   if (last === undefined || !new RegExp(ah.cfg('afk.question_re')).test(last)) return null;
+  if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_stop') }); return null; }
   var se = afkSession(p, f, now);
   if (se === null) return null;
   var held = typeof se.s.qholds === 'number' ? se.s.qholds : 0;
@@ -438,10 +457,13 @@ function decide(p) {
   }
   var f = afkFlush(afkFlag());
   if (ev === 'UserPromptSubmit') {
-    var r = afkPrompt(p, f, now);
+    var owner = afkOwnerPrompt(p), r = afkPrompt(p, f, now, owner);
     if (r !== null) return r;
     f = afkFlag();
-    return afkOn(f) ? afkInject(p, f, now, ev) : 'allow';
+    if (!afkOn(f)) return 'allow';
+    var inj = afkInject(p, f, now, ev);
+    if (owner) afkSessPresent(p, f, now);
+    return inj;
   }
   f = afkFlush(afkIdleTrip(afkOwnerBack(p, f, now, ev), now));
   if (ev === 'Stop') return afkStop(p, f, now);

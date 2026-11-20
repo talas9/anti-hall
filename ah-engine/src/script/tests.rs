@@ -4166,8 +4166,8 @@ mod afk_mode {
         assert_eq!(drained().counter("afk_stale_injection_suppressed", &[("event", "PreToolUse")]), 1);
     }
 
-    /// A live owner prompt typed after AFK started suspends the question block for afk.presentMinutes; the prompt that turned AFK on, a
-    /// teammate/system prompt and a prompt older than the window do not.
+    /// A live owner prompt typed after AFK started suspends the question block of THAT session for afk.presentMinutes; the prompt that
+    /// turned AFK on, a teammate/system prompt, a scheduled turn, a prompt older than the window and an owner prompt in another session do not.
     #[test]
     fn a_live_owner_prompt_after_afk_started_suspends_the_question_block_for_the_window() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
@@ -4184,19 +4184,38 @@ mod afk_mode {
             run(&h, "UserPromptSubmit", json!({"prompt": p}), &[]);
             assert!(denied(&h), "a non-owner prompt is no presence: {p}");
         }
+        // a cron tick (the host scheduler's turn, whatever its text) is not the owner either
+        let tick = "check the deploy and report";
+        std::fs::write(format!("{h}/t.jsonl"), json!({"type": "user", "turnOrigin": "scheduled", "message": {"role": "user", "content": tick}}).to_string() + "\n").unwrap();
+        run(&h, "UserPromptSubmit", json!({"prompt": tick}), &[]);
+        assert!(denied(&h), "a scheduled turn is no presence");
+        std::fs::remove_file(format!("{h}/t.jsonl")).unwrap();
         // a real owner prompt lifts the block, AFK stays on
         run(&h, "UserPromptSubmit", json!({"prompt": "ok please deploy all to develop"}), &[]);
         assert!(!denied(&h), "the live owner can be asked");
         assert!(!held(&h), "a turn ending on a question is not held for a live owner");
+        run(&h, "Stop", json!({"last_assistant_message": "Done."}), &[]);
         assert_eq!(flag(&h)["on"], json!(true), "AFK itself stays on");
-        assert_eq!(drained().counter("afk_question_present_allowed", &[("where", "pre")]), 1);
+        let m = drained();
+        assert_eq!(m.counter("afk_question_present_allowed", &[("where", "pre")]), 1);
+        assert_eq!(m.counter("afk_question_present_allowed", &[("where", "stop")]), 1, "only a turn ending on a question is counted");
+        // another session (a parallel workspace) is still blocked: the owner typed in s1, not there
+        let ask2 = |h: &str| out(&run(h, "PreToolUse", json!({"session_id": "s2", "tool_name": "AskUserQuestion", "tool_input": {}}), &[])).contains("deny");
+        assert!(ask2(&h), "an owner prompt in one session never lifts the block of another");
         // the window passed: blocked again
-        let old = crate::checks::taskkit::time::now_ms() - 11 * 60_000;
-        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": old}).to_string()).unwrap();
+        let (now, sess) = (crate::checks::taskkit::time::now_ms(), format!("{h}/.anti-hall/afk-sess-s1.json"));
+        let old = now - 11 * 60_000;
         std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "prompt", "since": old - 5000, "epoch": "e", "counted": true}).to_string()).unwrap();
+        std::fs::write(&sess, json!({"epoch": "e", "present": old}).to_string()).unwrap();
         assert!(denied(&h), "an owner prompt older than the window no longer counts");
+        // the machine-wide presence alone (a prompt in any session) is no presence in this one
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": now}).to_string()).unwrap();
+        assert!(denied(&h), "a fresh prompt elsewhere does not suspend this session's block");
+        // a mark of an earlier AFK period does not count
+        std::fs::write(&sess, json!({"epoch": "older", "present": now}).to_string()).unwrap();
+        assert!(denied(&h), "a mark of another AFK period is no presence");
         // the setting off: never suspended
-        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": crate::checks::taskkit::time::now_ms()}).to_string()).unwrap();
+        std::fs::write(&sess, json!({"epoch": "e", "present": now}).to_string()).unwrap();
         assert!(!denied(&h), "a fresh prompt suspends it again");
         std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"presentMinutes": 0}}).to_string()).unwrap();
         assert!(denied(&h), "presentMinutes 0 restores the old block");
