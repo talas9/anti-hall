@@ -1774,3 +1774,16 @@ fn fw3_the_codex_installer_pattern_covers_both_node_era_command_shapes() {
     assert!(re.is_match("\"/h/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex"));
     assert!(!re.is_match("node \"/h/other-tool/hooks/lint.js\""));
 }
+
+/// The doctor only advises about the AI credit line: it names the line to add when `~/.claude/settings.json` lacks it, says nothing
+/// when it is set, and never edits the file.
+#[test]
+fn attribution_advice_appears_only_when_the_setting_is_missing_and_never_edits() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let path = sc.put(".claude/settings.json", b"{\"theme\":\"dark\"}");
+    sc.doctor(&[]).has("info", &["AI credit line", "\"attribution\": false", "never edits your settings"]);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "{\"theme\":\"dark\"}", "the settings file is untouched");
+    fs::write(&path, "{\"attribution\":false}").unwrap();
+    sc.doctor(&[]).lacks("AI credit line");
+}

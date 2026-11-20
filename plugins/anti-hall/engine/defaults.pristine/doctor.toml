@@ -289,6 +289,18 @@ value = "Repair"
 doc = "The heading of the repair section in a preview."
 value = "Repair (dry-run — no changes written)"
 
+[doctor_msg.attribution_advice]
+doc = "The user's Claude Code settings do not turn off the AI credit line. The doctor only advises; it never edits the file. Placeholders: {path}, {key}."
+value = "Claude Code adds an AI credit line to commits and pull requests unless {path} sets \"{key}\": false (git-guard blocks those lines). Add that line yourself; the doctor never edits your settings"
+
+[doctor.user_settings_rel]
+doc = "The user's Claude Code settings file, relative to the home directory (read-only: the attribution advice checks it)."
+value = ".claude/settings.json"
+
+[doctor.attribution_key]
+doc = "The Claude Code settings key that turns off the commit/PR credit line (value false)."
+value = "attribution"
+
 [doctor_msg.repair_none]
 doc = "The repair pass found no rows and nothing failed."
 value = "nothing to repair"
