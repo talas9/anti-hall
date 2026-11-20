@@ -155,7 +155,8 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
 
 - **Estimated** (manual): if the owner knows their per-call cost, they can set
   `costPerCall` in `~/.anti-hall/jev.json` so `jev report` (below) can estimate
-  spend; otherwise it reports cost as `n/a`.
+  spend; otherwise the report uses the shipped default (`jevrep.thr_cost_per_call_default`) and
+  shows a real cost in the cost column whenever the calls reported one.
 - **Real** (automatic, when available): every Jev call already parses its own
   response for a gateway-reported cost or token usage (see
   `jev-client`'s `extractCostAndUsage` — verified against Vercel AI

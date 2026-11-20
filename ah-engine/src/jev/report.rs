@@ -533,4 +533,40 @@ mod issue_466_tests {
         assert_eq!(by("offOne")["suggestion"].as_str(), Some(expect_off.as_str()));
         assert_eq!(by("errOne")["errorsByKind"]["no-key"], 3);
     }
+
+    fn costed(id: &str, ts: u64, cost: Option<f64>) -> String {
+        let mut v: Value = serde_json::from_str(&row(id, ts, "on", "jev", None)).unwrap();
+        if let Some(c) = cost { v["costUsd"] = json!(c); }
+        v.to_string()
+    }
+
+    #[test]
+    fn cost_column_uses_real_cost_then_default_estimate() {
+        let now = now_ms();
+        let real = [costed("realOne", now - 10, Some(0.25)), costed("realOne", now - 20, Some(0.5))].join("\n");
+        let est: Vec<String> = (0..4).map(|i| costed("estOne", now - 10 - i, None)).collect();
+        let r = run(&["--json"], &[real, est.join("\n")].join("\n"), now);
+        let by = |id: &str| r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
+        assert!((by("realOne")["costEstimate"].as_f64().unwrap() - 0.75).abs() < 1e-9, "{}", by("realOne"));
+        let per: f64 = defaults::text("jevrep.thr_cost_per_call_default").parse().unwrap();
+        assert!((by("estOne")["costEstimate"].as_f64().unwrap() - 4.0 * per).abs() < 1e-9, "{}", by("estOne"));
+        assert_eq!(r["costPerCallKnown"], true);
+    }
+
+    #[test]
+    fn low_yield_note_prints_two_decimals() {
+        let now = now_ms();
+        // 1 changed decision of 200 distinct fresh calls = 0.5%, under the 1% threshold
+        let mut rows: Vec<String> = (0..200).map(|i| {
+            let mut v: Value = serde_json::from_str(&row("lowOne", now - 10 - i, "on", "jev", None)).unwrap();
+            v["h"] = json!(format!("h{i}"));
+            if i == 0 { v["changed"] = json!("added"); }
+            v.to_string()
+        }).collect();
+        rows.push(String::new());
+        let r = run(&["--json"], &rows.join("\n"), now);
+        let sug = r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == "lowOne").unwrap()["lowYieldNote"].to_string();
+        let want = defaults::render("jevrep.t_low_yield_note", &[("rate", &"0.50%"), ("pct", &1)]);
+        assert!(sug.contains(&want), "{sug} vs {want}");
+    }
 }

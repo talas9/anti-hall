@@ -265,7 +265,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   retroactively (no source cwd to recover it from).
 - `"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report [--window 24h|7d]` — read-only
   KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
-  `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic
+  `~/.anti-hall/jev.json` for a manual estimate (else the shipped `jevrep.thr_cost_per_call_default`), and an automatic
   REAL cost parsed from each call's own response when the gateway reports one —
   see `jev-client`'s `extractCostAndUsage`
   (https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
