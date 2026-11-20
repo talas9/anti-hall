@@ -336,6 +336,22 @@ min = 0
 max = 100
 unit = "%"
 
+[daemon.check_reserve_ms]
+doc = "Time kept for ONE check that may be cut at the deadline (script.cut_at_request_deadline) while the checks before it in the same request run (#763). Before a check starts it may use what the request has left less the sum of these reserves over the cut-eligible checks after it (never less than its own reserve, never more than what is left); past that cap it is cut exactly as at the hard deadline (a script call is interrupted, a native scan stops, a host call is clamped) and its answer is recorded as a drop (diagnostics.drop_reason_check_cut, counted deadline_cut.<check>.unsure), never as an allow. So a slow early check, or several, cannot use up the clock the guards behind it need: before, one 7.5 s task-guard used the whole 8000 ms Stop ceiling and every guard behind it was dropped as hard_deadline (867 Stop and 125 PreToolUse guard answers). A check that fails closed on a guard event, or whose deadline policy is `finish`, is never capped and never reserved for. This is the reserve of an event without a daemon.check_reserve_event_ms row and a check without a daemon.check_reserve_by_check_ms row: 100 ms each: a Bash PreToolUse call runs 17 checks, 11 of them cut-eligible (1100 ms of the 2000 ms ceiling), so the first still has about 850 ms."
+value = 100
+min = 0
+unit = "ms"
+
+[daemon.check_reserve_event_ms]
+doc = "Per hook event, the reserve of each cut-eligible check (see daemon.check_reserve_ms). Stop and SubagentStop have the 8000 ms ceiling and about 15 cut-eligible checks: 300 ms each (4500 ms) covers every Stop check run the engine log recorded past the client's fail-fast wait (the slowest after the first check: speculation-guard 279 ms, task-pair-guard 197 ms, devswarm-parent-gate 188 ms) and still leaves the first check (task-guard) about 3450 ms."
+value = { Stop = 300, SubagentStop = 300 }
+unit = "ms"
+
+[daemon.check_reserve_by_check_ms]
+doc = "Per check, its reserve on every event (see daemon.check_reserve_ms), over the event's row. Empty: no check is known to need more than its event's reserve."
+value = {}
+unit = "ms"
+
 [daemon.request_wall_warn_ms]
 doc = "SOFT wall mark of a request (the hard deadline before #684), measured from its arrival: a check that still answers past it is counted verdicts_saved_by_cpu_budget (it would have been dropped when the wall clock was the deadline); nothing is cut here. The HARD wall ceiling is daemon.request_hard_ms."
 value = 2000

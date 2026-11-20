@@ -199,7 +199,12 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let mut unsure = false;
     let mut skipped = 0u64;
 
-    for line in lines {
+    let every = defaults::num("taskstate.cut_check_lines").max(1) as usize;
+    for (n, line) in lines.iter().enumerate() {
+        // #763: a cut call stops here and the reconstruction is unsure (an error is never kept as the whole window's answer)
+        if n.is_multiple_of(every) && crate::deadline::cut_due() {
+            return Err(Unsure);
+        }
         let t = js_trim(line);
         if t.is_empty() {
             continue;

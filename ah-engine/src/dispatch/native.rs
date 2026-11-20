@@ -140,10 +140,14 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
     }
     let guard_event = crate::defaults::list("dispatch.guard_events").contains(&meta.event.as_str());
     let mut out = Vec::new();
-    for e in table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
+    let entries: Vec<Entry> = table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
         .into_iter()
         .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))
-    {
+        .collect();
+    // #763: the check that was running when the request passed its hard deadline (name, ms it ran), and whether the cut was logged
+    let mut over: Option<(String, u128)> = None;
+    let mut cut_logged = false;
+    for (i, e) in entries.iter().enumerate() {
         let started = std::time::Instant::now();
         crate::deadline::beat();
         let check = e.check.as_deref().unwrap_or("");
@@ -179,17 +183,42 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             // #463: the check answers by its own failure policy here; there is no Node hook to defer to
             // the check never started, so the session of its guard-down notice is named here (not a previous request's)
             crate::script::set_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default());
+            if !std::mem::replace(&mut cut_logged, true) {
+                // the first check the deadline cut: say which check was running when it passed and which checks it took with it
+                let (running, ran) = over.clone().unwrap_or_else(|| (crate::defaults::text("msg.log_deadline_cut_queued").to_string(), 0));
+                let skipped = entries[i..].iter().filter_map(|x| x.check.as_deref()).collect::<Vec<_>>().join(", ");
+                log_cut(
+                    "deadline_hard",
+                    check,
+                    &crate::defaults::render(
+                        "msg.log_deadline_hard",
+                        &[("event", &meta.event), ("running", &running), ("ran_ms", &ran), ("skipped", &skipped)],
+                    ),
+                );
+            }
             let v = crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
             answer_of(&e.id, Some(v))
         } else {
             let mark = crate::deadline::staged_mark();
+            // #763: a check that may be cut gets what the request has left less the time reserved for the cut-eligible checks after it
+            let window = crate::script::cut_at_deadline(check, &meta.event)
+                .then(|| budget(&entries[i + 1..], check, &meta.event))
+                .flatten()
+                .map(crate::deadline::cap_check);
             let a = if check == crate::defaults::text("upfront.check") {
                 // It has a real table row (and honors --only); emit after all blocking guards are known.
                 Answer::Decided(HookResult::quiet(&e.id), Vec::new())
             } else {
-                run_entry(&e, meta, p)
+                run_entry(e, meta, p)
             };
+            if window.as_ref().is_some_and(crate::deadline::CheckWindow::cut) {
+                // cut at its cap: its answer is a drop (counted with its own reason), and the checks after it keep their time
+                let ran = started.elapsed().as_millis();
+                log_cut("check_cut", check, &crate::defaults::render("msg.log_check_cut", &[("check", &check), ("event", &meta.event), ("ran_ms", &ran)]));
+                crate::budget::note_dropped(guard_event, check, &meta.event, crate::defaults::text("diagnostics.drop_reason_check_cut"));
+            }
+            drop(window);
             let used = crate::limits::thread_cpu_us().saturating_sub(cpu_before);
             if matches!(a, Answer::Defer) {
                 crate::deadline::discard_staged_since(mark);
@@ -215,6 +244,9 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             }
         };
         crate::deadline::beat();
+        if over.is_none() && !crate::deadline::in_time() {
+            over = Some((check.to_string(), started.elapsed().as_millis()));
+        }
         if crate::deadline::note_soft_overrun() {
             // the client's fail-fast wait ended while THIS check was running: it is the one the line names, with how long it ran
             // (the line used to name the next check to start: ship-it-guard, 0.7 ms mean over 49,811 live calls, was blamed for time earlier checks spent)
@@ -226,11 +258,41 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             );
         }
         crate::load::note_check_cpu(crate::limits::thread_cpu_us().saturating_sub(cpu_before));
-        observe(&e, &a, started.elapsed().as_micros() as u64);
-        out.push((e.id, a));
+        observe(e, &a, started.elapsed().as_micros() as u64);
+        out.push((e.id.clone(), a));
     }
     crate::learn::upfront_notice(meta, p, &mut out);
     out
+}
+
+/// How long `check` (on `event`) may run when that is less than the request has left (#763): what is left less the time reserved for
+/// the checks in `after` that may be cut at the deadline ([`reserve_ms`] each), never less than its own reserve. `None` when nothing
+/// after it needs the time (the check keeps the request's own deadline and its `diagnostics.deadline_grace_ms`, as before), and outside
+/// a request. A check that cannot be cut (fails closed on a guard event, or deadline policy `finish`) is not reserved for: it runs
+/// whatever the clock says.
+fn budget(after: &[Entry], check: &str, event: &str) -> Option<std::time::Duration> {
+    let ms = std::time::Duration::from_millis;
+    let left = crate::deadline::remaining()?;
+    let reserved: u64 =
+        after.iter().filter_map(|e| e.check.as_deref()).filter(|c| crate::script::cut_at_deadline(c, event)).map(|c| reserve_ms(c, event)).sum();
+    let b = left.saturating_sub(ms(reserved)).max(ms(reserve_ms(check, event)));
+    (b < left).then_some(b)
+}
+
+/// The time kept for `check` on `event` while the checks before it run: its `daemon.check_reserve_by_check_ms` row, else the
+/// event's `daemon.check_reserve_event_ms` row, else `daemon.check_reserve_ms`.
+fn reserve_ms(check: &str, event: &str) -> u64 {
+    let row = |key: &str, name: &str| crate::defaults::raw(key).get(name).and_then(crate::defaults::V::as_integer).map(|v| v.max(0) as u64);
+    row("daemon.check_reserve_by_check_ms", check)
+        .or_else(|| row("daemon.check_reserve_event_ms", event))
+        .unwrap_or_else(|| crate::defaults::num("daemon.check_reserve_ms"))
+}
+
+/// Log a deadline or check cut (and, in a test, keep the line for the assertion).
+fn log_cut(kind: &str, check: &str, detail: &str) {
+    #[cfg(test)]
+    tests::CUT_LINES.with(|l| l.borrow_mut().push(format!("{kind}|{check}|{detail}")));
+    crate::health::log_event(kind, check, detail);
 }
 
 /// The daemon's reply body: `[[id, "defer"], [id, code, stdout, stderr], ...]`.
@@ -264,6 +326,11 @@ pub fn decode(body: &str) -> Option<Vec<(String, Answer)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Test only: the cut lines `log_cut` wrote.
+        pub(super) static CUT_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
 
     fn meta() -> Meta {
         Meta {
@@ -745,5 +812,146 @@ mod tests {
         assert_eq!(decode(&encode(&a)), Some(a));
         assert_eq!(decode("not json"), None);
         assert_eq!(decode("[[1]]"), None);
+    }
+
+    fn bash_pkill() -> Value {
+        json!({"session_id": "s-763", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "pkill -f node"}})
+    }
+
+    /// Run the `event` chain of `p` on a fresh request that arrived `ago_ms` ago, with the calls of `held` held (#763 tests: see
+    /// [`crate::script::hold`]); the answers, the drop reason of each entry that had one (`id:reason`), and how long it took.
+    fn run_chain(
+        event: &str,
+        p: &Value,
+        held: &[(&str, std::time::Duration, Option<&str>)],
+        ago_ms: u64,
+    ) -> (Vec<(String, Answer)>, Vec<String>, std::time::Duration) {
+        CUT_LINES.with(|l| l.borrow_mut().clear());
+        // settings are read (parsed from the shipped files) before the request window opens
+        crate::defaults::millis("daemon.reply_slack_ms");
+        crate::deadline::ceiling_ms(event);
+        crate::script::hold::set(held);
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_millis(ago_ms));
+        crate::deadline::set_event(event);
+        let t = std::time::Instant::now();
+        let reasons = std::cell::RefCell::new(Vec::new());
+        let m = Meta { event: event.into(), ..meta() };
+        let got = evaluate(&m, p, &|_| false, &|e, _, _| {
+            if let Some(r) = crate::budget::take_drop_reason() {
+                reasons.borrow_mut().push(format!("{}:{r}", e.id));
+            }
+        });
+        let took = t.elapsed();
+        crate::deadline::end();
+        crate::script::hold::set(&[]);
+        (got, reasons.into_inner(), took)
+    }
+
+    fn blocks(got: &[(String, Answer)], id: &str) -> bool {
+        got.iter().any(|(i, a)| i == id && matches!(a, Answer::Decided(r, _) if r.code == Some(2)))
+    }
+
+    const LONG: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// #763: ONE slow check must not use up the request clock the guards after it need. coordinator-work-guard (open, so it may be cut)
+    /// runs a scan that only ends at its cut, through the real script call: on dev it ran to the request's hard deadline and every open
+    /// guard behind it was dropped (`hard_deadline`), so the `pkill` block of broad-kill-guard was lost.
+    #[test]
+    fn a_slow_first_check_does_not_drop_the_guard_block_behind_it() {
+        let (base, _, _) = run_chain("PreToolUse", &bash_pkill(), &[], 0);
+        assert!(blocks(&base, "broad-kill-guard"), "without a slow check broad-kill-guard blocks pkill: {base:?}");
+        let (got, reasons, took) = run_chain("PreToolUse", &bash_pkill(), &[("coordinator-work-guard", LONG, None)], 0);
+        assert!(blocks(&got, "broad-kill-guard"), "a slow first check must not drop the later guard's block: {reasons:?}");
+        assert!(!reasons.iter().any(|r| r.ends_with(":hard_deadline")), "no guard is dropped to the deadline: {reasons:?}");
+        assert!(reasons.iter().any(|r| r == "coordinator-work-guard:check_cut"), "the slow check is cut at its cap, as a drop: {reasons:?}");
+        assert!(took < std::time::Duration::from_millis(crate::deadline::ceiling_ms("PreToolUse")), "cut at its cap, not the ceiling: {took:?}");
+    }
+
+    /// #763 (Codex P1 on 865420dbf): THREE slow checks in a row must still leave the guards behind them their time. With a fixed share per
+    /// check (40% of the ceiling, at least 1000 ms) the first two used the whole PreToolUse clock and broad-kill-guard was dropped.
+    #[test]
+    fn three_slow_checks_still_leave_the_tail_guard_its_time() {
+        let held = [("coordinator-work-guard", LONG, None), ("merge-side-pick", LONG, None), ("scan-throttle", LONG, None)];
+        let (got, reasons, _) = run_chain("PreToolUse", &bash_pkill(), &held, 0);
+        assert!(blocks(&got, "broad-kill-guard"), "the tail guard still runs and blocks: {reasons:?}");
+        assert!(!reasons.iter().any(|r| r.ends_with(":hard_deadline")), "no check is dropped to the request deadline: {reasons:?}");
+        for (check, _, _) in held {
+            assert!(reasons.contains(&format!("{check}:check_cut")), "{check} is cut at its own cap: {reasons:?}");
+        }
+    }
+
+    /// #763 (Codex P1 on 865420dbf): a cut must not turn task-guard's block into an allow nobody sees. task-guard (failure mode open)
+    /// would have blocked the Stop, but its scan is still running at its cap: the entry is recorded as a drop (`check_cut`, counted
+    /// `deadline_cut.task-guard.unsure`) and logged by name, not counted as task-guard's allow. The request arrived late enough that
+    /// task-guard's cap is its own reserve, so the test needs no 8 s Stop clock.
+    #[test]
+    fn a_cut_task_guard_is_a_logged_drop_not_its_allow() {
+        let stop = json!({"session_id": "s-763-stop", "cwd": "/", "hook_event_name": "Stop", "transcript_path": "/nonexistent-763.jsonl"});
+        let ceiling = crate::deadline::ceiling_ms("Stop");
+        let held = [("task-guard", LONG, Some(r#"{"block":"open tasks have no agent working on them"}"#))];
+        let (got, reasons, _) = run_chain("Stop", &stop, &held, ceiling - 1500);
+        assert!(reasons.contains(&"task-guard:check_cut".to_string()), "the cut is a drop with its own reason: {reasons:?}");
+        assert!(!blocks(&got, "task-guard"), "the held verdict never came: {got:?}");
+        let lines = CUT_LINES.with(|l| l.borrow().clone());
+        assert!(lines.iter().any(|l| l.starts_with("check_cut|task-guard|")), "the cut is logged by name: {lines:?}");
+        // and a task-guard that answers inside its cap keeps its block
+        let quick = [("task-guard", std::time::Duration::from_millis(20), Some(r#"{"block":"open tasks have no agent working on them"}"#))];
+        let (got, reasons, _) = run_chain("Stop", &stop, &quick, 0);
+        assert!(blocks(&got, "task-guard"), "an answer inside the cap is the check's own: {reasons:?}");
+    }
+
+    /// #763: a check that fails closed on a guard event is never capped (its host calls are not clamped either): held past the cap a
+    /// cut-eligible check would get, it still runs to its own answer and is not dropped.
+    #[test]
+    fn a_fail_closed_check_is_never_capped() {
+        let ceiling = crate::deadline::ceiling_ms("PreToolUse");
+        let held = [("compact-declaration-guard", std::time::Duration::from_millis(400), None)];
+        let (got, reasons, _) = run_chain("PreToolUse", &bash_pkill(), &held, ceiling - 1300);
+        assert!(!reasons.iter().any(|r| r.starts_with("compact-declaration-guard:")), "the closed check answered: {reasons:?}");
+        assert!(got.iter().any(|(id, a)| id == "compact-declaration-guard" && matches!(a, Answer::Decided(..))), "{got:?}");
+    }
+
+    /// #763 review: a check that starts past the hard deadline but inside its `diagnostics.deadline_grace_ms` keeps that grace: no cap
+    /// is set when nothing after it needs the time, so it is not cut on the spot.
+    #[test]
+    fn a_check_inside_its_deadline_grace_is_not_capped_to_nothing() {
+        let grace = crate::script::deadline_grace_ms("silent-agent-nudge");
+        assert!(grace > 200, "the shipped grace of silent-agent-nudge: {grace}");
+        let stop = json!({"session_id": "s-763-grace", "cwd": "/", "hook_event_name": "Stop", "transcript_path": "/nonexistent-763.jsonl"});
+        let ceiling = crate::deadline::ceiling_ms("Stop");
+        let held = [("silent-agent-nudge", std::time::Duration::from_millis(50), Some(r#"{"block":"763 grace"}"#))];
+        let m = Meta { event: "Stop".into(), only: Some(vec!["silent-agent-nudge".into()]), ..meta() };
+        crate::defaults::millis("daemon.reply_slack_ms");
+        crate::script::hold::set(&held);
+        // the request is 50 ms past its hard deadline (ceiling less the reply slack) when the check starts
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_millis(ceiling + 50 - crate::defaults::num("daemon.reply_slack_ms")));
+        crate::deadline::set_event("Stop");
+        let got = evaluate(&m, &stop, &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        crate::script::hold::set(&[]);
+        assert!(blocks(&got, "silent-agent-nudge"), "inside its grace the check still answers: {got:?}");
+    }
+
+    /// #763: the log names the check that held the clock and the checks it did not leave time for (here the request is already at its
+    /// hard deadline when the second check starts: the first one is the running check).
+    #[test]
+    fn the_cut_log_names_the_running_check_and_the_skipped_ones() {
+        let ceiling = crate::deadline::ceiling_ms("PreToolUse");
+        // the request has 1 ms left (less the reply slack: none): the first check runs past it, the rest are cut
+        crate::defaults::millis("daemon.reply_slack_ms");
+        CUT_LINES.with(|l| l.borrow_mut().clear());
+        crate::script::hold::set(&[("compact-declaration-guard", std::time::Duration::from_millis(5), None)]);
+        crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_millis(ceiling - 1));
+        crate::deadline::client_window(crate::defaults::num("client.deadline_ms"));
+        crate::deadline::set_event("PreToolUse");
+        let got = evaluate(&meta(), &bash_pkill(), &|_| false, &|_, _, _| {});
+        crate::deadline::end();
+        crate::script::hold::set(&[]);
+        assert!(!got.is_empty());
+        let lines = CUT_LINES.with(|l| l.borrow().clone());
+        let hard: Vec<&String> = lines.iter().filter(|l| l.starts_with("deadline_hard|")).collect();
+        assert_eq!(hard.len(), 1, "one hard-cut line per request: {lines:?}");
+        assert!(hard[0].contains("while compact-declaration-guard was running"), "it names the running check: {}", hard[0]);
+        assert!(hard[0].contains("broad-kill-guard"), "it lists the skipped checks: {}", hard[0]);
     }
 }

@@ -391,7 +391,8 @@ fn scan_back(path: &str, size: u64, window: u64, wanted: &[(String, Need)], firs
             exhausted = false;
             break;
         }
-        if scanned >= max_scan {
+        // #763: the byte cap bounds the scan, the call's cut (deadline or the check's cap) ends it sooner: unsure, never a partial answer
+        if scanned >= max_scan || crate::deadline::cut_due() {
             return Err(Unsure);
         }
         let n = (chunk as u64).min(pos) as usize;

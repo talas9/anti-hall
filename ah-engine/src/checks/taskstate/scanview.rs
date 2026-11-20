@@ -128,7 +128,14 @@ pub(crate) fn has_task_activity_in_file_uncached(path: &str, window: u64) -> Opt
     let names = defaults::list("tasklist_guard.task_tool_names");
     let finders = wide_finders(&names);
     let mut buf: Vec<u8> = Vec::new();
+    let every = defaults::num("taskstate.cut_check_lines").max(1);
+    let mut n = 0u64;
     loop {
+        // #763: the widened search (16 MB) stops at its call's cut and answers unsure
+        if n.is_multiple_of(every) && crate::deadline::cut_due() {
+            return Some(Err(Unsure));
+        }
+        n += 1;
         buf.clear();
         match rd.read_until(b'\n', &mut buf) {
             Ok(0) | Err(_) => return Some(Ok(false)),
@@ -193,7 +200,12 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
     let mut result_ids: Vec<(String, String)> = Vec::new();
     let mut skipped = 0u64;
 
-    for line in lines {
+    let every = defaults::num("taskstate.cut_check_lines").max(1) as usize;
+    for (n, line) in lines.iter().enumerate() {
+        // #763: a cut call stops here and the pass is unsure (an error is never kept as the whole window's answer)
+        if n.is_multiple_of(every) && crate::deadline::cut_due() {
+            return Err(Unsure);
+        }
         let t = js_trim(line);
         if t.is_empty() {
             continue;
