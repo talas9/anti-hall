@@ -746,6 +746,10 @@ fn idle_rule_skips_tasks_named_in_a_running_agents_prompt() {
     let one = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Work on #1 only.");
     let r = idle_stop("ir-prompt-one-on", &one, true, None).expect("#2 is still unattended");
     assert!(r.contains("#2") && !r.contains("#1"), "{r}");
+    // the twin: GitHub references in the brief are not task numbers (PR #1, issues #1 and #2, owner/repo#2)
+    let gh = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Review PR #1, then issues #1 and #2 in acme/app#2.");
+    let g = idle_stop("ir-prompt-gh-on", &gh, true, None).expect("GitHub references attend no task");
+    assert!(g.contains("#1") && g.contains("#2"), "{g}");
 }
 
 /// Review P2: actionable work that merely mentions a retry, or says "not blocked", is not parked or clock-waiting.

@@ -69,7 +69,7 @@ function tgIdleSkips(open, rows) {
     if (r.live === false) return; // the tracker knows it stopped
     var name = jx.isObj(r.spawnInput) && typeof r.spawnInput[ah.cfg('task_guard.owner_name_key')] === 'string' ? r.spawnInput[ah.cfg('task_guard.owner_name_key')] : '';
     // the start of the spawn prompt counts too: an agent launched "for #1" in its brief is working #1 (its description may only name the work)
-    var prompt = jx.isObj(r.spawnInput) && typeof r.spawnInput.prompt === 'string' ? r.spawnInput.prompt.slice(0, ah.cfgNum('idle_rule.prompt_ref_max')) : '';
+    var prompt = jx.isObj(r.spawnInput) && typeof r.spawnInput.prompt === 'string' ? r.spawnInput.prompt.slice(0, ah.cfgNum('idle_rule.prompt_ref_max')).replace(new RegExp(ah.cfg('idle_rule.prompt_ref_skip_re'), 'gi'), ' ') : '';
     [String(r.description || ''), name, prompt].forEach(function (txt) {
       var m; refRe.lastIndex = 0;
       while ((m = refRe.exec(txt)) !== null) { covered[m[1]] = true; if (m[0].length === 0) refRe.lastIndex++; }

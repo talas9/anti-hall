@@ -1883,6 +1883,10 @@ doc = "Most UTF-16 units of a running agent's spawn prompt (from its start) that
 value = 600
 min = 1
 
+[idle_rule.prompt_ref_skip_re]
+doc = "JavaScript regex source (case-insensitive) of GitHub-style references in a spawn prompt that are NOT task numbers: a PR, pull request, issue, commit or bug number (a list of them: 'PRs #829, #827 and #826'), or owner/repo#N. They are blanked before the prompt is read for #<id>, so a brief that reviews PR #12 does not attend task #12."
+value = '''\b(?:prs?|pull\s+requests?|pulls?|issues?|gh|commits?|bugs?)\s*:?\s*#\d+(?:\s*(?:,|and|&|/)?\s*#\d+)*|[\w.-]+/[\w.-]+#\d+'''
+
 [idle_rule.subject_ref_min]
 doc = "Fewest characters a task subject (after its priority prefix) needs to count as named when an agent's description, launch name or prompt start quotes it whole; shorter subjects match too much by chance."
 value = 12
