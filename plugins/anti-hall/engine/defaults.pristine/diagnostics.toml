@@ -146,14 +146,14 @@ unit = "ms"
 # ---- resource budgets (reported in `status`, the health event and the health log) ---------------------------------------------------------
 
 [diagnostics.budget_cpu_pct]
-doc = "SOFT CPU limit of the daemon (5 percent of one core, owner decision 2026-10-23; the 10 percent hard bar is web.pulse_cpu_bad_permille). A limit, not a target. CPU budget of the daemon, percent of one core. A breach is reported when the CPU over diagnostics.budget_cpu_windows consecutive daemon.cpu_check_ms windows stays at or above it; 0 turns the CPU budget off."
-value = 5
+doc = "SOFT CPU limit of the daemon (10 percent of one core; was 5 until 2026-11-21, when a day of engine-log windows (n=729, 30 s each) showed p50 6.7, p90 16.2, p95 19.3, p99 25.8 percent, so 5 sat inside normal load; the 20 percent hard bar is web.pulse_cpu_bad_permille). A limit, not a target. CPU budget of the daemon, percent of one core. A breach is reported when the CPU over diagnostics.budget_cpu_windows consecutive daemon.cpu_check_ms windows stays at or above it; 0 turns the CPU budget off."
+value = 10
 min = 0
 unit = "%"
 
 [diagnostics.budget_cpu_hard_pct]
-doc = "HARD CPU limit of the daemon, percent of one core (10, owner decision 2026-10-23), measured over the same daemon.cpu_check_ms windows and the same diagnostics.budget_cpu_windows count as the soft bar (diagnostics.budget_cpu_pct, which only warns and counts). Once it is crossed the daemon sheds OPTIONAL work and nothing else: scheduled and background duties are delayed (the schedule.cpu_backoff_ms backoff, renewed every window), the checks of events that cannot block (everything outside dispatch.guard_events) are not run only when diagnostics.shed_checks is 1 (shipped 0), and Jev is not consulted (every caller gets its baseline). Guards and block decisions never stop. The event is logged and counted (status budget: cpu_hard_breaches, shed_skipped). Shedding ends by itself on the first window under the soft limit. 0 turns the hard limit off."
-value = 10
+doc = "HARD CPU limit of the daemon, percent of one core (20; was 10 until 2026-11-21: over a day of engine-log windows (n=729) p50 was 6.7, p90 16.2, p95 19.3, p99 25.8 percent, and 10 was crossed in more than 10 percent of normal windows, which shed work), measured over the same daemon.cpu_check_ms windows and the same diagnostics.budget_cpu_windows count as the soft bar (diagnostics.budget_cpu_pct, which only warns and counts). Once it is crossed the daemon sheds OPTIONAL work and nothing else: scheduled and background duties are delayed (the schedule.cpu_backoff_ms backoff, renewed every window), the checks of events that cannot block (everything outside dispatch.guard_events) are not run only when diagnostics.shed_checks is 1 (shipped 0), and Jev is not consulted (every caller gets its baseline). Guards and block decisions never stop. The event is logged and counted (status budget: cpu_hard_breaches, shed_skipped). Shedding ends by itself on the first window under the soft limit (10). 0 turns the hard limit off."
+value = 20
 min = 0
 unit = "%"
 

@@ -2004,8 +2004,8 @@ CPU sample every `diagnostics.debug_thread_sample_ms` and a memory line every `d
 status --json` shows `debug` (enabled, forced, lines written, invariant violations). While off, each call site costs one relaxed
 atomic load and its arguments are not evaluated.
 
-**Budgets.** `diagnostics.budget_cpu_pct` (2 % of one core, over `diagnostics.budget_cpu_windows` consecutive
-`daemon.cpu_check_ms` windows) and `diagnostics.budget_mem_mb` (100 MB, the figure `daemon.mem_metric` selects) are the daemon's
+**Budgets.** `diagnostics.budget_cpu_pct` (soft, 10 % of one core; the hard limit `diagnostics.budget_cpu_hard_pct`, 20 %, sheds optional work; both over `diagnostics.budget_cpu_windows` consecutive
+`daemon.cpu_check_ms` windows) and `diagnostics.budget_mem_mb` (150 MB, the figure `daemon.mem_metric` selects) are the daemon's
 resource budgets; 0 turns one off. The daemon reports a breach when it begins and when it ends in the health log (kind
 `budget`, code `cpu` or `mem`), in `status --json` (`budget`: the readings, the budgets, `breached`, `breaches`), and in every
 `daemon` health event (`cpu_permille`, `budget_breach`: bit 0 CPU, bit 1 memory). Reporting only: a breach changes nothing else. `diagnostics.mem_target_mb` (100 MB) is the
