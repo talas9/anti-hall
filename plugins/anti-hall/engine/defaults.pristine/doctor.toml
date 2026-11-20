@@ -437,6 +437,10 @@ value = 100
 doc = "Bytes read at a time when hashing a file."
 value = 65536
 
+[doctor.reason_max]
+doc = "Longest recorded-failure reason (characters) the report shows inline; a longer one is cut and the report names the file with the full text."
+value = 240
+
 [doctor.hash_shown]
 doc = "How many leading characters of a sha256 the report shows."
 value = 12
@@ -993,8 +997,12 @@ doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
 value = "last recorded failure ({class}): {reason} {hint}"
 
 [doctor_msg.last_crash]
-doc = "DMN-12. Placeholder: {crash}."
+doc = "DMN-12. Placeholder: {crash} (the one-line crash summary)."
 value = "last crash: {crash}"
+
+[doctor_msg.failure_reason_cut]
+doc = "A recorded failure reason longer than doctor.reason_max, cut. Placeholders: {head}, {path} (the failure record holding the full text)."
+value = "{head} ... (cut; full text in {path})"
 
 [doctor_msg.config_fell_back]
 doc = "CF-02. Placeholders: {file}, {detail}, {layer}, {code}."
