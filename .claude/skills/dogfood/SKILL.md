@@ -46,7 +46,7 @@ A repeat of an open entry gets its own dated line (frequency is data). Keep work
   daemon RSS.
 - `sh ~/.anti-hall/ah-node-shadow/node-shadow.sh --compare`: any check where the engine is
   weaker than Node is a **P0** entry; defer counts per check are tracked over time.
-- `ah-engine devswarm ledger --since 1h` (and `ah-engine telemetry`): per-feature actions,
+- `ah-engine devswarm ledger --since 1d` (and `ah-engine telemetry`): per-feature actions,
   success rate, refusals, **mistake rate**. A rising mistake rate or a new refusal reason is an entry.
 - The engine event log: whole-event fallbacks, stuck workers, script "interrupted"/CPU-limit
   errors, git timeouts. Record count and check id.
