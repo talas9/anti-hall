@@ -74,6 +74,8 @@ pub fn settle(t: &Telemetry, delivered: bool) {
         if !delivered {
             t.with_metrics(|m| m.inc("delivery_lost", &[("check", check.as_str()), ("reason", defaults::text("delivery.reason_undelivered"))]));
             funnel::stage(t, &check, &ctx, "delivery.stage_lost");
+            // the funnel counts the undelivered part of its lost itself, over the same answers as its decided (never the unsplit series)
+            funnel::stage(t, &check, &ctx, "delivery.stage_undelivered");
             continue;
         }
         stage(t, &check, "delivery.stage_delivered", "delivery.stage_delivered", &ctx);
@@ -205,7 +207,7 @@ fn funnel_rows(report: &serde_json::Value) -> std::collections::BTreeMap<String,
             shed: n("shed"),
             lost: n("lost"),
             suppressed: n("suppressed"),
-            undelivered: 0,
+            undelivered: n("undelivered"),
         };
         out.insert(check, row);
     }
@@ -273,11 +275,10 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
         }
     }
     let report = funnel::report(&t.with_metrics(|m| m.export()), None, true, &[], None);
-    // the funnel's exact stages replace the unsplit ones of every check it counted; the undelivered part stays the unsplit reason's
+    // the funnel's exact stages replace the unsplit ones of every check it counted, undelivered included: the unsplit series is older
+    // than the funnel and folds stages into its overflow label, so its undelivered count is over other answers than the funnel's decided
     for (check, f) in funnel_rows(&report) {
-        let row = checks.entry(check).or_default();
-        let kept = row.undelivered;
-        *row = Row { undelivered: kept.min(f.lost), ..f };
+        *checks.entry(check).or_default() = f;
     }
     let never: Vec<&str> = defaults::raw("diagnostics.shed_never").as_table().map(|t| t.iter().map(|(k, _)| *k).collect()).unwrap_or_default();
     let mut essential_shed = 0u64;
@@ -443,6 +444,32 @@ mod tests {
         t.with_metrics(|m| m.counter("delivery_funnel", &[("check", check), ("model", &c.model), ("project", &c.project), ("stage", defaults::text(which))]))
     }
 
+    /// The live shape (phase-tracker: dropped_pct 200): the unsplit series is older than the funnel, so it holds undelivered answers the
+    /// funnel never saw decided. The share is taken over the funnel's own answers alone, so it can never pass 100.
+    #[test]
+    fn dropped_share_never_exceeds_100_when_the_unsplit_series_is_older_than_the_funnel() {
+        let t = Telemetry::new();
+        let check = "phase-tracker";
+        let (undelivered, lost) = (defaults::text("delivery.reason_undelivered"), defaults::text("delivery.stage_lost"));
+        // before the funnel existed: 3 answers decided and undelivered, counted only by the unsplit series
+        for _ in 0..3 {
+            t.with_metrics(|m| m.inc("delivery_stage", &[("check", check), ("stage", defaults::text("delivery.stage_decided"))]));
+            t.with_metrics(|m| m.inc("delivery_lost", &[("check", check), ("reason", undelivered)]));
+        }
+        // runs dropped before the check answered, counted by the funnel's lost
+        for _ in 0..18 {
+            t.with_metrics(|m| m.inc("delivery_funnel", &[("check", check), ("model", "opus"), ("project", "pa"), ("stage", lost)]));
+        }
+        // since the funnel: 3 more answers through the real path, all undelivered
+        for i in 0..3 {
+            decided(&t, &format!("s-old-{i}"), check, &ctx());
+            settle(&t, false);
+        }
+        let r = status(&t)["per_check"][check].clone();
+        assert_eq!((r["decided"].as_u64(), r["undelivered"].as_u64(), r["not_run"].as_u64()), (Some(3), Some(3), Some(18)), "{r}");
+        assert_eq!((r["dropped_pct"].as_f64(), r["dropped_max_pct"].as_f64()), (Some(100.0), Some(100.0)), "{r}");
+    }
+
     /// Deliver one answer of `check` in `session` (it arms the check's acted-on window).
     fn deliver(t: &Telemetry, session: &str, check: &str) {
         decided(t, session, check, &ctx());
@@ -479,6 +506,20 @@ mod tests {
             let legacy = t.with_metrics(|m| m.counter("delivery_stage", &[("check", check), ("stage", defaults::text("delivery.stage_complied"))]));
             assert_eq!(legacy, a2, "{check}: delivery_stage complied == funnel acted_on");
         }
+    }
+
+    /// Ignored-rules 2/6: verify-first is a per-prompt reminder with nothing to act on (no compliance row, so null); tasklist-guard's
+    /// order is "update the progress file", so a Write or Edit is its reaction.
+    #[test]
+    fn verify_first_has_no_compliance_row_and_a_progress_file_write_answers_tasklist_guard() {
+        assert!(cond("verify-first").is_none(), "verify-first has no acted-on condition");
+        let (t, check) = (Telemetry::new(), "tasklist-guard");
+        for tool in ["Write", "Edit", "MultiEdit", "apply_patch"] {
+            let session = format!("s-{tool}");
+            deliver(&t, &session, check);
+            observe_tool(&t, &session, tool);
+        }
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 4, "Claude edits and the Codex apply_patch both count");
     }
 
     #[test]
