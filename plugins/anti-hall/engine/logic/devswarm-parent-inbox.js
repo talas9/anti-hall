@@ -255,6 +255,27 @@ function piNormTable(t) {
   }).join('\n');
 }
 
+// GH: a child that ran `inbox read` after its oldest unread mail arrived, within devswarm_parent.read_seen_window_ms, is draining: the cursor only
+// moves when it acks the read receipt, so a child that read, acted and replied without the ack still shows the mail as unread. True when one of
+// the newest devswarm_parent.read_seen_scan receipts of `id` (the file name sorts by time) was created at or after `oldestTs`, inside the window,
+// and delivered at least one row (a read that found nothing proves nothing about this mail).
+function piReadSince(home, id, oldestTs, now) {
+  if (!piSafeId(id)) return false;
+  var dir = piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_read_receipts') + '/' + id;
+  var names = piNames(dir);
+  if (names === null || !names.length) return false;
+  names = names.filter(function (n) { return /\.json$/.test(n); }).sort().reverse().slice(0, ah.cfgNum('devswarm_parent.read_seen_scan'));
+  var floor = Math.max(oldestTs, now - ah.cfgNum('devswarm_parent.read_seen_window_ms'));
+  for (var i = 0; i < names.length; i++) {
+    var r = piJson(dir + '/' + names[i]);
+    if (!r || !piFinite(r.createdAt) || r.createdAt < floor || !Array.isArray(r.ops)) continue;
+    for (var j = 0; j < r.ops.length; j++) {
+      if (r.ops[j] && piFinite(r.ops[j].delivered) && r.ops[j].delivered > 0) { ah.metric('devswarm_unread_read_seen', ['reason', 'receipt']); return true; }
+    }
+  }
+  return false;
+}
+
 // `normalizeInboxVolatile`: the oldest age and the trend of the nudge are dropped before the text is hashed.
 function piNormInbox(t) {
   return String(t).replace(/, oldest (?:—|\d+[smhd])/g, '').replace(/, (?:rising|flat|falling)\)/g, ')');
@@ -594,11 +615,12 @@ function piRoster(ctx, summary) {
     var total = piFinite(entry.total) ? entry.total : 0;
     var cursor = piFinite(entry.cursor) ? entry.cursor : 0;
     var urgencyMax = entry.urgencyMax || null;
+    var childRead = unread > 0 && piFinite(entry.oldestDirectUnreadTs) && piReadSince(home, id, entry.oldestDirectUnreadTs, now);
     var vv = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_liveness') + '/' + id + '.json');
     var verdict = vv && typeof vv === 'object' ? vv : null;
     var status = entry && typeof entry.status === 'string' ? entry.status : (verdict && typeof verdict.status === 'string' ? verdict.status : null);
     var stuck = status !== null && piStuck(status);
-    var notDraining = !!(verdict && verdict.notDraining);
+    var notDraining = !!(verdict && verdict.notDraining) && !childRead; // a child that ran `inbox read` on the backlog is draining, only its ack is missing
     // a backlog that does not drain on a child running an older build is a build problem, not neglect
     var staleBuild = null;
     if (notDraining) {
@@ -623,7 +645,8 @@ function piRoster(ctx, summary) {
     var graced = false;
     if (unread > 0 && oldestForGate !== null) {
       var ageMs = now - oldestForGate;
-      if (ageMs >= graceMs) graced = false;
+      if (childRead) graced = true; // read, replied, not acked: nothing for the Primary to poke
+      else if (ageMs >= graceMs) graced = false;
       else if (senderRaw != null && ctx.primaryId != null && String(senderRaw) !== String(ctx.primaryId)) graced = false;
       else graced = true;
     }

@@ -719,6 +719,22 @@ value = { kind = "counter", unit = "warnings", labels = ["reason"] }
 doc = "Skip archived rows."
 value = { section = "devswarm", key = "skipArchivedChildren", type = "boolean", env = "ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN", option = "", default = false }
 
+[devswarm_parent.read_seen_window_ms]
+doc = "How recent a child's `inbox read` must be for its unread backlog not to be flagged (GH: read, replied, never acked). A read this recent, made after the oldest unread mail arrived and delivering at least one row, shows the child is draining; only its ack is missing. Matches mesh_write.not_draining_age_ms (20 minutes) by default."
+value = 1200000
+min = 1000
+max = 86400000
+
+[devswarm_parent.read_seen_scan]
+doc = "How many of a child's newest read receipts the Primary's inbox check opens when looking for a recent read (file names sort by time)."
+value = 8
+min = 1
+max = 100
+
+[metric.devswarm_unread_read_seen]
+doc = "Unread backlogs left out of the not-draining nudge because the child ran `inbox read` on them since the oldest arrived (a read without its ack), by reason (receipt)."
+value = { kind = "counter", unit = "workspaces", labels = ["reason"] }
+
 [metric.devswarm_archived_child_skipped]
 doc = "Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker)."
 value = { kind = "counter", unit = "workspaces", labels = ["check", "reason"] }
