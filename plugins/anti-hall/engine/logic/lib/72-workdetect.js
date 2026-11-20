@@ -468,7 +468,9 @@ var wd = {
         else if (nested === null && mode === '') {
           var uw = wd.unknownWrite(words.slice(at));
           if (uw !== null) {
-            if (uw.targets.length === 0) unknown = true;
+            // an extraction that names no destination lands in the working directory: one that is scratch or temp space is no project work
+            if (uw.targets.length === 0 && dir && ah.cfg('workdetect.unknown_write_cwd_verbs').indexOf(verb) >= 0 && !wd.countablePath(dir + '/', cx)) { /* counts nothing */ }
+            else if (uw.targets.length === 0) unknown = true;
             else uw.targets.forEach(function (a) { targets.push({ t: a, kind: 'verb' }); });
           }
         }
