@@ -541,6 +541,14 @@ value = "block"
 doc = "Outcome word of a deadline cut that allowed and told the user (the once-per-session guard-down notice)."
 value = "allow_notice"
 
+[diagnostics.deadline_cut_outcome_unsure]
+doc = "Outcome word of a cut at the check's own cap (daemon.check_reserve_ms, #763): the check did not answer, so whatever its failure policy let through is not counted as its allow."
+value = "unsure"
+
+[diagnostics.drop_reason_check_cut]
+doc = "Drop reason (delivery_lost{check,reason}, answers_dropped, guard_answer_dropped) of an entry whose check was cut at its own cap (daemon.check_reserve_ms, #763): the check gave no answer, so its entry is a drop, not an allow."
+value = "check_cut"
+
 [diagnostics.deadline_cut_outcome_allow]
 doc = "Outcome word of a deadline cut that allowed (the session was already told, or there is no session)."
 value = "allow"
