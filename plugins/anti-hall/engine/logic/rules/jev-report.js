@@ -76,7 +76,7 @@ function jrParseIsoMs(s) {
   return Number.isFinite(t) ? t : null;
 }
 
-function jrPct(n) { return n === null || n === undefined ? 'n/a' : (n * 100).toFixed(1) + '%'; }
+function jrPct(n, digits) { return n === null || n === undefined ? 'n/a' : (n * 100).toFixed(digits === undefined ? 1 : digits) + '%'; }
 
 // ---- arguments ------------------------------------------------------------------------------------------------------------
 
@@ -311,6 +311,9 @@ function jrBuildTransportBreakdown(rows, triageRows, cutoff) {
 
 function jrBuildReport(rows, opts) {
   var now = opts.now;
+  // $/call fallback: jev.json "costPerCall" if set, else the shipped default (jev_report.thr_cost_per_call_default)
+  var costPerCall = Number.isFinite(opts.costPerCall) ? opts.costPerCall : (Number.isFinite(JR_C.cost_per_call_default) ? JR_C.cost_per_call_default : null);
+  var anyRealCost = false;
   var cutoff = Number.isFinite(opts.days) ? now - opts.days * JR_C.day_ms : null;
 
   var byId = new Map();
@@ -467,7 +470,7 @@ function jrBuildReport(rows, opts) {
     var budgetMs = opts.budgetMsById && opts.budgetMsById[bucket.id];
 
     var labeledSample = humanTP + humanFP + autoTP + autoFP;
-    var lowYieldNote = changedRate < JR_C.low_yield_changed_rate ? jrT('low_yield_note', { rate: jrPct(changedRate), pct: JR_C.low_yield_pct }) : null;
+    var lowYieldNote = changedRate < JR_C.low_yield_changed_rate ? jrT('low_yield_note', { rate: jrPct(changedRate, JR_C.low_yield_rate_digits), pct: JR_C.low_yield_pct }) : null;
 
     var isLabelOnly = bucket.labeled > 0 && known === 0 && labeledSample === 0;
     var labelOnlyNote = isLabelOnly
@@ -538,6 +541,7 @@ function jrBuildReport(rows, opts) {
       changed: changed,
       changedUnique: totalChangedUnique,
       changedRate: changedRate,
+      lowYieldNote: lowYieldNote,
       isLabelOnly: isLabelOnly,
       labelOnlyNote: labelOnlyNote,
       labelDistinctDecisions: bucket.labelHashesAll.size,
@@ -549,7 +553,8 @@ function jrBuildReport(rows, opts) {
       failureRate: failureRate,
       p50: p50,
       p95: p95,
-      costEstimate: Number.isFinite(opts.costPerCall) ? freshCalls * opts.costPerCall : null,
+      // real cost (sum of the rows' costUsd) when any row carries it, else the $/call estimate, else n/a
+      costEstimate: bucket.realCostKnown ? bucket.realCostSum : (costPerCall !== null ? freshCalls * costPerCall : null),
       realCostTotal: bucket.realCostKnown ? bucket.realCostSum : null,
       realCostPerCall: (bucket.realCostKnown && freshCalls > 0) ? bucket.realCostSum / freshCalls : null,
       realCostPerChangedDecision: (bucket.realCostKnown && totalChangedUnique > 0) ? bucket.realCostSum / totalChangedUnique : null,
@@ -564,6 +569,7 @@ function jrBuildReport(rows, opts) {
       suggestion: suggestion,
     };
     integrationRow.headline = jrBuildHeadline(integrationRow, opts.windowLabel || 'window');
+    if (bucket.realCostKnown) anyRealCost = true;
     integrations.push(integrationRow);
   });
 
@@ -571,7 +577,7 @@ function jrBuildReport(rows, opts) {
   var triageAnswers = jrBuildTriageAnswerReport(opts.triageRows || []);
   return {
     generatedAt: new Date(now).toISOString(),
-    costPerCallKnown: Number.isFinite(opts.costPerCall),
+    costPerCallKnown: anyRealCost || costPerCall !== null,
     integrations: integrations,
     triageAnswers: triageAnswers,
     transports: jrBuildTransportBreakdown(rows, opts.triageRows, cutoff),
@@ -922,7 +928,7 @@ function jrBegin(input) {
   JR_C = input.cfg.thresholds;
   JR_T = input.cfg.texts;
   // decimal numbers ship as strings
-  ['remove_good_outcome_rate', 'remove_failure_rate', 'keep_changed_rate', 'keep_good_outcome_rate', 'low_yield_changed_rate', 'p50', 'p95'].forEach(function (k) { JR_C[k] = Number(JR_C[k]); });
+  ['remove_good_outcome_rate', 'remove_failure_rate', 'keep_changed_rate', 'keep_good_outcome_rate', 'low_yield_changed_rate', 'cost_per_call_default', 'p50', 'p95'].forEach(function (k) { JR_C[k] = Number(JR_C[k]); });
   JR_OUT = [];
   JR_ERR = [];
   JR_EXIT = 0;
