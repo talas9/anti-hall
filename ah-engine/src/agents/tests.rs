@@ -4735,7 +4735,7 @@ fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
     assert_eq!(nd.snooze_min, 10, "no reason = the shortest hold (snooze_min_min), not the asked 60");
 }
 
-/// #784: a snooze given to a runtime nudge holds across the nudge closing (the child leaving "running" for a moment) and reopening: no
+/// #828: a snooze given to a runtime nudge holds across the nudge closing (the child leaving "running" for a moment) and reopening: no
 /// new nudge (and no new ref) about that child until the snooze runs out.
 #[test]
 fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
