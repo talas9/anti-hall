@@ -53,6 +53,7 @@ function decide(p, opts, event) {
   if (tool !== ah.cfg('tasklist_hygiene.create_tool') && tool !== ah.cfg('tasklist_hygiene.update_tool')) return 'allow';
   var guard = ah.cfg('tasklist_hygiene.guard_name');
   if (ah.settings.skipped(guard)) return 'allow';
+  if (ah.cfg('tasklist_hygiene.skip_subagent') === true && coordinator.subagentByPayload(p)) return 'allow';
   var mode = ah.settings.enum('ctxbudget.set_h_task_enforce');
   var inp = jx.isObj(p.tool_input) ? p.tool_input : {};
   var sid = typeof p.session_id === 'string' ? p.session_id : '';

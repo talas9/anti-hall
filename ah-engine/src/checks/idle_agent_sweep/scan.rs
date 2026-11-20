@@ -23,10 +23,13 @@ use std::collections::HashSet;
 /// A teammate that finished its work and was not stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finished {
-    /// The teammate's name (what TaskStop takes).
+    /// The teammate's name (the label; TaskStop takes `agent_id`).
     pub name: String,
     /// When its last turn ended, in milliseconds since the epoch.
     pub idle_since_ms: f64,
+    /// The id TaskStop takes: the spawn result's `agent_id` (`name@session-xxxx`; the bare name is answered "No task found"). Empty when
+    /// the spawn result carried none.
+    pub agent_id: String,
 }
 
 struct Res {
@@ -540,7 +543,11 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
             }
         }
         if state == State::Idle && r.finished_reason.is_match(&last_reason) && last_idle.is_finite() && !background.contains(name) {
-            finished.push(Finished { name: name.clone(), idle_since_ms: last_idle });
+            finished.push(Finished {
+                name: name.clone(),
+                idle_since_ms: last_idle,
+                agent_id: sc.team_info.items.iter().find(|(n, _)| n == name).map(|(_, i)| i.agent_id.clone()).unwrap_or_default(),
+            });
         }
     }
     Ok(finished)

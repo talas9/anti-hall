@@ -40,7 +40,7 @@ fn lines(v: Vec<String>) -> Vec<String> {
 fn a_teammate_that_reported_available_and_was_not_stopped_is_finished() {
     let mut l = spawn("amy", T0 - 3_000_000.0);
     l.push(report("amy", T0 - 2_000_000.0, "available"));
-    assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![scan::Finished { name: "amy".into(), idle_since_ms: T0 - 2_000_000.0 }]));
+    assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![scan::Finished { name: "amy".into(), idle_since_ms: T0 - 2_000_000.0, agent_id: "amy@t".into() }]));
 }
 
 #[test]
