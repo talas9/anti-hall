@@ -40,8 +40,12 @@ value = { kind = "counter", unit = "candidates", labels = ["reason"] }
 doc = "Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed)."
 value = { kind = "counter", unit = "replies", labels = ["rule"] }
 
+[metric.claim_evidence_tool_ok]
+doc = "Claims the claim-evidence guard let pass because a tool of this turn (claim_evidence.tool_evidence: an Artifact publish, an MCP deploy or publish tool) returned its own success result, by claim kind."
+value = { kind = "counter", unit = "claims", labels = ["claim"] }
+
 [metric.claim_evidence_suppressed]
-doc = "Claim hits the claim-evidence guard let pass, by reason (negated, future, reported, criterion, purpose, planned, labelled, quoted)."
+doc = "Claim hits the claim-evidence guard let pass, by reason (negated, future, condition, reported, criterion, purpose, planned, labelled, quoted)."
 value = { kind = "counter", unit = "claims", labels = ["reason"] }
 
 [claim_evidence.guard_name]
@@ -176,6 +180,17 @@ value = ['\b(?:requires?|requiring|required|ensures?)\s+that\b']
 doc = "A purpose clause that opens the claim's own clause (rule 1): 'to make a test pass', 'so that the build goes green', 'in order to get CI green' name the goal of an action, not a result. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = ['\b(?:to|so\s+that|in\s+order\s+to)\s+(?:make|makes|making|get|gets|getting|have|keep|keeps|force|forces|let|lets)\b']
 
+[claim_evidence.cond_coord_res]
+doc = "A claim that is the second part of a condition or intent clause (rule 1): 'merge as soon as its work is reviewed and tests pass', 'once the PR is approved or CI is green'. The text before the claim opens with a condition word (as soon as, once, when, after, until, if ...), has a short subject (at most 3 words), a present-tense verb (is, are, be, get, has, have) and at most 2 more words, and ends with 'and' or 'or' right before the claim. A past-tense clause ('when CI started and tests pass') has no such verb and stays a claim. Empty list turns the row off. Regular expressions, case-insensitive, matched against the clause before the claim; each must end with $."
+value = ['\b(?:as soon as|once|when|whenever|after|until|if|unless|before|assuming|provided)\b(?:\s+[\w#\x27-]+){0,3}?\s+(?:is|are|be|gets?|has|have)\b(?:\s+[\w#\x27-]+){0,2}?\s+(?:and|or)\s+$']
+
+[claim_evidence.tool_evidence]
+doc = "Tool results that back a shipped or published claim (rule 1), for tools that are no shell command. Each row: claims = the claim ids (claim_evidence.claims id) it backs; tool_re = Rust regular expression matched case-sensitively against the tool's name (the tool_use name of a call of this turn); result_re = Rust regular expression, case-insensitive, matched against the result THAT call returned. Only that tool's own non-error result counts: the reply's words and the command line are never read, so a reply cannot write its own evidence. Counted in claim_evidence_tool_ok. Empty list turns it off."
+value = [
+  { claims = ["shipped"], tool_re = '^Artifact$', result_re = '^\s*Published\b' },
+  { claims = ["shipped"], tool_re = '^mcp__.+__(?:deploy|publish|release)[a-z_]*$', result_re = '^\s*(?:published|deployed|released)\b|"(?:status|state)"\s*:\s*"(?:published|deployed|released|live)"' },
+]
+
 [claim_evidence.suppress_after]
 doc = "Why a claim hit is not a claim, judged from the words AFTER it (checked after claim_evidence.suppress): reason = the label written to the log, list = the config key of the pattern list matched against the rest of the claim's sentence, anchored at the end of the claim; before = the config key of a pattern list one of which must match the sentence text BEFORE the claim (so a plain status line 'All tests pass, then merge.' stays a claim). A claim followed by a next step is an item of a plan, not a statement."
 value = [
@@ -250,6 +265,7 @@ value = [
   { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
   { reason = "purpose", list = "claim_evidence.purpose_res", reach = "claim_evidence.reach_clause" },
+  { reason = "condition", list = "claim_evidence.cond_coord_res", reach = "claim_evidence.reach_verb", idiom = "claim_evidence.opener_idiom_re" },
 ]
 
 [claim_evidence.ack_reason]
@@ -267,7 +283,7 @@ min = 0
 max = 50
 
 [claim_evidence.msg_suppressed]
-doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, reported, criterion, purpose, planned, labelled, quoted), {claim} the claim kind, {quote} the words found."
+doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, condition, reported, criterion, purpose, planned, labelled, quoted), {claim} the claim kind, {quote} the words found."
 value = "suppressed ({reason}): \"{quote}\" ({claim})"
 
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------

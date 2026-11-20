@@ -214,12 +214,12 @@ function ceCountFired(rule) {
   ah.advisory('claim_evidence', 'fired_' + rule);
 }
 
-// The tool calls of the last `n` of the transcript as [command, output text] (command '' for a call without one, output '' when the
+// The tool calls of the last `n` of the transcript as [command, output text, tool name, errored] (command '' for a call without one, output '' when the
 // result is not in the window), in order: the output a call returned is the tool_result block that names its tool_use id.
 function ceTurnCalls(tp, n) {
   var lines = ah.fs.tailLines(tp, ah.cfgNum('claim_ledger.window_bytes'), true, ['tool_use', 'tool_result']);
   if (lines === null) return null;
-  var uses = [], outs = {};
+  var uses = [], outs = {}, errs = {};
   for (var i = 0; i < lines.length; i++) {
     var e;
     try { e = JSON.parse(lines[i]); } catch (x) { continue; }
@@ -228,14 +228,15 @@ function ceTurnCalls(tp, n) {
     for (var j = 0; j < c.length; j++) {
       var b = c[j];
       if (!b || typeof b !== 'object') continue;
-      if (b.type === 'tool_use') uses.push({ id: b.id, cmd: b.input && typeof b.input.command === 'string' ? b.input.command : '' });
+      if (b.type === 'tool_use') uses.push({ id: b.id, name: typeof b.name === 'string' ? b.name : '', cmd: b.input && typeof b.input.command === 'string' ? b.input.command : '' });
       else if (b.type === 'tool_result') {
         var t = typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(function (x) { return x && typeof x.text === 'string' ? x.text : ''; }).join('\n') : '';
         outs[b.tool_use_id] = t;
+        if (b.is_error === true) errs[b.tool_use_id] = true;
       }
     }
   }
-  return uses.slice(Math.max(0, uses.length - n)).map(function (u) { return [u.cmd, typeof outs[u.id] === 'string' ? outs[u.id] : '']; });
+  return uses.slice(Math.max(0, uses.length - n)).map(function (u) { return [u.cmd, typeof outs[u.id] === 'string' ? outs[u.id] : '', u.name, errs[u.id] === true]; });
 }
 
 // GH #376 (claim_evidence.log_read_counts): true when a read of a log or output file ran this turn (claim_evidence.log_read_res) and every
@@ -266,6 +267,25 @@ function ceLogReadBacks(claim, tp, tools) {
     if (passHave[want] !== true) return false;
   }
   return true;
+}
+
+// claim_evidence.tool_evidence: true when a tool call of this turn that is not a shell command backs the claim by its OWN success result.
+// A row names the claim ids it backs (claims), the tool's name (tool_re, matched case-sensitively against the tool_use name) and the
+// result that tool must have returned (result_re, matched against the tool_result text of that very call, which the reply cannot write).
+// An errored result never backs anything; the words of the reply and of the command line are never read.
+function ceToolBacks(claim, tp, tools) {
+  var rows = ah.cfg('claim_evidence.tool_evidence');
+  if (!Array.isArray(rows) || !rows.length) return false;
+  var calls = ceTurnCalls(tp, tools);
+  if (calls === null) return false;
+  for (var i = 0; i < calls.length; i++) {
+    if (calls[i][3] === true || !calls[i][2]) continue;
+    for (var r = 0; r < rows.length; r++) {
+      if (rows[r].claims.indexOf(claim.row.id) < 0) continue;
+      if (ah.re.find(rows[r].tool_re, '', calls[i][2]) && ah.re.find(rows[r].result_re, 'i', calls[i][1])) return true;
+    }
+  }
+  return false;
 }
 
 // spans of every pattern of a list in a text
@@ -388,6 +408,8 @@ function decide(p) {
       if (cmds !== null && !ceAnyCmd(needs, cmds)) {
         if (ceLogReadBacks(claim, tpOpen, tools)) {
           if (ah.settings.bool('claim_evidence.sw_telemetry')) ah.metric('claim_evidence_log_read_ok', ['claim', claim.row.id]);
+        } else if (ceToolBacks(claim, tpOpen, tools)) {
+          if (ah.settings.bool('claim_evidence.sw_telemetry')) ah.metric('claim_evidence_tool_ok', ['claim', claim.row.id]);
         } else what = text.render(ah.cfg('claim_evidence.msg_claim_what'), { claim: claim.row.id, quote: text.clean(claim.quote) });
       }
     }
