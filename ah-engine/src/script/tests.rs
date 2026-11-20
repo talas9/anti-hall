@@ -3081,7 +3081,7 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     }));
     let got = golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate");
     let Some(Verdict::Exact(out)) = got else { panic!("a child must report: {got:?}") };
-    assert!(out.out.contains("workspace reporting or inbox duties are unfinished"), "{}", out.out);
+    assert!(out.out.contains("workspace duty unfinished: no heartbeat or report sent"), "{}", out.out);
     let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-child-gate-direct-stop.md", case.home)).unwrap();
     assert!(details.contains("Heartbeat: before you stop") && details.contains("ah-engine mesh"), "{details}");
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);

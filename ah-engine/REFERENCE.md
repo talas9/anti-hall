@@ -6429,9 +6429,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_drop_labels` | `3 entries` |  |  | Whitelisted label of each known drop reason of a refused heartbeat summary (any other reason is never echoed). |
 | `devswarm_gates.cg_drop_remedies` | `3 entries` |  |  | Remedy of each known drop reason; the id placeholder (devswarm_role.id_placeholder) is replaced by the workspace id. |
 | `devswarm_gates.cg_drop_unknown` | `your last heartbeat summary was dropped (reason not recognized)` |  |  | The drop description of a reason the gate does not recognize. |
+| `devswarm_gates.cg_duty_cron` | `the mailbox tick cron is not armed` |  |  | Duty name in the child gate headline: the mailbox tick cron job is not scheduled. |
+| `devswarm_gates.cg_duty_inbox` | `unread parent messages` |  |  | Duty name in the child gate headline: unread parent mail. |
+| `devswarm_gates.cg_duty_report` | `no heartbeat or report sent` |  |  | Duty name in the child gate headline: no heartbeat or report was sent this episode. |
+| `devswarm_gates.cg_duty_sep` | `; ` |  |  | Joins the duty names in the child gate headline. |
+| `devswarm_gates.cg_duty_unknown` | `inbox state unreadable` |  |  | Duty name in the child gate headline: the unread count could not be read. |
 | `devswarm_gates.cg_err_cap` | `⚠️ workspace check: the stop reminder limit was reached.\nDo instead: send a ...` |  |  | The once-per-episode stderr notice that the block budget is spent: {max}, {sid} (JSON text). |
 | `devswarm_gates.cg_err_mismatch` | `⚠️ workspace check: the saved attempt is unauthenticated.\nDo instead: report...` |  |  | The once-per-session stderr notice of an own-id drop-attempt record that authenticates against neither the nonce nor the session: {sid}, {row}, {own} (JSON texts). |
 | `devswarm_gates.cg_headline` | `workspace reporting or inbox duties are unfinished.` |  |  | Headline of the child gate block. |
+| `devswarm_gates.cg_headline_duties` | `workspace duty unfinished: {duties}.` |  |  | Headline of the child gate block when the unmet duties are known; {duties} is their names joined by cg_duty_sep. Kept short: the visible line is cut near 115 units. |
 | `devswarm_gates.cg_heartbeat` | `Heartbeat: before you stop, emit a heartbeat / self-report to your parent orc...` |  |  | The outbound line that asks for a heartbeat report: {cli}, {id}. |
 | `devswarm_gates.cg_heartbeat_drop` | `Heartbeat: {drop}, THEN stop.` |  |  | The outbound line after a dropped report: {drop}. |
 | `devswarm_gates.cg_heartbeats_dir` | `heartbeats` |  |  | Directory of the workspace heartbeat files, under the DevSwarm state directory (the session-age proxy of the cron check). |
