@@ -4324,7 +4324,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.msg_usage` | `usage: ah-engine afk on\|off\|status \| ah-engine back` |  |  | Usage line of the `afk` verb. |
 | `afk.msg_write_failed` | `afk: cannot write {path}: {why}` |  |  | Printed when the flag file cannot be written. Placeholders: {path}, {why}. |
 | `afk.needs_owner_re` | `NEEDS OWNER` |  |  | A digest bullet that parks an item for the owner: listed first by back / progress (regular expression). |
-| `afk.non_owner_prompt_res` | `^\s*<task-notification>, ^\s*<system-reminder>, ^\s*<teammate-message` |  |  | Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive. |
+| `afk.non_owner_prompt_res` | `9 items` |  |  | Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive. |
 | `afk.open_re` | `^\s*[-*] \[ \] ` |  |  | An open checklist bullet (counts toward the percentage as not done). |
 | `afk.pre_deny` | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"den...` |  |  | The stdout line of a PreToolUse that denies the tool call with {reason} (JSON-quoted). |
 | `afk.presence_file` | `afk-presence.json` |  |  | The machine-wide owner-presence file (time of the last owner prompt), under the per-user state directory. |
@@ -4346,10 +4346,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `afk.set_idle_minutes` | `10 entries` |  |  | The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after which AFK starts by itself. |
 | `afk.set_measure` | `8 entries` |  |  | The afk.measure setting: count each main-session turn's output tokens from the transcript usage fields, split AFK vs present (afk_output_tokens{mode}). |
 | `afk.set_no_questions` | `8 entries` |  |  | The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools) every time with the question ladder, and hold (at most afk.question_max_holds times) a turn that ends on a plain-text question. Off = questions pass as usual. |
+| `afk.set_present_minutes` | `10 entries` |  |  | The afk.presentMinutes setting: minutes after an owner prompt typed while AFK is on during which the question block is suspended (the question tool passes, a turn ending on a question is not held), so a live owner can be asked. AFK itself stays on; a prompt that is not the owner (afk.non_owner_prompt_res) never counts, and the prompt that turned AFK on does not. 0 = off. |
 | `afk.set_prompt_commands` | `8 entries` |  |  | The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off / afk.words_progress is answered by the hook (the prompt is not sent to the model). |
 | `afk.stop_block` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a Stop that holds the reply with {reason} (JSON-quoted). |
 | `afk.summary` | `UserPromptSubmit, PreToolUse, PostToolUse, Stop (Claude) / SessionStart, User...` |  |  | One-line description of the afk-mode check in the generated reference. |
 | `afk.ups_block` | `{"decision":"block","reason":{reason}}\n` |  |  | The stdout line of a UserPromptSubmit that answers a typed command itself: the prompt is not sent to the model and {reason} (JSON-quoted) is shown to the owner. |
+| `afk.where_pre` | `pre` |  |  | Label of metric.afk_question_present_allowed for a question-tool call that passed because the owner is present. |
+| `afk.where_stop` | `stop` |  |  | Label of metric.afk_question_present_allowed for a turn ending on a question that was not held because the owner is present. |
 | `afk.window_bytes` | `2097152` |  |  | Transcript tail window (bytes) read at Stop to find the turn's assistant entries and their usage. |
 | `afk.words_off` | `back` |  |  | Prompts that end AFK mode and print the digest. |
 | `afk.words_on` | `afk` |  |  | Prompts (trimmed, compared case-insensitively) that start AFK mode. |
@@ -15797,6 +15800,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `afk_overlong_turns` | counter | events | action | Overlong AFK replies, by action (nudge, block, capped). |
 | `afk_question_denied` | counter | events | tool | AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap). |
 | `afk_question_parked` | counter | events | action | AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook). |
+| `afk_question_present_allowed` | counter | questions | where | Question-tool calls and question-ending turns the AFK question block let pass because an owner prompt arrived after AFK started (afk.presentMinutes), by where (pre, stop). |
 | `afk_stale_injection_suppressed` | counter | events | event | Hook calls that found an idle AFK flag still ON although the owner presence was newer than its start (GH #509): the flag was ended and nothing AFK was injected or enforced, by event. |
 | `afk_turns` | counter | turns |  | Main-session turns that ended (Stop) while AFK. |
 | `afk_turns_measured` | counter | turns | mode | Main-session turns whose output tokens were measured, by mode (afk, present). |

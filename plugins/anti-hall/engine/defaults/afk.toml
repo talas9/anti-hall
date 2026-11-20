@@ -37,6 +37,18 @@ value = { section = "afk", key = "idleDetect", kind = "bool", env = "", aliases 
 doc = "The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after which AFK starts by itself."
 value = { section = "afk", key = "idleMinutes", kind = "num", env = "", aliases = [], option = "", manifest_default = "", default = 20, min = 1, max = 1440 }
 
+[afk.set_present_minutes]
+doc = "The afk.presentMinutes setting: minutes after an owner prompt typed while AFK is on during which the question block is suspended (the question tool passes, a turn ending on a question is not held), so a live owner can be asked. AFK itself stays on; a prompt that is not the owner (afk.non_owner_prompt_res) never counts, and the prompt that turned AFK on does not. 0 = off."
+value = { section = "afk", key = "presentMinutes", kind = "num", env = "", aliases = [], option = "", manifest_default = "", default = 10, min = 0, max = 1440 }
+
+[afk.where_pre]
+doc = "Label of metric.afk_question_present_allowed for a question-tool call that passed because the owner is present."
+value = "pre"
+
+[afk.where_stop]
+doc = "Label of metric.afk_question_present_allowed for a turn ending on a question that was not held because the owner is present."
+value = "stop"
+
 [afk.set_prompt_commands]
 doc = "The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off / afk.words_progress is answered by the hook (the prompt is not sent to the model)."
 value = { section = "afk", key = "promptCommands", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
@@ -178,7 +190,7 @@ value = ["progress"]
 
 [afk.non_owner_prompt_res]
 doc = "Prompts that are not the owner typing (harness notifications, injected reminders): they neither record presence nor end an idle-entered AFK. Regular expressions, case-insensitive."
-value = ["^\\s*<task-notification>", "^\\s*<system-reminder>", "^\\s*<teammate-message"]
+value = ["^\\s*<task-notification>", "^\\s*<system-reminder>", "^\\s*<teammate-message", "^\\s*<cross-session-message\\b", "Another (?:Claude|Codex) session sent a message", "^\\s*<user-prompt-submit-hook", "^\\s*Stop hook feedback:", "^\\s*\\S*ah-engine\\s+mesh\\s+inbox\\s+tick\\b", "^\\s*Goal check-in:"]
 
 [afk.ups_block]
 doc = "The stdout line of a UserPromptSubmit that answers a typed command itself: the prompt is not sent to the model and {reason} (JSON-quoted) is shown to the owner."
@@ -467,6 +479,10 @@ value = { kind = "counter", unit = "events", labels = [] }
 [metric.afk_stale_injection_suppressed]
 doc = "Hook calls that found an idle AFK flag still ON although the owner presence was newer than its start (GH #509): the flag was ended and nothing AFK was injected or enforced, by event."
 value = { kind = "counter", unit = "events", labels = ["event"] }
+
+[metric.afk_question_present_allowed]
+doc = "Question-tool calls and question-ending turns the AFK question block let pass because an owner prompt arrived after AFK started (afk.presentMinutes), by where (pre, stop)."
+value = { kind = "counter", unit = "questions", labels = ["where"] }
 
 [metric.afk_question_denied]
 doc = "AFK question-tool calls denied with the question ladder, by tool (every call while AFK; no cap)."

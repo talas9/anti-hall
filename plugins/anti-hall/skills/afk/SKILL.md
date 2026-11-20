@@ -59,6 +59,7 @@ next prompt. A manual AFK lasts until `back`.
 | `afk.conciseCodex` | true | Concise reply rule at Codex session start |
 | `afk.noQuestions` | true | Deny the question tool and hold a turn ending on a question, while AFK |
 | `afk.answerPresence` | true | An answered question-tool call counts as owner presence (no idle AFK while the owner answers) |
+| `afk.presentMinutes` | 10 | Minutes after a live owner prompt (typed after AFK started) during which the question block is suspended; 0 = off |
 
 Texts, limits and patterns: `engine/defaults/afk.toml`.
 

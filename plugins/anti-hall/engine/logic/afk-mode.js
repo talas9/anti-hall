@@ -248,6 +248,18 @@ function afkOwnerBack(p, f, now, ev) {
   return off;
 }
 
+// An owner prompt typed AFTER this AFK period started, within afk.presentMinutes (0 = off), means the owner is at the keyboard: the
+// question block is suspended for the session's own (non-subagent) calls, though AFK stays on. Only a real owner prompt records
+// presence (afkPrompt skips afk.non_owner_prompt_res), and the prompt that turned AFK on has presence == since, never greater.
+function afkOwnerPresent(p, f, now) {
+  if (!afkOn(f) || afkIsAgent(p)) return false;
+  var win = ah.settings.num('afk.set_present_minutes');
+  if (!(win > 0)) return false;
+  var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
+  if (pr === null || typeof pr.last !== 'number') return false;
+  return pr.last > Number(f.since) && now - pr.last < win * 60000;
+}
+
 function afkIdleTrip(f, now) {
   if (afkOn(f) || !ah.settings.bool('afk.set_idle') || !afkIdleDue(f, now)) return f;
   return afkStart(ah.cfg('afk.how_idle'), now) || f;
@@ -333,6 +345,7 @@ function afkTurnTokens(tp) {
 // A turn that ends on a plain-text question while AFK: held with the ladder at most afk.question_max_holds times (null = not held).
 function afkQuestionHold(p, f, now, reply) {
   if (!ah.settings.bool('afk.set_no_questions')) return null;
+  if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_stop') }); return null; }
   var last = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).pop();
   if (last === undefined || !new RegExp(ah.cfg('afk.question_re')).test(last)) return null;
   var se = afkSession(p, f, now);
@@ -384,11 +397,12 @@ function afkStop(p, f, now) {
 }
 
 // PreToolUse while AFK: the question tool is denied every time with the ladder.
-function afkPre(p, f) {
+function afkPre(p, f, now) {
   if (!afkOn(f) || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
   var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
   if (ah.cfg('afk.question_tools').indexOf(tool) >= 0) {
     if (!ah.settings.bool('afk.set_no_questions')) return 'allow';
+    if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_pre') }); return 'allow'; }
     afkMetric('afk_question_denied', { tool: tool });
     return { exact: { code: 0, out: afkR(ah.cfg('afk.pre_deny'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_deny')) }), err: '' } };
   }
@@ -431,7 +445,7 @@ function decide(p) {
   }
   f = afkFlush(afkIdleTrip(afkOwnerBack(p, f, now, ev), now));
   if (ev === 'Stop') return afkStop(p, f, now);
-  if (ev === 'PreToolUse') return afkPre(p, f);
+  if (ev === 'PreToolUse') return afkPre(p, f, now);
   if (ev === 'PostToolUse' && !afkIsAgent(p) && afkOn(f)) return afkInject(p, f, now, ev); // a subagent never gets the rule nor consumes the parent's once-per-session state
   return 'allow';
 }

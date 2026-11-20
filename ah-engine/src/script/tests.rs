@@ -4166,6 +4166,43 @@ mod afk_mode {
         assert_eq!(drained().counter("afk_stale_injection_suppressed", &[("event", "PreToolUse")]), 1);
     }
 
+    /// A live owner prompt typed after AFK started suspends the question block for afk.presentMinutes; the prompt that turned AFK on, a
+    /// teammate/system prompt and a prompt older than the window do not.
+    #[test]
+    fn a_live_owner_prompt_after_afk_started_suspends_the_question_block_for_the_window() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-present");
+        drained();
+        let ask = json!({"tool_name": "AskUserQuestion", "tool_input": {}});
+        let denied = |h: &str| out(&run(h, "PreToolUse", ask.clone(), &[])).contains("deny");
+        let held = |h: &str| out(&run(h, "Stop", json!({"last_assistant_message": "Done.\nShall I deploy now?"}), &[])).contains("block");
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        assert!(denied(&h) && held(&h), "AFK just turned on by the typed prompt: questions are blocked");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // a teammate or system prompt is not the owner
+        for p in ["<teammate-message teammate_id=\"x\">hi</teammate-message>", "<system-reminder>x</system-reminder>", "<cross-session-message from=\"y\">z"] {
+            run(&h, "UserPromptSubmit", json!({"prompt": p}), &[]);
+            assert!(denied(&h), "a non-owner prompt is no presence: {p}");
+        }
+        // a real owner prompt lifts the block, AFK stays on
+        run(&h, "UserPromptSubmit", json!({"prompt": "ok please deploy all to develop"}), &[]);
+        assert!(!denied(&h), "the live owner can be asked");
+        assert!(!held(&h), "a turn ending on a question is not held for a live owner");
+        assert_eq!(flag(&h)["on"], json!(true), "AFK itself stays on");
+        assert_eq!(drained().counter("afk_question_present_allowed", &[("where", "pre")]), 1);
+        // the window passed: blocked again
+        let old = crate::checks::taskkit::time::now_ms() - 11 * 60_000;
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": old}).to_string()).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "prompt", "since": old - 5000, "epoch": "e", "counted": true}).to_string()).unwrap();
+        assert!(denied(&h), "an owner prompt older than the window no longer counts");
+        // the setting off: never suspended
+        std::fs::write(format!("{h}/.anti-hall/afk-presence.json"), json!({"last": crate::checks::taskkit::time::now_ms()}).to_string()).unwrap();
+        assert!(!denied(&h), "a fresh prompt suspends it again");
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"afk": {"presentMinutes": 0}}).to_string()).unwrap();
+        assert!(denied(&h), "presentMinutes 0 restores the old block");
+        drained();
+    }
+
     /// GH #509: AFK on, then `back`: the next question-tool and Stop hooks inject and hold nothing.
     #[test]
     fn after_back_no_hook_injects_afk_text_or_holds_a_stop() {
