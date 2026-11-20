@@ -53,14 +53,47 @@ struct Cond {
     reply_re: Option<regex::Regex>,
 }
 
-/// The compiled `command_re` of a row (one compile per distinct pattern; an invalid pattern matches nothing and is logged once).
+/// The compiled `command_re` of a row (one compile per distinct pattern; an invalid pattern matches nothing and is logged once, since it
+/// would otherwise quietly zero the row's acted_on).
 fn command_regex(pattern: &str) -> Option<regex::Regex> {
     static CACHE: Mutex<Option<HashMap<String, Option<regex::Regex>>>> = Mutex::new(None);
     if pattern.is_empty() {
         return None;
     }
     let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    g.get_or_insert_with(HashMap::new).entry(pattern.to_string()).or_insert_with(|| regex::Regex::new(pattern).ok()).clone()
+    g.get_or_insert_with(HashMap::new)
+        .entry(pattern.to_string())
+        .or_insert_with(|| match regex::Regex::new(pattern) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                log_bad_regex(pattern, &e.to_string());
+                None
+            }
+        })
+        .clone()
+}
+
+#[cfg(not(test))]
+fn log_bad_regex(pattern: &str, why: &str) {
+    let detail = defaults::render("delivery.msg_bad_command_re", &[("pattern", &pattern), ("why", &why)]);
+    crate::health::log_event(defaults::text("delivery.log_kind"), defaults::text("delivery.code_bad_command_re"), &detail);
+}
+
+#[cfg(test)]
+static BAD_REGEX_LOGS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn log_bad_regex(pattern: &str, why: &str) {
+    let detail = defaults::render("delivery.msg_bad_command_re", &[("pattern", &pattern), ("why", &why)]);
+    BAD_REGEX_LOGS.lock().unwrap_or_else(|e| e.into_inner()).push((defaults::text("delivery.code_bad_command_re").to_string(), detail));
+}
+
+/// What a hook payload gives the compliance ledger: the call's tool and, for the shell tool, its command text
+/// (`tool_input.command`); both empty when absent.
+pub fn call_fields(p: &serde_json::Value) -> (&str, &str) {
+    let tool = p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+    let command = p.pointer("/tool_input/command").and_then(|v| v.as_str()).unwrap_or("");
+    (tool, command)
 }
 
 static PENDING: Mutex<Option<HashMap<String, Vec<Armed>>>> = Mutex::new(None);
@@ -601,6 +634,32 @@ mod tests {
         observe_full(&t, "s-reply-3", ev, "NoSuchToolForTheFunnel", "", "not verified");
         observe_full(&t, "s-reply-3", "Stop", "", "", "");
         assert_eq!(acted(&t), 1, "a tool call event never carries a reply");
+    }
+
+    /// An invalid `command_re` matches nothing (it would zero the row's acted_on), so it is logged once per pattern, never silently.
+    #[test]
+    fn an_invalid_command_re_matches_nothing_and_is_logged_once() {
+        let bad = "(unclosed-ignored-rules-test";
+        assert!(command_regex(bad).is_none());
+        assert!(command_regex(bad).is_none());
+        let logs: Vec<_> = BAD_REGEX_LOGS.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, d)| d.contains(bad)).cloned().collect();
+        assert_eq!(logs.len(), 1, "one log per pattern: {logs:?}");
+        assert_eq!(logs[0].0, defaults::text("delivery.code_bad_command_re"));
+        assert!(command_regex(r"\bok\b").is_some());
+    }
+
+    /// The daemon feeds the ledger from the hook payload: the shell tool's command comes from `tool_input.command`, and a payload without
+    /// either gives empty fields; a Bash call carrying a prescribed command then completes the window.
+    #[test]
+    fn the_payload_fields_the_daemon_passes_complete_a_command_re_window() {
+        let p = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "'/h/.anti-hall/ah-engine/bin/ah-engine' mesh heartbeat 03db --summary x"}});
+        assert_eq!(call_fields(&p), ("Bash", "'/h/.anti-hall/ah-engine/bin/ah-engine' mesh heartbeat 03db --summary x"));
+        assert_eq!(call_fields(&serde_json::json!({"hook_event_name": "Stop"})), ("", ""));
+        let (t, check) = (Telemetry::new(), "devswarm-child-gate");
+        deliver(&t, "s-payload", check);
+        let (tool, command) = call_fields(&p);
+        observe_call(&t, "s-payload", defaults::text("delivery.react_event"), tool, command);
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1);
     }
 
     #[test]

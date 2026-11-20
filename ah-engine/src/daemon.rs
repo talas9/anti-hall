@@ -1249,9 +1249,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         over
     };
     // #312: the agent's reaction to what was delivered; B1: any event can advance an armed window (a turn end, a prompt)
-    let command = p.pointer("/tool_input/command").and_then(|v| v.as_str()).unwrap_or("");
+    let (tool, command) = crate::delivery::call_fields(&p);
     let reply = p.get("last_assistant_message").and_then(|v| v.as_str()).unwrap_or("");
-    crate::delivery::observe_full(&sh.telemetry, session, &meta.event, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""), command, reply);
+    crate::delivery::observe_full(&sh.telemetry, session, &meta.event, tool, command, reply);
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
     if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
