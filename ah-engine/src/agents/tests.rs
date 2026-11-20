@@ -4765,6 +4765,29 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     assert!(st.nudges.get("abc").is_some_and(|nd| nd.ref_id != first), "a new nudge once the snooze is over");
 }
 
+/// A nudge that carries Jev decisions reports its final outcome against each when it closes (the Jev report joins on the hash).
+#[test]
+fn a_closed_nudge_reports_its_outcome_against_the_jev_decisions_behind_it() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("nudge-jev-outcome");
+    let _lane = crate::jev::testkit::install_scripted(&h, &[("ANTIHALL_JEV", "1")], vec![]);
+    let e = env(&h, now0());
+    let mut st = State::default();
+    let jev = vec![("agentWaste".to_string(), "hw".to_string()), ("nudgeReply".to_string(), "hr".to_string())];
+    st.nudges.insert("abc".into(), nudge::Nudge { child: "abc".into(), jev, said_not_done: 1, ..nudge::Nudge::default() });
+    nudge::close_finished(&e, &mut st, "abc");
+    let rows: Vec<Value> = crate::jev::testkit::log_rows(&h).into_iter().filter(|r| r["type"] == "outcome").collect();
+    let got: Vec<(String, String, String, String)> =
+        rows.iter().map(|r| (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("agentWaste".into(), "hw".into(), "said_not_done".into(), "nudge".into()),
+            ("nudgeReply".into(), "hr".into(), "said_not_done".into(), "nudge".into())
+        ]
+    );
+}
+
 /// #828: a snooze given to a health nudge holds across that nudge closing as finished (the child not running for a tick, as a workspace
 /// or a main session between two turns) and the flag re-raising on the next turn: no new nudge (and no new ref) inside the snooze.
 #[test]

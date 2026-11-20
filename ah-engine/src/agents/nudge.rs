@@ -115,6 +115,8 @@ pub struct Nudge {
     pub ignored: u64,
     /// Times the parent said stop and the child was still running after the window.
     pub said_not_done: u64,
+    /// The Jev decisions behind this nudge as (integration id, decision hash); each gets the final outcome reported when it closes.
+    pub jev: Vec<(String, String)>,
     /// The verified outcome (empty while open).
     pub outcome: String,
     /// When it was resolved.
@@ -767,6 +769,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             snoozes: st.nudge_snooze.get(&snooze_key(&a.id, trig)).filter(|_| hold_snooze).map_or(0, |s| s.snoozes),
             tokens_at_sent: super::signals::total_spent(&a),
             out_mark: a.last_output_ms,
+            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() { vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())] } else { Vec::new() },
             ..Nudge::default()
         };
         let note = if walked {
@@ -854,11 +857,24 @@ pub(super) fn close_finished(env: &Env, st: &mut State, child: &str) {
     close(env, st, child, out("finished"));
 }
 
+/// Report the nudge's final outcome (said_not_done when the parent said stop and the child kept running) against each Jev decision behind it.
+fn report_outcomes(env: &Env, n: &Nudge) {
+    if n.jev.is_empty() {
+        return;
+    }
+    let outcome = if n.said_not_done > 0 { out("said_not_done") } else { n.outcome.as_str() };
+    let Some(lane) = crate::jev::shared::lane(&env.home, &crate::jev::Env::process()) else { return };
+    for (id, h) in &n.jev {
+        lane.record_outcome(id, h, outcome, Some(defaults::text("agent_nudge.outcome_source")), None);
+    }
+}
+
 fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     let Some(mut n) = st.nudges.remove(child) else { return };
     let now = env.now_ms;
     n.outcome = outcome.into();
     n.outcome_at = now;
+    report_outcomes(env, &n);
     n.tokens_after = st.agents.get(child).map_or(0, |a| super::signals::total_spent(a).saturating_sub(n.tokens_at_sent));
     emit(env, word("ev_resolved"), &n);
     // the child died or was stopped: its snoozes go with it. One that made progress or "finished" keeps them: finished only means the
@@ -1158,6 +1174,9 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
         let req = json!({"id": defaults::text("agent_nudge.reply_integration"), "child": key, "facts": {}, "sections": {"reply": [text], "child": [n.child_name, n.ev_text]}, "blocking": false});
         let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
         class = o.label.filter(|_| o.actionable).unwrap_or_default();
+        if !class.is_empty() && !o.hash.is_empty() {
+            n.jev.push((defaults::text("agent_nudge.reply_integration").to_string(), o.hash.clone()));
+        }
         n.reason.clone_from(&text);
     }
     if class.is_empty() {
@@ -1204,6 +1223,9 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
             let req = json!({"id": defaults::text("agent_nudge.reason_integration"), "child": key, "facts": {"tool_calls": calls.len()}, "sections": {"reason": [n.reason], "tool_calls": calls, "signals": [n.ev_text]}, "blocking": false});
             let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
             if let Some(l) = o.label.filter(|_| o.actionable) {
+                if !o.hash.is_empty() {
+                    n.jev.push((defaults::text("agent_nudge.reason_integration").to_string(), o.hash.clone()));
+                }
                 let ok = l == defaults::text("agent_nudge.reason_plausible");
                 n.reason_plausible = Some(ok);
                 if !ok {

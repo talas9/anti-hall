@@ -257,7 +257,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   that produced them. Rows also now carry an optional `turnRef` (the
   transcript's last-line ISO timestamp, or a line-count fallback) pointing at
   which turn the decision was about. A row missing either (including every row
-  logged before this feature existed) groups under `unknown`. **v0.108.3 fix:** `recordOutcome()`'s
+  logged before this feature existed) groups under `unknown`. **v0.108.3 fix:** Outcome writers also include the agent nudges (a closed nudge reports its outcome against `agentWaste` / `nudgeReason` / `nudgeReply`, source `nudge`) and the delivery ledger (`outputVerifyGuard`: `acted` or `ignored`, source `delivery`); the bad names are `jevrep.thr_bad_outcome_re`. `recordOutcome()`'s
   `type:'outcome'` rows (`triage`'s answer-latency join, `speculation`'s
   evidence-added/user-override outcomes) now carry `project` too, via the same
   cwd-basename fallback as decision rows — they used to have none at all. A

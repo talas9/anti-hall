@@ -34,6 +34,44 @@ struct Armed {
     ctx: Ctx,
     calls: u64,
     since_ms: u64,
+    /// The Jev decision this check's answer came from, when it has one (`delivery.jev`).
+    jev: Option<Noted>,
+}
+
+/// The Jev decision a check asked just before it answered: its hash, and what is needed to report the outcome against it later.
+#[derive(Clone)]
+struct Noted {
+    id: String,
+    hash: String,
+    home: std::path::PathBuf,
+    env: crate::jev::Env,
+    project: Option<String>,
+}
+
+/// (session, check) -> the check's latest Jev decision of that session. Bounded by `delivery.pending_sessions_max`.
+static NOTED: Mutex<Option<HashMap<(String, String), Noted>>> = Mutex::new(None);
+
+/// A check asked Jev (`id`, decision `hash`) for `session`: when a check owns that integration (`delivery.jev`), the decision is
+/// kept so the check's answer, once delivered, reports what the agent did as that decision's outcome.
+pub fn note_jev(session: &str, id: &str, hash: String, home: &std::path::Path, env: &crate::jev::Env, project: Option<&str>) {
+    let Some(check) = defaults::raw("delivery.jev").get(id).and_then(defaults::V::as_str) else { return };
+    let mut g = NOTED.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
+    if map.len() >= defaults::num("delivery.pending_sessions_max") as usize {
+        map.clear(); // bounded: a lost note only means one decision has no outcome
+    }
+    map.insert(
+        (session.to_string(), check.to_string()),
+        Noted { id: id.to_string(), hash, home: home.to_path_buf(), env: env.clone(), project: project.map(str::to_string) },
+    );
+}
+
+/// Report what the agent did about a delivered answer as the outcome of the Jev decision behind it.
+fn report_jev(n: &Noted, acted: bool) {
+    let word = defaults::text(if acted { "delivery.jev_outcome_acted" } else { "delivery.jev_outcome_ignored" });
+    if let Some(lane) = crate::jev::shared::lane(&n.home, &n.env) {
+        lane.record_outcome(&n.id, &n.hash, word, Some(defaults::text("delivery.jev_outcome_source")), n.project.as_deref());
+    }
 }
 
 /// A check's acted-on condition (`delivery.act`, else `delivery.react`).
@@ -117,7 +155,8 @@ fn arm(session: &str, check: &str, ctx: Ctx) {
         return; // one open question per check: its window is already running
     }
     if list.len() < defaults::num("delivery.pending_per_session_max") as usize {
-        list.push(Armed { check: check.to_string(), ctx, calls: 0, since_ms: crate::health::now_ms() });
+        let jev = NOTED.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(&(session.to_string(), check.to_string())));
+        list.push(Armed { check: check.to_string(), ctx, calls: 0, since_ms: crate::health::now_ms(), jev });
     }
 }
 
@@ -138,7 +177,7 @@ pub fn observe(t: &Telemetry, session: &str, event: &str, tool: &str) {
     let Some(list) = g.as_mut().and_then(|m| m.get_mut(session)) else { return };
     let (max_age, react_event) = (defaults::num("delivery.react_window_ms"), defaults::text("delivery.react_event"));
     let now = crate::health::now_ms();
-    let mut results: Vec<(String, Ctx, bool)> = Vec::new();
+    let mut results: Vec<(String, Ctx, bool, Option<Noted>)> = Vec::new();
     list.retain_mut(|a| {
         let Some(c) = cond(&a.check) else { return false }; // its row left the defaults on a reload: nothing to measure
         if event == c.window_event {
@@ -147,7 +186,7 @@ pub fn observe(t: &Telemetry, session: &str, event: &str, tool: &str) {
         let hit = event == react_event && c.tools.contains(&tool);
         let spent = a.calls >= c.window || now.saturating_sub(a.since_ms) > max_age;
         if hit || spent {
-            results.push((a.check.clone(), a.ctx.clone(), if hit { !c.avoid } else { c.avoid }));
+            results.push((a.check.clone(), a.ctx.clone(), if hit { !c.avoid } else { c.avoid }, a.jev.take()));
         }
         !(hit || spent)
     });
@@ -156,7 +195,10 @@ pub fn observe(t: &Telemetry, session: &str, event: &str, tool: &str) {
         m.remove(session);
     }
     drop(g);
-    for (check, ctx, acted) in results {
+    for (check, ctx, acted, jev) in results {
+        if let Some(n) = &jev {
+            report_jev(n, acted);
+        }
         if acted {
             stage(t, &check, "delivery.stage_complied", "delivery.stage_acted_on", &ctx);
         } else {
@@ -349,6 +391,36 @@ mod tests {
         assert_eq!(count(&t, "task-tracker", "delivery.stage_complied"), 1);
         observe_tool(&t, "s-react", "TaskUpdate");
         assert_eq!(count(&t, "task-tracker", "delivery.stage_complied"), 1, "counted once per delivery");
+    }
+
+    #[test]
+    fn a_delivered_answer_reports_the_reaction_as_the_outcome_of_the_jev_decision_behind_it() {
+        use crate::jev::testkit::{install_scripted, log_rows};
+        let home = std::env::temp_dir().join(format!("ah-delivery-jev-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&home);
+        let env = [("ANTIHALL_JEV", "1")];
+        let _lane = install_scripted(&home, &env, vec![]);
+        let jenv = crate::jev::Env::from_pairs(env.iter().copied());
+        let (t, id, check) = (Telemetry::new(), "outputVerifyGuard", "output-verify-guard");
+        // acted: a Read inside the window
+        note_jev("s-jev-a", id, "hash-a".into(), &home, &jenv, None);
+        decided(&t, "s-jev-a", check, &ctx());
+        settle(&t, true);
+        observe_tool(&t, "s-jev-a", "Read");
+        // ignored: the window runs out
+        note_jev("s-jev-i", id, "hash-i".into(), &home, &jenv, None);
+        decided(&t, "s-jev-i", check, &ctx());
+        settle(&t, true);
+        for _ in 0..8 {
+            observe_tool(&t, "s-jev-i", "Bash");
+        }
+        // a check with no Jev integration notes nothing
+        note_jev("s-jev-x", "someOtherId", "hash-x".into(), &home, &jenv, None);
+        let rows: Vec<_> = log_rows(&home).into_iter().filter(|r| r["type"] == "outcome").collect();
+        let got = |h: &str| rows.iter().find(|r| r["h"] == h).map(|r| (r["id"].as_str().unwrap().to_string(), r["outcome"].as_str().unwrap().to_string(), r["source"].as_str().unwrap().to_string()));
+        assert_eq!(got("hash-a"), Some((id.into(), "acted".into(), "delivery".into())));
+        assert_eq!(got("hash-i"), Some((id.into(), "ignored".into(), "delivery".into())));
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]
