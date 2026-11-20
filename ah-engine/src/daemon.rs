@@ -611,6 +611,7 @@ impl Shared {
             "queue_depth": self.depth.load(SeqCst),
             "queue_cap": cfg.queue,
             "workers": cfg.workers,
+            "idle_exit_s": cfg.idle_exit.map(|d| d.as_secs()),
             "requests": self.stats.requests.load(SeqCst),
             "busy_replies": self.stats.busy.load(SeqCst),
             "busy_by_reason": {
@@ -2003,7 +2004,7 @@ fn watchdog(sh: Arc<Shared>) {
             && last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms")
         {
             last_idle_check = Instant::now();
-            let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
+            let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0 && !sh.sched.get().is_some_and(|s| s.any_running());
             if quiet && now.saturating_sub(sh.last_request.load(SeqCst)) > idle.as_millis() as u64 {
                 begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false);
                 continue;

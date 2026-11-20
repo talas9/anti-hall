@@ -83,14 +83,65 @@ impl Config {
             session_burst: num("daemon.session_burst") as f64,
             project_rps: num("daemon.project_rps") as f64,
             project_burst: num("daemon.project_burst") as f64,
-            idle_exit: match num("daemon.idle_exit_s") {
-                0 => None,
-                s => Some(Duration::from_secs(s)),
-            },
+            idle_exit: idle_exit(num("daemon.idle_exit_s"), num("daemon.scratch_idle_exit_s"), &crate::paths::dir()),
             test_hooks: crate::defaults::env_var("test_hooks").is_some(),
             malloc_stack_logging: e.text("diagnostics.malloc_stack_logging"),
         }
     }
+}
+
+/// The directory with symlinks resolved (the nearest existing ancestor is resolved, so a path that is not created yet still
+/// compares right).
+fn resolved(p: &std::path::Path) -> std::path::PathBuf {
+    let mut tail = Vec::new();
+    let mut at = p;
+    loop {
+        if let Ok(r) = std::fs::canonicalize(at) {
+            return tail.iter().rev().fold(r, |acc, c| acc.join(c));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(up), Some(name)) => {
+                tail.push(name.to_owned());
+                at = up;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+/// Whether `root` may serve as a scratch root: never the filesystem root, and never a directory that equals or contains this
+/// user's real home (the passwd entry, not `$HOME`, which a test overrides) or the real state directory. A `TMPDIR` of `/` or
+/// of the home directory would otherwise make every real daemon "scratch".
+fn safe_scratch_root(root: &std::path::Path) -> bool {
+    if root.parent().is_none() {
+        return false;
+    }
+    let Some(home) = crate::checks::jsport::home::real_home() else { return true };
+    let home = resolved(std::path::Path::new(&home));
+    let state = home.join(crate::defaults::text("paths.base_dir")).join(crate::defaults::text("paths.state_dir"));
+    !home.starts_with(root) && !state.starts_with(root)
+}
+
+/// Whether `dir` lies under a safe scratch root: the system temp directory or a `daemon.scratch_roots` entry (symlinks
+/// resolved, so macOS `/tmp` and `/private/tmp` are one place).
+pub fn is_scratch(dir: &std::path::Path) -> bool {
+    let dir = resolved(dir);
+    std::iter::once(std::env::temp_dir())
+        .chain(crate::defaults::list("daemon.scratch_roots").into_iter().map(std::path::PathBuf::from))
+        .map(|r| resolved(&r))
+        .any(|root| safe_scratch_root(&root) && dir.starts_with(&root))
+}
+
+/// The idle exit of a daemon: `configured` seconds (0 = resident), cut to `scratch_cap` seconds when the state directory is scratch
+/// (see `daemon.scratch_idle_exit_s`; 0 = no cap, and a resident daemon stays resident).
+pub fn idle_exit(configured: u64, scratch_cap: u64, state_dir: &std::path::Path) -> Option<Duration> {
+    let secs = match (configured, scratch_cap) {
+        (0, _) => return None,
+        (c, 0) => c,
+        (c, cap) if is_scratch(state_dir) => c.min(cap),
+        (c, _) => c,
+    };
+    Some(Duration::from_secs(secs))
 }
 
 /// Client-side limits.
@@ -131,5 +182,31 @@ impl ClientConfig {
             spawn_n: num("client.spawn_n") as usize,
             spawn_window: secs("client.spawn_window_s"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{idle_exit, safe_scratch_root};
+    use std::path::Path;
+    use std::time::Duration;
+
+    #[test]
+    fn a_scratch_state_dir_caps_the_idle_exit_and_the_real_one_does_not() {
+        let scratch = std::env::temp_dir().join("ah-idle-cap-state");
+        assert_eq!(idle_exit(1800, 180, &scratch), Some(Duration::from_secs(180)));
+        assert_eq!(idle_exit(60, 180, &scratch), Some(Duration::from_secs(60)), "a shorter configured value stays");
+        assert_eq!(idle_exit(1800, 0, &scratch), Some(Duration::from_secs(1800)), "0 turns the cap off");
+        assert_eq!(idle_exit(0, 180, &scratch), None, "a daemon resident by choice stays resident");
+        assert_eq!(idle_exit(1800, 180, Path::new("/nonexistent-home/.anti-hall/ah-engine")), Some(Duration::from_secs(1800)));
+    }
+
+    #[test]
+    fn a_temp_root_that_is_slash_or_holds_the_real_home_is_no_scratch_root() {
+        let home = crate::checks::jsport::home::real_home().expect("a passwd home");
+        assert!(!safe_scratch_root(Path::new("/")));
+        assert!(!safe_scratch_root(Path::new(&home)), "the home directory itself");
+        assert!(!safe_scratch_root(Path::new(&home).parent().unwrap_or(Path::new("/"))), "the directory holding the home");
+        assert!(safe_scratch_root(&std::env::temp_dir()));
     }
 }
