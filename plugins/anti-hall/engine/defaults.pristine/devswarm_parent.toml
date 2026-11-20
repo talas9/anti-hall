@@ -719,6 +719,34 @@ value = { kind = "counter", unit = "warnings", labels = ["reason"] }
 doc = "Skip archived rows."
 value = { section = "devswarm", key = "skipArchivedChildren", type = "boolean", env = "ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN", option = "", default = false }
 
+[devswarm_parent.read_seen_window_ms]
+doc = "How recent a child's `inbox read` must be for its unread backlog not to be flagged (GH: read, replied, never acked). A recent unacked read receipt, made after the oldest unread mail arrived and delivering at least one row, relabels the row 'read, not acked' (the child must ack); the row stays flagged. Matches mesh_write.not_draining_age_ms (20 minutes) by default."
+value = 1200000
+min = 1000
+max = 86400000
+
+[devswarm_parent.read_seen_scan]
+doc = "How many of a child's newest read receipts the Primary's inbox check opens when looking for a recent read (file names sort by time)."
+value = 8
+min = 1
+max = 100
+
+[devswarm_parent.part_read_not_acked]
+doc = "A workspace part: the child ran `inbox read` on its backlog (a recent read receipt, not acked), so the mail stays unread until the child acks it. Placeholders: {cli}, {id}, {rid} (the receipt)."
+value = "read, not acked — child must run `{cli} inbox ack-primary {id} --receipt {rid}`"
+
+[devswarm_parent.unread_body_read_unacked]
+doc = "The nudge text when every listed unread backlog was read by its child but never acked (a recent read receipt with no ack): the child must ack, there is nothing to poke it to read."
+value = "READ, NOT ACKED: each child read its backlog but never acked the read receipt named above, so the mail still counts as unread. Tell it to run that ack command (`{cli} send --to <id> --message-file <path>`); a child that keeps re-reading without acking is stuck in a loop — escalate/reassign it. "
+
+[devswarm_parent.urgent_head_read_unacked]
+doc = "The urgent-segment text when every listed child read its URGENT/HIGH mail but never acked it. Placeholders: {count}, {shown}, {extra}, {cli}."
+value = "⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIGH-priority direct message that was read but NOT ACKED — {shown}{extra}. The child must run the ack command named for it; STOP and tell it to (`{cli} send --to <id> --message-file <path>`), and escalate if it keeps re-reading without acking — before continuing."
+
+[metric.devswarm_unread_read_seen]
+doc = "Unread backlogs relabelled 'read, not acked' in the nudge because the child ran `inbox read` on them since the oldest arrived (a read without its ack), by reason (receipt)."
+value = { kind = "counter", unit = "workspaces", labels = ["reason"] }
+
 [metric.devswarm_archived_child_skipped]
 doc = "Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker)."
 value = { kind = "counter", unit = "workspaces", labels = ["check", "reason"] }

@@ -177,12 +177,12 @@ impl World {
             assert!(tools_dir.join(x).symlink_metadata().is_err(), "{x} must not be on the harness PATH");
         }
 
-        // the recording shim: logs "<tag>\t<argv>" and fails the way a missing command does
+        // the recording shim: logs "<tag>\t<argv>" on ONE line (a multi-line `node -e` script has its newlines turned into spaces, so it is one start) and fails the way a missing command does
         let log = root.join("node-hits.log");
         fs::write(&log, "").unwrap();
         let shim = shim_dir.join("node");
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\t%s\\n' \"${{AH_NO_NODE_CASE:-unknown}}\" \"$*\" >> '{}'\nprintf '%s\\n' '{}' >&2\nexit {}\n",
+            "#!/bin/sh\nprintf '%s\\t%s\\n' \"${{AH_NO_NODE_CASE:-unknown}}\" \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" >> '{}'\nprintf '%s\\n' '{}' >&2\nexit {}\n",
             log.display(),
             cfg_str(&cfg, "shim", "stderr"),
             cfg_int(&cfg, "shim", "exit")

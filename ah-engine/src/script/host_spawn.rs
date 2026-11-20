@@ -430,15 +430,22 @@ mod tests {
         );
         let count = crate::testtmp::path(format!("ah-sp-warm-count-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_file(&count));
-        let env = fake_python("warm", &format!("#!/bin/sh\necho x >>{}\necho Python 3.12.1\n", count.display()));
+        // the probe blocks on a gate file, so "the request never waits on the warm worker" is proved by structure (the request has
+        // returned while the worker is still held), not by how long a cold start happens to take on a loaded machine
+        let gate = std::env::temp_dir().join(format!("ah-sp-warm-gate-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_file(&gate));
+        let env = fake_python(
+            "warm",
+            &format!("#!/bin/sh\nwhile [ ! -f {g} ]; do /bin/sleep 0.02; done\necho x >>{}\necho Python 3.12.1\n", count.display(), g = gate.display()),
+        );
         let a = vec!["--version".to_string()];
-        let t = Instant::now();
         // no request time left: the call answers skipped at once, and a worker still warms the cache
         request(env.clone(), 0, || {
             let out = spawn_probe_cached("python3", &a, None, 15000.0).unwrap();
             assert!(out.contains("skipped"), "{out}");
         });
-        assert!(t.elapsed() < Duration::from_millis(500), "the request never waits on the warm worker: {:?}", t.elapsed());
+        assert_eq!(WORKERS.load(std::sync::atomic::Ordering::SeqCst), 1, "the request returned while the warm worker was still held");
+        std::fs::write(&gate, b"go").unwrap();
         let warmed = (0..100).any(|_| {
             std::thread::sleep(Duration::from_millis(50));
             WORKERS.load(std::sync::atomic::Ordering::SeqCst) == 0 && inflight().iter().all(|k| !k.contains("ah-sp-warm"))

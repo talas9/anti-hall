@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## Engine 0.3.1
+
+Engine-only release (hook client 0.3.0 and dashboard 0.2.0 unchanged). Engine fixes merged to dev since the 0.3.0 live build:
+
+- Perf: the deadline cut (#832) removes the fail-open storm seen at live scale.
+- Nudges: snoozes (#829) and runtime nudge fixes (#820).
+- Inbox and child gates: responsive unread inbox (#827), child-gate name duty (#834), gate unread (#812), parent-gate scope (#810), mailbox wake (#808).
+- Task guards: tasklist-guard fixes (#798, #837), idle-task pairing (#824), task pair owner (#788), merge-side pick (#785).
+- Guards: claim evidence (#825, #787), routing read-only shape (#831), speculation acks (#786), owner approval (#800), transcript protection (#805), edit-guard and defect caps (#784, #795), P0 canaries (#779).
+- Tunables and tests: tunables cache allow (#839), dev-red test fixes (#813, #821, #822), reference regeneration (#838).
+
 ## 0.302.0
 
 ### Summary

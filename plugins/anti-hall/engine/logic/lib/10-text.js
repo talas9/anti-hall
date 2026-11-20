@@ -57,16 +57,24 @@ var text = {
       second = '\n' + labels.instead + action;
       room = 250 - prefix.length - second.length;
     }
-    return prefix + text.short(what, Math.min(115, room)) + second;
+    // a must-keep tail of the claim (the named heavy segment, GH #417): the generic head is cut first so the tail stays readable
+    var tail = typeof p.whatTail === 'string' ? text.plain(p.whatTail) : '', lim = Math.min(115, room);
+    if (tail && tail.length + 1 < lim) return prefix + (what ? text.short(what, lim - tail.length - 1) + ' ' : '') + tail + second;
+    return prefix + text.short(tail ? what + ' ' + tail : what, lim) + second;
   },
   detailsMessage: function (kind, guard, p, session) {
     var what = ah.cfg('guardkit.brief_what')[guard];
     var instead = ah.cfg('guardkit.brief_instead')[guard];
     // an addition to the short action (Part C of GH #800): joined to it with a comma, the original text kept whole in the saved details
+    var base = instead;
     if (instead && typeof p.briefInsteadExtra === 'string' && p.briefInsteadExtra) instead = instead.replace(/[.\s]+$/, '') + ', ' + p.briefInsteadExtra;
     // Save the complete original instructions, even when the short action needs no link.
     var path = text.saveDetails(guard, p, session);
-    return text.message(kind, guard, { what: (what || p.what) + (typeof p.briefExtra === 'string' ? p.briefExtra : ''), instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    var tail = typeof p.briefExtra === 'string' ? p.briefExtra : '';
+    var out = text.message(kind, guard, { what: what || p.what, whatTail: tail, instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    // the named heavy segment outranks the action's addition when both do not fit (both stay whole in the saved details the link names)
+    if (tail && base !== instead && out.indexOf(text.plain(tail)) === -1) out = text.message(kind, guard, { what: what || p.what, whatTail: tail, instead: base, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    return out;
   },
   // `io.blockDecision(reason)`: the JSON decision and a newline on stdout.
   blockJson: function (reason) { return JSON.stringify({ decision: 'block', reason: reason }) + '\n'; },

@@ -205,8 +205,7 @@ fn a_wake_prompt_past_the_cursor_file_is_not_neglected_mail() {
         }
         let st = e.store();
         for h in ["native:aa01", "native:aa02"] {
-            st.append_message_from(CHILD, now_ms() as i64 - 600_000, Some(h), &wake_line(h)["message"].as_str().unwrap().to_string(), Some("primary-63f9261d"))
-                .unwrap();
+            st.append_message_from(CHILD, now_ms() as i64 - 600_000, Some(h), wake_line(h)["message"].as_str().unwrap(), Some("primary-63f9261d")).unwrap();
         }
         e.inbox_lines(&[wake_line("native:aa01"), wake_line("native:aa02")], 1);
         assert_eq!(e.peek_unread(), 0, "peek-primary does not count a wake prompt");

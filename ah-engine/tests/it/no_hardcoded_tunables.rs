@@ -317,6 +317,10 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/script/host_mesh.rs", "static OWED", "a thread-local list of the app-cache writes the call's lookups owe, initialised empty: state, not a tunable"),
     ("src/script/host_mesh.rs", "static IDENT", "a thread-local cache of the resolved mesh identity of this call, initialised empty: state, not a tunable"),
     ("src/script/host_mesh.rs", "static APP", "a thread-local slot initialised empty (the app database read this call made): state, not a tunable"),
+    ("src/script/host_mesh.rs", "static STORES", "a thread-local map of the store handles this call opened, initialised empty and cleared per call: state, not a tunable"),
+    ("src/script/host_mesh.rs", "static ROSTERS", "a thread-local map of the roster rows this call read, initialised empty and cleared per call: state, not a tunable"),
+    ("src/script/host_parentinbox.rs", "static APP_STATES", "a thread-local slot for the app-database states read this call, initialised empty (None): state, not a tunable"),
+    ("src/script/host_parentinbox.rs", "static MARKERS", "a thread-local slot for the archived-marker index listed this call, initialised empty (None): state, not a tunable"),
     ("src/script/host_childturn.rs", "static PLANNED", "a thread-local slot for the registration the call planned, initialised empty: state, not a tunable"),
     (
         "src/script/host_parentinbox.rs",

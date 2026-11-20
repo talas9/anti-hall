@@ -95,6 +95,15 @@ fn gate(h: &Home, crons: Option<serde_json::Value>, extra: &[(&str, &str)]) -> S
 
 const TICK_PROMPT: &str = "/home/x/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick b-1 --child --quiet";
 
+/// The block's visible line names the unmet duty (the details file used to be the only place that said the cron was missing).
+#[test]
+fn the_child_gate_headline_names_the_missing_cron() {
+    let h = stale_child("cron-headline");
+    let out = h.raw("devswarm-child-gate", &stop(&h, Some(serde_json::json!([]))), &CHILD_ENV);
+    assert!(out.contains("workspace duty unfinished: the mailbox tick cron is not armed"), "{out}");
+    assert!(!out.contains("inbox duties are unfinished"), "the generic headline is gone: {out}");
+}
+
 /// The age-based check sent a child with an old tick marker to `CronList` even when the cron was armed. With the payload's cron list: a
 /// listed tick job ends the warning; a list without it gets a CronCreate order with no CronList step; no list keeps the old text.
 #[test]

@@ -88,12 +88,23 @@ function cgWakeLine(l) {
 }
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js with the gate's own texts and skip command.
-function cgFrame(body, ctx) {
+// The headline: names the unmet duties (the kinds this block was consumed for) so the visible line says what is missing; the generic headline when none maps.
+function cgHeadline(kinds) {
+  var names = {};
+  names[ah.cfg('devswarm_gates.cg_kind_cron')] = ah.cfg('devswarm_gates.cg_duty_cron');
+  names[ah.cfg('devswarm_gates.cg_kind_report')] = ah.cfg('devswarm_gates.cg_duty_report');
+  names[ah.cfg('devswarm_gates.cg_kind_inbox')] = ah.cfg('devswarm_gates.cg_duty_inbox');
+  names[ah.cfg('devswarm_gates.cg_kind_unknown')] = ah.cfg('devswarm_gates.cg_duty_unknown');
+  var list = (kinds || []).filter(function (k) { return Object.prototype.hasOwnProperty.call(names, k); }).map(function (k) { return names[k]; });
+  return list.length === 0 ? ah.cfg('devswarm_gates.cg_headline') : text.render(ah.cfg('devswarm_gates.cg_headline_duties'), { duties: list.join(ah.cfg('devswarm_gates.cg_duty_sep')) });
+}
+
+function cgFrame(body, ctx, kinds) {
   var guard = ah.cfg('devswarm_gates.child_gate_guard_name');
   var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
   var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
   var reason = text.message('block', guard, {
-    what: ah.cfg('devswarm_gates.cg_headline'),
+    what: cgHeadline(kinds),
     instead: ah.cfg('devswarm_gates.cg_short_instead'),
     why: ah.cfg('devswarm_gates.cg_why'), override: skip,
     extra: [body], details: true,
@@ -533,7 +544,7 @@ function cgGate(p, root, l) {
       cgPut(ctx, metric.rel, metric.body);
       state.lastCheckAt = ctx.now;
       cgWriteState(ctx, state);
-      ctx.out = cgFrame(cronWarn, ctx);
+      ctx.out = cgFrame(cronWarn, ctx, [kCron]);
       return ctx;
     }
   } else cgClear(ctx, [kCron]);
@@ -597,7 +608,7 @@ function cgGate(p, root, l) {
   var outbound = drop ? text.render(ah.cfg('devswarm_gates.cg_heartbeat_drop'), { drop: cgDescribeDrop(drop) })
     : text.render(ah.cfg('devswarm_gates.cg_heartbeat'), args);
   var reason = nativeOnlyUnknown ? prefix.trim() : heartbeatSatisfied ? prefix + wakeLine : prefix + outbound + wakeLine;
-  ctx.out = cgFrame(reason, ctx);
+  ctx.out = cgFrame(reason, ctx, kinds);
   return ctx;
 }
 

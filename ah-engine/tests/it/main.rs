@@ -63,6 +63,8 @@ mod idle_waste_a2;
 mod idle_waste_a2b;
 mod idle_waste_b;
 mod inbox_advisory_709;
+mod inbox_child_ack;
+mod inbox_read_seen;
 mod jev_review_scan_mem;
 mod jev_scrub_reload;
 mod js_number_printers;

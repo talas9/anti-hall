@@ -156,6 +156,10 @@ fn command(h: &Path, cmd: &str) -> (String, bool) {
 }
 
 fn command_with(h: &Path, cmd: &str, extra: &[(&str, &str)]) -> (String, bool) {
+    command_in(h, cmd, extra, "s")
+}
+
+fn command_in(h: &Path, cmd: &str, extra: &[(&str, &str)], session: &str) -> (String, bool) {
     let proj = project(h);
     std::fs::create_dir_all(proj.join("src")).unwrap();
     let mut pairs: Vec<(String, String)> = [
@@ -170,7 +174,7 @@ fn command_with(h: &Path, cmd: &str, extra: &[(&str, &str)]) -> (String, bool) {
     .collect();
     pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let env = RequestEnv::from_pairs(pairs);
-    let p = json!({"tool_name": "Bash", "session_id": "s", "cwd": proj, "hook_event_name": "PreToolUse", "tool_input": {"command": cmd}});
+    let p = json!({"tool_name": "Bash", "session_id": session, "cwd": proj, "hook_event_name": "PreToolUse", "tool_input": {"command": cmd}});
     text_of(ah_engine::script::run_forced("command", &p, &json!({}), "PreToolUse", &env))
 }
 
@@ -183,7 +187,15 @@ fn a_chain_with_one_heavy_part_names_it_and_still_blocks() {
     assert!(blocked, "the heavy part still blocks the chain: {out}");
     assert!(out.contains("Heavy: node tests/x.test.js"), "names the heavy segment: {out}");
     assert!(out.contains("are fine alone"), "says the rest is fine: {out}");
-    assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 1);
+    // the visible text is capped (250 units): the note outranks the owner-run hint (#800), which stays in the saved details the visible link
+    // names; a real session id (a UUID, 32 characters kept in the details path) leaves the least room
+    let (out, blocked) = command_in(&h, cmd, &[], "0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0");
+    assert!(blocked, "{out}");
+    assert!(out.contains("Heavy: node tests/x.test.js") && out.contains("are fine alone"), "the note stays visible: {out}");
+    assert!(out.contains("(details: "), "the details link stays: {out}");
+    let details = std::fs::read_to_string(h.join(".anti-hall/block-details/command-guard-0b1c2d3e-4f50-6172-8394-a5b6c7d8.md")).expect("details saved");
+    assert!(details.contains("ask the owner to run it themselves"), "the owner-run hint is kept in the details: {details}");
+    assert_eq!(advisory("command_heavy_segment_named", "flagged"), before + 2);
 }
 
 #[test]
