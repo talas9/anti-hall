@@ -1,6 +1,7 @@
 //! Engine health state, all inside the engine's own state dir (`paths::dir()`): the event log, the
 //! client circuit breaker, crash-loop protection, failure classification and the once-per-session
 //! advisory. Every function is best-effort: a state-dir problem must never break a hook call.
+pub mod exits;
 pub mod starts;
 
 use crate::config::ClientConfig;
@@ -824,6 +825,7 @@ pub fn add_fail_open_reason(summary: &mut Value, unhealthy: Option<(u64, String)
 pub fn summary() -> Value {
     let mut summary = summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining());
     starts::add_summary(&mut summary);
+    exits::add_summary(&mut summary);
     summary
 }
 
