@@ -1878,6 +1878,21 @@ value = ", "
 doc = "Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out."
 value = " (+{n} more)"
 
+[idle_rule.prompt_ref_max]
+doc = "Most UTF-16 units of a running agent's spawn prompt (from its start) that are read for a task number (#<id>) or a task subject; an agent launched for a task names it in its brief even when its description only names the work."
+value = 600
+min = 1
+
+[idle_rule.subject_ref_min]
+doc = "Fewest characters a task subject (after its priority prefix) needs to count as named when an agent's description, launch name or prompt start quotes it whole; shorter subjects match too much by chance."
+value = 12
+min = 1
+
+[idle_rule.subject_ref_max]
+doc = "Most characters of a task subject compared against the running agents' description, launch name and prompt start."
+value = 80
+min = 1
+
 [idle_rule.what_idle]
 doc = "First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail. Kept short: the visible line is cut near 115 units."
 value = "{n} open tasks idle, no live agent, no blocked reason: {ids}{more}."

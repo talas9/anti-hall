@@ -726,6 +726,28 @@ fn idle_rule_skips_pending_tasks_named_by_an_agent_launch_name() {
     assert!(still.contains("#1") && still.contains("#2"), "{still}");
 }
 
+/// An agent launched for a task names it in its BRIEF while its description only names the work (the idle check read descriptions and
+/// launch names only): the prompt start's #<id>, or the task's subject quoted whole, attends the task.
+#[test]
+fn idle_rule_skips_tasks_named_in_a_running_agents_prompt() {
+    let tasks = || vec![idle_task(1, "[P1] port the flutter client", "pending"), idle_task(2, "[P1] port the dart client", "pending")];
+    let with_prompt = |t: String, prompt: &str| t.replace("\"prompt\":\"p\"", &format!("\"prompt\":{}", serde_json::json!(prompt)));
+    // the brief names #1 and #2
+    let by_ref = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", Some("skyflutter-impl"))]), "Work on #1 and #2 in the repo.");
+    assert!(idle_stop("ir-prompt-ref-on", &by_ref, true, None).is_none(), "on: the prompt names #1 and #2");
+    // the brief quotes the subject
+    let by_subj = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Task: [P1] port the flutter client and [P1] port the dart client.");
+    assert!(idle_stop("ir-prompt-subj-on", &by_subj, true, None).is_none(), "on: the prompt quotes both subjects");
+    // the twin: a brief that names neither leaves both idle
+    let none = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Build the thing.");
+    let still = idle_stop("ir-prompt-none-on", &none, true, None).expect("a brief naming no task attends none");
+    assert!(still.contains("#1") && still.contains("#2"), "{still}");
+    // the twin: a brief that names only #1 leaves #2 idle
+    let one = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Work on #1 only.");
+    let r = idle_stop("ir-prompt-one-on", &one, true, None).expect("#2 is still unattended");
+    assert!(r.contains("#2") && !r.contains("#1"), "{r}");
+}
+
 /// Review P2: actionable work that merely mentions a retry, or says "not blocked", is not parked or clock-waiting.
 #[test]
 fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
