@@ -716,6 +716,14 @@ value = { section = "guards", key = "exploreHintExec", env = "ANTIHALL_EXPLORE_H
 doc = "Regex (case-insensitive) of a brief that writes a file or report (writes a report, a report file, saves findings to a file) or runs a script or shell commands (run a script, shell commands, invoking an interpreter on a script file): such an agent needs a general-purpose type, not Explore, so the row-6 Explore hint is withheld whatever read-only words the brief quotes. A negated write is removed first (negated_write_re)."
 value = '''\bwrit(?:e|es|ing|ten)\s+(?:\S+\s+){0,4}?(?:reports?|summar(?:y|ies)|findings|results?|notes|files?|output|logs?)\b|\b(?:reports?|findings|results?|output)\s+files?\b|\b(?:run|runs|running|execut(?:e|es|ing))\s+(?:\S+\s+){0,3}?(?:scripts?|shell|bash|commands?)\b|\bshell\s+(?:commands?|scripts?)\b|\b(?:bash|sh|python3?|node)\s+(?:-\S+\s+)*\S+\.(?:sh|py|js)\b'''
 
+[model_routing.build_exec_re]
+doc = "Regex (case-insensitive) of a brief that builds, compiles or installs: a toolchain command (flutter, dart, cargo, npm, pnpm, yarn, gradle, xcodebuild, pod, pip, brew, make, cmake, swift, go, mvn) followed by build, compile, install, get, pub get, run, test, archive or publish, or a build/compile/install verb aimed at an app, project, binary, package, dependencies or a platform. Such a spawn writes files, so the row-6 Explore hint is withheld (an Explore agent cannot write), like exec_report_re. A negated write is removed first (negated_write_re)."
+value = '''\b(?:flutter|dart|cargo|npm|pnpm|yarn|gradle|gradlew|xcodebuild|pod|pip3?|brew|make|cmake|swift|go|mvn)\s+(?:-\S+\s+)*(?:build|compile|install|get|pub\s+get|run|test|archive|publish)\b|\bxcodebuild\b|\b(?:build|builds|building|compile|compiles|compiling|install|installs|installing)\s+(?:\S+\s+){0,2}?(?:app|apps|project|binary|binaries|package|packages|dependencies|ios|android|apk|ipa|release|target|crate|workspace)\b'''
+
+[model_routing.design_ask_re]
+doc = "Regex (case-insensitive) of a brief that asks for a design or synthesis, not read-only research: design, propose, draft, recommend or specify a fix, change, solution or patch, a `the_fix` field, or an exact change to name. Such a spawn needs general-purpose, so the row-6 Explore hint is withheld."
+value = '''\b(?:design|propose|draft|recommend|specify|write\s+up)\s+(?:\S+\s+){0,2}?(?:fix(?:es)?|change|solution|patch|remedy)\b|\bthe_fix\b|\bfix\s+design\b|\bexact\s+(?:change|fix|edit)\b'''
+
 [model_routing.explore_hint_skip_setting]
 doc = "Withhold Explore hints for reviews and tests. Withholds the Explore hint for a review seat or a brief that runs tests (guards.exploreHintSkip, default on, #336): those agents run commands or hold a review role, so Explore is the wrong type."
 value = { section = "guards", key = "exploreHintSkip", env = "ANTIHALL_EXPLORE_HINT_SKIP", aliases = [], option = "", default = true }
