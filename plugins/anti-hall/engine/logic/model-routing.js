@@ -345,7 +345,7 @@ function decide(p) {
     mrT('model_routing.strong_write_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) ||
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
   // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
-  var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && (mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.build_exec_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')));
+  var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && (mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.build_exec_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.design_ask_re', corpus));
   // #336: a review seat or a brief that runs tests is no read-only research, whatever else it says: no Explore hint
   var skipReason = null;
   if (generic && ah.settings.bool('model_routing.explore_hint_skip_setting')) {
