@@ -30,6 +30,10 @@ value = '^-[A-Za-z]*c[A-Za-z]*$'
 doc = "Shell words that open a loop; a command inside one runs repeatedly."
 value = ["while", "until", "for"]
 
+[lane_waste.poll_openers]
+doc = "Loop openers whose loop runs until a condition holds, so its length is unknown (a poll). A sleep inside one is judged by the loop's bound (a timeout wrapper or the Bash tool timeout); a sleep inside any other loop (a for over a list) is judged by its own length."
+value = ["while", "until"]
+
 [lane_waste.loop_closer]
 doc = "The shell word that closes a loop."
 value = "done"

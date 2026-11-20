@@ -4,8 +4,9 @@
 // lane_waste.* in lane_waste.toml. Pure: no file system or process access.
 'use strict';
 var laneWaste = {
-  // Simple commands of `cmd` as { words, inLoop }: `words` start at the command that really runs (wrappers, assignments and shell
-  // keywords removed); `inLoop` says a while/until/for loop encloses it; `pre` is the wrapper words removed in front (and, for a
+  // Simple commands of `cmd` as { words, inLoop, poll }: `words` start at the command that really runs (wrappers, assignments and shell
+  // keywords removed); `inLoop` says a while/until/for loop encloses it; `poll` says one of the enclosing loops runs until a condition
+  // holds (lane_waste.poll_openers: while, until), so its length is unknown, unlike a `for` over a list; `pre` is the wrapper words removed in front (and, for a
   // command inside `sh -c '...'`, those of the shell too); `bound` is the part of `pre` a caller may read as a `timeout N` limit.
   // `det` says a detach token sits inside the timeout-wrapped segment (see laneWaste.segDetach), so no wrapper bounds that command;
   // whether the limit really holds is the caller's call (queued-wait-guard).
@@ -21,13 +22,14 @@ var laneWaste = {
       // a wrapper inside a loop bounds one iteration only, so it does not count
       var ownOk = !segs[s].inLoop;
       var det = laneWaste.segDetach(segs[s], pre, words, depth);
-      out.push({ words: words, inLoop: segs[s].inLoop, pre: pre, bound: ownOk ? pre : [], det: det });
+      out.push({ words: words, inLoop: segs[s].inLoop, poll: segs[s].poll, pre: pre, bound: ownOk ? pre : [], det: det });
       // `eval 'script'` runs its words as a script: read it like `sh -c`, the eval word standing for the shell
       if (ah.cfg('lane_waste.eval_words').indexOf(shellScan.basename(words[0])) >= 0 && words.length > 1) {
         var ev = laneWaste.commands(words.slice(1).join(' '), depth + 1);
         for (var e = 0; e < ev.length; e++) {
           ev[e].bound = !ownOk ? [] : pre.concat(words.slice(0, 1), ev[e].bound);
           ev[e].inLoop = ev[e].inLoop || segs[s].inLoop;
+          ev[e].poll = ev[e].poll || segs[s].poll;
           ev[e].det = ev[e].det || det;
           ev[e].pre = pre.concat(words.slice(0, 1), ev[e].pre);
           out.push(ev[e]);
@@ -40,6 +42,7 @@ var laneWaste = {
             for (var k = 0; k < inner.length; k++) {
               inner[k].bound = !ownOk ? [] : pre.concat(words.slice(0, a + 1), inner[k].bound);
               inner[k].inLoop = inner[k].inLoop || segs[s].inLoop;
+              inner[k].poll = inner[k].poll || segs[s].poll;
               inner[k].det = inner[k].det || det;
               inner[k].pre = pre.concat(words.slice(0, a + 1), inner[k].pre);
               out.push(inner[k]);
@@ -72,19 +75,19 @@ var laneWaste = {
     }
     return false;
   },
-  // `cmd` cut at ; & | newline into { words, inLoop }. A word keeps its quotes removed; a $( ... ) stays in its word.
+  // `cmd` cut at ; & | newline into { words, inLoop, poll }. A word keeps its quotes removed; a $( ... ) stays in its word.
   split: function (cmd) {
-    var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = 0, listStart = 0, procNext = false;
-    var openers = ah.cfg('lane_waste.loop_openers'), closer = ah.cfg('lane_waste.loop_closer');
+    var segs = [], words = [], cur = [], has = false, i = 0, n = cmd.length, loops = [], listStart = 0, procNext = false;
+    var openers = ah.cfg('lane_waste.loop_openers'), closer = ah.cfg('lane_waste.loop_closer'), polls = ah.cfg('lane_waste.poll_openers');
+    function polling() { for (var p = 0; p < loops.length; p++) if (polls.indexOf(loops[p]) >= 0) return true; return false; }
     function endWord() { if (has) words.push(cur.join('')); cur = []; has = false; }
     function endSeg() {
       endWord();
       if (words.length > 0) {
         var first = words[0];
-        if (first === closer && loops > 0) loops--;
-        var inLoop = loops > 0;
-        if (openers.indexOf(first) >= 0) { loops++; inLoop = true; }
-        segs.push({ words: words, inLoop: inLoop, amp: false, proc: procNext });
+        if (first === closer && loops.length > 0) loops.pop();
+        if (openers.indexOf(first) >= 0) loops.push(first);
+        segs.push({ words: words, inLoop: loops.length > 0, poll: polling(), amp: false, proc: procNext });
       }
       words = []; procNext = false;
     }

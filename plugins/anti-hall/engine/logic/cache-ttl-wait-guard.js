@@ -30,13 +30,14 @@ function cwBash(input) {
     // a wrapper `timeout N` bounds the command unless something detaches inside it (then nothing bounds it)
     var wrapper = cmds[c].det ? null : laneWaste.timeoutSeconds(cmds[c].bound || []);
     var secs, kind = isSleep && !cmds[c].inLoop ? kinds.sleep : kinds.loop;
-    if (isSleep && !cmds[c].inLoop) {
+    // a sleep in a `for` loop is judged by its own length: the list bounds the loop, so the tool timeout says nothing about the wait
+    if (isSleep && !(cmds[c].inLoop && cmds[c].poll)) {
       var args = laneWaste.stripRedirects(words.slice(1));
       if (args.length === 0) continue; // `sleep` with no operand waits nothing
       var s = laneWaste.sleepSeconds(args);
       secs = cwMin(s === null ? Infinity : s, wrapper); // an unreadable length is an endless wait
     } else {
-      // a poll loop or a watch lasts as long as its bound: the timeout wrapper or the Bash call's own timeout; with neither, no wait is known
+      // a poll loop (while, until) or a watch lasts as long as its bound: the timeout wrapper or the Bash call's own timeout; with neither, no wait is known
       secs = cwMin(wrapper, toolBound);
       if (secs === null) continue;
     }
