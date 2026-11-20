@@ -2317,3 +2317,13 @@ unit = "count"
 doc = "An unread-advisory store entry older than this many hours is dropped (its session is long over; a dropped entry only means the advisory speaks once more)."
 value = 48
 unit = "hours"
+
+[devswarm_prompt.read_unacked]
+doc = "The child's order when it ran `inbox read` on its mail and never acked the read receipt (the Primary keeps seeing the mail unread and flags the child). Placeholders: {cli}, {id}, {rid}."
+value = "⚠️ anti-hall · devswarm-child-ack: Do now: you read your mail (receipt {rid}) but never acked it, so the Primary still sees it as unread. Run `{cli} inbox ack-primary {id} --receipt {rid}` once you have handled it; it stays here until you do."
+
+[devswarm_prompt.read_unacked_scan]
+doc = "How many of the child's newest read receipts the child's turn opens when looking for one that is still unacked (file names sort by time)."
+value = 8
+min = 1
+max = 100
