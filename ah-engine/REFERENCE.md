@@ -2743,6 +2743,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.key_file_roots` | `.config, .anti-hall` |  |  | Directories under the home directory a key file must really live in once symlinks are resolved (Node: readKeyFile). |
 | `jev.key_file_typesafe` | `.config/typesafe/key` |  |  | Default key file for the TypeSafe vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
 | `jev.key_file_vercel` | `.config/vercel/ai-gateway-key` |  |  | Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath). |
+| `jev.key_source_file` | `a key file` |  |  | Plain-words name of a key that came from a key file (jev.allowLegacyKeyRead on). |
+| `jev.key_source_generic` | `the generic plugin option` |  |  | Plain-words name of a key that came from the generic (vendor-less) plugin option. |
+| `jev.key_source_own` | `the vendor's own plugin option` |  |  | Plain-words name of a key that came from the vendor's own plugin option. |
 | `jev.latency_samples_max` | `4096` |  |  | Most call-latency samples held between two metrics flushes; past it new samples are dropped until the flush drains them (a bound on memory if the flush stalls). |
 | `jev.legacy_file` | `jev.json` |  |  | The legacy Jev config file, relative to the anti-hall home directory, read below settings.json (Node: jev.json). |
 | `jev.legacy_on_default` | `speculation, triage` |  |  | Integrations that predate the per-integration modes and stay on by default; consulted only for an id missing from the table (Node: LEGACY_ON_DEFAULT). |
@@ -2756,8 +2759,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.max_timeout_ms` | `3000` |  | ms | Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS). |
 | `jev.min_fallback_ms` | `150` |  | ms | Below this much remaining budget no real call can finish, so the fallback is skipped (Node: MIN_FALLBACK_MS). |
 | `jev.model_pin` | `jev-1.14.0` |  |  | The versioned model id sent to the direct TypeSafe API, so a provider alias move (jev-latest) cannot change the model under tuned thresholds; the provider advises pinning a versioned id. Override with the jev.modelPin setting (set it to jev-latest to follow the moving alias; the doctor warns). An empty shipped value falls back to jev.model_typesafe. Not applied to the Vercel gateway id (jev.model_vercel): the gateway docs do not document a versioned id there. |
+| `jev.model_pin_released` | `2026-10-14` |  |  | Release date (YYYY-MM-DD) of the model version jev.model_pin names (jev-1.14.0: 2026-10-14, per docs/KB-jev-classifier.md). The doctor compares it with the release dates the provider lists and warns when a non-preview model is newer. Bump it together with jev.model_pin. |
 | `jev.model_typesafe` | `jev-latest` |  |  | The moving alias sent to the direct TypeSafe transport only when the shipped jev.model_pin is emptied; the doctor warns while it is in use (Node: TYPESAFE.model). |
 | `jev.model_vercel` | `typesafe-ai/jev` |  |  | Model name sent to the Vercel transport (Node: GATEWAY.model). |
+| `jev.models_date_field` | `release_date` |  |  | Field of one listed model that holds its release date (ISO 8601; only the leading YYYY-MM-DD is compared). |
+| `jev.models_list_field` | `models` |  |  | Field of the model-list answer that holds the array of models. |
+| `jev.models_name_field` | `name` |  |  | Field of one listed model that holds its id. |
+| `jev.models_path` | `/v1/models` |  |  | Path, on the origin of jev.endpoint_typesafe, of the provider's model list the doctor reads (one read-only GET with the TypeSafe key). Verified live 2026-11-20: it answers {"models":[{"name","description","release_date"}]} and lists only the aliases jev-latest and jev-preview, not versioned ids. |
+| `jev.models_preview_marker` | `preview` |  |  | A listed model whose id contains this text is a preview and never counts as a newer release. |
 | `jev.price_usd_per_m_input` | `0.042` |  |  | USD per million input tokens used when a response reports tokens but no cost; Jev's own published rate (Node: jev.priceUsdPerMInput). |
 | `jev.price_usd_per_m_output` | `0` |  |  | USD per million output tokens used when a response reports tokens but no cost; output is free on the published rate (Node: jev.priceUsdPerMOutput). |
 | `jev.question_version` | `v1` |  |  | Part of the cache key, bumped when a question's wording changes so old answers are not reused (Node: QUESTION_VERSION). |
@@ -7150,8 +7159,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.inbox_corrupt` | `{n} of the last {m} lines of {file} are not JSON` |  |  | LG-04. Placeholders: {n}, {m}, {file}. |
 | `doctor_msg.inbox_huge` | `{file} is {mb} MB (cap {cap_mb} MB) - Fix: ah-engine maintain` |  |  | LG-03. Placeholders: {file}, {mb}, {cap_mb}. |
 | `doctor_msg.jev_fail` | `Jev call failed via {transport}: {why} (after {ms} ms)` |  |  | Finding: the Jev test call failed. Placeholders: {why}, {ms}, {transport}. |
+| `doctor_msg.jev_key_file_unread` | `a {vendor} key file exists at {path} but is not read; enable jev.allowLegacyK...` |  |  | Warning: a Jev key file exists but is not read because jev.allowLegacyKeyRead is off. Placeholders: {vendor}, {path}. |
+| `doctor_msg.jev_key_source` | `Jev key for {vendor}: {source}` |  |  | Info: where the Jev key of a vendor was found; never the key. Placeholders: {vendor}, {source}. |
 | `doctor_msg.jev_model` | `Jev model: {models}` |  |  | Finding: the model id each Jev vendor is sent. Placeholders: {models} (vendor=model pairs, primary first). An alias (jev-latest) is flagged by the doctor as moving. |
 | `doctor_msg.jev_model_alias` | `Jev model {model} is a moving alias; set jev.modelPin to a versioned id` |  |  | Warning: the direct TypeSafe vendor is sent a moving alias, so thresholds tuned on one version can silently meet another. Placeholders: {model}. |
+| `doctor_msg.jev_model_newer` | `newer model available: {model} {date} (pinned {pin} {pin_date}); re-check the...` |  |  | Warning: the provider lists a non-preview model released after the pinned one. Placeholders: {model} (listed id), {date} (its release date), {pin}, {pin_date}. |
+| `doctor_msg.jev_models_unreachable` | `Jev model list not checked ({why})` |  |  | Info (fail-open): the model list could not be read, so the newer-model check was skipped. Placeholders: {why}. |
 | `doctor_msg.jev_no_key` | `Jev is enabled but has no API key for {transport}` |  |  | Finding: Jev is enabled but no API key resolves for its transport, so the test call was not made. Placeholder: {transport}. |
 | `doctor_msg.jev_ok` | `Jev answered in {ms} ms ({transport})` |  |  | Finding: the Jev test call answered in time. Placeholders: {ms}, {transport}, {limit}. |
 | `doctor_msg.jev_slow_fail` | `Jev is too slow: {ms} ms via {transport} (limit {limit} ms)` |  |  | Finding: the Jev test call answered, but past the fail limit. Placeholders: {ms}, {transport}, {limit}. |
