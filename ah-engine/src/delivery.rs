@@ -481,6 +481,20 @@ mod tests {
         }
     }
 
+    /// Ignored-rules 2/6: verify-first is a per-prompt reminder with nothing to act on (no compliance row, so null); tasklist-guard's
+    /// order is "update the progress file", so a Write or Edit is its reaction.
+    #[test]
+    fn verify_first_has_no_compliance_row_and_a_progress_file_write_answers_tasklist_guard() {
+        assert!(cond("verify-first").is_none(), "verify-first has no acted-on condition");
+        let (t, check) = (Telemetry::new(), "tasklist-guard");
+        for tool in ["Write", "Edit"] {
+            let session = format!("s-{tool}");
+            deliver(&t, &session, check);
+            observe_tool(&t, &session, tool);
+        }
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 2);
+    }
+
     #[test]
     fn a_turn_end_window_counts_stops_and_not_tool_calls() {
         let t = Telemetry::new();
