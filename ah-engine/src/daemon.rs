@@ -1204,7 +1204,11 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
                 crate::hookio::Observer::route(&obs, check, &meta.event, r);
             }
         }
+        // a check cut at the hard deadline answered by its failure policy (an allow or its guard-down notice): the rule's own answer is
+        // already counted lost as hard_deadline (`budget::note_dropped`), so the notice is not counted again as decided and then undelivered
+        let cut = matches!(a, Answer::Decided(..)) && crate::budget::take_drop_reason().is_some();
         if let Answer::Decided(r, _) = a
+            && !cut
             && (!r.out.is_empty() || r.code == Some(2))
         {
             // #312: it said something (a message or a block): delivery is counted at the end of the request. B1: with the session's model and project
@@ -2961,6 +2965,50 @@ mod tests {
                 assert_eq!((blocked_v, blocked_d), (i == 0, i == 0), "round {round}, client {i}: {git}");
             }
         }
+    }
+
+    /// B1: a check cut at the hard deadline answers by its failure policy (here its guard-down notice). Its answer is counted lost once,
+    /// as `hard_deadline` (`budget::note_dropped`); the notice is never also counted decided and then undelivered by `delivery::settle`.
+    #[test]
+    fn a_check_cut_at_the_hard_deadline_is_counted_lost_once_never_decided_then_undelivered() {
+        let (check, event) = ("switch-notice", "UserPromptSubmit");
+        assert!(crate::script::cut_at_deadline(check, event), "precondition: {check} is cut at the request deadline on {event}");
+        let sh = shared();
+        let payload = format!(r#"{{"session_id":"s-b1-cut-{}","cwd":"/","hook_event_name":"{event}","prompt":"hi"}}"#, std::process::id());
+        let meta = crate::dispatch::native::Meta {
+            host: "claude".into(),
+            event: event.into(),
+            tool: None,
+            root: None,
+            env: Default::default(),
+            only: Some(vec![check.into()]),
+            plan: vec![],
+            cfg: String::new(),
+            payload_sha1: None,
+            deadline_ms: None,
+            notice: None,
+        };
+        let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
+        // the request arrived further back than the event's ceiling plus the longest grace: the check is cut before it starts
+        let past = crate::deadline::ceiling_ms(event) + defaults::num("diagnostics.deadline_grace_cap_ms") + 1000;
+        crate::metrics::reset_this_thread();
+        crate::deadline::begin(Instant::now() - Duration::from_millis(past));
+        crate::deadline::client_window(defaults::num("client.deadline_ms"));
+        let rows: Vec<serde_json::Value> = serde_json::from_str(ok(&handle_request(d.as_bytes(), &sh).0)).unwrap();
+        // the end of the request as serve_conn ends it: the reply was written, past the hard deadline
+        crate::delivery::settle(&sh.telemetry, crate::deadline::in_time());
+        crate::deadline::end();
+        let row = rows.iter().find(|r| r[0] == check).expect("the cut check answers its entry");
+        assert!(row[2].as_str().is_some_and(|s| !s.is_empty()), "precondition: the cut answered with its notice: {row}");
+        let reason = |r: &str| crate::metrics::bumped_on_this_thread("delivery_lost", &[("check", check), ("reason", r)]);
+        assert_eq!(reason("hard_deadline"), 1, "the cut is counted lost once, as hard_deadline");
+        let (decided, undelivered) = sh.telemetry.with_metrics(|m| {
+            (
+                m.counter("delivery_stage", &[("check", check), ("stage", defaults::text("delivery.stage_decided"))]),
+                m.counter("delivery_lost", &[("check", check), ("reason", defaults::text("delivery.reason_undelivered"))]),
+            )
+        });
+        assert_eq!((decided, undelivered), (0, 0), "the cut's notice is not counted decided, then undelivered");
     }
 
     #[test]

@@ -202,6 +202,12 @@ value = "undelivered"
 doc = "The answers_dropped reason that status delivery reports as `shed` (the others are reported as `lost`). Must equal the reason budget::note_dropped is given when the CPU hard limit sheds a check."
 value = "shed"
 
+[delivery.pct_decimals]
+doc = "Decimal places of the shares `status` delivery shows per check and in its summary (dropped_pct, dropped_max_pct, ignored_pct)."
+value = 1
+min = 0
+max = 4
+
 [delivery.react_event]
 doc = "The hook event whose tool calls are watched for an agent's reaction to a delivered answer (one call of it is one step of the window)."
 value = "PreToolUse"
