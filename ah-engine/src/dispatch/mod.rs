@@ -1253,6 +1253,8 @@ mod tests {
             "curl -X POST https://api.stripe.com/v1/refunds",
             "psql -c \"DELETE FROM users\"",
             "espefuse.py --port /dev/x burn_key K",
+            "espefuse --port /dev/x write-protect-efuse X",
+            "idf.py -p /dev/x efuse-burn-key K",
         ] {
             assert!(class(held).is_some(), "held: {held}");
         }

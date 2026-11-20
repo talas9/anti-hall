@@ -424,12 +424,12 @@ fn wrapper_child_in(e: &Env, input: &str) -> std::process::Child {
     ch
 }
 
+/// A read: the fail-open timing checks of a missing, late or restarting daemon. A late or cold daemon is load, so a call in a hold
+/// class (dispatch.capacity_hold, the force push of DENY_IN) is held there by the client and by the ah-hook launcher (#882).
 fn wrapper_once(e: &Env) -> (i32, String, Duration) {
-    wrapper_once_in(e, DENY_IN)
+    wrapper_once_in(e, READ_IN)
 }
 
-/// A late daemon is load: a call in a hold class (dispatch.capacity_hold, the force push of DENY_IN) is held, so the fail-open
-/// timing checks of a hung daemon send a read.
 fn wrapper_once_in(e: &Env, input: &str) -> (i32, String, Duration) {
     let t = Instant::now();
     let o = wrapper_child_in(e, input).wait_with_output().unwrap();
@@ -466,7 +466,7 @@ fn clamped_num(key: &str, value: u64) -> u64 {
 }
 
 fn assert_twenty_wrappers_exit(e: &Env) {
-    let mut children: Vec<_> = (0..20).map(|_| wrapper_child(e)).collect();
+    let mut children: Vec<_> = (0..20).map(|_| wrapper_child_in(e, READ_IN)).collect();
     std::thread::sleep(Duration::from_secs(2));
     for (i, ch) in children.iter_mut().enumerate() {
         assert!(ch.try_wait().unwrap().is_some(), "wrapper child {i} still alive after 2s");
@@ -727,7 +727,7 @@ fn default_client_deadline_is_under_one_second() {
 fn wrapper_fails_open_under_one_second_with_no_daemon() {
     let _timing = wrapper_timing_lock();
     let e = Env::new_no_prime("wrapdown", &[("AH_ENGINE_NOSPAWN", "1")]);
-    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    let (out, code, dt) = e.wrapper_hook(READ_IN);
     println!("TIMING wrapper no-daemon separate wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((out.as_str(), code), ("", 0));
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
