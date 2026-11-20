@@ -468,7 +468,12 @@ var wd = {
         else if (nested === null && mode === '') {
           var uw = wd.unknownWrite(words.slice(at));
           if (uw !== null) {
-            if (uw.targets.length === 0) unknown = true;
+            // an extraction that names no destination lands in the working directory: one that is scratch or temp space is no project work
+            // (only when no destination option is present in a form the target parse did not read, e.g. `--directory=DIR` or `-CDIR`)
+            var destOpts = (ah.cfg('workdetect.unknown_write_targets')[verb] || []).filter(function (k) { return k !== 'last'; });
+            var destGiven = words.slice(at + 1).some(function (w) { return destOpts.some(function (o) { return w.indexOf(o) === 0; }); });
+            if (uw.targets.length === 0 && dir && !destGiven && ah.cfg('workdetect.unknown_write_cwd_verbs').indexOf(verb) >= 0 && !wd.countablePath(dir + '/', cx)) { /* counts nothing */ }
+            else if (uw.targets.length === 0) unknown = true;
             else uw.targets.forEach(function (a) { targets.push({ t: a, kind: 'verb' }); });
           }
         }

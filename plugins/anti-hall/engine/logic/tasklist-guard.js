@@ -136,7 +136,17 @@ function tlNote(out, abs, ts, cx) {
 function tlNoteUnknown(out, seg, ts) {
   if (ts !== null && ts > out.lastWork) out.lastWork = ts;
   out.work++;
-  tlName(out, seg, false);
+  tlName(out, tlUnknownLabel(seg), false);
+}
+
+// What the block calls a write the count cannot name: the command word (and a git subcommand), never the raw command string, which can hold
+// paths, flags and secrets and is not a file.
+function tlUnknownLabel(seg) {
+  var words = wd.words(seg).words, i = 0;
+  while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i])) i++;
+  var verb = i < words.length ? words[i].slice(words[i].lastIndexOf('/') + 1) : '';
+  if (verb === 'git' && i + 1 < words.length) verb += ' ' + words[i + 1];
+  return text.render(tlT('counted_unknown'), { verb: verb === '' ? tlT('counted_unknown_verb') : verb });
 }
 
 // One tool use of the work count: `tu` is {name, input: {file_path, command}} (the fields the count reads), `ts` its entry's time in ms
