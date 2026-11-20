@@ -238,3 +238,6 @@
 {"text":"I didn't run the tests, so nothing is confirmed.","expect":"allow","source":"negation-2026-11-20"}
 {"text":"Not verified this commit.","expect":"allow","source":"negation-2026-11-20"}
 {"text":"I verified this commit.","expect":"block","source":"negation-2026-11-20"}
+{"text":"All tests pass, then merge.","expect":"block","source":"review-825-plan-context"}
+{"text":"CI is green, then merge.","expect":"block","source":"review-825-plan-context"}
+{"text":"The PR is merged, then ship it.","expect":"block","source":"review-825-plan-context"}
