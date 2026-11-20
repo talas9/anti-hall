@@ -551,6 +551,9 @@ fn open_runtime(env: &Env, st: &mut State) {
         return;
     }
     let now = env.now_ms;
+    // a snooze the parent gave this child's runtime nudge outlives that nudge (it closes when the child blinks out of "running"): a new
+    // one about the same child is held until the snooze runs out, as open_new holds the health triggers
+    let hold_snooze = env.switch("agent_nudge.snooze_setting");
     let ids: Vec<String> = st
         .agents
         .values()
@@ -558,6 +561,7 @@ fn open_runtime(env: &Env, st: &mut State) {
             !escalate::primary(a)
                 && !a.dead
                 && !st.nudges.contains_key(&a.id)
+                && !(hold_snooze && st.nudge_snooze.get(&snooze_key(&a.id, rt_trigger())).is_some_and(|s| s.until > now))
                 && state_of(a) == state_name("running")
                 && !done_held(env, st, a, now)
                 && rt_reached(a, now, &steps) > 0
@@ -844,6 +848,12 @@ fn answered_since_send(env: &Env, n: &mut Nudge) -> bool {
     true
 }
 
+/// Close a child's open nudge as finished (the tracker's own "the child is not running" outcome); for the tests.
+#[cfg(test)]
+pub(super) fn close_finished(env: &Env, st: &mut State, child: &str) {
+    close(env, st, child, out("finished"));
+}
+
 fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     let Some(mut n) = st.nudges.remove(child) else { return };
     let now = env.now_ms;
@@ -852,7 +862,10 @@ fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     n.tokens_after = st.agents.get(child).map_or(0, |a| super::signals::total_spent(a).saturating_sub(n.tokens_at_sent));
     emit(env, word("ev_resolved"), &n);
     // the child is over (or was stopped): its snoozes go with it; one that only made progress keeps them for the next spell
-    if [out("finished"), out("child_died"), out("acted_stopped")].contains(&outcome) {
+    // (a runtime nudge that closes as finished keeps its snooze: the child may only have left "running" for a moment, and the snooze
+    // expires on its own, see forget below)
+    let momentary = n.trigger == rt_trigger() && outcome == out("finished");
+    if [out("finished"), out("child_died"), out("acted_stopped")].contains(&outcome) && !momentary {
         st.nudge_snooze.retain(|k, _| k.split_once('|').is_none_or(|(c, _)| c != child));
     }
     st.nudge_log.push(n);
