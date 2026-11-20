@@ -43,6 +43,52 @@ struct Cond {
     avoid: bool,
     window: u64,
     window_event: &'static str,
+    /// The row's `command_re`: a call of `delivery.command_tool` whose command text matches counts like a listed tool (compliance run
+    /// through the shell the message prescribes, e.g. `ah-engine mesh send`).
+    command_re: Option<regex::Regex>,
+}
+
+/// The compiled `command_re` of a row (one compile per distinct pattern; an invalid pattern matches nothing and is logged once, since it
+/// would otherwise quietly zero the row's acted_on).
+fn command_regex(pattern: &str) -> Option<regex::Regex> {
+    static CACHE: Mutex<Option<HashMap<String, Option<regex::Regex>>>> = Mutex::new(None);
+    if pattern.is_empty() {
+        return None;
+    }
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    g.get_or_insert_with(HashMap::new)
+        .entry(pattern.to_string())
+        .or_insert_with(|| match regex::Regex::new(pattern) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                log_bad_regex(pattern, &e.to_string());
+                None
+            }
+        })
+        .clone()
+}
+
+#[cfg(not(test))]
+fn log_bad_regex(pattern: &str, why: &str) {
+    let detail = defaults::render("delivery.msg_bad_command_re", &[("pattern", &pattern), ("why", &why)]);
+    crate::health::log_event(defaults::text("delivery.log_kind"), defaults::text("delivery.code_bad_command_re"), &detail);
+}
+
+#[cfg(test)]
+static BAD_REGEX_LOGS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn log_bad_regex(pattern: &str, why: &str) {
+    let detail = defaults::render("delivery.msg_bad_command_re", &[("pattern", &pattern), ("why", &why)]);
+    BAD_REGEX_LOGS.lock().unwrap_or_else(|e| e.into_inner()).push((defaults::text("delivery.code_bad_command_re").to_string(), detail));
+}
+
+/// What a hook payload gives the compliance ledger: the call's tool and, for the shell tool, its command text
+/// (`tool_input.command`); both empty when absent.
+pub fn call_fields(p: &serde_json::Value) -> (&str, &str) {
+    let tool = p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+    let command = p.pointer("/tool_input/command").and_then(|v| v.as_str()).unwrap_or("");
+    (tool, command)
 }
 
 static PENDING: Mutex<Option<HashMap<String, Vec<Armed>>>> = Mutex::new(None);
@@ -96,9 +142,10 @@ fn cond(check: &str) -> Option<Cond> {
             avoid: row.str_field("polarity") == defaults::text("delivery.polarity_avoid"),
             window: row.get("window").and_then(defaults::V::as_integer).map_or(calls, |n| n.max(1) as u64),
             window_event: row.get("window_event").and_then(defaults::V::as_str).unwrap_or(event),
+            command_re: row.get("command_re").and_then(defaults::V::as_str).and_then(command_regex),
         });
     }
-    react_tools(check).map(|tools| Cond { tools, avoid: false, window: calls, window_event: event })
+    react_tools(check).map(|tools| Cond { tools, avoid: false, window: calls, window_event: event, command_re: None })
 }
 
 fn arm(session: &str, check: &str, ctx: Ctx) {
@@ -133,6 +180,12 @@ pub fn observe_tool(t: &Telemetry, session: &str, tool: &str) {
 /// window (`event` advances the check's window when it is its `window_event`), or waits for the next event. For an `avoid` check
 /// the outcome is the other way round: the window running out is the reaction, a listed tool is not.
 pub fn observe(t: &Telemetry, session: &str, event: &str, tool: &str) {
+    observe_call(t, session, event, tool, "");
+}
+
+/// [`observe`] with the call's shell command text (`tool_input.command` of a `delivery.command_tool` call): a row with a `command_re`
+/// also counts a call of that tool whose command matches it as the reaction.
+pub fn observe_call(t: &Telemetry, session: &str, event: &str, tool: &str, command: &str) {
     if session.is_empty() {
         return;
     }
@@ -146,7 +199,8 @@ pub fn observe(t: &Telemetry, session: &str, event: &str, tool: &str) {
         if event == c.window_event {
             a.calls += 1;
         }
-        let hit = event == react_event && c.tools.contains(&tool);
+        let by_command = !command.is_empty() && tool == defaults::text("delivery.command_tool") && c.command_re.as_ref().is_some_and(|re| re.is_match(command));
+        let hit = event == react_event && (c.tools.contains(&tool) || by_command);
         let spent = a.calls >= c.window || now.saturating_sub(a.since_ms) > max_age;
         if hit || spent {
             results.push((a.check.clone(), a.ctx.clone(), if hit { !c.avoid } else { c.avoid }));
@@ -506,6 +560,59 @@ mod tests {
             let legacy = t.with_metrics(|m| m.counter("delivery_stage", &[("check", check), ("stage", defaults::text("delivery.stage_complied"))]));
             assert_eq!(legacy, a2, "{check}: delivery_stage complied == funnel acted_on");
         }
+    }
+
+    /// A row's `command_re` makes a Bash call whose command matches a reaction; a Bash call that does not match is not (both ways).
+    #[test]
+    fn a_shell_command_matching_the_rows_command_re_is_the_reaction_and_a_foreign_one_is_not() {
+        let bash = defaults::text("delivery.command_tool");
+        for (check, good, bad) in [
+            ("devswarm-parent-inbox", "~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read-primary 3f2", "ls -la && git status"),
+            ("devswarm-child-gate", "/Users/x/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat 03db --summary \"holding\"", "cargo test -p ah-engine"),
+            ("silent-agent-nudge", "\"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents nudge abc other \"why\"", "ah-engine status --json"),
+        ] {
+            let t = Telemetry::new();
+            deliver(&t, "s-bad", check);
+            observe_call(&t, "s-bad", defaults::text("delivery.react_event"), bash, bad);
+            assert_eq!(
+                (funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), funnel_count(&t, check, &ctx(), "delivery.stage_ignored")),
+                (0, 0),
+                "{check}: a foreign command leaves the window open"
+            );
+            deliver(&t, "s-good", check);
+            observe_call(&t, "s-good", defaults::text("delivery.react_event"), bash, good);
+            assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "{check}: its prescribed command is the reaction");
+            // the command only counts for the shell tool, never for another tool carrying the same text
+            deliver(&t, "s-other-tool", check);
+            observe_call(&t, "s-other-tool", defaults::text("delivery.react_event"), "Edit", good);
+            assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1, "{check}: a command on another tool is no reaction");
+        }
+    }
+
+    /// An invalid `command_re` matches nothing (it would zero the row's acted_on), so it is logged once per pattern, never silently.
+    #[test]
+    fn an_invalid_command_re_matches_nothing_and_is_logged_once() {
+        let bad = "(unclosed-ignored-rules-test";
+        assert!(command_regex(bad).is_none());
+        assert!(command_regex(bad).is_none());
+        let logs: Vec<_> = BAD_REGEX_LOGS.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, d)| d.contains(bad)).cloned().collect();
+        assert_eq!(logs.len(), 1, "one log per pattern: {logs:?}");
+        assert_eq!(logs[0].0, defaults::text("delivery.code_bad_command_re"));
+        assert!(command_regex(r"\bok\b").is_some());
+    }
+
+    /// The daemon feeds the ledger from the hook payload: the shell tool's command comes from `tool_input.command`, and a payload without
+    /// either gives empty fields; a Bash call carrying a prescribed command then completes the window.
+    #[test]
+    fn the_payload_fields_the_daemon_passes_complete_a_command_re_window() {
+        let p = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "'/h/.anti-hall/ah-engine/bin/ah-engine' mesh heartbeat 03db --summary x"}});
+        assert_eq!(call_fields(&p), ("Bash", "'/h/.anti-hall/ah-engine/bin/ah-engine' mesh heartbeat 03db --summary x"));
+        assert_eq!(call_fields(&serde_json::json!({"hook_event_name": "Stop"})), ("", ""));
+        let (t, check) = (Telemetry::new(), "devswarm-child-gate");
+        deliver(&t, "s-payload", check);
+        let (tool, command) = call_fields(&p);
+        observe_call(&t, "s-payload", defaults::text("delivery.react_event"), tool, command);
+        assert_eq!(funnel_count(&t, check, &ctx(), "delivery.stage_acted_on"), 1);
     }
 
     /// Ignored-rules 2/6: verify-first is a per-prompt reminder with nothing to act on (no compliance row, so null); tasklist-guard's
