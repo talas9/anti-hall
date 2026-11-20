@@ -444,7 +444,6 @@ mod tests {
         t.with_metrics(|m| m.counter("delivery_funnel", &[("check", check), ("model", &c.model), ("project", &c.project), ("stage", defaults::text(which))]))
     }
 
-    /// Deliver one answer of `check` in `session` (it arms the check's acted-on window).
     /// The live shape (phase-tracker: dropped_pct 200): the unsplit series is older than the funnel, so it holds undelivered answers the
     /// funnel never saw decided. The share is taken over the funnel's own answers alone, so it can never pass 100.
     #[test]
@@ -471,6 +470,7 @@ mod tests {
         assert_eq!((r["dropped_pct"].as_f64(), r["dropped_max_pct"].as_f64()), (Some(100.0), Some(100.0)), "{r}");
     }
 
+    /// Deliver one answer of `check` in `session` (it arms the check's acted-on window).
     fn deliver(t: &Telemetry, session: &str, check: &str) {
         decided(t, session, check, &ctx());
         settle(t, true);
