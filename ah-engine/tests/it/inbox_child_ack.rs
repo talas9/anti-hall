@@ -88,6 +88,25 @@ fn an_unacked_read_receipt_is_ordered_acked_every_turn_until_it_is() {
     assert!(!h.turn().contains(ORDER), "cleared once the receipt is acked");
 }
 
+/// Only the newest read that delivered mail decides: a later acked read covers an older unacked one, and an unacked read older than
+/// devswarm_parent.read_seen_window_ms (an ack that keeps failing, a child that stopped reading) is no longer ordered every turn.
+#[test]
+fn a_newer_acked_read_or_an_old_unacked_one_gives_no_order() {
+    let h = Home::new("newest");
+    h.inbox(true);
+    h.receipt("rmx0001", 1, false);
+    h.receipt("rmx0002", 1, true);
+    assert!(!h.turn().contains(ORDER), "the newest read was acked: the older unacked one is covered");
+    let old = Home::new("old");
+    old.inbox(true);
+    let body = serde_json::json!({
+        "v": 1, "receiptId": "rmx0001", "id": "b-1", "reader": "h:1:1", "createdAt": 1_000_000u64,
+        "ops": [{"k": "own", "partition": "b-1", "target": 1, "delivered": 1}], "hashes": [], "ackedAt": serde_json::Value::Null
+    });
+    old.put(".anti-hall/devswarm/read-receipts/b-1/rmx0001.json", &body.to_string());
+    assert!(!old.turn().contains(ORDER), "an unacked read older than the window is not ordered forever");
+}
+
 #[test]
 fn no_order_for_an_empty_read_or_when_nothing_is_unread() {
     let h = Home::new("quiet");

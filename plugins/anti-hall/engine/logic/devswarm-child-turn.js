@@ -69,8 +69,9 @@ function ctUnread(id, home) {
 // The id of the child's newest read receipt that is still UNACKED: it ran `inbox read` and delivered at least one row, never acked, and the
 // summary still shows direct mail unread (the caller checks that). The Primary sees the mail as unread until
 // the ack, so the child is told the exact command (GH: read, replied, never acked). null for none.
-function ctUnackedRead(id, home) {
+function ctUnackedRead(id, home, now) {
   if (!ctSafeId(id)) return null;
+  var floor = now - ah.cfgNum('devswarm_parent.read_seen_window_ms');
   var dir = home + '/' + ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('mesh_write.dir_read_receipts') + '/' + id;
   var names = ah.fs.readdir(dir);
   if (names === null || !names.length) return null;
@@ -80,12 +81,13 @@ function ctUnackedRead(id, home) {
     if (typeof raw !== 'string') continue;
     var r;
     try { r = JSON.parse(raw); } catch (e) { continue; }
-    if (!r || typeof r !== 'object' || !Array.isArray(r.ops) || (r.ackedAt !== null && r.ackedAt !== undefined)) continue;
-    for (var j = 0; j < r.ops.length; j++) {
-      var op = r.ops[j];
-      if (!op || typeof op.delivered !== 'number' || !(op.delivered > 0)) continue;
-      return typeof r.receiptId === 'string' && ctSafeId(r.receiptId) ? r.receiptId : names[i].replace(/\.json$/, '');
-    }
+    if (!r || typeof r !== 'object' || !Array.isArray(r.ops)) continue;
+    var delivered = r.ops.some(function (op) { return op && typeof op.delivered === 'number' && op.delivered > 0; });
+    if (!delivered) continue;
+    // only the NEWEST read that delivered mail decides: acked (a later read and ack covers an older unacked one) or older than the window
+    // (an ack that keeps failing, or a child that stopped reading, falls back to the Primary's plain unread flag instead of ordering forever)
+    if ((r.ackedAt !== null && r.ackedAt !== undefined) || typeof r.createdAt !== 'number' || r.createdAt < floor) return null;
+    return typeof r.receiptId === 'string' && ctSafeId(r.receiptId) ? r.receiptId : names[i].replace(/\.json$/, '');
   }
   return null;
 }
@@ -355,7 +357,7 @@ function decide(p, opts) {
       }
     }
     var info = reg ? ctUnread(builder, home) : preInfo; // a registration may have created the cursor and the inbox
-    var unackedRid = (ownUnread || info !== null) && ctSafeId(builder) ? ctUnackedRead(builder, home) : null; // still unread by the summary or the durable inbox; not deduped: the order stands until the ack is run
+    var unackedRid = (ownUnread || info !== null) && ctSafeId(builder) ? ctUnackedRead(builder, home, ah.clock.now()) : null; // still unread by the summary or the durable inbox; not deduped: the order stands until the ack is run
     var segments = [];
     if (bannerText !== null) segments.push(bannerText);
     var staticEmit = !dedupeOn || dedupe.evaluate(staticOpts, 'suppressed');
