@@ -46,6 +46,11 @@ debug_factor = 10
 # on, never above `max`. AH_TEST_TIME_SCALE=<n> overrides it (CI sets it).
 load_per_core = 0.5
 max = 8
+# An unoptimised build (plain `cargo test`) multiplies the factor by this: the same product code is 4 to 5x slower there. Measured 2026-11-21,
+# release-like `ci-test` vs `test` profile, the call after a kill -9 (reliability::wrapper_respawns_a_daemon_killed_right_after_its_start, a
+# cold daemon start): 290 ms vs 1.17 to 1.54 s; the call after a hung daemon was replaced (a_stopped_daemon_costs_at_most_one_slow_call): 280 ms
+# vs 1.1 to 1.5 s. 1 on an optimised build, so the bounds the timed pass checks are unchanged.
+debug_factor = 5
 
 [swarm_guard_cost]
 # tests/it/swarm_guard_cost.rs: the real-shape session of GH #537 (2,881 agent launches, 64 tracker rows) must not make the swarm-guard script

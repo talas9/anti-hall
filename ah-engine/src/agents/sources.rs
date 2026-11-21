@@ -354,6 +354,21 @@ fn stopped_subagents(env: &Env, st: &mut State) {
     }
 }
 
+/// Whether the launching session of subagent `a` has issued a stop of it that no answer closed yet (the tracker's own pass ignores such a
+/// stop, since an unanswered call may never run). A nudge about the child waits a short while for the answer (GH #923).
+pub(super) fn stop_unanswered(a: &Agent) -> bool {
+    if !super::is_child(a) {
+        return false;
+    }
+    let Some(session_dir) = Path::new(&a.path).parent().and_then(Path::parent) else { return false };
+    let parent = format!("{}{}", session_dir.to_string_lossy(), pth("transcript_ext"));
+    let opts = crate::checks::agent_scan::Opts { now_ms: 0.0, ignore_unanswered_stops: false };
+    crate::checks::agent_scan::scan_transcript(&parent, defaults::num("agent_scan.tail_bytes"), &opts)
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.terminal.contains(&a.id) || s.stopped_agents.contains(&a.id))
+}
+
 /// The stops a launching session answered for in-process teammates, as task description -> latest stop time (ms): the host answers a
 /// `TaskStop` of a teammate with its own task id (not the agent id or the name) plus the task's description, which is the `description`
 /// field of that teammate's meta file. Only the answer is read here (the recent tail of the transcript), so a stop whose launch line is

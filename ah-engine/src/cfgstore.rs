@@ -854,6 +854,9 @@ pub struct ConfigStore {
     offered: Mutex<Option<PathBuf>>,
     /// True for the process's own store (the daemon's): each swapped-in snapshot is also installed as the `defaults::*` overlay.
     publish: AtomicBool,
+    /// The name of the thread each file reload ran on (tests: the daemon's accept loop must never run one, #908).
+    #[cfg(test)]
+    pub(crate) reloaded_on: Mutex<Vec<String>>,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -878,6 +881,8 @@ impl ConfigStore {
             watch: Mutex::new(Watch { seen: Fingerprint { files: vec![], defaults: vec![] }, pending: None, last_poll: Instant::now() }),
             offered: Mutex::new(None),
             publish: AtomicBool::new(false),
+            #[cfg(test)]
+            reloaded_on: Mutex::new(Vec::new()),
         }
     }
 
@@ -921,6 +926,8 @@ impl ConfigStore {
             watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }),
             offered: Mutex::new(None),
             publish: AtomicBool::new(false),
+            #[cfg(test)]
+            reloaded_on: Mutex::new(Vec::new()),
         }
     }
 
@@ -963,6 +970,8 @@ impl ConfigStore {
     /// defaults are read and validated first; an invalid set keeps EVERYTHING as it was (one snapshot, never a mixture).
     pub fn reload(&self) -> Reload {
         let Some(paths) = &self.paths else { return Reload::Unchanged };
+        #[cfg(test)]
+        lk(&self.reloaded_on).push(std::thread::current().name().unwrap_or_default().to_string());
         let root = self.target_root();
         lk(&self.watch).seen = fingerprint(paths, root.as_deref());
         let prev = self.snapshot();
@@ -1017,37 +1026,44 @@ impl ConfigStore {
         }
     }
 
-    /// Called from the daemon's accept loop: every `config.watch_ms`, look at the files; once a change has stayed the
-    /// same for `config.debounce_ms`, reload. Returns what a reload did, if one ran.
+    /// Every `config.watch_ms`, look at the files; once a change has stayed the same for `config.debounce_ms`, reload. Returns
+    /// what a reload did, if one ran. The daemon's accept loop calls [`ConfigStore::due`] instead and reloads on a thread of its
+    /// own (#908).
     pub fn poll(&self) -> Option<Reload> {
-        let paths = self.paths.as_ref()?;
+        self.due().then(|| self.reload())
+    }
+
+    /// The cheap half of [`ConfigStore::poll`], for the daemon's accept loop: every `config.watch_ms`, look at the files (a stat
+    /// each); true once a change has stayed the same for `config.debounce_ms`. The caller must then reload ([`ConfigStore::reload`]),
+    /// which re-reads every defaults file: too slow for the accept loop (#908).
+    pub fn due(&self) -> bool {
+        let Some(paths) = self.paths.as_ref() else { return false };
         let mut w = lk(&self.watch);
         if w.last_poll.elapsed() < defaults::millis("config.watch_ms") {
-            return None;
+            return false;
         }
         w.last_poll = Instant::now();
         let root = self.target_root();
         let now = fingerprint(paths, root.as_deref());
         if now == w.seen {
             w.pending = None;
-            return None;
+            return false;
         }
         match &w.pending {
             Some((fp, since)) if *fp == now => {
                 if since.elapsed() < defaults::millis("config.debounce_ms") {
-                    return None;
+                    return false;
                 }
             }
             _ => {
                 w.pending = Some((now, Instant::now()));
                 if !defaults::millis("config.debounce_ms").is_zero() {
-                    return None;
+                    return false;
                 }
             }
         }
         w.pending = None;
-        drop(w);
-        Some(self.reload())
+        true
     }
 
     /// `config --json`: the active snapshot, with the files it is read from.
