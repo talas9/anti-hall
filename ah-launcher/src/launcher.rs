@@ -571,8 +571,18 @@ impl L {
         let rule = listed
             .then(|| {
                 rules.iter().find_map(|(name, pat)| {
+                    // the shared anchor (command position) in front, unless the rule is unanchored: as dispatch::capacity_hold_pattern
+                    let pat = pat.as_str()?;
+                    let unanchored = cfg
+                        .get("unanchored")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|a| a.iter().any(|n| n.as_str() == Some(name.as_str())));
+                    let full = match cfg.get("anchor").and_then(|v| v.as_str()) {
+                        Some(a) if !a.is_empty() && !unanchored => format!("(?:{a})(?:{pat})"),
+                        _ => pat.to_string(),
+                    };
                     // ASCII classes (\b, \s, case folding) on bytes: the launcher's regex is built without the Unicode tables
-                    let re = regex::bytes::RegexBuilder::new(pat.as_str()?)
+                    let re = regex::bytes::RegexBuilder::new(&full)
                         .unicode(false)
                         .case_insensitive(true)
                         .build();
@@ -589,6 +599,7 @@ impl L {
         let Some(rule) = rule else {
             return false;
         };
+        limits::bump(Ctr::CapacityHold);
         self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
         let msg = self.s.msg(
             "dispatch.msg_capacity_hold",
@@ -785,6 +796,10 @@ impl L {
                 ));
                 self.log_line(&format!("engine_group_alive event={}", self.event));
                 self.integrity("fail");
+                // the engine did not finish in time either: no answer for lack of capacity, so a risky guard call is held (#901)
+                if self.capacity_held() {
+                    return 2;
+                }
                 self.unreachable_notice_for("msg.launcher_unreachable_why_unfinished");
                 0
             }
@@ -1343,6 +1358,19 @@ pub fn run() -> i32 {
     if env_nonempty(&l.key("launcher.in_process_env")).is_none_or(|v| v != "1")
         && l.fresh_marker("daemon_down_marker")
     {
+        l.unreachable_notice_for("msg.launcher_unreachable_why_down");
+        return 0;
+    }
+    // #901: the slow-streak marker (a loaded daemon, not a down one): the engine is skipped as for the down marker, but a guard call
+    // in a hold class of dispatch.capacity_hold is held with its reason and retry hint; anything else passes with the notice
+    if env_nonempty(&l.key("launcher.in_process_env")).is_none_or(|v| v != "1")
+        && l.fresh_marker("daemon_slow_marker")
+    {
+        if l.capacity_held() {
+            return 2;
+        }
+        limits::bump(Ctr::SlowMarkerPass);
+        l.log_line(&format!("slow_marker_pass event={}", l.event));
         l.unreachable_notice_for("msg.launcher_unreachable_why_down");
         return 0;
     }

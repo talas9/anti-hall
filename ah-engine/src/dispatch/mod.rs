@@ -453,13 +453,22 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
     let rules = cfg.get("rules").and_then(|v| v.as_table())?;
     for (name, pat) in rules {
         let Some(pat) = pat.as_str() else { continue };
-        match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
+        match regex::RegexBuilder::new(&capacity_hold_pattern(cfg, name, pat)).case_insensitive(true).build() {
             Ok(re) if re.is_match(command) => return Some(name.to_string()),
             Ok(_) => {}
             Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
         }
     }
     None
+}
+
+/// The full pattern of one `dispatch.capacity_hold` rule: the shared `anchor` (the command must stand in command position, so a read
+/// that merely names the words passes) in front of it, unless the rule is listed in `unanchored` (matched anywhere). The ah-hook
+/// launcher composes the same pattern from the same config.
+pub(crate) fn capacity_hold_pattern(cfg: &defaults::V, name: &str, pat: &str) -> String {
+    let anchor = cfg.get("anchor").and_then(|v| v.as_str()).unwrap_or_default();
+    let unanchored = cfg.get("unanchored").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|n| n.as_str() == Some(name)));
+    if anchor.is_empty() || unanchored { pat.to_string() } else { format!("(?:{anchor})(?:{pat})") }
 }
 
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
@@ -1255,6 +1264,23 @@ mod tests {
             "espefuse.py --port /dev/x burn_key K",
             "espefuse --port /dev/x write-protect-efuse X",
             "idf.py -p /dev/x efuse-burn-key K",
+            // #901: command position in its usual spellings
+            "cd x && git push -f",
+            "bash -c \"git push -f\"",
+            "sh -lc 'git push origin +main'",
+            "sudo rm -rf /x",
+            "timeout 30 git push",
+            "(git push)",
+            "echo ok; git push",
+            "git status\ngit push",
+            "/usr/bin/git push --force",
+            "env A=1 B=2 git push",
+            "taskpolicy -c utility nice -n 19 git push",
+            "find . -name x | xargs rm -rf",
+            "npx firebase deploy --only functions",
+            "python3 -m espefuse burn_key K",
+            "git --git-dir=.git push",
+            "git branch -D feature",
         ] {
             assert!(class(held).is_some(), "held: {held}");
         }
@@ -1268,11 +1294,34 @@ mod tests {
             "espefuse summary",
             "cargo build",
             "ls -rf",
+            // #901: a read that merely names the trigger words passes
+            "grep -rn \"git push\" .",
+            "rg 'rm -rf' src",
+            "echo \"git push --force\"",
+            "git log --grep push",
+            "git log --oneline -- push.rs",
+            "cat notes.md | grep 'gh pr merge'",
+            "grep -n \"firebase deploy\" README.md",
+            "rg 'npm publish' docs",
         ] {
             assert_eq!(class(pass), None, "passes: {pass}");
         }
         let write = serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}});
         assert_eq!(capacity_hold(&write), None, "a tool outside dispatch.capacity_hold.tools passes");
+    }
+
+    /// #901: a hold rule that does not compile is skipped, which fails open silently. Every shipped rule, with the anchor in front,
+    /// compiles both in the engine (Unicode) and in the ah-hook launcher (ASCII on bytes).
+    #[test]
+    fn every_capacity_hold_rule_compiles_in_the_engine_and_the_launcher() {
+        let cfg = defaults::raw("dispatch.capacity_hold");
+        let rules = cfg.get("rules").and_then(|v| v.as_table()).unwrap();
+        assert!(!rules.is_empty());
+        for (name, pat) in rules {
+            let full = capacity_hold_pattern(cfg, name, pat.as_str().unwrap());
+            regex::RegexBuilder::new(&full).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name}: {e}"));
+            regex::bytes::RegexBuilder::new(&full).unicode(false).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name} (ascii): {e}"));
+        }
     }
 
     /// The over-cap tool-name scan (a payload past the stdin cap is spooled and its top-level `tool_name` found structurally, so the

@@ -280,6 +280,7 @@ pub const STRS: &[(&str, &str)] = &[
     ("paths.private_dir_prefix", "anti-hall-"),
     ("paths.short_socket_ext", ".sock"),
     ("files.daemon_down_marker", "daemon.down.until"),
+    ("files.daemon_slow_marker", "daemon.slow.until"),
     ("files.breaker_until", "breaker.until"),
     ("files.crashloop_until", "crashloop.until"),
     ("files.cold_guard_notice", "cold-guard.notice"),

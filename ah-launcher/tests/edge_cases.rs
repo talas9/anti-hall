@@ -90,6 +90,52 @@ fn a_fresh_daemon_down_marker_passes_through_and_tells_the_session_once() {
     );
 }
 
+/// #901: the slow-streak marker (a loaded daemon) skips the engine as the down marker does, but a force push is held with the
+/// reason and retry hint (dispatch.capacity_hold) and counted; a read passes. The down marker (really down) still passes the push.
+#[test]
+fn a_fresh_slow_marker_holds_a_force_push_and_passes_a_read() {
+    const PUSH: &[u8] = b"{\"session_id\":\"s-1\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd /x && git push --force origin main\"}}";
+    const READ: &[u8] = b"{\"session_id\":\"s-2\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep -rn 'git push --force' .\"}}";
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 60_000;
+    let env = Env::new("e-slow-marker");
+    let p = engine(&env, "echo should-not-run");
+    std::fs::create_dir_all(&env.state).unwrap();
+    std::fs::write(env.state.join("daemon.slow.until"), until.to_string()).unwrap();
+    let o = env.run("PreToolUse", PUSH, Some(&p), &[]);
+    assert_eq!(
+        o.code, 2,
+        "a force push in the slow window is held: {}",
+        o.err
+    );
+    assert!(
+        o.err.contains("too risky") && o.err.contains("git-push"),
+        "{}",
+        o.err
+    );
+    assert!(o.out.is_empty(), "the engine is skipped");
+    let o = env.run("PreToolUse", READ, Some(&p), &[]);
+    assert_eq!(
+        (o.code, o.out.len()),
+        (0, 0),
+        "a read that names the words passes: {}",
+        o.err
+    );
+    let env = Env::new("e-down-push");
+    let p = engine(&env, "echo should-not-run");
+    std::fs::create_dir_all(&env.state).unwrap();
+    std::fs::write(env.state.join("daemon.down.until"), until.to_string()).unwrap();
+    let o = env.run("PreToolUse", PUSH, Some(&p), &[]);
+    assert_eq!(
+        o.code, 0,
+        "a really-down daemon passes the call (C9): {}",
+        o.err
+    );
+}
+
 #[test]
 fn engine_not_executable_is_treated_as_missing() {
     let env = Env::new("e-noexec");

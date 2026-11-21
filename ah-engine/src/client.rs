@@ -526,6 +526,13 @@ pub(crate) fn daemon_down_marked() -> bool {
     fresh_until(&state_file("daemon_down_marker"))
 }
 
+/// The slow-streak marker (`files.daemon_slow_marker`): the daemon is there but loaded, so clients skip it for a while, and a guard
+/// call no check could decide then falls under `dispatch.capacity_hold` instead of passing (#901). A really-down daemon writes the down
+/// marker instead and removes this one.
+pub(crate) fn daemon_slow_marked() -> bool {
+    fresh_until(&state_file("daemon_slow_marker"))
+}
+
 pub(crate) fn fail_open_unavailable() -> bool {
     daemon_down_marked() || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some()
 }
@@ -554,9 +561,24 @@ fn clear_supervisor_unhealthy() {
 
 fn mark_daemon_down(reason: &str) {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    // really down: the load marker goes, so a call in the window passes (C9) instead of being weighed as load
+    clear_daemon_slow_marker();
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
     crate::discard::logged("daemon_down_marker_write", crate::atomic::write(state_file("daemon_down_marker"), until.to_string()));
     health::log_event("client_down", "daemon", reason);
+}
+
+/// #901: the slow streak tripped. The daemon is there but loaded, not down: later clients skip it as they would a down one, but on
+/// the slow marker, never the down marker, so a guard call in a hold class of `dispatch.capacity_hold` is held, never let through.
+fn mark_daemon_slow(reason: &str) {
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
+    crate::discard::logged("daemon_slow_marker_write", crate::atomic::write(state_file("daemon_slow_marker"), until.to_string()));
+    health::log_event("client_slow_marked", "daemon", reason);
+}
+
+fn clear_daemon_slow_marker() {
+    crate::discard::harmless(std::fs::remove_file(state_file("daemon_slow_marker"))); // keep: absent marker is the desired state
 }
 
 /// Count this slow reply into the streak file (`count first_ts_ms`); true once `client.slow_down_n` slow replies came in a
@@ -607,6 +629,7 @@ fn clear_slow_streak() {
 
 fn clear_daemon_down_marker() {
     crate::discard::harmless(std::fs::remove_file(state_file("daemon_down_marker"))); // keep: absent marker is the desired state
+    clear_daemon_slow_marker();
 }
 
 struct SpawnLock {
@@ -861,6 +884,15 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
         return None;
     }
+    if daemon_slow_marked() {
+        // #901: a loaded daemon, skipped for a while: this call is load, as a late reply is (LAST_SLOW), so a guard call in a hold
+        // class (dispatch.capacity_hold) is held and anything else passes; never the down marker's unconditional pass
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_slow"));
+        crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "client:slow_marker", defaults::text("msg.client_skip_slow"));
+        return None;
+    }
     let sock = paths::socket();
     wait_marker(true);
     // the ack protocol only with a daemon that announced it (an older one would wait for an end-of-stream that never comes)
@@ -900,7 +932,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             LAST_SLOW.set(true);
             health::log_event("client_slow", "daemon", &why);
             if slow_streak_tripped() {
-                mark_daemon_down(&why); // wedged: later clients skip it
+                mark_daemon_slow(&why); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
             }
             None
         }
