@@ -1563,6 +1563,10 @@ value = "Write the ledger entry yourself (Write or Edit tool, no heredoc). Ledge
 doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."
 value = "nudge"
 
+[tasklist_hygiene.event_subagent_skipped]
+doc = "Counter event: the check stayed silent on a task call of a subagent (tasklist_hygiene.skip_subagent), so its order to delete a task it may not edit was not sent."
+value = "subagent_skipped"
+
 [tasklist_hygiene.event_deleted]
 doc = "Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge)."
 value = "deleted"

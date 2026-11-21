@@ -87,7 +87,11 @@ function idWaiting(tp, now, finished) {
       var rec = null;
       try { rec = JSON.parse(raw); } catch (z) { rec = null; }
       var res = rec && typeof rec === 'object' ? rec[resultField] : null;
-      if (res && typeof res === 'object' && res.status === spawnTag && typeof res[nameField] === 'string') delete ended[res[nameField]];
+      if (res && typeof res === 'object' && res.status === spawnTag && typeof res[nameField] === 'string') {
+        delete ended[res[nameField]];
+        var sid = res[ah.cfg('idle_order.spawn_id_field')];
+        if (typeof sid === 'string' && sid !== '') idStopIds[res[nameField]] = sid;
+      }
     }
     var gone = goneRe.exec(raw);
     if (gone && typeof gone[1] === 'string') { ended[gone[1]] = true; delete state[gone[1]]; }

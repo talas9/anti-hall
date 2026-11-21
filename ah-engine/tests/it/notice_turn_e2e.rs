@@ -66,12 +66,14 @@ impl Rig {
     }
 }
 
-const NOTICES: [&str; 5] = [
+const NOTICES: [&str; 7] = [
     "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
     "/Users/someone/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick primary-xxxx --quiet",
     "Goal check-in: how is the goal going?",
     "<cross-session-message from=\"abc\">hello</cross-session-message>",
     "<teammate-message teammate_id=\"w1\">done</teammate-message>",
+    "[wake-watch] 2 new mesh messages",
+    "<<autonomous-loop-dynamic>>",
 ];
 
 #[test]
