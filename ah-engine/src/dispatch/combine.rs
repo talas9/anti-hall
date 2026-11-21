@@ -277,10 +277,6 @@ pub(crate) fn blocks(r: &HookResult) -> bool {
     r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out))
 }
 
-/// The output channels one answer of a check uses, as the keys of `delivery.channel_label` (B1 funnel): `block` (exit 2 or a JSON
-/// block), `soft_block` (a non-blocking answer of a `dispatch.stop_events` event that carries `additionalContext`: it continues
-/// the turn), `advisory` (`additionalContext` on any other event), `system_message` (a non-empty `systemMessage`), `stderr` (stderr
-/// text on an answer that does not block), `plain` (stdout that is not a JSON object). An answer on several channels is on each.
 /// Whether a finished hook or check said anything the host passes on: a block, a non-empty `additionalContext` or `systemMessage`,
 /// stderr, or plain stdout. A JSON reply whose context is empty is silence: it is not an advisory, not decided and not delivered
 /// (GH #894: limit-conserve-inject and auto-handover print the empty context line on every quiet turn, which the funnel had counted as
@@ -289,6 +285,10 @@ pub(crate) fn says_something(event: &str, r: &HookResult) -> bool {
     r.code == Some(2) || !channel_keys(event, r).is_empty()
 }
 
+/// The output channels one answer of a check uses, as the keys of `delivery.channel_label` (B1 funnel): `block` (exit 2 or a JSON
+/// block), `soft_block` (a non-blocking answer of a `dispatch.stop_events` event that carries `additionalContext`: it continues
+/// the turn), `advisory` (`additionalContext` on any other event), `system_message` (a non-empty `systemMessage`), `stderr` (stderr
+/// text on an answer that does not block), `plain` (stdout that is not a JSON object). An answer on several channels is on each.
 pub(crate) fn channel_keys(event: &str, r: &HookResult) -> Vec<&'static str> {
     let parsed = parse_object(&r.out);
     let non_empty = |v: Option<&Ordered>| v.and_then(Ordered::as_str).is_some_and(|s| !s.is_empty());

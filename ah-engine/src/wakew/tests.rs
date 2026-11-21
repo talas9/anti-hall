@@ -351,3 +351,26 @@ fn the_direct_read_carries_the_rows_unread_count() {
     let coalesce = crate::defaults::list("wake_watch.coalesce_roles");
     assert_eq!(coalesce, vec!["child"], "the Primary's own mail is not coalesced");
 }
+
+/// A restarted watcher (a deploy re-execs it) keeps no wake in memory, but the cursor a held wake moved past was saved: unread mail
+/// found at arm, with no new mail, still gets the one re-wake after the window. New mail at arm wakes at once, as before.
+#[test]
+fn a_restarted_watcher_still_re_wakes_mail_that_was_held_before_the_restart() {
+    let on = Some(600_000.0);
+    let saved = State { last_total2: 5.0, ..State::default() };
+    let (st, lines) = tick(&saved, &mail(5.0, Some(2.0), 1_000.0, on));
+    assert_eq!(lines.len(), 1, "only the arm line: {lines:?}");
+    assert!(st.held_pending);
+    let (st, lines) = tick(&st, &mail(5.0, Some(2.0), 300_000.0, on));
+    assert!(lines.is_empty(), "inside the window: {lines:?}");
+    let (st, lines) = tick(&st, &mail(5.0, Some(2.0), 601_000.0, on));
+    assert_eq!(lines, vec!["[wake-watch] new mesh mail for child w1: mesh-direct direct total 3 -> 5 (+2). Drain your own inbox on your next turn."]);
+    let (_, lines) = tick(&st, &mail(5.0, Some(2.0), 1_300_000.0, on));
+    assert!(lines.is_empty(), "one re-wake only: {lines:?}");
+    // mail that arrived while the watcher was down wakes on the arm tick, never held
+    let (_, lines) = tick(&saved, &mail(6.0, Some(3.0), 1_000.0, on));
+    assert_eq!(lines.len(), 2, "arm line and a wake: {lines:?}");
+    // coalescing off: nothing is seeded
+    let (st, _) = tick(&saved, &mail(5.0, Some(2.0), 1_000.0, None));
+    assert!(!st.held_pending);
+}

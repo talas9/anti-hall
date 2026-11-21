@@ -62,6 +62,7 @@ function decide(p) {
       } else {
         var hp = cb.expectedHandoverPath(p);
         out = cb.fire(result, over, p, cfg.maxTokens, hp, cfg);
+        ah.metric(cb.c('ctxbudget.ah_fired_metric'), ['via', over]);
         w.latch = { fired: true, firedAt: now, firedPct: result.pct, firedVia: over, lastNagPct: result.pct, lastNagAt: now, softFired: false };
       }
     } else {

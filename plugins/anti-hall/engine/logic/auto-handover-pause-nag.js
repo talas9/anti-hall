@@ -53,6 +53,7 @@ function decide(p) {
       var suffix = cb.decisiveSuffixFor(p, cfg, linesOf());
       w.latch = { fired: true, firedAt: now, firedPct: result.pct, firedVia: cb.c('ctxbudget.ah_via_stop_prefix') + over, lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true };
       reason = cb.fire(result, over, p, cfg.maxTokens, hp, cfg) + suffix;
+      ah.metric(cb.c('ctxbudget.ah_fired_metric'), ['via', w.latch.firedVia]);
     }
   } else if (cfg.nag) {
     result = cb.getContextPct(tp, p.session_id, w);

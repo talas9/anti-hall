@@ -203,6 +203,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     st.held = 0;
     let mut lines = Vec::new();
     let now = snap.now_ms;
+    let arming = !st.armed;
     if !st.armed {
         st.armed = true;
         lines.push(arm_line(snap));
@@ -271,6 +272,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     } else if let (true, Some(t2)) = (moved2, total2) {
         mail = Some(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
     }
+    let had_mail = mail.is_some();
     if let Some(line) = mail {
         // only mail on the mesh-direct channel alone is coalesced: the inbox channel moving, too, always wakes
         if moved2 && !moved1 && hold(&st, snap) {
@@ -287,6 +289,18 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         // held mail still unread after the re-wake window: one wake for all of it
         lines.push(wake_line(snap, st.woke_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
         note_wake(&mut st, snap);
+    }
+    // A (re)started watcher keeps no wake in memory, while the cursor a held wake moved past is saved: unread direct mail found
+    // at arm with no new mail is treated as held behind an outstanding wake, so the re-wake still comes if it stays unread.
+    if arming
+        && !had_mail
+        && let (Some(_), Some(unread), Some(Some(t2))) = (snap.coalesce_ms, snap.unread, snap.total2)
+        && unread > 0.0
+    {
+        st.woke_ms = Some(now);
+        st.woke_total2 = t2 - unread;
+        st.woke_unread = 0.0;
+        st.held_pending = true;
     }
     if moved1 && let Some(t) = total {
         st.last_total = t;
