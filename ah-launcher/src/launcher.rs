@@ -981,6 +981,16 @@ impl L {
                         .collect()
                 })
                 .unwrap_or_default(),
+            wrapper_split_opts: cfg
+                .get("script")
+                .and_then(|s| s.get("wrapper_split_opts"))
+                .and_then(|t| t.as_table())
+                .map(|t| {
+                    t.iter()
+                        .map(|(k, v)| (k.to_string(), strs(Some(v))))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 

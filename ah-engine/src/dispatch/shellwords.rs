@@ -71,6 +71,10 @@ pub struct Cfg {
     /// #928: per wrapper word (`sudo`, `env`, `nice`, `timeout`), the options that take the next word as their value, so that
     /// value is not read as the command.
     pub wrapper_opts: Vec<(String, Vec<String>)>,
+    /// #928 (Codex review): per wrapper word, the options (a subset of `wrapper_opts`' values, plus attached spellings
+    /// `--opt=VALUE` / `-oVALUE`) whose value is itself a command line (`env -S './x.sh'`): the value is read again as a command,
+    /// so a script it names is resolved like a top-level one.
+    pub wrapper_split_opts: Vec<(String, Vec<String>)>,
 }
 
 /// A command read the shell's way.
@@ -617,14 +621,26 @@ fn is_redir(word: &str) -> bool {
 /// The word a simple command runs (assignments, redirections, wrappers and their options skipped), with the words after it.
 /// `None` when it is dynamic (`$x`, which the dynamic-command rule holds) or the group runs nothing. A wrapper's option that takes
 /// a value (`sudo -u bob`, `env -u X`, `timeout -s KILL`; `opts`) skips that value too, counted in `skips` (#928).
-fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String], opts: &[(String, Vec<String>)], skips: &mut usize) -> Option<(&'a str, usize)> {
+fn command_at<'a>(
+    group: &'a [(String, bool, String)],
+    wrappers: &[String],
+    opts: &[(String, Vec<String>)],
+    split_opts: &[(String, Vec<String>)],
+    skips: &mut usize,
+    splits: &mut Vec<String>,
+) -> Option<(&'a str, usize)> {
     let wrapper = |w: &str| wrappers.iter().any(|x| x.eq_ignore_ascii_case(base(w)));
     let mut wrapped = false;
-    let (mut cur, mut skip_value) = (String::new(), false);
-    for (i, (word, ..)) in group.iter().enumerate() {
+    let (mut cur, mut skip_value, mut split_value) = (String::new(), false, false);
+    let is_split = |cur: &str, o: &str| split_opts.iter().any(|(k, os)| k == cur && os.iter().any(|x| x == o));
+    for (i, (word, _, raw)) in group.iter().enumerate() {
         if skip_value {
             skip_value = false;
             *skips += 1;
+            // the value of a split option is a command line: read it again as one
+            if std::mem::take(&mut split_value) {
+                splits.push(raw.clone());
+            }
             continue;
         }
         if word.starts_with('$') && !word.starts_with("$(") {
@@ -646,7 +662,20 @@ fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String], opts
         // an option that takes its value as the next word (`sudo -u bob`): that word is no command
         if wrapped && opts.iter().any(|(k, os)| *k == cur && os.iter().any(|o| o == w)) {
             skip_value = true;
+            split_value = is_split(&cur, w);
             continue;
+        }
+        // the same option with its value attached (`--split-string=./x.sh`, `-S./x.sh`)
+        if wrapped && w.starts_with('-') {
+            let attached = split_opts.iter().filter(|(k, _)| *k == cur).flat_map(|(_, os)| os.iter()).find_map(|o| {
+                let long = o.starts_with("--");
+                let rest = if long { w.strip_prefix(o.as_str()).and_then(|r| r.strip_prefix('=')) } else { w.strip_prefix(o.as_str()) };
+                rest.filter(|r| !r.is_empty())
+            });
+            if let Some(v) = attached {
+                splits.push(v.to_string());
+                continue;
+            }
         }
         // a wrapper's option and its value (`timeout 30s`, `nice -n 10`), an assignment (`env A=1`)
         if wrapped && (w.starts_with('-') || w.starts_with(|c: char| c.is_ascii_digit()) || is_assign(w)) {
@@ -905,7 +934,10 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         // the commands of the group: the first, and one after each marker word (`find . -exec cmd {} ;`)
         let starts = std::iter::once(0).chain(group.iter().enumerate().filter(|(_, (w, ..))| cfg.cmd_markers.iter().any(|m| m == w)).map(|(i, _)| i + 1));
         for seg in starts.map(|s| &group[s..]) {
-            let Some((cmd, at)) = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &mut more.opt_skips) else { continue };
+            let mut splits = Vec::new();
+            let at_cmd = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &cfg.wrapper_split_opts, &mut more.opt_skips, &mut splits);
+            nested.extend(splits);
+            let Some((cmd, at)) = at_cmd else { continue };
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
@@ -1254,6 +1286,23 @@ mod tests {
         let mut none = c.clone();
         none.wrapper_opts.clear();
         assert_eq!(normalise("sudo -u deploy ls", &none).map(|n| n.unknown_cmds).unwrap(), vec!["deploy".to_string()]);
+    }
+
+    /// #928 (Codex review): the value of a split option (`env -S './x.sh'`) is a command line: a script it names is read as one.
+    #[test]
+    fn issue_928_a_split_string_value_is_read_as_a_command_line() {
+        let mut c = cfg();
+        c.wrapper_opts = vec![("env".into(), vec!["-u".into(), "-S".into()])];
+        c.wrapper_split_opts = vec![("env".into(), vec!["-S".into()])];
+        let s = |t: &str| normalise(t, &c).map(|n| n.scripts).unwrap();
+        assert_eq!(s("env -S ./x.sh"), ["./x.sh"]);
+        assert_eq!(s("env -S./x.sh"), ["./x.sh"]);
+        assert_eq!(s("env -S 'FOO=1 ./x.sh'"), ["./x.sh"]);
+        assert!(s("env -S 'echo hi'").is_empty());
+        assert!(s("env -u ./x.sh ls").is_empty(), "an option that is no split option still only skips its value");
+        let mut off = c.clone();
+        off.wrapper_split_opts.clear();
+        assert!(normalise("env -S ./x.sh", &off).unwrap().scripts.is_empty());
     }
 
     #[test]

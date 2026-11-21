@@ -380,3 +380,16 @@ H if false; then t=$(mktemp -d) || exit; a=(); fi; rm -rf "$t/x"
 H mktemp() { echo "$HOME"; }; t=$(mktemp) || exit; rm -rf "$t"
 H t=$(mktemp -d) || exit; fi; rm -rf "$t/x"
 H t=$(mktemp -d) || exit 1; rm -rf "$t/x"
+
+# #928 Codex review of #929: env -S takes a command line, so a script it names is read; a printed list is no exec call
+H cd {fix} && env -S ./push.sh
+H cd {fix} && env --split-string ./push.sh
+H cd {fix} && env --split-string=./push.sh
+H cd {fix} && env -S 'FOO=1 ./push.sh'
+P cd {fix} && env -S ./clean.sh
+P env -S 'echo hi'
+P python3 -c "op='status'; print(['git', op])"
+P python3 -c "op='status'; cmd=['git', op]; print(cmd)"
+H python3 -c "import subprocess; subprocess.run(['git', op])"
+H python3 -c "import subprocess; cmd=['git', op]; subprocess.run(cmd)"
+H python3 -c "op='push'; cmd=['git', op]; import os; os.execvp('git', cmd)"
