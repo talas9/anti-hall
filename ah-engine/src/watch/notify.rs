@@ -28,6 +28,18 @@ impl Events {
     }
 }
 
+/// Per-file descriptor opens the events backends skipped for their budget (`realtime.max_file_watches`; 0 off macOS).
+pub fn skipped_fds() -> usize {
+    #[cfg(target_os = "macos")]
+    {
+        super::kq::skipped_fds()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}
+
 /// The descriptors the events backends of this process hold for watches (inotify needs none per watch: 0 there).
 pub fn open_fds() -> usize {
     #[cfg(target_os = "macos")]

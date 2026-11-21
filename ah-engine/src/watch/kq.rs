@@ -36,9 +36,19 @@ const GONE: u32 = libc::NOTE_DELETE | libc::NOTE_RENAME | libc::NOTE_REVOKE;
 /// Descriptors every running kqueue backend holds open for watches (directories and files), for the daemon's status.
 static OPEN_FDS: AtomicUsize = AtomicUsize::new(0);
 
+/// Per-file descriptors not opened because the backend's budget (`realtime.max_file_watches`) was used up: those files are only
+/// seen through their directory's events (a create, delete or rename in it), so a growing count means in-place writes may be
+/// reported late. For the daemon's status.
+static SKIPPED: AtomicUsize = AtomicUsize::new(0);
+
 /// The descriptors all kqueue backends of this process hold for watches.
 pub fn open_fds() -> usize {
     OPEN_FDS.load(Ordering::Relaxed)
+}
+
+/// Per-file descriptor opens skipped for the budget since the process started.
+pub fn skipped_fds() -> usize {
+    SKIPPED.load(Ordering::Relaxed)
 }
 
 /// The bounds of one backend (from [`super::Config`]).
@@ -141,7 +151,9 @@ impl State {
         let todo: Vec<(OsString, PathBuf)> = want.into_iter().filter(|n| !d.files.contains_key(n)).map(|n| (n.clone(), key.join(&n))).collect();
         for (n, canonical) in todo {
             if self.file_fds >= lim.total {
-                break; // the directory descriptor still reports every rename, create and delete in it
+                // the directory descriptor still reports every rename, create and delete in it; counted so the loss shows
+                SKIPPED.fetch_add(1, Ordering::Relaxed);
+                continue;
             }
             let Some(fd) = open_evt(&canonical) else { continue };
             if !register(kq, fd) {
@@ -184,6 +196,9 @@ fn run(kq: RawFd, wake_r: RawFd, state: &Mutex<State>, sink: &Sink, lim: Limits)
         let mut rescan = false;
         {
             let mut st = lock(state);
+            // directories to re-list, each once per batch however many of its events arrived (a replaced file fires both its own
+            // descriptor and the directory's)
+            let mut dirty: Vec<PathBuf> = Vec::new();
             for ev in &out[..n as usize] {
                 let fd = ev.ident as RawFd;
                 if fd == wake_r {
@@ -199,9 +214,8 @@ fn run(kq: RawFd, wake_r: RawFd, state: &Mutex<State>, sink: &Sink, lim: Limits)
                         if ev.fflags & GONE != 0 {
                             st.drop_fd(fd);
                             // the name may already hold a new file (atomic save): look again
-                            match st.resync(kq, &key, lim) {
-                                Some(found) => changed.extend(found),
-                                None => rescan = true,
+                            if !dirty.contains(&key) {
+                                dirty.push(key);
                             }
                         }
                     }
@@ -209,11 +223,16 @@ fn run(kq: RawFd, wake_r: RawFd, state: &Mutex<State>, sink: &Sink, lim: Limits)
                         if ev.fflags & GONE != 0 {
                             rescan = true; // the directory itself went away
                         }
-                        match st.resync(kq, &key, lim) {
-                            Some(found) => changed.extend(found),
-                            None => rescan = true,
+                        if !dirty.contains(&key) {
+                            dirty.push(key);
                         }
                     }
+                }
+            }
+            for key in dirty {
+                match st.resync(kq, &key, lim) {
+                    Some(found) => changed.extend(found),
+                    None => rescan = true,
                 }
             }
         }

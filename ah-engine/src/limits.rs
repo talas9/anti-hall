@@ -327,11 +327,12 @@ pub fn apply_nofile(want: u64) -> String {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut cur) } != 0 {
         return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
-    let mut target: libc::rlim_t = want.min(cur.rlim_max);
+    // macOS refuses a soft limit above the per-process ceiling
     #[cfg(target_os = "macos")]
-    if let Some(ceiling) = sysctl_u64(crate::defaults::text("daemon.nofile_sysctl")) {
-        target = target.min(ceiling);
-    }
+    let ceiling = sysctl_u64(crate::defaults::text("daemon.nofile_sysctl")).unwrap_or(libc::rlim_t::MAX);
+    #[cfg(not(target_os = "macos"))]
+    let ceiling = libc::rlim_t::MAX;
+    let target: libc::rlim_t = want.min(cur.rlim_max).min(ceiling);
     if cur.rlim_cur >= target {
         return format!("kept:{}", cur.rlim_cur);
     }
@@ -385,12 +386,13 @@ pub fn fd_state(open: u64, limit: u64) -> &'static str {
 }
 
 /// The `fds` block of `status`: open descriptors, the limit, the state word, the start-up result of raising the limit
-/// (`applied`) and the descriptors the file watcher holds (`watch`).
+/// (`applied`), the descriptors the file watcher holds (`watch`) and the per-file ones it skipped for its budget (`watch_skipped`).
 pub fn fd_status(applied: &str) -> serde_json::Value {
     let (open, limit) = (open_fds(), nofile_limit());
     let state = open.map_or(crate::defaults::text("daemon.fd_state_ok"), |o| fd_state(o, limit));
     serde_json::json!({
         "open": open, "limit": limit, "state": state, "applied": applied, "watch": crate::watch::notify::open_fds(),
+        "watch_skipped": crate::watch::notify::skipped_fds(),
         "soft_pct": crate::defaults::num("daemon.fd_soft_pct"), "hard_pct": crate::defaults::num("daemon.fd_hard_pct"),
     })
 }
