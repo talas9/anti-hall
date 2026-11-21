@@ -31,15 +31,29 @@ impl Env {
             .env_remove("AH_ENGINE_NOSPAWN");
         c
     }
+    #[track_caller]
     fn hook(&self, version: &str, input: &str) -> (String, i32) {
         let mut ch = self.cmd(version).arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
         // A guard event that cannot be answered because the daemon is unavailable now fails open for this call.
         let code = o.status.code().unwrap_or(-1);
-        // the one notice (#229) a call passed through while the daemon is not yet up may print, once per session
+        // the one notice (#229) a call passed through while the daemon is not yet up may print, once per session; or, for DENY_IN (a
+        // force push, a hold class of dispatch.capacity_hold), the configured hold notice (#901): a daemon that is still starting (a
+        // cold start of an unoptimised build under parallel tests) cannot decide the call, so the risky call is held, never passed, and
+        // the callers poll until the daemon answers. The notice text is the plugin's (dispatch.msg_capacity_hold), not a copy here.
         let err = String::from_utf8_lossy(&o.stderr);
-        assert!(err.is_empty() || (err.contains("did not answer this") && err.contains("went through unchecked")), "client wrote to stderr: {err}");
+        let hold = ah_engine::defaults::text("dispatch.msg_capacity_hold");
+        let hold_lead = hold.split('{').next().unwrap_or("").trim();
+        let held = !hold_lead.is_empty() && err.contains(hold_lead);
+        assert!(
+            err.is_empty() || held || (err.contains("did not answer this") && err.contains("went through unchecked")),
+            "client wrote to stderr: {err}"
+        );
+        if held {
+            assert_eq!(code, 2, "a held call exits 2, nothing ran: {err}");
+            assert!(o.stdout.is_empty(), "a held call prints no verdict");
+        }
         (String::from_utf8_lossy(&o.stdout).trim().to_string(), code)
     }
     fn ctl(&self, verb: &str) -> Option<String> {
