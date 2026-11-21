@@ -2388,6 +2388,35 @@ fn a_failed_exchange_with_a_live_daemon_marks_it_slow_and_holds_a_force_push() {
     }
 }
 
+/// #905: an open client breaker (files.breaker_until) with a daemon process still there (it holds the singleton lock, a live pid) is
+/// load: a force push is held, a read passes. Once the daemon is provably gone (its pid dead) the open breaker passes everything.
+#[test]
+fn an_open_breaker_holds_a_force_push_while_the_daemon_is_there_and_passes_all_once_it_is_gone() {
+    use std::os::fd::AsRawFd;
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("breakerload", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+    let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(e.eng().join("e.sock.lock")).unwrap();
+    // SAFETY: `lock` is an open file owned by this scope; `flock` takes only its descriptor and a flag.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    std::fs::write(e.eng().join("e.sock.lock"), stand_in.id().to_string()).unwrap();
+    fake_server(&e, || Some(b"{\"decision\":\"allow\"}".to_vec()));
+    let until = ah_engine::health::now_ms() + 60_000;
+    std::fs::write(e.eng().join("breaker.until"), until.to_string()).unwrap();
+    let (_, held, _) = e.wrapper_hook(DENY_IN);
+    let (_, read, _) = e.wrapper_hook(READ_IN);
+    ah_engine::discard::harmless(stand_in.kill());
+    ah_engine::discard::harmless(stand_in.wait()); // now the lock names a dead pid: provably gone
+    let (_, gone, _) = e.wrapper_hook(DENY_IN);
+    drop(lock);
+    let log = e.health_log();
+    assert_eq!(held, 2, "an open breaker with the daemon there holds a force push: {log}");
+    assert_eq!(read, 0, "an open breaker with the daemon there passes a read: {log}");
+    assert_eq!(gone, 0, "an open breaker with the daemon gone passes everything: {log}");
+    assert!(log.contains("skipped_breaker_load"), "the breaker-load skip is logged: {log}");
+}
+
 /// Codex P1 on the merge: in ack mode a daemon that acknowledged the request and then stopped beating must reach the hung path
 /// (fail fast, replacement), not wait out the slow window.
 #[test]

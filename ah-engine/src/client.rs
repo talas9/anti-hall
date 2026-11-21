@@ -594,6 +594,15 @@ fn daemon_gone(sock: &Path) -> Option<&'static str> {
     (!health::pid_alive(holder)).then_some("no_process")
 }
 
+/// #905: while the breaker is open, is a daemon process still there? The same proof as [`mark_unusable`] (`client.down_requires_gone`
+/// 0 = never: the open breaker passes everything, as before). A crash loop or the down marker still passes everything.
+fn breaker_daemon_there() -> bool {
+    defaults::num("client.down_requires_gone") != 0
+        && health::crashloop_remaining().is_none()
+        && !daemon_down_marked()
+        && daemon_gone(&paths::socket()).is_none()
+}
+
 /// #905: the daemon could not be used (a failed exchange, a hung daemon; `alive` names which for the counter). It is marked down only
 /// when it is provably gone ([`daemon_gone`], or `gone`: the caller's own proof); a daemon whose process is still there (loaded,
 /// stopped) is load: the slow marker, and this call counts as a late one (`LAST_SLOW`), so a guard call in a hold class of
@@ -914,9 +923,19 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
     LAST_BUSY_REPLY.set(false);
     LAST_SLOW.set(false);
     LAST_UNAVAILABLE.set(false);
-    if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
+    // #905: an open breaker with a daemon process still there (loaded, stopped) is load, as the slow marker is: risky calls are
+    // held below; it passes everything only once the daemon is provably gone (a broken install must not block every push)
+    let breaker_load = health::breaker_remaining().is_some() && breaker_daemon_there();
+    if !breaker_load && (health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked()) {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
+        return None;
+    }
+    if breaker_load {
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_breaker_load"));
+        crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "client:breaker_load", defaults::text("msg.client_skip_breaker_load"));
         return None;
     }
     if daemon_slow_marked() {
