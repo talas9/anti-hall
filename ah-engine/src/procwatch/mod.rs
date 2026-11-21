@@ -142,6 +142,9 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
             for l in &sw.leaks {
                 if sw.leak_known.insert((l.broker.pid, l.broker.start_s)) {
                     rec(defaults::text("procwatch.impact_orphan"), &l.broker.class, bc.mode.name());
+                    if bc.mode == Mode::Kill && !l.withheld.is_empty() {
+                        rec(defaults::text("procwatch.impact_kill_withheld"), &l.broker.class, &l.withheld);
+                    }
                 }
             }
             if bc.mode == Mode::Kill {
@@ -224,7 +227,7 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
         "modes": modes,
         "orphans": {"count": sw.orphans.len(), "listed": listed},
         "kills": sw.kills,
-        "broker_leaks": {"count": sw.leaks.len(), "mode": broker::Cfg::load(&st).map_or("off", |b| b.mode.name()), "listed": broker_listed, "kills": sw.leak_kills},
+        "broker_leaks": {"count": sw.leaks.len(), "withheld": sw.leaks.iter().filter(|l| !l.withheld.is_empty()).count(), "mode": broker::Cfg::load(&st).map_or("off", |b| b.mode.name()), "listed": broker_listed, "kills": sw.leak_kills},
         "resource": warns,
         "disk": disk_json,
     });

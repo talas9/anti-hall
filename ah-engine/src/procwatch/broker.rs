@@ -71,6 +71,8 @@ pub struct Leak {
     pub cwd: String,
     /// Memory of the whole tree, bytes.
     pub mem: u64,
+    /// Why a stop is withheld (the workspace is unknown): the tree is reported and never signalled. Empty = may be stopped.
+    pub withheld: String,
 }
 
 impl Leak {
@@ -91,13 +93,18 @@ impl Leak {
         serde_json::json!({
             "pid": self.broker.pid, "cwd": self.cwd, "children": self.kids.len(), "mem_bytes": self.mem,
             "mem": super::disk::human(self.mem), "age_s": self.broker.age_s, "cmd": cut(&self.broker.cmd, chars),
-            "stop_cmd": cmd, "pids": pids, "mode": self.broker.mode.name(),
+            "stop_cmd": cmd, "pids": pids, "mode": self.broker.mode.name(), "withheld": self.withheld,
         })
     }
 }
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// The realpath of `p`; the text itself when it cannot be resolved (a job recorded for a directory that is gone).
+fn real(p: &str) -> String {
+    std::fs::canonicalize(p).map_or_else(|_| p.to_string(), |r| r.to_string_lossy().into_owned())
 }
 
 /// Does a Codex job run, or wait, in `workspace`? Unknown is yes: no workspace, no plugin data directory, a state file that is
@@ -113,6 +120,7 @@ pub fn job_active(home: &str, workspace: &str) -> bool {
     let active = defaults::list("procwatch.broker_active_statuses");
     let (f_jobs, f_status, f_ws) =
         (defaults::text("procwatch.broker_f_jobs"), defaults::text("procwatch.broker_f_status"), defaults::text("procwatch.broker_f_workspace"));
+    let workspace = &real(workspace);
     let mut found_root = false;
     for d in rd.flatten().filter(|d| dirs.is_match(&d.file_name().to_string_lossy())) {
         let Ok(spaces) = std::fs::read_dir(d.path().join(folder)) else { continue };
@@ -125,7 +133,7 @@ pub fn job_active(home: &str, workspace: &str) -> bool {
             let Some(v) = read_json(&sf) else { return true };
             for j in v.get(f_jobs).and_then(|j| j.as_array()).map(Vec::as_slice).unwrap_or(&[]) {
                 let on = j.get(f_status).and_then(|x| x.as_str()).is_some_and(|x| active.contains(&x));
-                let ws = j.get(f_ws).and_then(|x| x.as_str()).unwrap_or("");
+                let ws = &real(j.get(f_ws).and_then(|x| x.as_str()).unwrap_or(""));
                 if on && (ws.is_empty() || ws == workspace || workspace.starts_with(&format!("{}/", ws.trim_end_matches('/')))) {
                     return true;
                 }
@@ -135,10 +143,16 @@ pub fn job_active(home: &str, workspace: &str) -> bool {
     !found_root
 }
 
+/// The workspace a broker serves, as a realpath; empty when it is unknown: the parsed `--cwd` (or, without the flag, the broker's own
+/// directory) is not an existing directory. Never a truncated or guessed value.
 fn workspace(host: &mut dyn Host, cfg: &Cfg, row: &ProcRow) -> String {
-    match cfg.cwd.captures(&row.cmd).and_then(|c| c.get(1)) {
-        Some(m) => m.as_str().to_string(),
+    let raw = match cfg.cwd.captures(&row.cmd).and_then(|c| c.get(1)) {
+        Some(m) => m.as_str().trim().to_string(),
         None => host.cwd(row.pid).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+    };
+    match std::fs::canonicalize(&raw) {
+        Ok(p) if !raw.is_empty() && p.is_dir() => p.to_string_lossy().into_owned(),
+        _ => String::new(),
     }
 }
 
@@ -188,11 +202,13 @@ pub fn scan(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, home: &str, own: &
             continue;
         }
         let ws = workspace(host, cfg, b);
-        if job_active(home, &ws) {
+        // an unknown workspace is reported with a reason and never stopped; a known one with a job (or unreadable job state) is skipped
+        let withheld = if ws.is_empty() { defaults::text("procwatch.broker_withheld_unknown_workspace").to_string() } else { String::new() };
+        if withheld.is_empty() && job_active(home, &ws) {
             continue;
         }
         let kids_f: Vec<Finding> = order.iter().rev().map(|k| finding(k, now, cfg.mode, format!("child_of:{}", b.pid))).collect();
-        out.push(Leak { broker: finding(b, now, cfg.mode, "orphan_broker".to_string()), kids: kids_f, cwd: ws, mem });
+        out.push(Leak { broker: finding(b, now, cfg.mode, "orphan_broker".to_string()), kids: kids_f, cwd: ws, mem, withheld });
     }
     out.sort_by(|a, b| b.mem.cmp(&a.mem).then(a.broker.pid.cmp(&b.broker.pid)));
     out
@@ -202,7 +218,7 @@ pub fn scan(host: &mut dyn Host, rows: &[ProcRow], cfg: &Cfg, home: &str, own: &
 /// listed (same start time and command); the polite signal goes to every pid, one grace period is waited for the whole tree, then
 /// the forced signal goes to those still there. None when a job started in the workspace since the scan. At most `budget` pids.
 pub fn stop(host: &mut dyn Host, leak: &Leak, home: &str, grace_ms: u64, budget: usize) -> Vec<(Finding, Outcome)> {
-    if job_active(home, &leak.cwd) {
+    if !leak.withheld.is_empty() || job_active(home, &leak.cwd) {
         return Vec::new();
     }
     let same = |r: &ProcRow, f: &Finding| r.start_s == f.start_s && r.cmd == f.cmd;

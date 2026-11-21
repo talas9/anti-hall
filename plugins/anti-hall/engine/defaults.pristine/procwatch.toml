@@ -261,12 +261,12 @@ doc = "Mode of the leaked Codex broker tree check: off | report | kill. Report l
 value = { section = "procwatch", key = "brokerLeakMode", env = "ANTIHALL_PROCWATCH_BROKER_LEAK", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
 
 [procwatch.broker_re]
-doc = "Regular expression (Rust syntax, case-insensitive) of the command line of a Codex companion broker process."
-value = '(?i)app-server-broker\.mjs\s+serve\b'
+doc = "Regular expression (Rust syntax, case-insensitive) of the command line of a Codex companion broker process. Provenance: the broker script must sit at the Codex plugin's install path (the plugin cache `plugins/cache/openai-codex/codex/<version>/scripts/`), not just share the file name, so an unrelated script of the same name is never a candidate."
+value = '(?i)/plugins/cache/openai-codex/codex/[^/\s]+/scripts/app-server-broker\.mjs\s+serve\b'
 
 [procwatch.broker_cwd_re]
-doc = "Regular expression whose first group is the workspace directory in a broker's command line (`--cwd <dir>`); the broker's own working directory is used when it does not match."
-value = '--cwd\s+(\S+)'
+doc = "Regular expression whose first group is the workspace directory in a broker's command line: everything after `--cwd` up to the next ` --<flag>` or the end of the command (a path may contain spaces). The broker's own working directory is used when the flag is absent. The value must be an existing directory, otherwise the workspace is unknown and the tree is withheld from a stop."
+value = '--cwd\s+(.+?)(?:\s+--[A-Za-z][\w-]*(?:\s|$)|\s*$)'
 
 [procwatch.broker_min_children]
 doc = "A broker tree with MORE descendants than this is a leak."
@@ -329,6 +329,14 @@ value = "status"
 [procwatch.broker_f_workspace]
 doc = "The job field that holds its workspace directory."
 value = "workspaceRoot"
+
+[procwatch.broker_withheld_unknown_workspace]
+doc = "Reason recorded on a leaked tree that kill mode withheld because its workspace is unknown (no `--cwd`, or not an existing directory): reported only, never signalled."
+value = "workspace_unknown"
+
+[procwatch.impact_kill_withheld]
+doc = "Impact kind recorded once per leaked broker tree whose stop was withheld in kill mode (unknown workspace)."
+value = "orphan_kill_withheld"
 
 [procwatch.broker_cooldown_s]
 doc = "Least time between two leaked-broker advisories to the same session."

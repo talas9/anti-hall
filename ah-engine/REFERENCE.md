@@ -10333,7 +10333,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.advisory_events` | `SessionStart, UserPromptSubmit, PreToolUse` |  |  | The hook events the procwatch-advisory script answers. |
 | `procwatch.broker_active_statuses` | `queued, running` |  |  | Job statuses that mean the broker is in use. |
 | `procwatch.broker_cooldown_s` | `3600` |  | s | Least time between two leaked-broker advisories to the same session. |
-| `procwatch.broker_cwd_re` | `--cwd\s+(\S+)` |  |  | Regular expression whose first group is the workspace directory in a broker's command line (`--cwd <dir>`); the broker's own working directory is used when it does not match. |
+| `procwatch.broker_cwd_re` | `--cwd\s+(.+?)(?:\s+--[A-Za-z][\w-]*(?:\s\|$)\|\s*$)` |  |  | Regular expression whose first group is the workspace directory in a broker's command line: everything after `--cwd` up to the next ` --<flag>` or the end of the command (a path may contain spaces). The broker's own working directory is used when the flag is absent. The value must be an existing directory, otherwise the workspace is unknown and the tree is withheld from a stop. |
 | `procwatch.broker_f_jobs` | `jobs` |  |  | The state file field that holds the job list. |
 | `procwatch.broker_f_status` | `status` |  |  | The job field that holds its status. |
 | `procwatch.broker_f_workspace` | `workspaceRoot` |  |  | The job field that holds its workspace directory. |
@@ -10344,11 +10344,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.broker_min_age_s` | `21600` |  | s | An orphaned broker older than this is a leak even when its tree is small. |
 | `procwatch.broker_min_children` | `20` |  |  | A broker tree with MORE descendants than this is a leak. |
 | `procwatch.broker_min_mem_mb` | `1024` |  | MB | A broker tree using MORE memory than this, in MB (broker and descendants together), is a leak. |
-| `procwatch.broker_re` | `(?i)app-server-broker\.mjs\s+serve\b` |  |  | Regular expression (Rust syntax, case-insensitive) of the command line of a Codex companion broker process. |
+| `procwatch.broker_re` | `(?i)/plugins/cache/openai-codex/codex/[^/\s]+/scripts/app-server-broker\.mjs\...` |  |  | Regular expression (Rust syntax, case-insensitive) of the command line of a Codex companion broker process. Provenance: the broker script must sit at the Codex plugin's install path (the plugin cache `plugins/cache/openai-codex/codex/<version>/scripts/`), not just share the file name, so an unrelated script of the same name is never a candidate. |
 | `procwatch.broker_state_dir_re` | `^codex-` |  |  | Regular expression of the names of the plugin data directories that hold Codex companion job state. |
 | `procwatch.broker_state_file` | `state.json` |  |  | The name of the job state file inside a workspace's folder. |
 | `procwatch.broker_state_folder` | `state` |  |  | The folder under a Codex plugin data directory that holds one folder per workspace. |
 | `procwatch.broker_state_parent` | `.claude/plugins/data` |  |  | The directory, relative to the home, that holds the Codex companion's plugin data directories. |
+| `procwatch.broker_withheld_unknown_workspace` | `workspace_unknown` |  |  | Reason recorded on a leaked tree that kill mode withheld because its workspace is unknown (no `--cwd`, or not an existing directory): reported only, never signalled. |
 | `procwatch.classes` | `6 entries, 6 entries, 6 entries, 6 entries, 6 entries, 6 entries` |  |  | Orphan classes, first match wins. name: report name; mode_key: the defaults key of its mode setting (off \| report \| kill); cmd_re: matches the command line; exclude_re: a match is skipped ('' = none); min_age_s: how old a process must be; children: also list its descendants (they die with it). |
 | `procwatch.cmd_chars` | `160` |  |  | A command line in a report or advisory is cut to this many characters. |
 | `procwatch.extra_classes_file` | `procwatch-classes.toml` |  |  | The owner's own orphan classes: a TOML file with `[[classes]]` tables (name, mode = off \| report \| kill, cmd_re, exclude_re, min_age_s, children) in the engine state directory. Its classes are tried before the shipped ones. Example: engine/examples/procwatch-dev.toml. |
@@ -10360,6 +10361,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.grace_ms` | `2000` |  | ms | How long a kill waits between the polite and the forced signal. |
 | `procwatch.guard_name` | `procwatch` |  |  | The name the process-watch messages carry. |
 | `procwatch.impact_kill` | `orphan_kill` |  |  | Impact kind recorded when an orphan is signalled. |
+| `procwatch.impact_kill_withheld` | `orphan_kill_withheld` |  |  | Impact kind recorded once per leaked broker tree whose stop was withheld in kill mode (unknown workspace). |
 | `procwatch.impact_orphan` | `orphan_candidate` |  |  | Impact kind recorded when an orphan candidate is first reported. |
 | `procwatch.marker_var` | `CLAUDECODE` |  |  | The environment variable Claude Code sets in every child process; a process without it is never an orphan candidate. |
 | `procwatch.max_kills_per_run` | `8` |  |  | The most processes one sweep signals, in any class. |
