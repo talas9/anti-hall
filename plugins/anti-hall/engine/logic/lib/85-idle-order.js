@@ -7,6 +7,8 @@
 var idleOrder = {
   enabled: function () { return ah.settings.bool('idle_order.sw_enabled'); },
   afterMs: function () { return ah.settings.num('idle_order.num_after_min') * ah.cfgNum('idle_order.ms_per_minute'); },
+  stallEnabled: function () { return ah.settings.bool('idle_order.sw_stall'); },
+  stallAfterMs: function () { return ah.settings.num('idle_order.num_stall_after_min') * ah.cfgNum('idle_order.ms_per_minute'); },
   safe: function (s) { return String(s).replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, ah.cfgNum('idle_order.key_max')); },
   rel: function (kind, scope) { return ah.cfg('idle_order.dir') + '/' + ah.cfg('idle_order.file_prefix') + '-' + idleOrder.safe(kind) + '-' + idleOrder.safe(scope) + '.json'; },
   skip: function (kind, reason) { ah.metric('idle_order', ['kind', kind, 'outcome', 'suppressed', 'reason', reason]); },

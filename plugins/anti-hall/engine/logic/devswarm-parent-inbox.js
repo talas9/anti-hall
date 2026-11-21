@@ -537,7 +537,9 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], ownExtra: 0, ownExtraSig: [], ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], stallCands: [], stallKeep: [], stallSince: {}, stallSinceRel: null, ownExtra: 0, ownExtraSig: [], ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var prevSince = {};
+  if (idleOrder.stallEnabled() && ctx.key) { out.stallSinceRel = idleOrder.rel(ah.cfg('idle_order.kind_since'), ctx.key); prevSince = idleOrder.read(out.stallSinceRel); }
   // the DevSwarm app's database, read once
   var focusEnv = ah.env.get(ah.cfg('devswarm_parent.env_focus_ms'));
   var focusRaw = Number(focusEnv === null ? undefined : focusEnv); // Number(undefined) is NaN, Number(null) would be 0
@@ -731,7 +733,8 @@ function piRoster(ctx, summary) {
       else if (rowParked) idleWhy = 'parked';
       else if (nagIgnored || st.ignored || closedRow) idleWhy = 'done';
       else if (ownerFocused) idleWhy = 'focused';
-      else if (unread > 0 || !unreadKnown) idleWhy = 'unread';
+      // GH #876: a pending archive-request is unread mail that only the child can clear; it must not silence the order that asked for it
+      else if ((unread > 0 || !unreadKnown) && !(unreadKnown && entry.archive_request_only_unread === true)) idleWhy = 'unread';
       else if (planOpen) idleWhy = 'plan';
       else if (planUnknown) idleWhy = 'plan_unknown';
       else if (wtPath && sessionId) {
@@ -739,7 +742,26 @@ function piRoster(ctx, summary) {
         if (ib.none !== true && (ib.busy || ib.waiting)) idleWhy = 'busy';
       }
       if (idleWhy !== '') { idleOrder.skip(idleKind, idleWhy); out.idleKeep.push(id); }
-      else out.idleCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - activityTs });
+      else out.idleCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - activityTs, merged: entry.mergedVerified === true });
+      out.stallKeep.push(id); // idle, not stalled: its stall record is carried, not counted as acted on
+    } else if (idleOrder.stallEnabled() && enrich && !archivedRow && !appArchivedRow && !archivedSuperseded && activityTs !== null && now - activityTs < idleOrder.afterMs() && wtPath) {
+      // GH #876: reports working (recent activity) but delivers nothing: no commit for guards.stallOrderAfterMin. Not judged while done, parked,
+      // ignored, focused or holding unread mail (those have their own nudges); a worktree git cannot date is unknown, never stalled.
+      var stallWhy = '';
+      var stallDone = !!(entry && ((entry.gates && entry.gates.done === true) || entry.archive_ready === true));
+      if (stallDone || rowParked || nagIgnored || st.ignored || closedRow) stallWhy = 'done';
+      else if (ownerFocused) stallWhy = 'focused';
+      else if (unread > 0 || !unreadKnown) stallWhy = 'unread';
+      if (stallWhy === '') {
+        var sp = JSON.parse(ahHost.piProgress(wtPath));
+        // a worktree cut from an old commit holds nothing newer until it commits: progress is the later of that commit and when it was first seen working
+        var seenAt = prevSince[id] && piFinite(prevSince[id].at) ? prevSince[id].at : now;
+        out.stallSince[id] = { at: seenAt };
+        var progressTs = Math.max(piFinite(sp.commitMs) ? sp.commitMs : 0, seenAt);
+        if (sp.unsure) stallWhy = 'unknown';
+        else if (now - progressTs >= idleOrder.stallAfterMs()) out.stallCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - progressTs });
+      }
+      if (stallWhy !== '') { idleOrder.skip(ah.cfg('idle_order.kind_stall'), stallWhy); out.stallKeep.push(id); }
     }
     var appMarks = '';
     if (rowWs) {
@@ -753,6 +775,13 @@ function piRoster(ctx, summary) {
     });
   }
   return out;
+}
+
+// GH #876: the tail of an idle order that names the verified-merged idle children, which can be archived at once ('' when there are none).
+function piMergedTail(due, cliPath) {
+  var m = due.filter(function (c) { return c.merged === true; });
+  if (!m.length) return '';
+  return text.render(ah.cfg('idle_order.msg_merged_tail'), { cli: cliPath, list: idleOrder.list(m, 'idle_order.item_ws'), id: m[0].id });
 }
 
 // `archiveCooldownElapsed(home, id, now)`: no earlier recommendation, or its cooldown is over.
@@ -1725,8 +1754,18 @@ function piDecide(p, opts) {
   if (roster !== null && idleOrder.enabled() && key && cliPath !== null) {
     idlePlan = idleOrder.plan(ah.cfg('idle_order.kind_workspace'), key, roster.idleCands, now, roster.idleKeep);
     if (idlePlan.due.length) {
-      pending.push({ kind: 'plain', rank: 155, text: text.render(ah.cfg('idle_order.msg_workspace'), { n: idlePlan.due.length, list: idleOrder.list(idlePlan.due, 'idle_order.item_ws'), cli: cliPath, id: idlePlan.due[0].id }) });
+      pending.push({ kind: 'plain', rank: 155, text: text.render(ah.cfg('idle_order.msg_workspace'), { n: idlePlan.due.length, list: idleOrder.list(idlePlan.due, 'idle_order.item_ws'), cli: cliPath, id: idlePlan.due[0].id, merged: piMergedTail(idlePlan.due, cliPath) }) });
     }
+  }
+  // GH #876: working but delivering nothing: a status check first, an order to converge or archive on the repeats (same schedule and cap)
+  var stallPlan = null;
+  if (roster !== null && idleOrder.stallEnabled() && key && cliPath !== null) {
+    stallPlan = idleOrder.plan(ah.cfg('idle_order.kind_stall'), key, roster.stallCands, now, roster.stallKeep);
+    var stallFirst = stallPlan.due.filter(function (c) { return stallPlan.next[c.id].count <= 1; });
+    var stallAgain = stallPlan.due.filter(function (c) { return stallPlan.next[c.id].count > 1; });
+    [[stallFirst, 'idle_order.msg_stall_advise'], [stallAgain, 'idle_order.msg_stall_order']].forEach(function (g) {
+      if (g[0].length) pending.push({ kind: 'plain', rank: 156, text: text.render(ah.cfg(g[1]), { n: g[0].length, list: idleOrder.list(g[0], 'idle_order.item_stall'), cli: cliPath, id: g[0][0].id }) });
+    });
   }
   // every dedupe record must be decidable before the first write
   var dedupeOn = sid !== null && !dedupe.disabled();
@@ -1760,6 +1799,8 @@ function piDecide(p, opts) {
     ah.state.appendFile(piRel(ah.cfg('devswarm_parent.file_log')), JSON.stringify({ ts: Math.floor(ah.clock.now()), event: 'inject', workspaces: inj }) + '\n');
   }
   if (idlePlan !== null) idleOrder.apply(idlePlan);
+  if (stallPlan !== null) idleOrder.apply(stallPlan);
+  if (roster !== null && roster.stallSinceRel && JSON.stringify(roster.stallSince) !== JSON.stringify(idleOrder.read(roster.stallSinceRel))) ah.state.writeAtomic(roster.stallSinceRel, JSON.stringify({ subjects: roster.stallSince }));
   archiveList.forEach(function (id) { ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_archive_nudges') + '/' + id + '.json'), JSON.stringify({ lastNudgedAt: now })); });
   if (!segments.length) return 'allow';
   return { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_parent.segment_joiner'))) };

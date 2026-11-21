@@ -391,10 +391,11 @@ struct Archived {
 }
 
 #[allow(clippy::type_complexity)] // a skip-reason callback
-fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> Archived {
+/// `parked`: the caller already pushed the workspace's work to a park branch (respawn), so the archive's own work check is not made.
+fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>, parked: bool) -> Archived {
     let argv = vec![text("devswarm_cli.action_archive").to_string(), id.to_string()];
     let args = crate::meshw::args::parse(&argv);
-    match crate::meshw::archiveverb::archive_with(inv, &args, revalidate) {
+    match crate::meshw::archiveverb::archive_with_guard(inv, &args, revalidate, parked) {
         Ok(ans) => {
             let r = OVal::parse(ans.stdout.trim());
             let skipped = r
@@ -482,7 +483,7 @@ pub fn reap_stale(inv: &Inv, a: &Args) -> R<Answer> {
         // P1-5: the safety condition is re-checked INSIDE the workspace's lock, immediately before the archive writes, so a workspace
         // that heartbeats or commits after the candidates were collected is skipped, not archived
         let recheck = |desc: &OVal| -> Option<String> { reap_recheck(inv, &c.id, c.path(), &repo_key, desc, fresh_ms, idle_ms, &states).map(str::to_string) };
-        let r = archive_via_verb(inv, &c.id, Some(&recheck));
+        let r = archive_via_verb(inv, &c.id, Some(&recheck), false);
         if let Some(reason) = &r.skipped {
             skipped.push(skip(&c.id, reason));
             continue;
@@ -611,7 +612,7 @@ pub fn reconcile_active(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let mut archived = Vec::new();
     for id in &cand_ids {
-        let r = archive_via_verb(inv, id, None);
+        let r = archive_via_verb(inv, id, None, false);
         let mut e = Obj::default();
         e.put("id", s(id)).put("ok", OVal::Bool(r.ok)).put("error", s_or_null(r.error.as_deref()));
         archived.push((r.ok, e.done()));
@@ -860,13 +861,13 @@ fn git(cwd: &str, args: &[String]) -> GitOut {
 
 /// `worktreeState(wt)`: the branch HEAD is on, whether the tree is dirty, and the commits no origin ref contains (`None` when git
 /// cannot say).
-struct WtState {
-    branch: Option<String>,
-    dirty: bool,
-    unpushed: Option<f64>,
+pub(crate) struct WtState {
+    pub(crate) branch: Option<String>,
+    pub(crate) dirty: bool,
+    pub(crate) unpushed: Option<f64>,
 }
 
-fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
+pub(crate) fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
     let shown = wt.unwrap_or("undefined");
     let Some(wt) = wt.filter(|w| !w.is_empty() && std::path::Path::new(w).exists()) else {
         return Err(tpl("devswarm_cli.rs_msg_no_worktree", &[("wt", shown)]));
@@ -890,7 +891,7 @@ fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
 }
 
 /// `needsPark(state)`: work would be lost without a park branch.
-fn needs_park(st: &WtState) -> bool {
+pub(crate) fn needs_park(st: &WtState) -> bool {
     st.dirty || st.unpushed.is_none_or(|u| u > 0.0)
 }
 
@@ -1438,7 +1439,7 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
     });
     note(&found.key, r);
     // (e) archive the old workspace; the owner closes its app tab
-    let archived = archive_via_verb(inv, id, None);
+    let archived = archive_via_verb(inv, id, None, true); // the dirty or unpushed work was parked on a pushed branch in (b)
     let nag = tpl("devswarm_cli.rs_msg_nag", &[("id", id), ("branch", &branch), ("next", &next)]);
     let fields = vec![
         ("id".to_string(), s(id)),
@@ -1840,7 +1841,7 @@ mod tests {
             std::fs::write(beats.join("child-1.json"), format!(r#"{{"ts":{},"sessionId":"s"}}"#, common::now_ms())).unwrap();
             reap_recheck(&i, "child-1", cwd.to_str().unwrap(), &key, desc, fresh_ms, idle_ms, &states).map(str::to_string)
         };
-        let r = archive_via_verb(&i, "child-1", Some(&revive));
+        let r = archive_via_verb(&i, "child-1", Some(&revive), false);
         assert_eq!(r.skipped.as_deref(), Some("fresh-heartbeat"), "{:?}", r.error);
         assert!(dir.join("workspaces/child-1.json").exists(), "the active descriptor stays");
         assert!(!dir.join("archived/child-1.json").exists(), "and no archived marker was written");

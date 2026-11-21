@@ -623,6 +623,46 @@ fn arch_error(id: &str, error: &str) -> Answer {
     answer(2, o.done())
 }
 
+/// #876: the refusal of an archive whose worktree still holds uncommitted changes or commits no origin ref has. `None` when the check is
+/// off (`devswarm_cli.archive_work_guard`), the worktree is gone (nothing is lost) or it holds nothing unsaved. A worktree git cannot
+/// read is refused too: the archive cannot prove nothing is lost.
+fn unsafe_work_refusal(id: &str, desc: Option<&OVal>) -> Option<Answer> {
+    if defaults::raw("devswarm_cli.archive_work_guard").as_bool() == Some(false) {
+        return None;
+    }
+    let wt = str_of(desc?.get(text("mesh_write.field_worktree_path")))?;
+    if !std::path::Path::new(wt).is_dir() {
+        return None;
+    }
+    let (what, dirty, unpushed) = match crate::meshw::dsbverbs::worktree_state(Some(wt)) {
+        Ok(st) if !crate::meshw::dsbverbs::needs_park(&st) => return None,
+        Ok(st) => {
+            let mut parts: Vec<String> = Vec::new();
+            if st.dirty {
+                parts.push(text("devswarm_cli.act_unsafe_dirty").to_string());
+            }
+            match st.unpushed {
+                Some(u) if u > 0.0 => parts.push(tpl("devswarm_cli.act_unsafe_unpushed", &[("n", &u.to_string())])),
+                None => parts.push(text("devswarm_cli.act_unsafe_unreadable").to_string()),
+                _ => {}
+            }
+            (parts.join(text("devswarm_cli.act_unsafe_join")), st.dirty, st.unpushed)
+        }
+        Err(e) => (tpl("devswarm_cli.act_unsafe_unreadable_why", &[("why", &e)]), false, None),
+    };
+    crate::metrics::bump("archive_refused_unsafe", &[("verb", text("devswarm_cli.action_archive"))]);
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("action", s(text("devswarm_cli.action_archive")))
+        .put("id", s(id))
+        .put("descriptorArchived", OVal::Bool(false))
+        .put("unsafeWork", OVal::Bool(true))
+        .put("dirty", OVal::Bool(dirty))
+        .put("unpushed", unpushed.map_or(OVal::Null, n))
+        .put("error", s(&tpl("devswarm_cli.act_msg_unsafe_work", &[("id", &crate::meshw::actverbs::quote(id)), ("what", &what), ("wt", wt)])));
+    Some(answer(2, o.done()))
+}
+
 /// `(device, inode)` of the file at `p` without following a link.
 fn ino(p: &std::path::Path) -> Option<(u64, u64)> {
     std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
@@ -655,6 +695,8 @@ pub(crate) struct Opts<'a> {
     /// `opts.revalidate(desc)`: a reason to skip, evaluated inside the lock right before the archive.
     #[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
     pub revalidate: Option<&'a dyn Fn(Option<&OVal>) -> Option<String>>,
+    /// The caller has already parked the workspace's work on a pushed branch (respawn): the work check below is not made.
+    pub parked: bool,
 }
 
 /// A unit's ops applied to the real home (no lock: the caller holds the workspace's).
@@ -745,6 +787,12 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
 /// the first write. A reason skips the archive (`{ ok: true, skipped: true, reason }`, nothing written).
 #[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
 pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> R<Answer> {
+    archive_with_guard(inv, a, revalidate, false)
+}
+
+/// [`archive_with`], `parked` set when the caller has already pushed the workspace's work to a park branch.
+#[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
+pub fn archive_with_guard(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>, parked: bool) -> R<Answer> {
     let raw = a.positionals.get(1).map(String::as_str).unwrap_or("");
     // already archived in anti-hall but still live in the app: archive the app side only
     if let Some(only) = app_only_archive(inv, raw)? {
@@ -778,7 +826,7 @@ pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Op
         }
     };
     let adapt = |d: Option<&OVal>| d.and_then(|d| revalidate.and_then(|check| check(d)));
-    cmd_archive(inv, &id, &Opts { args: Some(a), revalidate: revalidate.map(|_| &adapt as &dyn Fn(Option<&OVal>) -> Option<String>) })
+    cmd_archive(inv, &id, &Opts { args: Some(a), revalidate: revalidate.map(|_| &adapt as &dyn Fn(Option<&OVal>) -> Option<String>), parked })
 }
 
 /// `cmdArchive(id, ctx, opts)`, under the workspace's own lock.
@@ -927,6 +975,13 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
             .put("skipped", OVal::Bool(true))
             .put("reason", s(&why));
         return Ok(answer(0, o.done()));
+    }
+    // #876: a workspace holding uncommitted or unpushed work is never archived (its worktree goes with it): refused and reported
+    if active.exists
+        && !opts.parked
+        && let Some(refusal) = unsafe_work_refusal(id, desc.as_ref())
+    {
+        return Ok(refusal);
     }
     let owner = owner_key.clone().unwrap_or_else(|| current_owner.clone());
     // ---- 1. the archived name: a hard link of the active descriptor; a leftover one that is nobody's is replaced atomically ----
@@ -1177,6 +1232,62 @@ mod tests {
         fifo(&f);
         let state = within("descriptor_state", move || descriptor_state(&f).map(|s| (s.exists, s.error)).ok());
         assert_eq!(state, Some((true, Some(text("devswarm_cli.act_msg_desc_not_file").to_string()))));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let o = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+
+    fn desc_of(wt: &std::path::Path) -> OVal {
+        let mut d = Obj::default();
+        d.put(text("mesh_write.field_worktree_path"), s(&wt.to_string_lossy()));
+        d.done()
+    }
+
+    /// GH #876: an archive of a workspace with uncommitted or unpushed work is refused and says why; a clean, pushed one, and one whose
+    /// worktree is gone, are not.
+    #[test]
+    fn archive_refuses_uncommitted_or_unpushed_work_and_allows_clean_pushed_or_gone_gh876() {
+        crate::defaults::init().unwrap();
+        let dir = scratch("archive-unsafe");
+        let (remote, wt) = (dir.join("remote.git"), dir.join("wt"));
+        std::fs::create_dir_all(&remote).unwrap();
+        git_in(&remote, &["init", "-q", "--bare"]);
+        std::fs::create_dir_all(&wt).unwrap();
+        git_in(&wt, &["init", "-q"]);
+        git_in(&wt, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let d = desc_of(&wt);
+
+        // a commit no origin ref has
+        let unpushed = unsafe_work_refusal("ws-1", Some(&d)).expect("unpushed commits are refused");
+        let r = OVal::parse(unpushed.stdout.trim()).unwrap();
+        assert_eq!((r.get("ok"), r.get("unsafeWork")), (Some(&OVal::Bool(false)), Some(&OVal::Bool(true))));
+        assert!(matches!(r.get("error"), Some(OVal::Str(e)) if e.contains("unpushed commit")), "{r:?}");
+        assert_eq!(unpushed.code, 2);
+
+        // pushed and clean: archivable
+        git_in(&wt, &["push", "-q", "origin", "HEAD"]);
+        assert!(unsafe_work_refusal("ws-1", Some(&d)).is_none(), "a clean, pushed worktree is archivable");
+
+        // an uncommitted file
+        std::fs::write(wt.join("wip.txt"), "x").unwrap();
+        let dirty = unsafe_work_refusal("ws-1", Some(&d)).expect("uncommitted changes are refused");
+        let r = OVal::parse(dirty.stdout.trim()).unwrap();
+        assert_eq!(r.get("dirty"), Some(&OVal::Bool(true)));
+        assert!(matches!(r.get("error"), Some(OVal::Str(e)) if e.contains("uncommitted changes") && e.contains("Nothing was archived")), "{r:?}");
+
+        // a worktree that is gone holds nothing to lose; a descriptor with no worktree is not judged
+        assert!(unsafe_work_refusal("ws-1", Some(&desc_of(&dir.join("gone")))).is_none());
+        assert!(unsafe_work_refusal("ws-1", None).is_none());
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
     }
 }
