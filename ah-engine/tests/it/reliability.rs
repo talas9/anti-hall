@@ -1947,7 +1947,8 @@ fn rss_over_cap_restarts_cleanly_and_next_client_respawns() {
     let rules: Vec<String> = (0..8000).map(|i| format!(r#"{{"pattern":"rss{i}[a-z]{{20}}","action":"warn","message":"m{i}"}}"#)).collect();
     let rules_text = format!(r#"{{"version":1,"rules":[{}]}}"#, rules.join(","));
     std::fs::write(probe.dir.join("rules.json"), &rules_text).unwrap();
-    let mut probe_daemon = crate::common::Daemon::new(probe.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    let mut probe_daemon =
+        crate::common::Daemon::new(probe.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     assert!(wait_for(|| probe.pid().is_some()));
     let startup_mem = probe.status()["mem_kb"].as_u64().unwrap();
     drop(probe.ctl("stop"));
@@ -2483,6 +2484,78 @@ fn an_old_hold_run_after_an_idle_gap_never_lets_a_force_push_through() {
     assert!(slow && !down, "a new hold run: slow marker, never down (down={down} slow={slow}): {log}");
     let since = run.split_whitespace().next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     assert!(since > old, "a new hold run starts after the idle gap: {run:?}");
+}
+
+/// #910: the slow-streak hold has the same continuous-run cap as the failed-exchange hold. A daemon that stays slow (never replies) holds a
+/// force push while the run is young; once the run is older than client.load_hold_max_ms with no OK reply the streak marks it down
+/// (counted hold_expired) and the force push passes, so a daemon that stays slow cannot hold risky calls forever.
+#[test]
+fn a_daemon_that_stays_slow_holds_risky_calls_only_for_load_hold_max_ms() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new(
+        "slowcap",
+        &[
+            ("AH_ENGINE_NOSPAWN", "1"),
+            ("AH_ENGINE_DISPATCH_IN_PROCESS", "0"),
+            ("AH_ENGINE_DEADLINE_MS", "150"),
+            ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "300"),
+            ("AH_ENGINE_SLOW_DOWN_N", "2"),
+            ("AH_ENGINE_BREAKER_N", "9"),
+            ("AH_ENGINE_LOAD_HOLD_MAX_MS", "600"),
+            ("AH_ENGINE_DOWN_MARKER_TTL_MS", "200"),
+        ],
+    );
+    fake_server(&e, || None); // never replies: every call is a late one
+    for _ in 0..2 {
+        assert_eq!(e.dispatch("PreToolUse", READ_IN).2, 0, "a late read passes");
+    }
+    assert!(e.fresh_slow_marker(), "the first streak writes the slow marker: {}", e.health_log());
+    let (_, young, held) = e.dispatch("PreToolUse", DENY_IN);
+    assert_eq!(held, 2, "a force push in a young slow run is held: {young:?}");
+    e.wait_down_marker_expired();
+    std::thread::sleep(Duration::from_millis(700)); // the run is now older than client.load_hold_max_ms, with no OK reply in it
+    for _ in 0..2 {
+        assert_eq!(e.dispatch("PreToolUse", READ_IN).2, 0, "a late read passes");
+    }
+    let (down, slow) = (e.fresh_down_marker(), e.fresh_slow_marker());
+    let (_, _, capped) = e.dispatch("PreToolUse", DENY_IN);
+    let log = e.health_log();
+    let journal = std::fs::read_to_string(e.eng().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+    assert!(down && !slow, "past the cap the slow streak marks the daemon down, not slow (down={down} slow={slow}): {log}");
+    assert_eq!(capped, 0, "past client.load_hold_max_ms a daemon that stays slow no longer holds a force push: {log}");
+    assert!(journal.contains("client_marker\tdown\thold_expired\t"), "the capped hold is counted with its reason: {journal}");
+}
+
+/// #910 review: the cap covers the hold of every slow reply, not only a tripped streak. With the default timing a single session
+/// never trips the streak (client.slow_down_n slow replies take longer than client.slow_window_ms), yet each late reply holds a
+/// force push (LAST_SLOW); past client.load_hold_max_ms with no OK reply the late reply marks the daemon down and the call passes.
+#[test]
+fn a_slow_daemon_that_never_trips_the_streak_holds_risky_calls_only_for_load_hold_max_ms() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new(
+        "slowcap1",
+        &[
+            ("AH_ENGINE_NOSPAWN", "1"),
+            ("AH_ENGINE_DISPATCH_IN_PROCESS", "0"),
+            ("AH_ENGINE_DEADLINE_MS", "150"),
+            ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "300"),
+            ("AH_ENGINE_SLOW_DOWN_N", "50"),
+            ("AH_ENGINE_BREAKER_N", "50"),
+            ("AH_ENGINE_LOAD_HOLD_MAX_MS", "600"),
+            ("AH_ENGINE_DOWN_MARKER_TTL_MS", "200"),
+        ],
+    );
+    fake_server(&e, || None); // never replies: every call is a late one, and the streak never trips
+    let (_, young, held) = e.dispatch("PreToolUse", DENY_IN);
+    assert_eq!(held, 2, "a force push answered late in a young run is held: {young:?}");
+    assert!(!e.fresh_slow_marker() && !e.fresh_down_marker(), "one late reply marks nothing: {}", e.health_log());
+    std::thread::sleep(Duration::from_millis(700)); // the run is now older than client.load_hold_max_ms, with no OK reply in it
+    let (_, _, capped) = e.dispatch("PreToolUse", DENY_IN);
+    let log = e.health_log();
+    let journal = std::fs::read_to_string(e.eng().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+    assert_eq!(capped, 0, "past client.load_hold_max_ms a late reply no longer holds a force push: {log}");
+    assert!(e.fresh_down_marker(), "the capped late reply marks the daemon down: {log}");
+    assert!(journal.contains("client_marker\tdown\thold_expired\t"), "the capped hold is counted with its reason: {journal}");
 }
 
 /// Codex P1 on the merge: in ack mode a daemon that acknowledged the request and then stopped beating must reach the hung path

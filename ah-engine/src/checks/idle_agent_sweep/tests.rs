@@ -23,7 +23,7 @@ fn iso(ms: f64) -> String {
 fn spawn(name: &str, ts: f64) -> Vec<String> {
     vec![
         json!({"type":"assistant","timestamp":iso(ts - 10.0),"message":{"content":[{"type":"tool_use","id":"tu1","name":"Agent","input":{}}]}}).to_string(),
-        json!({"type":"user","timestamp":iso(ts),"toolUseResult":{"status":"teammate_spawned","name":name,"agent_id":format!("{name}@t")},"message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"s"}]}}).to_string(),
+        json!({"type":"user","timestamp":iso(ts),"toolUseResult":{"status":"teammate_spawned","name":name,"agent_id":format!("a{name}-4e73c1cee12244e6"),"teammate_id":format!("{name}@t")},"message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"s"}]}}).to_string(),
     ]
 }
 
@@ -40,7 +40,19 @@ fn lines(v: Vec<String>) -> Vec<String> {
 fn a_teammate_that_reported_available_and_was_not_stopped_is_finished() {
     let mut l = spawn("amy", T0 - 3_000_000.0);
     l.push(report("amy", T0 - 2_000_000.0, "available"));
-    assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![scan::Finished { name: "amy".into(), idle_since_ms: T0 - 2_000_000.0 }]));
+    assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![scan::Finished { name: "amy".into(), idle_since_ms: T0 - 2_000_000.0, stop_id: "amy@t".into() }]));
+}
+
+/// PR #893 review: the id TaskStop takes is the spawn's teammate_id (`name@session-xxxx`); a stop by it ends the teammate.
+#[test]
+fn a_stop_by_the_teammate_id_ends_the_teammate() {
+    let stop = |id: &str| {
+        json!({"type":"assistant","timestamp":iso(T0 - 1_000_000.0),"message":{"content":[{"type":"tool_use","id":"ts7","name":"TaskStop","input":{"task_id":id}}]}}).to_string()
+    };
+    let mut l = spawn("amy", T0 - 3_000_000.0);
+    l.push(report("amy", T0 - 2_000_000.0, "available"));
+    l.push(stop("amy@t"));
+    assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![]), "a stop by the spawn's teammate_id");
 }
 
 #[test]

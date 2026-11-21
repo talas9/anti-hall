@@ -789,7 +789,7 @@ min = 0
 max = 1
 
 [client.load_hold_max_ms]
-doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
+doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there; and a daemon that answers late, client.slow_fallback_max_ms: every late reply, whether or not it trips client.slow_down_n, #910) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
 value = 300000
 env = "AH_ENGINE_LOAD_HOLD_MAX_MS"
 unit = "ms"

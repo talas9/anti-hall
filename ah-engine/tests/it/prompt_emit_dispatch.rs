@@ -60,6 +60,7 @@ impl Env {
             .env("AH_ENGINE_VERSION", "prompt-emit-dispatch")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -116,6 +117,7 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", e.home())
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", e.state())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -230,7 +232,7 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let transcript = e.dir.join("t.jsonl");
     let lines = [
         serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}),
-        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
+        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
         serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}),
     ];
     std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
@@ -387,7 +389,7 @@ fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
         let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
         let lines = std::cell::RefCell::new(vec![
             serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}).to_string(),
-            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
             serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}).to_string(),
         ]);
         let map = e.map("UserPromptSubmit", "idle-agent-sweep");
@@ -468,7 +470,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
     let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
     let mut lines = vec![
         serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}).to_string(),
-        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
+        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
         serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}).to_string(),
     ];
     let map = e.map("UserPromptSubmit", "idle-agent-sweep");
@@ -502,6 +504,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", e.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", e.state())
             .output()
             .unwrap();
@@ -538,7 +541,7 @@ fn teammate_idle_order_needs_a_complete_task_store() {
         let transcript = e.dir.join("t.jsonl");
         let lines = [
             serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}),
-            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
             serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}),
         ];
         std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();

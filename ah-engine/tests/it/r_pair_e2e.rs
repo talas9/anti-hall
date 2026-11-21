@@ -59,6 +59,7 @@ impl World {
             .env("AH_ENGINE_VERSION", "rpair-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

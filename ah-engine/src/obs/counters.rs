@@ -469,6 +469,9 @@ mod tests {
     #[test]
     fn an_abandoned_decision_is_logged_with_site_and_reason_once_per_interval() {
         let site = format!("test:abandoned-log-{}", std::process::id());
+        // the event log is only appended to in a state dir that exists (health::log_event drops the line otherwise): the test's scratch
+        // state dir is created by whichever test touches it first, so this one makes it, not relying on the order the tests run in
+        std::fs::create_dir_all(crate::paths::dir()).unwrap();
         let why = "workspace w-1 not drained: shortfall";
         let lines = || health::events().into_iter().filter(|e| e.kind == "abandoned" && e.code == site).collect::<Vec<_>>();
         for _ in 0..5 {

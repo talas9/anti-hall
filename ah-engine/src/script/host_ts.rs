@@ -214,7 +214,7 @@ pub(super) fn answer<S: AsRef<str>>(items: &[S], truncated: bool) -> String {
 }
 
 /// `teammates(path, tail)`: JSON text. The named in-process teammates the last `tail` bytes of a Claude transcript show finished
-/// but never stopped, in the order the scan lists them: `{"teammates":[{"name","idleSinceMs"}]}`; `null` when the file is
+/// but never stopped, in the order the scan lists them: `{"teammates":[{"name","idleSinceMs","stopId"}]}`; `null` when the file is
 /// missing, unreadable or empty; `{"unsure":true}` for a relative path or anything JavaScript might read differently.
 pub fn teammates(path: &str, tail: f64) -> String {
     use crate::checks::guardkit::tail::tail_lines_bounded;
@@ -231,7 +231,9 @@ pub fn teammates(path: &str, tail: f64) -> String {
         return unsure();
     }
     match found {
-        Ok(v) => json!({"teammates": v.iter().map(|f| json!({"name": f.name, "idleSinceMs": f.idle_since_ms})).collect::<Vec<_>>()}).to_string(),
+        Ok(v) => {
+            json!({"teammates": v.iter().map(|f| json!({"name": f.name, "idleSinceMs": f.idle_since_ms, "stopId": f.stop_id})).collect::<Vec<_>>()}).to_string()
+        }
         Err(_) => unsure(),
     }
 }

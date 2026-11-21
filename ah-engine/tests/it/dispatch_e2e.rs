@@ -1345,7 +1345,9 @@ fn two_built_in_blocks_both_reach_the_host_in_table_order() {
     assert_eq!(code, 2, "{out:?} {err:?}");
     let (git_at, command_at) = (
         err.find(ah_engine::defaults::raw("git.msg_force_push").str_field("what")),
-        err.find(ah_engine::defaults::raw("guardkit.brief_what").str_field("command-guard")),
+        // the command guard's reason opens with its plain name (guardkit.plain_names): since #857 its rule note outranks the generic
+        // headline (guardkit.brief_what) when both do not fit one line, so the headline is not a marker of this reason
+        err.find(&format!("{}:", ah_engine::defaults::raw("guardkit.plain_names").str_field("command-guard"))),
     );
     assert!(git_at.is_some() && command_at.is_some() && git_at < command_at, "both reasons, in table order: {err:?}");
 }
@@ -1647,10 +1649,26 @@ fn every_timeout_failing_closed_check_resolves_to_a_known_skip_name() {
 
 /// The older `ah-engine hook` path without `--event` (no dispatch table: the daemon dispatches) knows no entries, so no check policy
 /// can apply; a timeout there passes, and only the dispatcher path (`--event`, what ah-hook runs) answers by policy. Pinned so a change
-/// of either is deliberate.
+/// of either is deliberate. A call in no hold class passes (#901: a call in one is held, see the next test).
 #[test]
 fn the_legacy_hook_path_without_event_passes_a_timeout() {
     let e = Env::new("slow-legacy");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let (code, _, err) = e.run_with(
+        &["hook"],
+        false,
+        &bash("ls", &e.dir),
+        true,
+        &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW],
+    );
+    assert_eq!(code, 0, "{err:?}");
+}
+
+/// #901/#908: the same timeout on the legacy path holds a call in a hold class of `dispatch.capacity_hold` (a force push), exit 2 with the
+/// configured notice, never a pass: blocks protect without disrupting, so only the risky call is held.
+#[test]
+fn the_legacy_hook_path_without_event_holds_a_risky_call_on_a_timeout() {
+    let e = Env::new("slow-legacy-hold");
     let _d = scripted_daemon(&e, vec![NEVER]);
     let (code, _, err) = e.run_with(
         &["hook"],
@@ -1659,7 +1677,10 @@ fn the_legacy_hook_path_without_event_passes_a_timeout() {
         true,
         &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW],
     );
-    assert_eq!(code, 0, "{err:?}");
+    assert_eq!(code, 2, "{err:?}");
+    let fixed = ah_engine::defaults::text("dispatch.msg_capacity_hold");
+    let lead = fixed.split('{').next().unwrap_or("");
+    assert!(err.contains(lead.trim()), "the configured hold notice: {err:?}");
 }
 
 /// A daemon reply for a Bash PreToolUse call of `cmd` that answers each built-in check `decide` gives a code for (2 blocks with
@@ -1736,7 +1757,7 @@ fn a_timeout_notice_is_once_per_session_and_event_family() {
     let unchecked = "went through unchecked";
     let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "stop_hook_active": false}).to_string();
     let calls: Vec<(i32, bool)> =
-        [("PreToolUse", bash("git push --force origin main", &e.dir)), ("PreToolUse", bash("ls", &e.dir)), ("Stop", stop.clone()), ("Stop", stop)]
+        [("PreToolUse", bash("ls -la", &e.dir)), ("PreToolUse", bash("ls", &e.dir)), ("Stop", stop.clone()), ("Stop", stop)]
             .iter()
             .map(|(ev, p)| {
                 let (code, out, err) = e.run_with(&["hook", "--event", ev], false, p, true, &env);

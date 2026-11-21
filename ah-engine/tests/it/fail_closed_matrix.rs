@@ -529,6 +529,7 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", case.dir.join("home"))
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", case.dir.join("state"))
         .env("AH_ENGINE_VERSION", "fail-closed-matrix")
         // this suite pins the fail-closed machinery (guards.failOpenNonSafety off: every unanswered guard entry blocks, a Stop is held up to
@@ -952,6 +953,7 @@ fn an_engine_only_advisory_whose_script_fails_on_a_guard_event_allows() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", dir.join("home"))
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", dir.join("state"))
             .env("AH_ENGINE_SCRIPT_TIME_MS", "50")
             .stdin(Stdio::piped())

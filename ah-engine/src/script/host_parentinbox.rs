@@ -16,6 +16,7 @@
 //! | `piPid(pid)` | `pidIsAlive(pid)`: `true`, `false` or `null` (no opinion) |
 //! | `piAppChildren(worktree)` | the workspaces the app database lists as open children of the project around `worktree`: `{repo, children: [{id, worktreePath, sessionId}]}` (`appHasLiveChild` before the per-row eligibility) |
 //! | `piFinish(id, worktree, now)` | `{label, key, extras}`: the step-plan label of a working row (`planLib.findPlan` then `finishLabel`), `label` null when the workspace has no plan |
+//! | `piProgress(worktree)` | `{commitMs}`: when the worktree last committed (the supervisor's cached last-commit read), `null` when git cannot say |
 //! | `piMeshId(worktree)` | `{id}`: `resolveContext(worktree, { missingPath: 'ancestor' }).meshId`, `null` outside a checkout |
 //! | `piSessionPid(session)` | `sessionPidAlive(session)`: `true`, `false` (a record names it and every pid is dead) or `null` (no record) |
 //! | `piJev()` | whether the Jev triage of arrivals may be switched on (then a broadcast feed is labelled by Jev, which the engine does not do)
@@ -440,6 +441,15 @@ fn activity_of(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, last_ou
     Ok(json!({"ts": ts, "dormant": dormant_act && !alive, "idleAlive": dormant_act && alive, "idleMs": w.idle_ms()}))
 }
 
+/// The last delivery progress of a worktree: the time of its newest commit. The script reads a workspace's progress as the later of
+/// that and when it first saw the workspace working, because a fresh worktree holds the commit it was cut from, which can be days old.
+fn progress_of(wt: &str) -> R<Value> {
+    if wt.is_empty() || !Path::new(wt).is_dir() {
+        return Ok(json!({"commitMs": Value::Null}));
+    }
+    Ok(json!({"commitMs": liveness::worktree_activity(&crate::dsact::runner::System::configured(), wt)}))
+}
+
 fn mesh_id_of(wt: &str) -> R<Value> {
     let c = ident::resolve_context(wt, true)?;
     Ok(json!({"id": c.worktree_root.as_deref().map(ident::mesh_id_for_real_path)}))
@@ -718,6 +728,7 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         })?,
     )?;
     h.set("piMeshId", Function::new(c.clone(), |wt: String| -> rquickjs::Result<String> { with_settings(|_| answer(mesh_id_of(&wt))) })?)?;
+    h.set("piProgress", Function::new(c.clone(), |wt: String| -> rquickjs::Result<String> { with_settings(|_| answer(progress_of(&wt))) })?)?;
     h.set(
         "piSessionPid",
         Function::new(c.clone(), |sid: String| -> rquickjs::Result<String> {

@@ -66,12 +66,14 @@ impl Rig {
     }
 }
 
-const NOTICES: [&str; 5] = [
+const NOTICES: [&str; 7] = [
     "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
     "/Users/someone/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick primary-xxxx --quiet",
     "Goal check-in: how is the goal going?",
     "<cross-session-message from=\"abc\">hello</cross-session-message>",
     "<teammate-message teammate_id=\"w1\">done</teammate-message>",
+    "[wake-watch] 2 new mesh messages",
+    "<<autonomous-loop-dynamic>>",
 ];
 
 #[test]
@@ -107,6 +109,17 @@ fn notice_turn_a_notice_drops_both_reminders_with_the_switch_on() {
             assert_eq!((code, err.as_str()), (0, ""), "{host}: {out}");
             assert!(!out.contains(VERIFY_FIRST) && !out.contains(TASK_TRACKER), "{host} {notice}: {out}");
         }
+    }
+}
+
+/// PR #893 review: a /loop the human types is a human turn; only the scheduled wake's sentinel is a notice.
+#[test]
+fn notice_turn_a_human_typed_loop_command_keeps_both_reminders_with_the_switch_on() {
+    for (i, typed) in ["/loop 5m /babysit-prs", "/oh-my-claudecode:loop check the deploy"].iter().enumerate() {
+        let r = Rig::new(&format!("loop-{i}"));
+        let (code, out, err) = r.prompt("claude", typed, true);
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert!(out.contains(VERIFY_FIRST) && out.contains(TASK_TRACKER), "{typed}: {out}");
     }
 }
 

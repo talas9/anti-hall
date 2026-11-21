@@ -3024,7 +3024,7 @@ function scanCommand(cmd, depth, baseCwd) {
   let lastCdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
 
   if (d < TB.inlineDepth) {
-    for (const lit of callLiteralCommands(scanText)) {
+    for (const lit of callLiteralCommands(withoutGhTextValues(scanText))) {
       const hit = scanCommand(lit, d + 1, baseCwd);
       if (hit) return hit;
     }
@@ -3161,7 +3161,7 @@ function scanCommand(cmd, depth, baseCwd) {
     const lb = launcherBackstop(scanText, baseCwd);
     if (lb) return lb;
   }
-  return gitBackstop(scanText, d, heredocBodies, baseCwd);
+  return gitBackstop(withoutGhTextValues(scanText), d, heredocBodies, baseCwd);
 }
 
 function launcherBackstop(rawCmd, baseCwd) {
@@ -3416,6 +3416,41 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
     }
   }
   return null;
+}
+
+// #907: the free text a gh pr/issue/release command publishes (its --body / --title / --notes value, a --body-file path) is data, never a
+// command of this chain: the quote-blind backstop must not read "a; <command words>" inside it as one. The value is blanked in the text the
+// backstop and call-literal scans read (the credit scan keeps reading it); a value that can run something (`$(..)`, a backtick, `${..}`
+// outside single quotes) stays live. A gh command that itself merges or deletes is untouched: only the value words go.
+function withoutGhTextValues(cmd) {
+  if (typeof cmd !== 'string' || cmd.indexOf('gh') === -1) return cmd;
+  let out = cmd;
+  try {
+    for (const seg of splitSegments(cmd)) {
+      const ev = effectiveVerb(tokenize(seg));
+      if (!ev || ev.verb !== 'gh') continue;
+      const words = ev.args.map((a) => a.text);
+      if (!TB.ghSubs.some((w) => words.includes(w))) continue;
+      let masked = seg;
+      for (let i = 0; i < ev.args.length; i++) {
+        const w = ev.args[i].text;
+        let val = null;
+        if (TB.ghValueOpts.has(w) || TB.ghFileOpts.has(w)) { if (i + 1 < ev.args.length) { val = ev.args[i + 1]; i++; } }
+        else if (TB.ghValuePrefixes.some((p) => w.startsWith(p)) || TB.ghFilePrefixes.some((p) => w.startsWith(p))) val = ev.args[i];
+        if (!val || typeof val.raw !== 'string' || val.raw === '') continue;
+        if (/^'[^']*'$/.test(val.raw) === false && /[$`]/.test(val.raw)) continue; // can run something: stays live
+        const at = masked.indexOf(val.raw);
+        if (at < 0) continue;
+        const eq = ev.args[i] === val && val.raw.indexOf('=') >= 0 && !TB.ghValueOpts.has(w) ? val.raw.indexOf('=') + 1 : 0;
+        masked = masked.slice(0, at + eq) + '""' + masked.slice(at + val.raw.length);
+      }
+      if (masked !== seg && out.indexOf(seg) >= 0) out = out.replace(seg, () => masked);
+    }
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return cmd;
+  }
+  return out;
 }
 
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {

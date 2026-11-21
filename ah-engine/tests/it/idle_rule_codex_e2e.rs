@@ -47,6 +47,7 @@ impl World {
             .env("AH_ENGINE_VERSION", "idle-codex-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .envs(env.iter().copied())
             .current_dir(&self.dir)
             .stdin(Stdio::piped())

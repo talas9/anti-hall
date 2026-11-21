@@ -306,8 +306,8 @@ doc = "Advisory advice; {verb} close or stop, {call} the exact call for the firs
 value = "{verb} each finished agent you will not reuse."
 
 [idle_sweep.call_claude]
-doc = "The call that stops a Claude teammate; {id} is its name."
-value = 'TaskStop {"task_id":"{id}"}'
+doc = "The call that stops a Claude teammate; {id} is its name, {stop_id} the id TaskStop takes (the spawn result's idle_order.spawn_id_field, teammate_id `name@session-xxxx`; a bare name is answered No task found, ignored-rules audit 2026-11-20)."
+value = 'TaskStop {"task_id":"{stop_id}"}'
 
 [idle_sweep.call_codex]
 doc = "The call that closes a Codex agent; {id} is its id."
@@ -338,6 +338,10 @@ value = '[\x00-\x1F\x7F-\x9F]'
 [idle_sweep.prefilter]
 doc = "A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms)."
 value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\""]
+
+[idle_sweep.stop_id_sep]
+doc = "The separator of a teammate's TaskStop id (`name@session-xxxx`): in the waiting-teammate scan, a stop (or No task found answer) whose id matches no spawn in the window still names the teammate before the last separator."
+value = "@"
 
 [idle_sweep.task_stop_marks]
 doc = "How a TaskStop call appears in a transcript line."
@@ -655,11 +659,11 @@ value = "{name} ({min}m)"
 
 [idle_order.msg_workspace]
 doc = "The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically)."
-value = "⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to report, give it new work, or archive it: `{cli} archive-request {id}`."
+value = "⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Each must converge or be archived. Converge: give it a concrete next step and a deadline to finish its PR set. Archive: only once its PRs are pushed and nothing is in flight, via `{cli} archive-request {id}` (it archives nothing until the child runs `archive`).{merged}"
 
 [idle_order.msg_teammate]
-doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name."
-value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{id}\"}`) or give it new work."
+doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it."
+value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{stop_id}\"}`) or give it new work."
 
 [idle_order.kind_workspace]
 doc = "The kind label of a child workspace in the idle-order counter."
@@ -717,9 +721,13 @@ value = "toolUseResult"
 doc = "The field of that answer that names the spawned teammate; the answer's status is idle_sweep.spawned_status."
 value = "name"
 
+[idle_order.spawn_id_field]
+doc = "The field of that answer that holds the id TaskStop takes for the spawned teammate: teammate_id (`name@session-xxxx`). Not agent_id: that is the internal `a<name>-<hex>` id, and it and the bare name are both answered No task found (PR #893 review, CC 2.1.294 to 2.1.329). Kept for the {stop_id} of the orders, and a stop naming it counts as that teammate's stop."
+value = "teammate_id"
+
 [idle_order.msg_waiting]
-doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check."
-value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {list}. Check that the work is running; if not, resume it now (`SendMessage {\"to\":\"{id}\"}`) or stop it (`TaskStop {\"task_id\":\"{id}\"}`)."
+doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it. It asserts nothing about the job; it orders the check."
+value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {list}. Check that the work is running; if not, resume it now (`SendMessage {\"to\":\"{id}\"}`) or stop it (`TaskStop {\"task_id\":\"{stop_id}\"}`)."
 
 [idle_order.kind_waiting]
 doc = "The kind label of a teammate waiting on background work in the idle-order counter."
@@ -746,5 +754,43 @@ doc = "The resume order for a teammate or subagent that is idle past guards.idle
 value = "⚠️ Do now: resume or reassign {list}."
 
 [metric.idle_order]
-doc = "Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running)."
+doc = "Idle orders (GH #744) by kind (workspace, workspace_stall, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running)."
 value = { kind = "counter", unit = "orders", labels = ["kind", "outcome", "reason"] }
+
+# ---- #876: stalled and idle workspaces must converge or be archived ----
+
+[idle_order.msg_merged_tail]
+doc = "Appended to the idle-workspace order when some idle children are verified merged: they can be archived at once. Placeholders: {cli} the DevSwarm CLI, {list} the merged idle children (named with idle_order.item_ws), {id} the first one's id. The archive refuses a workspace with uncommitted or unpushed work."
+value = " Merged and idle, archive now: {list} (`{cli} archive {id}`; it refuses when work is uncommitted or unpushed)."
+
+[idle_order.sw_stall]
+doc = "Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on). A workspace that reports working but has made no commit for guards.stallOrderAfterMin minutes is named to the Primary on the idle-order schedule (idle_order.steps_min, idle_order.max_orders): the first time as a status check, then as an order to converge or be archived. Off: no stalled-delivery order."
+value = { section = "guards", key = "stallOrder", env = "ANTIHALL_STALL_ORDER", default = true }
+
+[idle_order.num_stall_after_min]
+doc = "Where the minutes without a commit before a working workspace counts as stalled are read from (guards.stallOrderAfterMin, default 60). Progress is the later of the worktree's newest commit and the worktree's creation, so a fresh workspace cut from an old commit is not stalled. A commit restarts the schedule."
+value = { section = "guards", key = "stallOrderAfterMin", env = "ANTIHALL_STALL_ORDER_AFTER_MIN", default = 60, min = 1 }
+
+[idle_order.kind_stall]
+doc = "The kind label of a stalled working workspace in the idle-order counter."
+value = "workspace_stall"
+
+[idle_order.kind_since]
+doc = "The kind label of the record of when each working workspace was first seen working (the stalled-delivery baseline: progress is the later of the worktree's newest commit and this). One file per project beside the order records; a workspace that is no longer working is dropped, so its next spell starts afresh."
+value = "since"
+
+[idle_order.item_stall]
+doc = "One stalled workspace in the order. Placeholders: {name} its title (or id), {min} minutes without a commit."
+value = "{name} (no commit {min}m)"
+
+[idle_order.msg_stall_advise]
+doc = "The first order for working workspaces with no commit past the stall threshold. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id."
+value = "⚠️ Do now: {n} workspace(s) report working but delivered nothing: {list}. Ask each for its PR status and next step (`{cli} relay {id}`)."
+
+[idle_order.msg_stall_order]
+doc = "The repeat order for workspaces still stalled after the first. Placeholders: {n}, {list}, {cli}, {id} as for idle_order.msg_stall_advise."
+value = "⚠️ Do now: {n} workspace(s) still stalled, no commit or PR progress: {list}. Each must converge (finish and open its PR; give it a concrete next step and a deadline) or be archived once its PRs are pushed and nothing is in flight (`{cli} archive-request {id}`; archive refuses uncommitted or unpushed work)."
+
+[metric.archive_refused_unsafe]
+doc = "Archives refused because the workspace's worktree held uncommitted changes, unpushed commits or a state git could not read (#876, devswarm_cli.archive_work_guard), by verb."
+value = { kind = "counter", unit = "archives", labels = ["verb"] }

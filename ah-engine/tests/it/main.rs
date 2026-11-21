@@ -56,6 +56,7 @@ mod gitcache_parity;
 mod gitcheck;
 mod handover_codex_e2e;
 mod handover_hygiene;
+mod home_isolation;
 mod hooks_files;
 mod idle_gate;
 mod idle_orders;

@@ -13,6 +13,7 @@ fn engine(home: &std::path::Path, args: &[&str], stdin: Option<&str>) -> (i32, S
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", home.join("state"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -37,6 +37,7 @@ impl Env {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.dir.join("home"))
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", self.dir.join("eng"))
             .env("AH_ENGINE_VERSION", "fb-test")
             .env("AH_ENGINE_NOSPAWN", "1");

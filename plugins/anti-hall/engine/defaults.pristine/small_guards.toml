@@ -1485,7 +1485,7 @@ value = 4096
 
 [coordinator_work.bookkeeping_verbs]
 doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
-value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose", "help", "verbs", "verb", "pull", "ack", "read"]
+value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose", "help", "verbs", "verb", "pull", "ack", "read", "nudge"]
 
 [coordinator_work.mesh_read_re]
 doc = "Regex source of a mesh mailbox read, peek or ack call; group 1 is the verb. A call that matches and is not counted as work is counted in coordinator_work_mesh_read_pass (#900)."
@@ -1504,8 +1504,8 @@ doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe with
 value = ["tail", "head", "wc", "grep", "egrep", "rg", "sort", "uniq", "cut", "nl"]
 
 [coordinator_work.bookkeeping_cli]
-doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh|agents|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs})."
-value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-(?:hook|engine)\s+mesh|ah-engine\s+(?:agents|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'''
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh|agents|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs}); the binary path may be quoted (`'.../ah-engine' mesh ...`, the form the engine's own ackCommand and nudge commands use)."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-(?:hook|engine)["\x27]?\s+mesh|ah-engine["\x27]?\s+(?:agents|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'''
 
 [coordinator_work.bookkeeping_filter]
 doc = "Regex source of one output-filter segment ({filters} are the allowed filter words); its arguments are flags, plain words or quoted strings."
