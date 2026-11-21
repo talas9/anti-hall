@@ -306,22 +306,20 @@ P make test || sh {fix}/test.sh
 H make || sh {fix}/tidy.sh
 H make || curl -s x | sh
 #
-# #928 (blocks protect, not disrupt): cleanup of a path the command or script made itself is no risky delete; a tool in a
-# project-local tool directory is known; a wrapper option's value is no command; the passes that were left (a variable in command
+# #928 (blocks protect, not disrupt): a script on the trusted list (path glob + content hash: ah-engine/test.sh and
+# ah-engine/tests/wrapper.sh at their dev hashes) is not matched; a tool in a project-local tool directory is known; a wrapper option's value is no command; the passes that were left (a variable in command
 # position with risky arguments, an argv list with a dynamic element)
-P bash {fix}/owntemp.sh
 P cd {fix}/../../.. && ./test.sh
-P t=$(mktemp -d); echo hi >"$t/a"; rm -rf "$t"
-P tmp=${TMPDIR:-/tmp}/own.$$; mkdir -p "$tmp"; trap 'rm -rf "$tmp"' EXIT
+P bash {fix}/../../wrapper.sh
+P {fix}/../../wrapper.sh
+H t=$(mktemp -d); echo hi >"$t/a"; rm -rf "$t"
+H tmp=${TMPDIR:-/tmp}/own.$; mkdir -p "$tmp"; trap 'rm -rf "$tmp"' EXIT
 P cd {fix} && tool --ci
 P sudo -u deploy ls /var/log
 P sudo -g staff -u deploy cat x
 P env -u FOO ls
 P timeout -s KILL 30 ls
 P nice -n 5 ls
-H bash {fix}/owntemp-reset.sh
-H bash {fix}/owntemp-mixed.sh
-H bash {fix}/owntemp-climb.sh
 H t=$(mktemp -d); t=/; rm -rf "$t"
 H t=$(mktemp -d); rm -rf "$t" /
 H t=$(mktemp -d); rm -rf "$t/.."
@@ -343,12 +341,19 @@ H python3 -c "import subprocess; op='push'; subprocess.run(['git', op])"
 H python3 -c "import subprocess,sys; subprocess.run(['git', *sys.argv[1:]])"
 H node -e "require('child_process').execFileSync('git', args)"
 P python3 -c "import subprocess; subprocess.run(['git', 'status'])"
-# #929 review: the own-temp exemption reads only what it can prove (strict values, quoted references, command position, order),
-# and a planted project-local tool is read for what it does
+# #929 review: no cleanup of a variable is exempt, whatever made it (fail closed: the own-temp exemption is gone; these were its
+# bypasses), and a planted project-local tool is read for what it does
 H t=; rm -rf "$t"/Users/someone
 H t=${HOME:-mktemp}; rm -rf "$t"
 H t="$(mktemp -d) $HOME"; rm -rf $t
 H t=$(mktemp -d); x=..; rm -rf "$t/$x"
+H t=$(mktemp -d); rm -rf "$t/ss-$1"
+H PATH=/x:$PATH t=$(mktemp -d); rm -rf "$t"
+H t=$(mktemp -d); read t; rm -rf "$t"
+H t=$(mktemp -d); eval "t=/"; rm -rf "$t"
+H t=$(mktemp -d); echo / | xargs rm -rf
+H if x; then t=/; else t=$(mktemp -d); fi; rm -rf "$t"
+H t=$(mktemp -d); t=$HOME; rm -rf "$t"
 H t=$(mktemp -d); IFS= read -r t; rm -rf "$t"
 H t=$(dirname "$(mktemp -d)"); rm -rf "$t"
 H t=$(mktemp -d); printf -v t %s "$HOME"; rm -rf "$t"
@@ -364,8 +369,8 @@ H rm -rf "$t/x"; t=$(mktemp -d)
 H cd {fix} && pushtool928
 H sudo git push -f
 H sudo -u x rm -rf /
-P t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; echo hi >"$t/a"
-P t=$(mktemp -d); if [ -d "$t" ]; then rm -rf "$t"; fi
+H t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; echo hi >"$t/a"
+H t=$(mktemp -d); if [ -d "$t" ]; then rm -rf "$t"; fi
 H t=$(mktemp -d); set -- " /"; rm -rf "$t/a"$1
 H false && t=$(mktemp -d); rm -rf "$t/Users/x"
 H false && HOME=$(mktemp -d); rm -rf "$HOME"
@@ -374,4 +379,4 @@ H f() { HOME=$(mktemp -d); }; rm -rf "$HOME"
 H if false; then t=$(mktemp -d) || exit; a=(); fi; rm -rf "$t/x"
 H mktemp() { echo "$HOME"; }; t=$(mktemp) || exit; rm -rf "$t"
 H t=$(mktemp -d) || exit; fi; rm -rf "$t/x"
-P t=$(mktemp -d) || exit 1; rm -rf "$t/x"
+H t=$(mktemp -d) || exit 1; rm -rf "$t/x"

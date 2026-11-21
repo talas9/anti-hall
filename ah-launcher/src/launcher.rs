@@ -572,14 +572,6 @@ impl L {
         // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a command it can not balance is held
         // under `unreadable` (#918 review: the quote-blind raw text alone would let any such tail switch the reading off)
         let ncfg = Self::capacity_norm_cfg(cfg);
-        // #928: the cleanup of a path the command made itself (`t=$(mktemp -d); ..; rm -rf "$t"`) is no risky delete
-        let (blanked, own) = ncfg
-            .as_ref()
-            .map_or((command.to_string(), 0), |c| shellwords::blank_own_temp(command, c));
-        for _ in 0..own {
-            limits::bump(Ctr::CapacityOwnTemp);
-        }
-        let command = blanked.as_str();
         let norm = ncfg
             .as_ref()
             .and_then(|c| shellwords::normalise(command, c));
@@ -808,14 +800,16 @@ impl L {
                 Ctr::CapacityScriptRead,
             ))
         };
-        // #928: the cleanup of a path a script made itself is no risky delete (counted once per script, held or not)
-        let own_temp = |body: &str| {
-            let (b, n) = shellwords::blank_own_temp(body, ncfg);
-            for _ in 0..n {
-                limits::bump(Ctr::CapacityOwnTemp);
-            }
-            b
-        };
+        // #928: the trusted-scripts list: (repo-relative path glob, sha256 of the file's content)
+        let trusted: Vec<(&str, &str)> = sc
+            .get("trusted")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| Some((e.get("path")?.as_str()?, e.get("sha256")?.as_str()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut unread = false;
         let mut seen: Vec<String> = Vec::new();
         let mut queue: std::collections::VecDeque<(String, usize)> =
@@ -828,6 +822,30 @@ impl L {
                 break;
             }
             seen.push(path.clone());
+            // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's)
+            // is not matched; any edit changes the hash and the script is checked like any other
+            if !trusted.is_empty()
+                && let Some((rel, bytes)) = shellwords::script_identity(
+                    &path,
+                    &dirs,
+                    home.as_deref(),
+                    int("trusted_max_bytes"),
+                    &ncfg.repo_marker,
+                )
+            {
+                use sha2::{Digest, Sha256};
+                let sha: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                if trusted
+                    .iter()
+                    .any(|(g, h)| shellwords::glob_match(g, &rel) && h.eq_ignore_ascii_case(&sha))
+                {
+                    limits::bump(Ctr::CapacityTrustedScript);
+                    continue;
+                }
+            }
             match shellwords::read_script(
                 &path,
                 &dirs,
@@ -836,7 +854,6 @@ impl L {
                 int("scan_bytes"),
             ) {
                 shellwords::Script::Text(body) => {
-                    let body = own_temp(&body);
                     let norm = shellwords::normalise(&body, ncfg);
                     let texts: Vec<&str> = match &norm {
                         Some(nb) => std::iter::once(nb.text.as_str())
@@ -880,7 +897,6 @@ impl L {
                     }
                 }
                 shellwords::Script::Large(body) => {
-                    let body = own_temp(&body);
                     for (name, pat) in rules
                         .iter()
                         .filter(|(name, _)| scan_rules.contains(&name.as_str()))
@@ -953,24 +969,6 @@ impl L {
             cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
             cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
             cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
-            own_cleanup: strs(cfg.get("own_temp").and_then(|o| o.get("cleanup"))),
-            own_creators: strs(cfg.get("own_temp").and_then(|o| o.get("creators"))),
-            own_bases: strs(cfg.get("own_temp").and_then(|o| o.get("bases"))),
-            own_markers: strs(cfg.get("own_temp").and_then(|o| o.get("markers"))),
-            own_prefixes: strs(cfg.get("own_temp").and_then(|o| o.get("prefixes"))),
-            own_leads: strs(cfg.get("own_temp").and_then(|o| o.get("leads"))),
-            own_string_leads: strs(cfg.get("own_temp").and_then(|o| o.get("string_leads"))),
-            own_keep: strs(cfg.get("own_temp").and_then(|o| o.get("keep"))),
-            own_blocks: cfg
-                .get("own_temp")
-                .and_then(|o| o.get("blocks"))
-                .and_then(|t| t.as_table())
-                .map(|t| t.iter().filter_map(|(k, v)| v.as_str().map(|c| (k.to_string(), c.to_string()))).collect())
-                .unwrap_or_default(),
-            own_branches: strs(cfg.get("own_temp").and_then(|o| o.get("branches"))),
-            own_guards: strs(cfg.get("own_temp").and_then(|o| o.get("guards"))),
-            own_functions: strs(cfg.get("own_temp").and_then(|o| o.get("functions"))),
-            own_cases: strs(cfg.get("own_temp").and_then(|o| o.get("cases"))),
             local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
             repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
             wrapper_opts: cfg

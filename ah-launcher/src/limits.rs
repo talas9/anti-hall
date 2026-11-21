@@ -44,7 +44,7 @@ pub enum Ctr {
     CapacityScriptUnread,
     CapacityGhUnknown,
     CapacityUnknownCommand,
-    CapacityOwnTemp,
+    CapacityTrustedScript,
     CapacityLocalTool,
     CapacityWrapperOpt,
 }
@@ -84,7 +84,7 @@ impl Ctr {
             Ctr::CapacityScriptUnread => "capacity_script_unread",
             Ctr::CapacityGhUnknown => "capacity_gh_unknown",
             Ctr::CapacityUnknownCommand => "capacity_unknown_command",
-            Ctr::CapacityOwnTemp => "capacity_own_temp",
+            Ctr::CapacityTrustedScript => "capacity_trusted_script",
             Ctr::CapacityLocalTool => "capacity_local_tool",
             Ctr::CapacityWrapperOpt => "capacity_wrapper_opt",
         }
@@ -118,7 +118,7 @@ impl Ctr {
         Ctr::CapacityScriptUnread,
         Ctr::CapacityGhUnknown,
         Ctr::CapacityUnknownCommand,
-        Ctr::CapacityOwnTemp,
+        Ctr::CapacityTrustedScript,
         Ctr::CapacityLocalTool,
         Ctr::CapacityWrapperOpt,
     ];
