@@ -56,6 +56,8 @@ What the automatic guards check and how to read a block.
 - `context.protocolFullAfterCompact` = true: Full rules on compaction
 - `context.protocolOnce` = true: Once-per-session protocol text switch
 - `guards.keepaliveCountsScheduled` = false: Count scheduled turns toward keepalives
+- `guards.stallOrderAfterMin` = 60: Where the minutes without a commit before a working workspace counts as stalled are read from...
+- `guards.stallOrder` = true: Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on)
 - `guards.wasteWarnTokens` = 1000: First saved-token warning threshold
 - `guards.wasteWarnWindowMin` = 60: Saved-token warning window, minutes
 - `guards.wasteWarn` = true: Warn when saved-token levels rise

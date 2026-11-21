@@ -3454,10 +3454,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_order.file_prefix` | `idle` |  |  | The file name prefix of an idle-order record (<prefix>-<kind>-<scope>.json); stale ones are pruned by that prefix. |
 | `idle_order.idle_marker` | `idle_notification` |  |  | The type of the notice a teammate sends when its turn ends (read from the transcript). |
 | `idle_order.item_mate` | `{name} ({min}m)` |  |  | One idle teammate in the order. Placeholders: {name}, {min} minutes idle. |
+| `idle_order.item_stall` | `{name} (no commit {min}m)` |  |  | One stalled workspace in the order. Placeholders: {name} its title (or id), {min} minutes without a commit. |
 | `idle_order.item_task` | `task {task}, owner {name}` |  |  | One open task of an idle owner in the resume order. Placeholders: {task} the task subject, {name} the owner, {min} minutes idle. |
 | `idle_order.item_ws` | `{name} ({min}m)` |  |  | One idle workspace in the order. Placeholders: {name} its title (or id), {min} minutes idle. |
 | `idle_order.key_max` | `80` |  |  | Most characters of a scope or subject id kept in a record file name. |
 | `idle_order.kind_open_task` | `teammate_open_task` |  |  | The kind label of an idle teammate that still owns an open task in the idle-order counter and record file name (GH #764). |
+| `idle_order.kind_since` | `since` |  |  | The kind label of the record of when each working workspace was first seen working (the stalled-delivery baseline: progress is the later of the worktree's newest commit and this). One file per project beside the order records; a workspace that is no longer working is dropped, so its next spell starts afresh. |
+| `idle_order.kind_stall` | `workspace_stall` |  |  | The kind label of a stalled working workspace in the idle-order counter. |
 | `idle_order.kind_teammate` | `teammate` |  |  | The kind label of a teammate (or Codex agent) in the idle-order counter. |
 | `idle_order.kind_waiting` | `teammate_waiting` |  |  | The kind label of a teammate waiting on background work in the idle-order counter. |
 | `idle_order.kind_workspace` | `workspace` |  |  | The kind label of a child workspace in the idle-order counter. |
@@ -3467,11 +3470,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_order.max_orders` | `6` |  |  | Most orders given for one idle workspace or teammate; after that it is left alone (counted as suppressed, reason cap). |
 | `idle_order.more` | ` +{m} more` |  |  | Appended to the named children when more are idle. Placeholder: {m}. |
 | `idle_order.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (idle times are kept in ms, settings in minutes). |
+| `idle_order.msg_merged_tail` | ` Merged and idle, archive now: {list} (`{cli} archive {id}`; it refuses when ...` |  |  | Appended to the idle-workspace order when some idle children are verified merged: they can be archived at once. Placeholders: {cli} the DevSwarm CLI, {list} the merged idle children (named with idle_order.item_ws), {id} the first one's id. The archive refuses a workspace with uncommitted or unpushed work. |
 | `idle_order.msg_open_task` | `⚠️ Do now: resume or reassign {list}.` |  |  | The resume order for a teammate or subagent that is idle past guards.idleOrderAfterMin while it still owns a pending or in_progress task. It repeats on idle_order.steps_min and starts again when the owner worked and went idle again. Placeholders: {n} how many, {list} the tasks and owners, {id} the first owner's name. |
+| `idle_order.msg_stall_advise` | `⚠️ Do now: {n} workspace(s) report working but delivered nothing: {list}. Ask...` |  |  | The first order for working workspaces with no commit past the stall threshold. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. |
+| `idle_order.msg_stall_order` | `⚠️ Do now: {n} workspace(s) still stalled, no commit or PR progress: {list}. ...` |  |  | The repeat order for workspaces still stalled after the first. Placeholders: {n}, {list}, {cli}, {id} as for idle_order.msg_stall_advise. |
 | `idle_order.msg_teammate` | `⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, the...` |  |  | The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it. |
 | `idle_order.msg_waiting` | `⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {l...` |  |  | The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it. It asserts nothing about the job; it orders the check. |
-| `idle_order.msg_workspace` | `⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to repo...` |  |  | The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically). |
+| `idle_order.msg_workspace` | `⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Each must conver...` |  |  | The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically). |
 | `idle_order.num_after_min` | `5 entries` |  |  | Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default 30): a child workspace with no activity, no open plan and no unread mail, or a teammate that delivered its report and owns no open task, that long gets the order. A workspace idle this long also needs no mailbox wake path. |
+| `idle_order.num_stall_after_min` | `5 entries` |  |  | Where the minutes without a commit before a working workspace counts as stalled are read from (guards.stallOrderAfterMin, default 60). Progress is the later of the worktree's newest commit and the worktree's creation, so a fresh workspace cut from an old commit is not stalled. A commit restarts the schedule. |
 | `idle_order.re_gone` | `No task found with ID: ([^<"\\\s]*[^<"\\\s.])` |  |  | The host's answer to a stop of a teammate that no longer exists (JavaScript regex over a transcript line, group 1 = the name): that teammate is gone too. |
 | `idle_order.re_idle_json` | `\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}` |  |  | The idle_notification object inside a teammate message (JavaScript regex, first match). |
 | `idle_order.re_plan_done` | `^steps (\d+)/\1 done` |  |  | A workspace's step-plan finish label that says every step is done (JavaScript regex; the head of mesh_write.lbl_all_done, 'steps N/N done'). A plan with that label is finished, not open: its workspace is idle like one with no plan. |
@@ -3484,6 +3491,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_order.spawn_result_field` | `toolUseResult` |  |  | The top-level field of a transcript line that holds the host's answer to a tool call. A spawn is read from it structurally (the line parsed as JSON), because a spawn record's prompt and description carry braces a pattern cannot step over: a teammate spawned again under a name that was stopped or gone is a new one, so it is listed again when it idles. |
 | `idle_order.steps_min` | `30, 60, 120` |  |  | The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
 | `idle_order.sw_enabled` | `4 entries` |  |  | Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before. |
+| `idle_order.sw_stall` | `4 entries` |  |  | Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on). A workspace that reports working but has made no commit for guards.stallOrderAfterMin minutes is named to the Primary on the idle-order schedule (idle_order.steps_min, idle_order.max_orders): the first time as a status check, then as an order to converge or be archived. Off: no stalled-delivery order. |
 | `idle_order.task_joiner` | `; ` |  |  | Separator between the open tasks named in one resume order. |
 | `idle_order.task_max` | `80` |  |  | Most characters of an open task's subject named in the resume order; a longer one is cut with an ellipsis. |
 | `idle_order.waiting_after_min` | `15` |  |  | Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner. |
@@ -6733,7 +6741,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `465 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `467 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9210,7 +9218,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `478 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `480 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -11444,6 +11452,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.act_msg_relay_unknown_receipt` | `no read receipt {rid} for {id} — re-run `inbox read-primary {caller}`` |  |  | The refusal when the receipt does not exist. Placeholders: {rid}, {id} (JSON-quoted), {caller}. |
 | `devswarm_cli.act_msg_tombstone_failed` | `failed to tombstone registry (rolled back — nothing archived): {error}` |  |  | The error when the registry tombstone could not be applied (the archive is rolled back). Placeholder: {error}. |
 | `devswarm_cli.act_msg_unlink_failed` | `failed to remove active descriptor after tombstone — recovery-intent persiste...` |  |  | The error when the active descriptor could not be removed after the tombstone. Placeholder: {error}. |
+| `devswarm_cli.act_msg_unsafe_work` | `refused to archive {id}: {wt} holds {what}. Have it commit and push (and open...` |  |  | The archive refusal for a workspace with unsaved work. Placeholders: {id} the quoted workspace id, {what} the unsaved work, {wt} its worktree. |
 | `devswarm_cli.act_msg_verb_failed` | `verb returned ok:false` |  |  | The message of a logged failure that carries neither an error nor a reason. |
 | `devswarm_cli.act_notice_component` | `devswarm-maintainer-notice` |  |  | The component of the maintainer-notice central-log events. |
 | `devswarm_cli.act_notice_kind_post` | `post` |  |  | The operation of the maintainer-notice post events. |
@@ -11489,6 +11498,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.act_sys_mkdir` | `mkdir` |  |  | The system call name Node puts in the message of a failed directory creation. |
 | `devswarm_cli.act_sys_open` | `open` |  |  | The system call name Node puts in the message of a failed file open (write or append). |
 | `devswarm_cli.act_sys_rename` | `rename` |  |  | The system call name Node puts in the message of a failed rename. |
+| `devswarm_cli.act_unsafe_after_park` | `a commit made after the park (no park branch holds it)` |  |  | The unsaved-work part of a respawn's archive refusal: the workspace committed after its work was parked, and no park branch holds that commit. |
+| `devswarm_cli.act_unsafe_dirty` | `uncommitted changes` |  |  | The unsaved-work part of an archive refusal: the tree has uncommitted changes. |
+| `devswarm_cli.act_unsafe_join` | ` and ` |  |  | Separator between the parts of the unsaved work in an archive refusal. |
+| `devswarm_cli.act_unsafe_unpushed` | `{n} unpushed commit(s)` |  |  | The unsaved-work part of an archive refusal: commits no origin ref has. Placeholder: {n}. |
+| `devswarm_cli.act_unsafe_unreadable` | `an unpushed-commit count git could not read` |  |  | The unsaved-work part of an archive refusal: git could not say whether commits are unpushed. |
+| `devswarm_cli.act_unsafe_unreadable_why` | `a worktree git could not read ({why})` |  |  | The whole unsaved-work part when git could not read the worktree at all. Placeholder: {why} git's reason. |
 | `devswarm_cli.action_app_archived_skip` | `app-archived-skip` |  |  | The `action` of a registration refused because the DevSwarm app archived the workspace. |
 | `devswarm_cli.action_app_state` | `app-state` |  |  | The `action` of an app-state result. |
 | `devswarm_cli.action_app_sync` | `app-sync` |  |  | The `action` of an app-sync result. |
@@ -11590,8 +11605,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.app_why_unverified` | `the archive could not be verified` |  |  | The reason when no reason is known. |
 | `devswarm_cli.archive_marker` | `[[ANTIHALL_ARCHIVE_REQUEST]]` |  |  | The machine-readable marker that starts an archive request message. |
 | `devswarm_cli.archive_reminder` | `Ensure you have verified merged + tested + deployed per your repo policy befo...` |  |  | The reminder an archive-request result carries for the Primary. |
+| `devswarm_cli.archive_request_needs` | `NOT archived yet: the child must confirm with its user and run `archive {id}`...` |  |  | What an archive-request answer says it still needs: the request only posts a message, it archives nothing. Placeholder: {id} the workspace. |
 | `devswarm_cli.archive_tail` | `your parent asks you to archive this workspace; confirm with your user, then ...` |  |  | The closing words of an archive request message. |
 | `devswarm_cli.archive_urgency` | `high` |  |  | The urgency of an archive request message (fixed: it is a reminder, never an emergency). |
+| `devswarm_cli.archive_work_guard` | `true` |  |  | Whether `archive` (and the direct archive of `archive-request`) first checks the workspace's worktree and refuses when it holds uncommitted changes, commits no origin ref has, or a state git cannot read. Off lets an archive discard such work. A worktree that no longer exists is archived (nothing is lost). Respawn parks the work on a pushed branch first; its archive then refuses only a commit made after the park. |
 | `devswarm_cli.cause_caller_not_registered` | `caller-not-registered` |  |  | The refusal cause when the caller has no registry row. |
 | `devswarm_cli.cause_ownership_mismatch` | `ownership-mismatch` |  |  | The refusal cause when the caller owns a different registry row. |
 | `devswarm_cli.cause_unregistered_workspace` | `unregistered-workspace` |  |  | The refusal cause for a workspace id that has no descriptor, registry row or messages. |
@@ -15926,7 +15943,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest` | counter | sessions | state | Session starts by rule-digest state (on, off), for blocks per 100 matching calls with the digest on versus off. |
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
-| `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running). |
+| `archive_refused_unsafe` | counter | archives | verb | Archives refused because the workspace's worktree held uncommitted changes, unpushed commits or a state git could not read (#876, devswarm_cli.archive_work_guard), by verb. |
+| `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, workspace_stall, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running). |
 | `misfire_suppressed` | counter | suppressions | guard, reason | Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason. |
 | `auto_handover_fired` | counter | fires | via | Auto-handover fires (the once-per-arm handover order), by via: pct (the percent line), tokens (autoHandover.maxTokens), workspace (a DevSwarm workspace past autoHandover.workspaceMaxTokens, GH #884: ordered to a fresh session), and the same words with the Stop-side prefix (ctxbudget.ah_via_stop_prefix) when the Stop check fired it. |
 | `context_shrunk` | counter | contexts | class | Hook contexts replaced by a summary line and a file at an event in context_size.events, by class (context_size.label_pinned, context_size.label_low). A pinned one is shrunk only by an explicit context_size.hook_caps row while context_size.sw_keep_pinned is on. |
