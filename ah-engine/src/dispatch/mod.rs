@@ -32,6 +32,7 @@ pub mod native;
 pub mod node;
 pub mod notice;
 pub mod plan;
+pub mod shellwords;
 pub mod shrink;
 pub mod spill;
 pub mod stopchan;
@@ -437,32 +438,90 @@ pub(crate) fn capacity_open() -> bool {
     path_open("capacity")
 }
 
+/// What [`capacity_decide`] found: the hold rule (if any), and whether the answer came only through the shell-word normalisation
+/// (#907: the raw text alone would have passed it) or whether a gh text value kept a rule from matching (counted by the caller).
+pub(crate) struct Decision {
+    pub rule: Option<String>,
+    pub normalised: bool,
+    pub text_exempt: bool,
+}
+
+/// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
+/// switches that step off, the raw text alone is matched then).
+fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
+    if cfg.get("normalise").and_then(|v| v.as_integer()) == Some(0) {
+        return None;
+    }
+    let strs = |v: Option<&'static defaults::V>| -> Vec<String> {
+        v.and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect()).unwrap_or_default()
+    };
+    let (text, git) = (cfg.get("text"), cfg.get("git"));
+    Some(shellwords::Cfg {
+        text_verb: text.and_then(|t| t.get("verb")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        text_subs: strs(text.and_then(|t| t.get("subs"))),
+        text_opts: strs(text.and_then(|t| t.get("opts"))),
+        git_rule: git.and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        git_known: strs(git.and_then(|g| g.get("known"))),
+        git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
+        git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
+    })
+}
+
 /// The risk class a guard call falls in when no check could decide it for lack of capacity (`dispatch.capacity_hold`): `Some(rule)`
 /// when its shell command matches a hold rule (an irreversible or shared-remote action: a push, a merge, a recursive delete, a deploy,
 /// a publish), which is held with a reason and a retry hint; `None` for anything else (read-only or a reversible local change), which
 /// passes with the capacity notice. The classes are config, never code; a rule that does not compile is skipped and logged.
 pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
+    capacity_decide(payload).rule
+}
+
+/// [`capacity_hold`] with how it was decided. The rules match the raw command and the command read the way the shell reads it
+/// (#907: in-word quotes and backslashes gone, only an unquoted separator splits, the free text of a gh pr/issue/release command
+/// blanked); a git subcommand that is no known one (an alias, an external command) is held under its own rule.
+pub(crate) fn capacity_decide(payload: &Value) -> Decision {
+    let none = Decision { rule: None, normalised: false, text_exempt: false };
     let cfg = defaults::raw("dispatch.capacity_hold");
-    let tool = payload.get("tool_name").and_then(Value::as_str)?;
+    let Some(tool) = payload.get("tool_name").and_then(Value::as_str) else { return none };
     let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
     if !tools.contains(&tool) {
-        return None;
+        return none;
     }
     let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
-    let command = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str)?;
-    let rules = cfg.get("rules").and_then(|v| v.as_table())?;
-    if capacity_read_only(cfg, command) {
-        return None;
+    let Some(command) = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str) else { return none };
+    let Some(rules) = cfg.get("rules").and_then(|v| v.as_table()) else { return none };
+    let norm = capacity_norm_cfg(cfg).and_then(|c| shellwords::normalise(command, &c));
+    if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) {
+        return none;
     }
+    // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
+    let texts: Vec<&str> = match &norm {
+        Some(n) if n.stripped => vec![n.text.as_str()],
+        Some(n) => vec![command, n.text.as_str()],
+        None => vec![command],
+    };
+    let mut raw_only_hit = false;
     for (name, pat) in rules {
         let Some(pat) = pat.as_str() else { continue };
         match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
-            Ok(re) if re.is_match(command) => return Some(name.to_string()),
-            Ok(_) => {}
+            Ok(re) => {
+                let hit = texts.iter().position(|t| re.is_match(t));
+                if let Some(at) = hit {
+                    return Decision { rule: Some(name.to_string()), normalised: texts.len() > 1 && at == 1 && !re.is_match(command), text_exempt: false };
+                }
+                raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
+            }
             Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
         }
     }
-    None
+    if let Some(n) = &norm {
+        if n.git_unknown.is_some() {
+            let rule = cfg.get("git").and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
+            if !rule.is_empty() {
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false };
+            }
+        }
+    }
+    Decision { rule: None, normalised: false, text_exempt: raw_only_hit }
 }
 
 /// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
@@ -488,7 +547,14 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
 /// retry hint) when [`capacity_hold`] puts it in a hold class, else `None` (it passes).
 pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
-    let rule = capacity_hold(payload)?;
+    let d = capacity_decide(payload);
+    if d.text_exempt {
+        crate::obs::counters::advisory("capacity_hold", "text_exempt");
+    }
+    let rule = d.rule?;
+    if d.normalised {
+        crate::obs::counters::advisory("capacity_hold", "normalised");
+    }
     let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity_hold", &format!("{event}: {rule}"));
     crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
@@ -1365,6 +1431,56 @@ mod tests {
         assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str("("))]), read), "an uncompilable read_only exempts nothing");
         assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str(""))]), read), "an empty read_only exempts nothing");
         assert!(capacity_read_only(&with(vec![("read_only", ro)]), read), "no read_only_unless: the read passes");
+    }
+
+    /// #907: the rule each bypass is held under, and what the normalisation changes: a gh text value is data (the command words are not),
+    /// a quoted separator hides nothing, an alias is held without reading git config, and the switch `normalise` 0 restores raw matching.
+    #[test]
+    fn capacity_hold_reads_the_command_the_way_the_shell_does() {
+        let decide = |c: &str| capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        let rule = |c: &str| decide(c).rule;
+        // in-word quoting and a quoted separator: held by the rule they always meant, found only through the normalised text
+        for (cmd, want, via_norm) in [
+            ("g\"it\" pu\"sh\" -f", "git-push", true),
+            ("git -C \"a;b\" push -f", "git-push", true),
+            ("git pf", "git-unknown-subcommand", true),
+            ("git -C /r -c a=b pf", "git-unknown-subcommand", true),
+            ("r\\m -rf /x", "recursive-delete", true),
+            ("cat f | python3 -", "pipe-to-interpreter", false), // a new rule, not a new reading
+            ("cat f | node", "pipe-to-interpreter", false),
+            ("python3 <<'EOF'\nx\nEOF", "interpreter-heredoc", false),
+        ] {
+            let d = decide(cmd);
+            assert_eq!(d.rule.as_deref(), Some(want), "{cmd:?}");
+            assert_eq!(d.normalised, via_norm, "{cmd:?}: counted as found by the normalised text only");
+        }
+        // a gh text value is data; the command words still decide
+        assert_eq!(rule("gh issue create --title t --body \"x; git push -f\"").as_deref(), Some("gh-remote-change"));
+        assert_eq!(rule("gh pr merge 1 --body \"x\"").as_deref(), Some("gh-remote-change"));
+        assert!(decide("gh pr view 1 --json title --jq .title").rule.is_none());
+        // a value that runs something is not data
+        assert_eq!(rule("gh pr view 1 --title \"$(git push -f)\"").as_deref(), Some("git-push"));
+        // reads and known subcommands pass
+        for c in ["git status", "git -C \"a;b\" log", "echo \"a; git push\"", "cat f | python3 script.py", "cat f | python3 -c 'print(1)'"] {
+            assert_eq!(rule(c), None, "{c:?}");
+        }
+    }
+
+    /// #907: `normalise` 0 turns the shell-word reading off (raw matching, as before): the in-word spelling passes again.
+    #[test]
+    fn normalise_zero_restores_raw_matching() {
+        let shipped = defaults::raw("dispatch.capacity_hold");
+        let off = defaults::V::Table(Box::leak(
+            shipped.as_table().unwrap().iter().map(|(k, v)| (*k, if *k == "normalise" { defaults::V::Int(0) } else { *v })).collect::<Vec<_>>().into_boxed_slice(),
+        ));
+        assert!(capacity_norm_cfg(&off).is_none());
+        assert!(capacity_norm_cfg(shipped).is_some());
+    }
+
+    /// The two copies of the shell-word module (the engine's and the launcher's) are one file.
+    #[test]
+    fn the_launcher_carries_the_same_shellwords_module() {
+        assert_eq!(include_str!("shellwords.rs"), include_str!("../../../ah-launcher/src/shellwords.rs"));
     }
 
     /// #901: a hold rule that does not compile is skipped, which fails open silently. Every shipped rule and both read-exemption keys

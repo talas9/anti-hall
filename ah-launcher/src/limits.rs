@@ -37,9 +37,11 @@ pub enum Ctr {
     ColdWaitHashedExpired,
     CapacityHold,
     SlowMarkerPass,
+    CapacityHoldNormalised,
+    CapacityTextExempt,
 }
 
-const NCTR: usize = 21;
+const NCTR: usize = 23;
 static COUNTERS: [AtomicU64; NCTR] = [const { AtomicU64::new(0) }; NCTR];
 
 impl Ctr {
@@ -67,6 +69,8 @@ impl Ctr {
             Ctr::ColdWaitHashedExpired => "cold_wait_hashed_expired",
             Ctr::CapacityHold => "capacity_hold",
             Ctr::SlowMarkerPass => "slow_marker_pass",
+            Ctr::CapacityHoldNormalised => "capacity_hold_normalised",
+            Ctr::CapacityTextExempt => "capacity_text_exempt",
         }
     }
     const ALL: [Ctr; NCTR] = [
@@ -91,6 +95,8 @@ impl Ctr {
         Ctr::ColdWaitHashedExpired,
         Ctr::CapacityHold,
         Ctr::SlowMarkerPass,
+        Ctr::CapacityHoldNormalised,
+        Ctr::CapacityTextExempt,
     ];
 }
 
