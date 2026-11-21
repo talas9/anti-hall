@@ -213,6 +213,10 @@ value = { section = "agents", key = "nudgeScope", env = "ANTIHALL_AGENT_NUDGE_SC
 doc = "Telemetry words of a nudge held back by the scope rules (class agent_nudge.words.class): the event, and its reason values judge_done (the health judge said the child is done) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
 value = { event = "suppressed", judge_done = "judge_done", answered = "answered" }
 
+[agent_nudge.grace]
+doc = """Misfire guards of the health and runtime nudges (GH #923). min_age_ms: a child younger than this gets no health nudge of a trigger in triggers (a fresh child has had no time to be unhealthy). first_outcome_ms: a child with no outcome yet and younger than this gets none either (the first outcome of a normal lane takes a while). triggers: the trigger kinds these two rules hold back; a looping child is a true positive at any age, so it is not listed. stuck_ms: the evidence says 'stuck on: <step>' only when the oldest open call has run this long (or, with no call open, the child has been silent this long); a normal short command is not stuck. stop_hold_ms: a child whose launching session just issued a stop that is not yet answered gets no nudge for this long. The other rules are counted in agent_nudge_suppressed by reason (the words below)."""
+value = { min_age_ms = 600000, first_outcome_ms = 900000, triggers = ["hung", "idle", "waste"], stuck_ms = 300000, stop_hold_ms = 120000, reason_young = "young", reason_first_outcome = "first_outcome", reason_snoozed = "snoozed", reason_stopped = "stop_pending" }
+
 [agent_nudge.runtime_escalation]
 doc = "Escalation of a long-running child whose nudges keep repeating (GH #484). after_reminders: nudges about one child (the first included) after which it counts as escalated if it has not finished or been stopped (0 = off). file: where the open escalations are published for the coordinator's Stop check, under the tracker's directory."
 value = { after_reminders = 3, file = "runtime-escalations.json" }
@@ -226,7 +230,7 @@ doc = "Nudges opened and delivered (or escalated to the owner when no parent is 
 value = { kind = "counter", unit = "nudges", labels = ["trigger"] }
 
 [metric.agent_nudge_suppressed]
-doc = "Nudges held back by the scope rules (agents.nudgeScope), by reason: judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
+doc = "Nudges held back by the scope rules (agents.nudgeScope), by reason: young, first_outcome (a fresh child, agent_nudge.grace), snoozed (a recorded snooze still running held a runtime step), stop_pending (the launching session just stopped the child), judge_done (the agentHealth judge said the child's work is finished, so the done hold starts; the hold then keeps suppressing without a judge call or another count until it runs out or the child writes) and answered (the parent answered after the last send, so the wake fallback does not queue it again)."
 value = { kind = "counter", unit = "nudges", labels = ["reason"] }
 
 [metric.agent_nudge_done_hold_released]

@@ -600,6 +600,9 @@ pub struct State {
     /// Snoozes by child and trigger (`<child>|<trigger>`): they outlive the nudge they were given to (#333).
     #[serde(default)]
     pub nudge_snooze: BTreeMap<String, nudge::Snooze>,
+    /// Suppressions already counted (`<child>|<reason>`), so a held child is counted once per reason, not once per tick (GH #923).
+    #[serde(default)]
+    pub nudge_supp_seen: std::collections::BTreeSet<String>,
 }
 
 impl State {

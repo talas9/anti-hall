@@ -401,12 +401,15 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     let idle_min = now.saturating_sub(a.last_output_ms) / min_ms;
     let step = a.pending.values().min_by_key(|p| p.ts).map(|p| format!("{} {}", p.name, p.label)).unwrap_or_else(|| f.text.clone());
     let step = super::cap(&step, lim("step_cap"));
+    // "stuck on" names a call only once it has run past stuck_ms with no output (a short command, or a log read, is not stuck)
+    let quiet_since = a.pending.values().map(|p| p.ts).min().unwrap_or(a.last_output_ms);
+    let is_stuck = now.saturating_sub(quiet_since) >= grace_num("stuck_ms");
     let spent = super::signals::tokens_since_outcome(a, now);
     let mut parts = Vec::new();
     if idle_min >= lim("idle_min_show") {
         parts.push(defaults::fill(ef.str_field("idle"), &[("min", &idle_min)]));
     }
-    if !step.is_empty() && trigger_of(sig) != Some(defaults::raw("agent_nudge.triggers").str_field("agent_waste")) {
+    if !step.is_empty() && is_stuck && trigger_of(sig) != Some(defaults::raw("agent_nudge.triggers").str_field("agent_waste")) {
         parts.push(defaults::fill(ef.str_field("stuck"), &[("step", &step)]));
     }
     if super::signals::building(a, now) {
@@ -421,6 +424,11 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
         parts.push(why.to_string());
     }
     (parts.join(ef.str_field("join")), idle_min, spent, step)
+}
+
+#[cfg(test)]
+pub(super) fn evidence_for_tests(a: &Agent, sig: &str, f: &super::Flag, now: u64) -> (String, u64, u64, String) {
+    evidence(a, sig, f, now, "")
 }
 
 /// What the outcomes line says of the owner: when they last spoke to this session, empty when not within the window.
@@ -444,6 +452,55 @@ fn health_req(a: &Agent, now: u64) -> Value {
         "sections": {"goal": goal, "tool_calls": calls, "outcomes": [defaults::render("agent_nudge.outcomes_line", &[("commits", &a.commits), ("steps", &a.steps_done), ("checks", &a.tests_pass), ("files", &a.files.len()), ("reports", &a.reports), ("owner", &owner_text(a, now))])], "signals": signals},
         "blocking": false,
     })
+}
+
+// ---- misfire guards (GH #923) ---------------------------------------------------------------------------------
+
+fn grace_cfg() -> &'static V {
+    defaults::raw("agent_nudge.grace")
+}
+
+fn grace_num(k: &str) -> u64 {
+    grace_cfg().get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+/// Count a suppression once per child and reason (not once per tick the child stays held).
+fn suppressed(env: &Env, st: &mut State, a: &Agent, reason_key: &str, trig: &str) {
+    let reason = grace_cfg().str_field(reason_key);
+    if !st.nudge_supp_seen.insert(format!("{}|{reason}", a.id)) {
+        return;
+    }
+    let sup = defaults::raw("agent_nudge.suppress");
+    rec(env, word("class"), sup.str_field("event"), Outcome::Skip, base(a).tok("reason", reason).tok("trigger", trig));
+    crate::metrics::bump("agent_nudge_suppressed", &[("reason", reason)]);
+}
+
+/// A child whose launching session has just stopped it (the stop not answered yet) gets no nudge for `stop_hold_ms`; held once only, so
+/// a stop that never completes cannot silence the child for ever.
+fn hold_stop_pending(env: &Env, st: &mut State, a: &Agent, trig: &str) -> bool {
+    if st.nudge_supp_seen.contains(&format!("{}|{}", a.id, grace_cfg().str_field("reason_stopped"))) || !super::sources::stop_unanswered(a) {
+        return false;
+    }
+    st.nudge_hold.insert(a.id.clone(), env.now_ms + grace_num("stop_hold_ms"));
+    suppressed(env, st, a, "reason_stopped", trig);
+    true
+}
+
+/// Why a health nudge of trigger `trig` about this child must wait: it is too young, or has no outcome yet within the first-outcome
+/// grace (the config key of the reason word), none when it may be nudged.
+fn too_young(a: &Agent, trig: &str, now: u64) -> Option<&'static str> {
+    let listed = grace_cfg().get("triggers").map(V::strings).unwrap_or_default().contains(&trig);
+    if !listed {
+        return None;
+    }
+    let age_ms = now.saturating_sub(super::started_ms(a));
+    if age_ms < grace_num("min_age_ms") {
+        Some("reason_young")
+    } else if a.progress == 0 && age_ms < grace_num("first_outcome_ms") {
+        Some("reason_first_outcome")
+    } else {
+        None
+    }
 }
 
 // ---- escalating runtime steps (GH #687) -----------------------------------------------------------------------
@@ -581,6 +638,9 @@ fn open_runtime(env: &Env, st: &mut State) {
         .collect();
     for id in ids {
         let Some(a) = st.agents.get(&id).cloned() else { continue };
+        if st.nudge_hold.get(&id).is_some_and(|t| *t > now) || hold_stop_pending(env, st, &a, rt_trigger()) {
+            continue;
+        }
         let level = rt_reached(&a, now, &steps);
         let (direct, to, walked) = target(env, st, &a);
         let mut n = Nudge {
@@ -627,6 +687,13 @@ fn rt_follow(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge) {
         n.snooze_until = 0;
     }
     let advanced = level > n.rt_level;
+    // a recorded snooze holds the next step until it runs out (GH #923): the step then fires on its own thresholds
+    if advanced && n.snooze_until > now {
+        if st.nudge_supp_seen.insert(format!("{}|{}|{level}", a.id, grace_cfg().str_field("reason_snoozed"))) {
+            crate::metrics::bump("agent_nudge_suppressed", &[("reason", grace_cfg().str_field("reason_snoozed"))]);
+        }
+        return;
+    }
     let Some(step) = steps.get(level as usize - 1).filter(|_| level > 0) else { return };
     let last = level as usize == steps.len();
     let due = n.answer_class.is_empty() && n.snooze_until == 0 && now.saturating_sub(n.last_sent) >= step.refire_ms && (n.rt_acked < level || last);
@@ -651,6 +718,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
     let now = env.now_ms;
     let mut ids: Vec<(String, &'static str)> = Vec::new();
     let mut held: Vec<String> = Vec::new();
+    let mut young: Vec<(String, &'static str, &'static str)> = Vec::new();
     let hold_snooze = env.switch("agent_nudge.snooze_setting");
     for a in st.agents.values() {
         if escalate::primary(a)
@@ -684,7 +752,9 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         }
         // the first trigger signal in the tracker's signal order (hung before waste)
         if let Some(t) = super::defaults_signals().iter().filter(|s| a.flags.contains_key(**s)).find_map(|s| trigger_of(s)) {
-            if snoozed(t) {
+            if let Some(r) = too_young(a, t, now) {
+                young.push((a.id.clone(), r, t));
+            } else if snoozed(t) {
                 held.push(snooze_key(&a.id, t));
             } else {
                 ids.push((a.id.clone(), t));
@@ -706,8 +776,16 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             }
         }
     }
+    for (id, reason, trig) in young {
+        if let Some(a) = st.agents.get(&id).cloned() {
+            suppressed(env, st, &a, reason, trig);
+        }
+    }
     for (id, trig) in ids {
         let Some(a) = st.agents.get(&id).cloned() else { continue };
+        if hold_stop_pending(env, st, &a, trig) {
+            continue;
+        }
         if a.kind == kind_name("codex") && escalate::codex_pid(&a).is_none() {
             st.nudge_hold.insert(id.clone(), now + lim("health_recheck_ms")); // no live one-shot process: nothing is hung
             continue;

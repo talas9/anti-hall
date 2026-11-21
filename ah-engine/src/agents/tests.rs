@@ -5056,3 +5056,111 @@ fn the_waste_categories_are_registered_and_listed_in_the_status_words() {
     assert_eq!((words.str_field("cache_expiry"), words.str_field("poke_turn")), ("cache_expiry", "poke_turn"));
     assert_eq!(defaults::raw("agent_waste.status_words").str_field("key"), "waste");
 }
+
+// ---- GH #923: health and runtime nudges no longer misfire on fresh, snoozed or stopped children ------------------------------------
+
+/// Tick the tracker once at `t` (so the child is seen), then raise `sig` on child `abc` by hand and run the nudge loop at `t2`.
+fn raise_and_nudge(h: &Path, st: &mut State, sig: &str, t: u64, t2: u64) {
+    let e = nudge_env(h, t, &[]);
+    arm_wake(&e, "parent");
+    tick(&e, st);
+    let a = st.agents.get_mut("abc").expect("the child is tracked");
+    a.flags.insert(sig.into(), Flag { since: t, text: "Bash mkdir out".into(), ..Flag::default() });
+    let e2 = nudge_env(h, t2, &[]);
+    arm_wake(&e2, "parent");
+    nudge::tick(&e2, st);
+}
+
+fn supp(reason: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("agent_nudge_suppressed", &[("reason", reason)])
+}
+
+/// #923 item 1: a child a couple of minutes old is never called unhealthy for a quiet-type signal; the same signal on an older child
+/// still nudges (a true positive), and so does a loop at any age.
+#[test]
+fn n923_a_fresh_child_gets_no_health_nudge_but_an_old_one_and_a_loop_do() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, _child) = nudge_home("n923-young");
+    drained();
+    let mut st = State::default();
+    raise_and_nudge(&h, &mut st, "idle_open_task", n + MIN, n + 2 * MIN);
+    assert!(!st.nudges.contains_key("abc"), "a 2 minute old child was nudged");
+    assert_eq!(supp("young"), 1, "the young suppression is counted once");
+    nudge::tick(&nudge_env(&h, n + 3 * MIN, &[]), &mut st);
+    assert_eq!(supp("young"), 1, "and not again per tick");
+    // a loop is a true positive at any age
+    let (h2, n2, _c2) = nudge_home("n923-young-loop");
+    let mut st2 = State::default();
+    raise_and_nudge(&h2, &mut st2, "looping", n2 + MIN, n2 + 2 * MIN);
+    assert!(st2.nudges.contains_key("abc"), "a looping child must be nudged at any age");
+    // an old child with an open task and a long idle is a true positive
+    let (h3, n3, _c3) = nudge_home("n923-old-idle");
+    let mut st3 = State::default();
+    raise_and_nudge(&h3, &mut st3, "idle_open_task", n3 + 30 * MIN, n3 + 31 * MIN);
+    assert!(st3.nudges.contains_key("abc"), "a long-idle child with an open task must be nudged");
+}
+
+/// #923 item 1: past the minimum age a child with no outcome yet still gets the first-outcome grace.
+#[test]
+fn n923_a_child_with_no_outcome_yet_waits_out_the_first_outcome_grace() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, _child) = nudge_home("n923-first");
+    drained();
+    let mut st = State::default();
+    raise_and_nudge(&h, &mut st, "idle_open_task", n + 11 * MIN, n + 12 * MIN);
+    assert!(!st.nudges.contains_key("abc"), "no outcome yet, inside the first-outcome grace");
+    assert_eq!(supp("first_outcome"), 1);
+    nudge::tick(&nudge_env(&h, n + 20 * MIN, &[]), &mut st);
+    assert!(st.nudges.contains_key("abc"), "the grace is over: nudged");
+}
+
+/// #923 item 5: the evidence names a call as stuck only once it has run past the configured time.
+#[test]
+fn n923_stuck_on_names_only_a_call_that_ran_past_the_configured_time() {
+    let (h, n, _child) = nudge_home("n923-stuck");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n + MIN]);
+    let mut a = st.agents.get("abc").cloned().unwrap();
+    let f = Flag { text: "Bash mkdir out".into(), ..Flag::default() };
+    let stuck_ms = defaults::raw("agent_nudge.grace").get("stuck_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+    a.last_output_ms = n;
+    let (young, ..) = nudge::evidence_for_tests(&a, "hung", &f, n + stuck_ms / 2);
+    assert!(!young.contains("stuck on"), "a short quiet is not stuck: {young}");
+    let (old, ..) = nudge::evidence_for_tests(&a, "hung", &f, n + stuck_ms + MIN);
+    assert!(old.contains("stuck on: Bash mkdir out"), "a call quiet past the time is: {old}");
+}
+
+/// #923 item 3: a snooze recorded for a runtime nudge holds the next step until it runs out, then the step fires.
+#[test]
+fn n923_a_runtime_snooze_holds_the_next_step_until_it_runs_out() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("n923-snooze");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    assert_eq!(rt_fired("advise"), 1);
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "waiting on CI", "min": 60})).unwrap();
+    rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    rt_tick(&h, &child, &mut st, n + 92 * MIN, 4); // the order step's own threshold (90 min) is inside the snooze (until ~107 min)
+    assert_eq!(rt_fired("order"), 0, "a step must not fire inside a recorded snooze");
+    assert!(supp("snoozed") >= 1, "the held step is counted");
+    rt_tick(&h, &child, &mut st, n + 110 * MIN, 5);
+    assert_eq!(rt_fired("order"), 1, "once the snooze ran out the step fires on its own threshold");
+}
+
+/// #923 item 4: a child its launching session just stopped (the stop not answered yet) is not nudged; one nobody stopped is.
+#[test]
+fn n923_a_child_with_a_pending_stop_gets_no_nudge() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, _child) = nudge_home("n923-stop");
+    drained();
+    append(&sess(&h, "parent"), &[tool(n + 29 * MIN, "ps", 5, "toolu_stop", "TaskStop", json!({"task_id": "abc"}))]);
+    let mut st = State::default();
+    raise_and_nudge(&h, &mut st, "idle_open_task", n + 30 * MIN, n + 31 * MIN);
+    assert!(!st.nudges.contains_key("abc"), "a child with a TaskStop in flight was nudged");
+    assert_eq!(supp("stop_pending"), 1);
+}
