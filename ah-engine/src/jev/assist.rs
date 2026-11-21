@@ -1809,7 +1809,7 @@ mod tests {
 
     #[test]
     fn the_lane_shares_nodes_cache_file_a_node_entry_is_a_hit_and_an_engine_entry_is_nodes() {
-        let dir = std::env::temp_dir().join(format!("ah-jev-assist-file-cache-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-jev-assist-file-cache-{}", std::process::id()));
         let path = dir.join("cache").join("jev-assist.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let r = req("speculation", Trust::AddBlock, json!(false));
@@ -1873,7 +1873,7 @@ mod tests {
     use crate::jev::cascade::MODEL_LOCK;
 
     fn home(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-cascade-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-cascade-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         d

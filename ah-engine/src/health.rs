@@ -1,6 +1,7 @@
 //! Engine health state, all inside the engine's own state dir (`paths::dir()`): the event log, the
 //! client circuit breaker, crash-loop protection, failure classification and the once-per-session
 //! advisory. Every function is best-effort: a state-dir problem must never break a hook call.
+pub mod exits;
 pub mod starts;
 
 use crate::config::ClientConfig;
@@ -851,6 +852,7 @@ pub fn add_fail_open_reason(summary: &mut Value, unhealthy: Option<(u64, String)
 pub fn summary() -> Value {
     let mut summary = summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining());
     starts::add_summary(&mut summary);
+    exits::add_summary(&mut summary);
     summary
 }
 
@@ -1180,7 +1182,7 @@ mod tests {
     /// fallback); a new session hears it again; a healthy engine says nothing.
     #[test]
     fn a_degraded_engine_gives_exactly_one_notice_per_session() {
-        let dir = std::env::temp_dir().join(format!("ah-degraded-notice-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-degraded-notice-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         let log = vec![
             ev(9_000, "start", "-", "v0.1.0 pid 1"),
@@ -1247,7 +1249,7 @@ mod tests {
     #[test]
     fn the_log_trim_keeps_the_tail_atomically_and_waits_for_no_one() {
         // review finding 9: the trim truncated the log in place with no lock, racing every other appender
-        let d = std::env::temp_dir().join(format!("ah-health-trim-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-health-trim-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let log = d.join("e.log");
         let cap = defaults::num("health.log_cap") as usize;
@@ -1278,7 +1280,7 @@ mod tests {
     #[test]
     fn an_unwritable_log_is_an_error_not_a_silent_drop() {
         // review finding 9: log_event dropped every append error; only a missing state dir is silent now
-        let d = std::env::temp_dir().join(format!("ah-health-unwritable-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-health-unwritable-{}", std::process::id()));
         std::fs::create_dir_all(d.join("e.log")).unwrap(); // the log path is a directory: EISDIR
         let e = append_to(&d.join("e.log"), "x\n").unwrap_err();
         assert_ne!(e.kind(), std::io::ErrorKind::NotFound, "goes to stderr");
@@ -1350,7 +1352,7 @@ mod tests {
     impl StuckLog {
         fn new(name: &str) -> StuckLog {
             let turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
-            let dir = std::env::temp_dir().join(format!("ah-health-flush-{name}-{}", std::process::id()));
+            let dir = crate::testtmp::path(format!("ah-health-flush-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `TURN` first.
             unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };

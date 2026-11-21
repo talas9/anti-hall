@@ -82,7 +82,7 @@ struct Env {
 
 impl Env {
     fn new(tag: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ah-failover-{tag}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ah-failover-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         // the plugin's defaults, pristine copy and fallback lists (no Node hooks: the event used is a thin trigger)

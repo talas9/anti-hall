@@ -634,6 +634,7 @@ impl Shared {
             "queue_depth": self.depth.load(SeqCst),
             "queue_cap": cfg.queue,
             "workers": cfg.workers,
+            "idle_exit_s": cfg.idle_exit.map(|d| d.as_secs()),
             "requests": self.stats.requests.load(SeqCst),
             "busy_replies": self.stats.busy.load(SeqCst),
             "busy_by_reason": {
@@ -1811,7 +1812,7 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
     let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
         let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
         health::record_failure("panic", "thread_panic", &why);
-        begin_drain(&s, &why, false);
+        begin_drain(&s, "thread_panic", &why, false);
     });
     crate::crash::spawn_supervised(name, stop, restart, run);
 }
@@ -1851,7 +1852,7 @@ fn worker(sh: Arc<Shared>, idx: usize) {
         crate::script::maintain(false);
         crate::memdiag::worker_tick(idx);
         if after == After::Exit {
-            begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false);
+            begin_drain(&sh, "handoff", defaults::text("msg.exit_reason_handoff"), false);
         }
     }
 }
@@ -1922,9 +1923,11 @@ fn reload_tick(sh: &Arc<Shared>, last_check: &mut Instant) {
     }
 }
 
-fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
+fn begin_drain(sh: &Arc<Shared>, kind: &str, why: &str, forced_exit: bool) {
     let first = !sh.draining.swap(true, SeqCst);
     if first {
+        health::exits::note(kind, why);
+        sh.telemetry.with_metrics(|m| m.inc("daemon_exits", &[("kind", health::exits::kind(kind))]));
         crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
         crate::wire::withdraw();
         // the session stores are written for the next start: a restart then parses only what was appended meanwhile
@@ -1948,6 +1951,7 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
         await_close(&sh.db_closing, &sh.db_closed, defaults::millis("daemon.close_max_ms"), defaults::millis("daemon.drain_poll_ms"));
         crate::proc::kill_all();
         health::clear_marker();
+        health::exits::record_exit();
         health::log_event("exit", code, &why);
         health::flush_log(); // the line is only queued for the log thread; process::exit below would drop it
         std::process::exit(if forced_exit { defaults::num("daemon.forced_exit_code") as i32 } else { clean_exit_code() });
@@ -2032,7 +2036,7 @@ fn watchdog(sh: Arc<Shared>) {
         if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, cfg.stall.as_millis() as u64, cfg.start_stall.as_millis() as u64) {
             health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
             health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
-            begin_drain(&sh, defaults::text("msg.exit_reason_stall"), true);
+            begin_drain(&sh, "stall", defaults::text("msg.exit_reason_stall"), true);
             continue;
         }
         for (i, b) in sh.busy_since.iter().enumerate() {
@@ -2040,7 +2044,7 @@ fn watchdog(sh: Arc<Shared>) {
             if since != 0 && now.saturating_sub(since - 1) > cfg.stuck.as_millis() as u64 {
                 health::log_event("watchdog", "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]));
                 health::record_failure("watchdog", "stuck", defaults::text("msg.failure_stuck"));
-                begin_drain(&sh, defaults::text("msg.exit_reason_stuck"), true);
+                begin_drain(&sh, "stuck", defaults::text("msg.exit_reason_stuck"), true);
                 break;
             }
         }
@@ -2100,9 +2104,9 @@ fn watchdog(sh: Arc<Shared>) {
             && last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms")
         {
             last_idle_check = Instant::now();
-            let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0;
+            let quiet = sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && sh.depth.load(SeqCst) == 0 && !sh.sched.get().is_some_and(|s| s.any_running());
             if quiet && now.saturating_sub(sh.last_request.load(SeqCst)) > idle.as_millis() as u64 {
-                begin_drain(&sh, defaults::text("msg.exit_reason_idle"), false);
+                begin_drain(&sh, "idle", defaults::text("msg.exit_reason_idle"), false);
                 continue;
             }
         }
@@ -2121,7 +2125,7 @@ fn watchdog(sh: Arc<Shared>) {
             if let Some(r) = crate::mem::global().tick(mem.saturating_mul(1024), now) {
                 crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_mem"));
                 health::log_event("memory", "breakdown", &sh.memory_line());
-                begin_drain(&sh, &crate::mem::restart_reason(&r), true);
+                begin_drain(&sh, "memory", &crate::mem::restart_reason(&r), true);
                 continue;
             }
             // the data segment (Linux VmData, what setrlimit caps): recycle before the ceiling, because past it an allocation
@@ -2135,7 +2139,7 @@ fn watchdog(sh: Arc<Shared>) {
                     defaults::render("msg.log_data", &[("data", &data_kb.unwrap_or(0)), ("limit", &(cfg.mem_mb * 1024)), ("pct", &cfg.mem_recycle_pct)]);
                 health::log_event("recycle", "data", &detail);
                 health::log_event("memory", "breakdown", &sh.memory_line());
-                begin_drain(&sh, defaults::text("msg.exit_reason_data"), false);
+                begin_drain(&sh, "data", defaults::text("msg.exit_reason_data"), false);
                 continue;
             }
             if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
@@ -2150,11 +2154,11 @@ fn watchdog(sh: Arc<Shared>) {
                         let workers = cfg.workers;
                         std::thread::spawn(move || {
                             crate::memdiag::capture(s.memory(), workers, s.cfg().rss_cap_kb, s.started.elapsed().as_secs());
-                            begin_drain(&s, defaults::text("msg.exit_reason_rss"), true);
+                            begin_drain(&s, "rss", defaults::text("msg.exit_reason_rss"), true);
                         });
                     }
                 } else {
-                    begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
+                    begin_drain(&sh, "rss", defaults::text("msg.exit_reason_rss"), true);
                 }
             }
         }
@@ -2310,7 +2314,7 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
         }
         if let Some(why) = footing.lost() {
             health::log_event("exit", "orphaned", why);
-            begin_drain(&sh, why, false);
+            begin_drain(&sh, "orphaned", why, false);
             return;
         }
     }
@@ -2319,6 +2323,8 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
     let recorded = health::record_failure("start_fail", code, detail);
+    health::exits::note("start_fail", &format!("{code}: {detail}"));
+    health::exits::record_exit();
     // A start by the service manager that keeps failing obeys the same crash-loop rule: the failure above counts (start_fail is a
     // crashy kind), and once the rule trips this exits 0, which launchd (KeepAlive SuccessfulExit=false, no start limit) leaves alone
     // until the interval tick asks again after the cooldown. Below the threshold it exits 78 and the manager starts it again.
@@ -2402,6 +2408,8 @@ pub fn serve(start_reason: &str) -> i32 {
     let supervised = SUPERVISED.load(SeqCst);
     if supervised {
         if health::crashloop_tripped(&crate::config::ClientConfig::from_env()) {
+            health::exits::note("crashloop", defaults::text("health.exit_detail_crashloop"));
+            health::exits::record_exit();
             return 0;
         }
         health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));
@@ -2444,6 +2452,7 @@ pub fn serve(start_reason: &str) -> i32 {
     let rlimit = limits::apply_mem_limit(cfg.mem_mb);
     let nofile = limits::apply_nofile(defaults::num("daemon.nofile"));
     limits::apply_nice(cfg.nice);
+    health::exits::mark_start();
     health::starts::record(start_reason);
     health::write_marker();
     health::clear_env_failure();
@@ -2485,7 +2494,7 @@ pub fn serve(start_reason: &str) -> i32 {
         let s = sh.clone();
         crate::db::set_panic_restart(Some(Arc::new(move |thread| {
             let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
-            begin_drain(&s, &why, false);
+            begin_drain(&s, "thread_panic", &why, false);
         })));
     }
     // events from other processes (the hook dispatcher, one-shot commands) arrive through the inbox; events from inside
@@ -2549,6 +2558,7 @@ pub fn serve(start_reason: &str) -> i32 {
     }
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
+    health::exits::record_exit();
     let by_term = TERM_DRAIN.load(SeqCst);
     health::log_event("exit", if by_term { "sigterm" } else { "clean" }, if by_term { defaults::text("msg.exit_reason_sigterm") } else { "drained" });
     health::flush_log();
@@ -2578,7 +2588,7 @@ fn start_devswarm(sh: &Arc<Shared>) {
     let s = sh.clone();
     let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
         let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
-        begin_drain(&s, &why, false);
+        begin_drain(&s, "thread_panic", &why, false);
     });
     crate::dssup::ingest::start(&home, &paths::dir(), stop, restart);
 }
@@ -2801,13 +2811,13 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             if !sh.draining.load(SeqCst) {
                 TERM_DRAIN.store(true, SeqCst);
             }
-            begin_drain(sh, defaults::text("msg.exit_reason_sigterm"), false);
+            begin_drain(sh, "sigterm", defaults::text("msg.exit_reason_sigterm"), false);
         }
         if INT.swap(false, SeqCst) {
             if crate::metrics::recent_on() {
                 sh.telemetry.with_metrics(|m| m.inc("sigint_drains", &[]));
             }
-            begin_drain(sh, defaults::text("msg.exit_reason_sigint"), false);
+            begin_drain(sh, "sigint", defaults::text("msg.exit_reason_sigint"), false);
         }
         let draining = sh.draining.load(SeqCst);
         let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
@@ -3083,7 +3093,7 @@ mod tests {
         let sh = Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into());
         let payload =
             r#"{"session_id":"s","cwd":"/","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
-        let home = std::env::temp_dir().join(format!("ahd-env-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ahd-env-{}", std::process::id()));
         let envs = [
             crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_str().unwrap())]),
             crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_str().unwrap()), ("ANTIHALL_GIT_GUARD", "0")]),

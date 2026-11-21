@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn hooks_run_at_once_with_the_payload_and_report_in_order() {
-        let dir = std::env::temp_dir().join(format!("ah-engine-node-overlap-{}-{}", std::process::id(), crate::health::now_ms()));
+        let dir = crate::testtmp::path(format!("ah-engine-node-overlap-{}-{}", std::process::id(), crate::health::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let starts: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("start-{id}")).display().to_string()).collect();
         let checked: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("checked-{id}")).display().to_string()).collect();
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn file_feeder_treats_a_closed_child_stdin_as_success() {
-        let path = std::env::temp_dir().join(format!("ah-engine-feed-{}-{}.tmp", std::process::id(), crate::health::now_ms()));
+        let path = crate::testtmp::path(format!("ah-engine-feed-{}-{}.tmp", std::process::id(), crate::health::now_ms()));
         std::fs::write(&path, b"payload").unwrap();
         let file = File::open(&path).unwrap();
         let mut writer = BrokenPipeWriter;

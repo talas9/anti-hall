@@ -39,7 +39,7 @@ impl Drop for Home {
 }
 
 fn home(tag: &str) -> Home {
-    let d = std::env::temp_dir().join(format!("ah-hostd-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-hostd-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     Home(std::fs::canonicalize(&d).unwrap().to_string_lossy().to_string())

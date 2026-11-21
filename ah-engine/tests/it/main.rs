@@ -9,6 +9,7 @@ mod advisor_mode;
 mod broad_kill;
 #[path = "../common/mod.rs"]
 mod common;
+mod daemon_leak_guard;
 mod deploy_defaults_gate;
 mod event_budgets;
 mod fw1_command;

@@ -412,7 +412,7 @@ mod tests {
     use super::*;
 
     fn file(tag: &str, bytes: &[u8]) -> String {
-        let p = std::env::temp_dir().join(format!("ah-taillines-{tag}-{}", std::process::id()));
+        let p = crate::testtmp::path(format!("ah-taillines-{tag}-{}", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
         p.to_string_lossy().into_owned()
     }

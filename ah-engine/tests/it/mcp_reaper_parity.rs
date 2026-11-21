@@ -115,7 +115,7 @@ fn engine_plugin() -> &'static Path {
 }
 
 fn scratch(tag: &str) -> TempDir {
-    TempDir::at(std::env::temp_dir().join(format!("ah-reaper-{tag}-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed))))
+    TempDir::at(crate::common::testtmp::path(format!("ah-reaper-{tag}-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed))))
 }
 
 /// The fake `ps` and `launchctl`: they answer from files in `dir` and record every invocation's arguments in `dir/calls`.

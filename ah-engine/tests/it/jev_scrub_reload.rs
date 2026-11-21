@@ -21,7 +21,7 @@ fn copy_tree(from: &Path, to: &Path) {
 
 #[test]
 fn scrub_rules_are_read_from_the_plugin_and_follow_a_reload() {
-    let root = std::env::temp_dir().join(format!("ah-scrub-reload-{}", std::process::id()));
+    let root = crate::common::testtmp::path(format!("ah-scrub-reload-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults"), &root.join("engine/defaults"));
     defaults::reload(Some(&root)).unwrap();

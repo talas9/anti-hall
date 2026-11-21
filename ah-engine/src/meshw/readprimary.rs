@@ -425,7 +425,7 @@ fn caller_owns_row(inv: &Inv, id: &str) -> bool {
 }
 
 fn owns_row(inv: &Inv, id: &str) -> R<bool> {
-    let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?.identity;
+    let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?.identity;
     if caller == id {
         return Ok(true);
     }
@@ -719,7 +719,7 @@ fn unowned_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
     if rows.iter().any(|r| r.id == id) {
         return Ok(None); // registered without a descriptor: the read below decides
     }
-    let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+    let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
     let own_entry = resolve_mesh_target(inv, Some(&reader), &rows, Some(caller.identity.as_str()))?;
     let owns =
         caller.identity == id || own_entry.as_ref().is_some_and(|e| e.id == id) || ident::declared_self_id(&inv.env, &inv.cwd, &rows)?.as_deref() == Some(id);
@@ -1587,7 +1587,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     // (a peek acks nothing, so it has no ownership gate: any caller may look; `--ack-as-owner` skips the gate, and turns the
     // existence guard back on)
     if !peek && !ack_as_owner {
-        let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+        let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
         let own_entry = resolve_mesh_target(inv, None, &o.rows, Some(caller.identity.as_str()))?;
         let owns = caller.identity == id
             || own_entry.as_ref().is_some_and(|e| e.id == id)
@@ -1801,7 +1801,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let with_broadcasts = a.has(defaults::text("mesh_write.flag_with_broadcasts"));
     let mut broadcasts_merged: Option<usize> = None;
     if peek && with_broadcasts {
-        let aliases = common::read_aliases(&inv.home);
+        let aliases = common::read_aliases(&inv.home, &inv.env);
         let mut found: Vec<Value> = Vec::new();
         o.reader
             .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {
@@ -2148,7 +2148,7 @@ mod tests {
     }
 
     fn scratch_inv(tag: &str) -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-rp-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-rp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale scratch directory of an earlier run
         std::fs::create_dir_all(&home).unwrap();
         Inv {

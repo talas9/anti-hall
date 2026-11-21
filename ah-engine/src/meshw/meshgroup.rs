@@ -36,7 +36,7 @@ pub struct Group {
 pub fn resolve(rows: &[Row], id: &str, wt: Option<&str>) -> R<Group> {
     let single = Group { ids: vec![id.to_string()], active: false };
     let Some(mesh) = (match wt.filter(|w| !w.is_empty()) {
-        Some(w) => ident::canonical_mesh_id(w)?,
+        Some(w) => ident::registry_mesh_id(rows, w)?,
         None => None,
     }) else {
         return Ok(single);
@@ -358,7 +358,7 @@ mod tests {
     use serde_json::json;
 
     fn inv() -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-meshgroup-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-meshgroup-{}", std::process::id()));
         crate::discard::harmless(std::fs::create_dir_all(&home)); // keep: the dedup log write below reports nothing either way
         Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None }
     }
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn two_rows_of_one_worktree_are_a_group_and_a_lone_row_is_not() {
-        let dir = std::env::temp_dir().join(format!("ah-meshgroup-wt-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-meshgroup-wt-{}", std::process::id()));
         crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the git init below reports a missing directory
         let st = std::process::Command::new("git").current_dir(&dir).args(["init", "-q", "-b", "main"]).status().unwrap();
         assert!(st.success());

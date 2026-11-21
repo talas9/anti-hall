@@ -5,6 +5,9 @@
 //! allocator is process-wide.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::memstat;
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
@@ -113,7 +116,7 @@ fn long_commands_do_not_make_a_check_allocate_in_proportion_to_length_times_char
     let braces = format!("echo {}", "a} ".repeat(5000));
     let redirects = format!("echo {}", "a>|b ".repeat(3000));
 
-    let home = std::env::temp_dir().join(format!("ah-alloc-budget-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-alloc-budget-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let home = std::fs::canonicalize(&home).unwrap();
     let mut over = Vec::new();

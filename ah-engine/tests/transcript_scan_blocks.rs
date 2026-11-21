@@ -5,6 +5,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::mem::measure;
 use ah_engine::transcript::scan::{Flow, Window};
 use ah_engine::transcript::{Index, Refresh};
@@ -26,7 +29,7 @@ fn budget() -> u64 {
 
 /// About `mb` MB of transcript lines of 1-3 KB, one line in 4000 of 300 KB.
 fn transcript(tag: &str, mb: u64) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("ah-scan-blocks-{tag}-{}.jsonl", std::process::id()));
+    let p = testtmp::path(format!("ah-scan-blocks-{tag}-{}.jsonl", std::process::id()));
     let mut f = std::io::BufWriter::new(std::fs::File::create(&p).unwrap());
     let (mut written, mut i) = (0u64, 0u64);
     let big = "b".repeat(300 * 1024);

@@ -178,3 +178,7 @@ mod tests {
         assert_eq!(version_cmp("1.0.0-rc1", "1.0.0"), Equal);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/common/testtmp.rs"]
+pub(crate) mod testtmp;

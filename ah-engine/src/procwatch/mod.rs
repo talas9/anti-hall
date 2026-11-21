@@ -6,6 +6,7 @@
 //! advisory per event, with cooldowns (and the stuck agents of the current session come from the silent-agent-nudge check). Everything tunable is in `procwatch.toml`, `resource_watch.toml` and
 //! `disk_watch.toml`; nothing here decides a number. Both the orphan sweep and the resource watch use the one process scan.
 
+pub mod broker;
 pub mod disk;
 pub mod host;
 pub mod orphan;
@@ -38,6 +39,9 @@ pub struct Sweep {
     growth: Vec<(std::path::PathBuf, u64)>,
     growth_s: u64,
     disk_seen: HashMap<u64, (disk::Level, u64)>,
+    leaks: Vec<broker::Leak>,
+    leak_known: HashSet<(u32, u64)>,
+    leak_kills: Vec<Value>,
 }
 
 /// Where a telemetry record goes: (impact kind, check or class, reason).
@@ -128,6 +132,34 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
             }
             sw.kills.push(json!({"ts_s": now, "pid": f.pid, "class": f.class, "cmd": orphan::cut(&f.cmd, chars), "outcome": match out { Outcome::Gone => "gone", Outcome::Terminated => "term", Outcome::Killed => "kill" }}));
         }
+        // ---- leaked Codex broker trees ----
+        sw.leaks.clear();
+        sw.leak_kills.clear();
+        if let Some(bc) = broker::Cfg::load(&st) {
+            sw.leaks = broker::scan(host, &rows, &bc, home, &own);
+            let live: HashSet<(u32, u64)> = sw.leaks.iter().map(|l| (l.broker.pid, l.broker.start_s)).collect();
+            sw.leak_known.retain(|k| live.contains(k));
+            for l in &sw.leaks {
+                if sw.leak_known.insert((l.broker.pid, l.broker.start_s)) {
+                    rec(defaults::text("procwatch.impact_orphan"), &l.broker.class, bc.mode.name());
+                    if bc.mode == Mode::Kill && !l.withheld.is_empty() {
+                        rec(defaults::text("procwatch.impact_kill_withheld"), &l.broker.class, &l.withheld);
+                    }
+                }
+            }
+            if bc.mode == Mode::Kill {
+                let mut budget = bc.max_kills;
+                for l in sw.leaks.clone() {
+                    for (f, out) in broker::stop(host, &l, home, cfg.grace_ms, budget) {
+                        budget = budget.saturating_sub(1);
+                        if out != Outcome::Gone {
+                            rec(defaults::text("procwatch.impact_kill"), &f.class, if out == Outcome::Killed { "kill" } else { "term" });
+                        }
+                        sw.leak_kills.push(json!({"ts_s": now, "pid": f.pid, "broker": l.broker.pid, "class": f.class, "outcome": match out { Outcome::Gone => "gone", Outcome::Terminated => "term", Outcome::Killed => "kill" }}));
+                    }
+                }
+            }
+        }
     }
 
     // ---- disk watch ----
@@ -180,6 +212,10 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
             j
         })
         .collect();
+    let broker_listed: Vec<Value> = match broker::Cfg::load(&st) {
+        Some(bc) => sw.leaks.iter().take(bc.max_listed).map(|l| l.json(chars, &bc)).collect(),
+        None => Vec::new(),
+    };
     let warns: Vec<Value> = sw
         .warns
         .iter()
@@ -191,6 +227,7 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
         "modes": modes,
         "orphans": {"count": sw.orphans.len(), "listed": listed},
         "kills": sw.kills,
+        "broker_leaks": {"count": sw.leaks.len(), "withheld": sw.leaks.iter().filter(|l| !l.withheld.is_empty()).count(), "mode": broker::Cfg::load(&st).map_or("off", |b| b.mode.name()), "listed": broker_listed, "kills": sw.leak_kills},
         "resource": warns,
         "disk": disk_json,
     });

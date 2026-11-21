@@ -1433,7 +1433,7 @@ mod tests {
     #[test]
     fn a_huge_generation_number_is_javascripts_number_and_text() {
         init();
-        let dir = std::env::temp_dir().join(format!("ah-sr-gen-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-sr-gen-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a stale directory of an earlier run
         std::fs::create_dir_all(&dir).unwrap();
         let big = "9".repeat(30);
@@ -1450,7 +1450,7 @@ mod tests {
 
     fn scratch_inv(tag: &str) -> Inv {
         init();
-        let home = std::env::temp_dir().join(format!("ah-sui-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-sui-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&home).unwrap();
         let mut env = std::collections::HashMap::new();

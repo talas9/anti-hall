@@ -6,6 +6,7 @@
 #![allow(dead_code)] // each test binary uses a subset
 
 pub mod scale;
+pub mod testtmp;
 
 /// This checkout's plugin (`plugins/anti-hall`): the one plugin root every test passes to the engine it spawns, explicitly, so no
 /// test resolves defaults through $HOME (the installed plugin, a snapshot cache or an install record there). #910

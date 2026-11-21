@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 const ON: [(&str, &str); 1] = [("ANTIHALL_JEV", "1")];
 
 fn home(tag: &str) -> std::path::PathBuf {
-    let h = std::env::temp_dir().join(format!("ah-evidence-{tag}-{}", std::process::id()));
+    let h = crate::testtmp::path(format!("ah-evidence-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&h));
     std::fs::create_dir_all(&h).unwrap();
     h

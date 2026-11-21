@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn an_ingested_done_notice_carries_its_sender() {
-        let dir = std::env::temp_dir().join(format!("ah-import-sender-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-import-sender-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let st = MeshStore::open(&dir.join("devswarm.db")).unwrap();
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn an_ingested_poke_from_main_carries_the_primary_as_sender() {
-        let dir = std::env::temp_dir().join(format!("ah-import-fallback-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-import-fallback-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let st = MeshStore::open(&dir.join("devswarm.db")).unwrap();
@@ -405,7 +405,7 @@ mod tests {
     /// checkout), so a union read returned it twice with an empty sender and no seq.
     #[test]
     fn the_same_native_message_through_two_partitions_of_one_checkout_is_stored_once() {
-        let dir = std::env::temp_dir().join(format!("ah-import-twin-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-import-twin-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let st = MeshStore::open(&dir.join("devswarm.db")).unwrap();

@@ -2,13 +2,16 @@
 //! left out of the block, the rest are listed), and the count does not depend on how the config/settings reads are cached.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::io::Write;
 
 #[test]
 fn many_open_tasks_give_the_same_verdict() {
-    let home = std::env::temp_dir().join(format!("ah-tgmany-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-tgmany-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();
     let tp = real.join("t.jsonl");
@@ -43,7 +46,7 @@ fn many_open_tasks_give_the_same_verdict() {
 /// and the next call (a fresh request) checks the defaults generation again, so a defaults reload between calls is still seen.
 #[test]
 fn config_and_settings_reads_cost_one_host_call_per_check_call() {
-    let home = std::env::temp_dir().join(format!("ah-tgcalls-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-tgcalls-{}", std::process::id()));
     std::fs::create_dir_all(home.join(".anti-hall/logic")).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();
     std::fs::write(
@@ -72,7 +75,7 @@ fn config_and_settings_reads_cost_one_host_call_per_check_call() {
 /// of one cfg key and one setting are 2 misses and 1998 hits, and the host sees one `cfgGen` per call, not one per read.
 #[test]
 fn cfg_cache_hits_and_misses_are_counted_without_extra_host_calls() {
-    let home = std::env::temp_dir().join(format!("ah-tgcachecnt-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-tgcachecnt-{}", std::process::id()));
     std::fs::create_dir_all(home.join(".anti-hall/logic")).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();
     std::fs::write(
@@ -104,7 +107,7 @@ fn cfg_cache_hits_and_misses_are_counted_without_extra_host_calls() {
 /// `tailLinesNewest` with a cap counts `tail_newest_reads{mode=capped}`, without one `{mode=fallback_full}`.
 #[test]
 fn newest_tail_reads_are_counted_by_mode() {
-    let home = std::env::temp_dir().join(format!("ah-tgtailcnt-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-tgtailcnt-{}", std::process::id()));
     std::fs::create_dir_all(home.join(".anti-hall/logic")).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();
     let tp = real.join("t.jsonl");

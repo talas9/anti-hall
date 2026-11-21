@@ -681,6 +681,11 @@ impl Scheduler {
         json!({"job": job, "started": true, "finished": false})
     }
 
+    /// Whether any job is running right now (the daemon does not idle-exit under it: its shutdown would kill the job's process group).
+    pub fn any_running(&self) -> bool {
+        lk(&self.state).values().any(|st| st.running)
+    }
+
     /// Every job with its configuration, schedule and last result.
     pub fn list(&self) -> Value {
         let state = lk(&self.state);

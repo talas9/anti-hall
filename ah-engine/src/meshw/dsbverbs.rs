@@ -1505,7 +1505,7 @@ mod tests {
     use std::process::Command;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-dsb-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-dsb-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         std::fs::canonicalize(&d).unwrap()

@@ -297,7 +297,7 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-afk-cli-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-afk-cli-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a leftover of an earlier run; absent is the goal state
         std::fs::create_dir_all(&d).expect("scratch home");
         d

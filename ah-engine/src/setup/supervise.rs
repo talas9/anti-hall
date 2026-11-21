@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn the_unit_log_is_emptied_only_when_over_its_limit() {
-        let d = std::env::temp_dir().join(format!("ah-unitlog-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-unitlog-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join(defaults::text("units.plist_log"));
         trim_unit_log(&d); // a missing file is fine

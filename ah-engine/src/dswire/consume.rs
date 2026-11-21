@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn the_marker_keeps_the_told_times_and_the_held_changes_between_looks() {
         defaults::init().unwrap();
-        let dir = std::env::temp_dir().join(format!("ah-advisory-marker-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-advisory-marker-{}", std::process::id()));
         let path = dir.join("s1.json");
         let told = BTreeMap::from([("w1".to_string(), 7i64)]);
         let held = BTreeMap::from([("w1".to_string(), Held { from: "working".into(), to: "stuck".into(), at_ms: 60_000, count: 2 })]);

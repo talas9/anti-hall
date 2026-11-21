@@ -1,6 +1,9 @@
 //! Overhead of Node-hook telemetry. Its own test binary: a p95 timing is meaningless beside other tests' daemons and threads.
 
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::telemetry::event::Outcome;
 
 /// The budget for what the Node-hook telemetry adds to one hook call, p95 (a call with three Node hooks: build and queue
@@ -10,7 +13,7 @@ const HOOK_CALL_P95_BUDGET_US: u128 = 200;
 #[test]
 fn recording_a_hook_calls_node_hooks_adds_under_two_tenths_of_a_millisecond_at_p95() {
     use ah_engine::telemetry::emit::{self, NodeRun};
-    let dir = std::env::temp_dir().join(format!(
+    let dir = testtmp::path(format!(
         "ah-tel-overhead-{}-{}",
         std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()

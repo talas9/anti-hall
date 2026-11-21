@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 const NOW: i64 = 1_800_000_000_000;
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-dsact-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-dsact-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join("home")).unwrap();
     std::fs::create_dir_all(d.join("state")).unwrap();

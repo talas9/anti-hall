@@ -25,7 +25,7 @@ struct World {
 
 impl World {
     fn new(name: &str) -> World {
-        let dir = std::env::temp_dir().join(format!("ah-rpair-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ah-rpair-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.git")).unwrap();

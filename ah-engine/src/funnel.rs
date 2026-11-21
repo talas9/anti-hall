@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn the_model_is_read_from_the_newest_assistant_entry_of_the_transcript_tail() {
-        let dir = std::env::temp_dir().join(format!("ah-funnel-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-funnel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let tp = dir.join("t.jsonl");
         std::fs::write(

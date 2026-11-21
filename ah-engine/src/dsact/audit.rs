@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn build_reads_fixture_files_and_the_doctor_findings_flag_trouble() {
-        let d = std::env::temp_dir().join(format!("ah-audit-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-audit-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(defaults::text("devswarm_act.ledger_file")), "{\"ts\":100,\"key\":\"z\",\"kind\":\"poke\",\"outcome\":\"started\"}\nnot json\n")
             .unwrap();

@@ -114,7 +114,7 @@ impl Drop for Sc {
 
 impl Sc {
     fn new() -> Sc {
-        let root = std::env::temp_dir().join(format!("ah-doctor-sc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let root = crate::common::testtmp::path(format!("ah-doctor-sc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let (home, cwd) = (root.join("home"), root.join("cwd"));
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&cwd).unwrap();

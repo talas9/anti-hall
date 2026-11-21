@@ -26,7 +26,7 @@ function ctHeartbeatKey(builderId, branch) {
 // The CLI path the reminders name: the stable launcher when that is switched on and installed, else the plugin's own script (`preferStableLauncher`).
 // null when the plugin root cannot be resolved the way Node's `__dirname` would be.
 function ctCli(opts, home) {
-  return dwEngineCmd('devswarm_role.engine_cli', home);
+  return dwCliCmd(home);
 }
 
 // Text of a small state file, or null when absent; undefined when it is too large to read whole (Node reads all of it).

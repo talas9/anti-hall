@@ -726,7 +726,7 @@ mod tests {
 
     fn home(enabled: bool) -> PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);
-        let h = std::env::temp_dir().join(format!("ah-arrival-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let h = crate::testtmp::path(format!("ah-arrival-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(h.join(".anti-hall")).unwrap();
         if enabled {
             std::fs::write(h.join(".anti-hall/jev.json"), r#"{"enabled":true}"#).unwrap();

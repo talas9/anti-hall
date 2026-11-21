@@ -251,8 +251,9 @@ impl Pool {
         let now = self.epoch.elapsed();
         let wall = hard_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
         self.deadline.wall.store((now.as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
-        let req = crate::deadline::at().zip(cut).map_or(0, |(at, grace_ms)| {
-            let left = (at + std::time::Duration::from_millis(grace_ms)).saturating_duration_since(Instant::now());
+        // the request's hard deadline plus the check's grace, or the check's cap when that comes first (#763)
+        let req = cut.and_then(crate::deadline::cut_point).map_or(0, |at| {
+            let left = at.saturating_duration_since(Instant::now());
             (now.as_nanos() as u64).saturating_add(left.as_nanos() as u64).max(1)
         });
         self.deadline.req.store(req, Ordering::Relaxed);
@@ -1033,11 +1034,22 @@ pub fn deadline_grace_ms(check: &str) -> u64 {
 /// There is no Node hook to defer to any more (#463), so the check answers here by its own failure policy ([`unanswered`]: `open`
 /// allows and tells the user once per session, `closed` blocks on a guard event), never a deferral. Counted per check and outcome
 /// (`status` advisory `<diagnostics.deadline_cut_counter>.<check>.<outcome>`).
+///
+/// A call cut at its check's cap (#763: the time the checks after it are reserved, [`crate::deadline::cap_check`]) is no answer of the
+/// check either: its outcome is counted `diagnostics.deadline_cut_outcome_unsure`, never as an allow, and the dispatcher records the
+/// entry as a drop (`diagnostics.drop_reason_check_cut`), so an open guard's allow here cannot hide the block it might have given.
 pub fn cut(name: &str, event: &str) -> Verdict {
+    let at_cap = crate::deadline::cap_passed();
     crate::failopen::note(defaults::text("fail_open.reason_deadline"), name, event);
     crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
     let v = unanswered(name, event);
-    crate::obs::counters::advisory(defaults::text("diagnostics.deadline_cut_counter"), &format!("{name}.{}", cut_outcome(&v)));
+    let outcome = if at_cap {
+        crate::deadline::note_cap_cut();
+        defaults::text("diagnostics.deadline_cut_outcome_unsure")
+    } else {
+        cut_outcome(&v)
+    };
+    crate::obs::counters::advisory(defaults::text("diagnostics.deadline_cut_counter"), &format!("{name}.{outcome}"));
     v
 }
 
@@ -1086,21 +1098,24 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
             pool.arm(limit, cut_at_deadline(name, event).then(|| deadline_grace_ms(name)));
-            let out = ctx.with(|c| -> Result<String, String> {
-                let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
-                let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
-                let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
-                let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
-                // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
-                let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
-                api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
-                let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
-                if v.is_undefined() || v.is_null() {
-                    return Ok("null".into());
-                }
-                let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
-                Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
-            });
+            let js = || {
+                ctx.with(|c| -> Result<String, String> {
+                    let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
+                    let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
+                    let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
+                    let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
+                    // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
+                    let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
+                    api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
+                    let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
+                    if v.is_undefined() || v.is_null() {
+                        return Ok("null".into());
+                    }
+                    let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
+                    Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
+                })
+            };
+            let out = held_or(name, js);
             was_cut = out.is_err() && pool.past_request();
             timed_out = out.is_err() && matches!(Trip::of(pool.deadline.trip.load(Ordering::Relaxed)), Some(Trip::Cpu | Trip::Wall)); // a limit of its own, not the client's deadline
             starved = out.is_err() && Trip::of(pool.deadline.trip.load(Ordering::Relaxed)) == Some(Trip::Wall); // waited for a core, used no CPU
@@ -1125,6 +1140,52 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
             Some(failed(name, event, &e))
         }
         Err(e) => Some(failed(name, event, &e)),
+    }
+}
+
+/// The script's answer `js` gives, or (in a test) what a held call ([`hold`]) gives first.
+fn held_or(name: &str, js: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    #[cfg(test)]
+    match hold::run(name) {
+        Ok(None) => {}
+        Ok(Some(answer)) => return Ok(answer),
+        Err(e) => return Err(e),
+    }
+    #[cfg(not(test))]
+    let _ = name;
+    js()
+}
+
+/// Test only: a call of a held check first runs as a slow native scan, inside the armed call (after [`Pool::arm`]), so the real deadline
+/// policy decides whether and when it is cut: the scan looks at its cut the way the transcript scans do ([`host::unless_cut`]), and a cut
+/// fails the call exactly as a cut scan does (the call's `was_cut`, then [`cut`]). A check that may not be cut (fails closed on a guard
+/// event, or `finish`) is never armed, so it runs the whole hold.
+#[cfg(test)]
+pub(crate) mod hold {
+    use std::cell::RefCell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static HELD: RefCell<Vec<(String, Duration, Option<String>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Hold the calls of these checks on this thread: (check, how long its scan runs, the verdict JSON it answers when the scan is not
+    /// cut; `None` runs the real script after it). An empty list ends every hold.
+    pub(crate) fn set(rows: &[(&str, Duration, Option<&str>)]) {
+        HELD.with(|h| *h.borrow_mut() = rows.iter().map(|(n, d, v)| (n.to_string(), *d, v.map(str::to_string))).collect());
+    }
+
+    /// `Ok(None)`: not held. `Ok(Some(json))`: the held call's answer. `Err`: its scan was cut.
+    pub(super) fn run(name: &str) -> Result<Option<String>, String> {
+        let Some((span, then)) = HELD.with(|h| h.borrow().iter().find(|(n, _, _)| n == name).map(|(_, d, v)| (*d, v.clone()))) else {
+            return Ok(None);
+        };
+        let end = Instant::now() + span;
+        while Instant::now() < end {
+            super::host::unless_cut(()).map_err(|e| e.to_string())?;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Ok(then)
     }
 }
 

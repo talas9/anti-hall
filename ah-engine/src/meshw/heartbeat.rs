@@ -587,7 +587,7 @@ fn plan_broadcast(inv: &Inv, a: &Args, id: &str, session_flag: Option<&str>, had
             Vec::new()
         }
     };
-    let caller = soft(site, ident::caller_identity_detailed(&inv.env, &cwd).map(Some)).unwrap_or(ident::Caller {
+    let caller = soft(site, ident::caller_identity_for(&inv.env, &cwd, &inv.home).map(Some)).unwrap_or(ident::Caller {
         identity: String::new(),
         kind: defaults::text("mesh_write.kind_unresolvable").to_string(),
         mesh_id: None,
@@ -937,7 +937,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         }
     }
     // `identity` is computed fresh (a pure cwd/env resolution); null when that throws
-    let identity = match ident::caller_identity_detailed(&inv.env, &inv.cwd) {
+    let identity = match ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home) {
         Ok(c) => {
             let mut ident_obj = Obj::default();
             ident_obj.put("id", s(&c.identity)).put("kind", s(&c.kind));
@@ -1022,7 +1022,7 @@ mod tests {
 
     fn scratch_inv(tag: &str) -> Inv {
         defaults::init().unwrap();
-        let home = std::env::temp_dir().join(format!("ah-hb-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-hb-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&home).unwrap();
         let cwd = home.join("plain");
@@ -1142,6 +1142,39 @@ mod tests {
         assert_eq!(code, 0);
         let mb = field(&v, "meshBroadcast");
         assert_eq!((field(mb, "ok"), field(mb, "sent")), (&OVal::Bool(true), &OVal::Bool(true)), "{}", v.stringify());
+    }
+
+    /// A child whose worktree is a plain subdirectory of the Primary's checkout (#767): its own id broadcasts.
+    #[test]
+    fn a_child_in_a_subdirectory_of_the_primary_checkout_owns_its_id() {
+        let mut inv = scratch_inv("subdirchild");
+        init_repo(&mut inv);
+        let root = inv.cwd.clone();
+        let sub = format!("{root}/pkg/app");
+        std::fs::create_dir_all(&sub).unwrap();
+        let key = ident::repo_key_for_worktree(&root).unwrap().unwrap();
+        let st = crate::meshw::common::open_store(&inv, &key).unwrap();
+        let primary = ident::primary_workspace_id(&root).unwrap();
+        for (id, wt, sid, at) in [(primary.as_str(), root.as_str(), "ps", 5), ("child-1", sub.as_str(), "s9", 1)] {
+            let row = store::RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: Some(sid.into()), ..Default::default() };
+            assert!(st.upsert_registry(&row, at, |_, _| true).unwrap());
+        }
+        drop(st);
+        let wsdir = crate::meshw::idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&wsdir).unwrap();
+        std::fs::write(wsdir.join("child-1.json"), format!(r#"{{"id":"child-1","worktreePath":{}}}"#, OVal::Str(sub.clone()).stringify())).unwrap();
+        inv.cwd = sub;
+        inv.env.insert(defaults::text("mesh_write.env_builder_id").to_string(), "child-1".into());
+        inv.env.insert(defaults::text("mesh_write.env_source_branch").to_string(), "b".into());
+        let (code, v) = run_args(&inv, &["heartbeat", "child-1", "--summary", "working", "--session", "s1"]);
+        assert_eq!(code, 0);
+        let mb = field(&v, "meshBroadcast");
+        assert_eq!(field(mb, "ok"), &OVal::Bool(true), "{}", v.stringify());
+        assert_eq!(field(field(&v, "identity"), "id"), &OVal::Str("child-1".into()), "the caller is the child, not the root's label");
+        // the send side resolves the same identity
+        let rows = ident::rows_of(&crate::meshw::common::open_store(&inv, &key).unwrap().reader().roster().unwrap());
+        let sender = ident::sender_identity_detailed(&inv.env, &inv.cwd, &rows, &inv.home).unwrap();
+        assert_eq!((sender.identity.as_str(), sender.kind.as_str()), ("child-1", "child"));
     }
 
     #[test]

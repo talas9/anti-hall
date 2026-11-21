@@ -222,7 +222,7 @@ fn a_child_submodule_worktree_never_resolves_as_the_primary_checkout() {
             .unwrap();
         assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
     };
-    let base = std::env::temp_dir().join(format!("ah-childsub-{}", std::process::id()));
+    let base = crate::testtmp::path(format!("ah-childsub-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: a leftover from an aborted run; an absent dir is the goal state
     std::fs::create_dir_all(&base).unwrap();
     let tmp = std::fs::canonicalize(&base).unwrap();

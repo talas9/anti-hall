@@ -350,7 +350,7 @@ mod tests {
 
     fn unique_home(tag: &str) -> PathBuf {
         let id = TEST_ID.fetch_add(1, Ordering::SeqCst);
-        let d = std::env::temp_dir().join(format!("ah-jev-shared-{tag}-{}-{id}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-jev-shared-{tag}-{}-{id}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -387,7 +387,7 @@ mod tests {
     }
 
     fn tmp(tag: &str, body: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ah-turnref-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-turnref-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("t.jsonl");
         std::fs::write(&p, body).unwrap();

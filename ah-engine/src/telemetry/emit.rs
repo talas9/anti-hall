@@ -596,7 +596,7 @@ mod tests {
         prepare_child_counts(&p).unwrap();
         assert!(open_child_counts(&p, 10).is_some());
         // a file elsewhere than the state dir is refused, the way a path a parent made up would be
-        let other = std::env::temp_dir().join(format!("ah-416-elsewhere-{}.jsonl", std::process::id()));
+        let other = crate::testtmp::path(format!("ah-416-elsewhere-{}.jsonl", std::process::id()));
         std::fs::write(&other, "").unwrap();
         assert!(open_child_counts(&other, 10).is_none(), "outside the state dir");
         crate::discard::harmless(std::fs::remove_file(&other));
@@ -651,7 +651,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-tel-emit-{tag}-{}-{}", std::process::id(), now_ms()));
+        let d = crate::testtmp::path(format!("ah-tel-emit-{tag}-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&d).unwrap();
         d.join(defaults::text("files.telemetry_inbox"))
     }

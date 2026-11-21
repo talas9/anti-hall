@@ -4,6 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,7 +31,7 @@ struct Run {
 
 /// Run the monitor command with a stub engine (`engine_body`, absent when None) and a stub installer that must never run.
 fn run(tag: &str, engine_body: Option<&str>) -> Run {
-    let root: PathBuf = std::env::temp_dir().join(format!("ah-monfb-{tag}-{}", std::process::id()));
+    let root: PathBuf = testtmp::path(format!("ah-monfb-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let home = root.join("home");
     let plugin = root.join("plugin");

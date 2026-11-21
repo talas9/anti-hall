@@ -646,7 +646,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let rows = registry(st)?;
     let archived = archive_complete_ids(home);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
-    let aliases = crate::meshw::common::read_aliases(home);
+    let aliases = crate::meshw::common::read_aliases(home, &inv.env);
     let mut resolver = Resolver { rows: &rows, aliases: aliases.clone(), pwid: HashMap::new() };
     let mut cur = Cursors::new(home);
     let marker = defaults::text("mesh_write.archive_request_marker");
@@ -1085,7 +1085,7 @@ mod tests {
     /// `(reader, position, retired_line)`; the summary row of X.
     fn summary_row_of_x(tag: &str, readers: &[(&str, i64, Option<i64>)]) -> (i64, i64) {
         use crate::meshw::store::{CursorPut, RegistryRow};
-        let dir = std::env::temp_dir().join(format!("ah-summary-owner-{}-{tag}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-summary-owner-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ah-summary-{tag}-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-summary-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         dir

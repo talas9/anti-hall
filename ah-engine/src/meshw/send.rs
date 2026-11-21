@@ -44,7 +44,7 @@ pub fn mesh_candidates(rows: &[Row], mesh_id: Option<&str>) -> R<Vec<Row>> {
     let mut out = Vec::new();
     for d in rows {
         let Some(wp) = d.worktree_path.as_deref() else { continue };
-        let canon = match ident::canonical_mesh_id(wp)? {
+        let canon = match ident::registry_mesh_id(rows, wp)? {
             Some(c) => Some(c),
             None => ident::raw_path_mesh_id(wp)?,
         };
@@ -716,8 +716,6 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().or_else(|e| ident::unavailable("mesh_write.what_registry", &e))?);
     let from_d = ident::sender_identity_detailed(&inv.env, &cwd, &rows, home)?;
-    // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so
-    common::ensure_alias(inv, &from_d, &cwd);
     let from = from_d.identity.clone();
     if let Some(ff) = a.one(defaults::text("mesh_write.flag_from"))
         && ff != from
@@ -880,6 +878,8 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         return Ok(o);
     }
     // ---- commit: everything below writes ----
+    // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so; only once the target is validated (#767)
+    common::ensure_alias(inv, &from_d, &cwd);
     let to_out: Option<String> = if broadcast {
         None
     } else if to_primary {
@@ -1141,7 +1141,7 @@ mod tests {
     /// #203: a live descriptor id by prefix is found (the engine then hands the send to Node's alias step); other prefixes are not.
     #[test]
     fn a_live_descriptor_id_prefix_is_found() {
-        let home = std::env::temp_dir().join(format!("ah-descprefix-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-descprefix-{}", std::process::id()));
         let dir = crate::meshw::idlock::devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::File::create(dir.join(format!("c5dbd3c3-1e53{}", defaults::text("mesh_write.json_suffix")))).unwrap();
@@ -1172,7 +1172,7 @@ mod label_tests {
     }
 
     fn scratch_inv(tag: &str) -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-pick-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pick-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&home).unwrap();
         Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1_000_000, stdin: None, store_override: None }

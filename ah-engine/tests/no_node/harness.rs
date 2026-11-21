@@ -120,7 +120,7 @@ pub struct World {
 impl World {
     pub fn new(name: &str) -> World {
         let cfg = cfg();
-        let dir = common::TempDir::at(std::env::temp_dir().join(format!("ah-nonode-{name}-{}", std::process::id())));
+        let dir = common::TempDir::at(crate::common::testtmp::path(format!("ah-nonode-{name}-{}", std::process::id())));
         let root = dir.path().to_path_buf();
         assert!(!root.to_string_lossy().contains(char::is_whitespace), "the scratch path must have no spaces (the shim log splits argv on them)");
         let home = root.join("home");

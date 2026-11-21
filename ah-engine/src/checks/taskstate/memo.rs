@@ -161,7 +161,7 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str, body: &str) -> Scratch {
-            let p = std::env::temp_dir().join(format!("ah-memo-{tag}-{}", std::process::id()));
+            let p = crate::testtmp::path(format!("ah-memo-{tag}-{}", std::process::id()));
             std::fs::write(&p, body).unwrap();
             Scratch(p)
         }

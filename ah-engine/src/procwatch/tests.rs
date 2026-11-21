@@ -91,7 +91,7 @@ fn marked(owner: u32) -> Vec<(String, String)> {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-procwatch-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-procwatch-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&d).ok(); // harmless: the scratch dir of this test process
     std::fs::create_dir_all(&d).expect("scratch dir");
     d
@@ -993,4 +993,259 @@ fn details(h: &Path, guard: &str, _session: &str) -> String {
         .join(crate::defaults::text("guardkit.details_dir"))
         .join(format!("{guard}-{session}{}", crate::defaults::text("guardkit.details_ext")));
     std::fs::read_to_string(p).expect("the brief guard saves its complete details")
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// leaked Codex companion broker trees (fake process table, scratch HOME; no real process is read or signalled)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The Codex plugin's broker script as the plugin cache installs it.
+const BROKER_SCRIPT: &str = "/home/u/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs";
+
+fn broker_cmd(script: &str, cwd: &str) -> String {
+    format!("node {script} serve --endpoint unix:/s/broker.sock --cwd {cwd} --pid-file /s/pid")
+}
+
+/// The workspace directory of the broker fixture under a scratch home (it exists, so its realpath is known).
+fn ws(home: &Path, name: &str) -> String {
+    let d = home.join("work").join(name);
+    std::fs::create_dir_all(&d).expect("workspace dir");
+    d.to_string_lossy().into_owned()
+}
+
+/// An orphaned broker (700) with a `codex app-server` child (701) and `repls` node_repl grandchildren (710..), plus a bystander.
+fn broker_fixture(home: &Path, repls: u32, age: u64) -> Fake {
+    let cwd = ws(home, "app");
+    let mut rows = vec![
+        row(1, 0, 10 * DAY, "/sbin/launchd"),
+        row(500, 1, 5 * DAY, "/Users/u/.local/bin/claude --resume"),
+        row(700, 1, age, &broker_cmd(BROKER_SCRIPT, &cwd)),
+        row(701, 700, age, "codex app-server"),
+        row(900, 1, 5 * DAY, "node /work/other/server.js"),
+    ];
+    for i in 0..repls {
+        rows.push(row(710 + i, 701, age, "node_repl"));
+    }
+    Fake { rows, ..Fake::default() }
+}
+
+/// The Codex companion's job state of one workspace under a scratch home.
+fn codex_state(home: &Path, status: &str) {
+    codex_state_for(home, status, &ws(home, "app"));
+}
+
+fn codex_state_for(home: &Path, status: &str, workspace: &str) {
+    let dir = home.join(".claude/plugins/data/codex-test/state/app-0123456789abcdef");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    let jobs = json!({"version": 1, "jobs": [{"id": "j1", "status": status, "workspaceRoot": workspace}]});
+    std::fs::write(dir.join("state.json"), jobs.to_string()).expect("state file");
+}
+
+#[test]
+fn a_leaked_broker_tree_is_reported_once_with_its_pids_and_nothing_is_stopped_in_report_mode() {
+    let h = scratch("broker-report");
+    codex_state(&h, "completed");
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    let (report, recs) = sweep_once(&mut f, &h);
+    let b = &report["broker_leaks"];
+    assert_eq!(b["count"], 1);
+    assert_eq!(b["mode"], "report");
+    assert_eq!(b["listed"][0]["pid"], 700);
+    assert_eq!(b["listed"][0]["cwd"], real_of(&ws(&h, "app")).as_str(), "the workspace is reported as its realpath");
+    assert_eq!(b["listed"][0]["children"], 26, "the app-server and its 25 node_repl descendants");
+    let cmd = b["listed"][0]["stop_cmd"].as_str().expect("stop command");
+    assert!(cmd.starts_with("kill ") && cmd.ends_with(" 701 700"), "descendants first, the broker last: {cmd}");
+    assert!(!cmd.contains("900") && !cmd.contains("500"), "an unrelated process is never named: {cmd}");
+    assert!(f.signals.is_empty(), "report mode signals nothing");
+    assert_eq!(recs.iter().filter(|r| r.1 == "broker_leak").count(), 1, "one telemetry record per tree, a stable class");
+}
+
+#[test]
+fn a_broker_with_a_queued_or_running_job_is_not_a_leak() {
+    for status in ["running", "queued"] {
+        let h = scratch(&format!("broker-job-{status}"));
+        codex_state(&h, status);
+        let mut f = broker_fixture(&h, 25, 2 * DAY);
+        let (report, _) = sweep_once(&mut f, &h);
+        assert_eq!(report["broker_leaks"]["count"], 0, "an active job protects the tree ({status})");
+    }
+}
+
+#[test]
+fn an_unreadable_job_state_counts_as_an_active_job() {
+    let h = scratch("broker-nostate");
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 0, "no plugin data directory: fail open");
+    let h2 = scratch("broker-badstate");
+    codex_state(&h2, "completed");
+    std::fs::write(h2.join(".claude/plugins/data/codex-test/state/app-0123456789abcdef/state.json"), "{ not json").expect("write");
+    let (report, _) = sweep_once(&mut broker_fixture(&h2, 25, 2 * DAY), &h2);
+    assert_eq!(report["broker_leaks"]["count"], 0, "a state file that does not parse: fail open");
+}
+
+#[test]
+fn a_small_young_broker_tree_is_under_every_limit_and_not_flagged() {
+    let h = scratch("broker-small");
+    codex_state(&h, "completed");
+    let mut f = broker_fixture(&h, 3, 60);
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 0);
+}
+
+#[test]
+fn a_broker_that_still_has_its_parent_is_not_an_orphan() {
+    let h = scratch("broker-parent");
+    codex_state(&h, "completed");
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    f.rows.iter_mut().find(|r| r.pid == 700).expect("broker").ppid = 500;
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 0, "a broker under a live session is in use");
+}
+
+#[test]
+fn reap_on_stops_exactly_the_tree_pids_children_first_and_nothing_else() {
+    let h = scratch("broker-kill");
+    codex_state(&h, "completed");
+    write_settings(&h, json!({"procwatch": {"brokerLeakMode": "kill"}}));
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    let (report, recs) = sweep_once(&mut f, &h);
+    let polite: Vec<u32> = f.signals.iter().filter(|s| !s.1).map(|s| s.0).collect();
+    let mut expect: Vec<u32> = (710..735).collect();
+    expect.extend([701, 700]);
+    let mut sorted = polite.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), 27, "every tree pid is signalled once: {polite:?}");
+    assert!(polite.iter().all(|p| expect.contains(p)), "only tree pids: {polite:?}");
+    assert_eq!(*polite.last().expect("signals"), 700, "the broker last");
+    assert!(polite.iter().position(|p| *p == 701) < polite.iter().position(|p| *p == 700), "descendants before the broker");
+    assert!(f.signals.iter().all(|s| s.0 != 900 && s.0 != 500), "no other process is signalled");
+    assert_eq!(f.sleeps, vec![2000], "one grace period for the whole tree");
+    assert_eq!(report["broker_leaks"]["kills"].as_array().expect("kills").len(), 27);
+    assert_eq!(recs.iter().filter(|r| r.0 == "orphan_kill" && r.1 == "broker_leak").count(), 27);
+}
+
+#[test]
+fn reap_on_never_stops_a_broker_whose_workspace_has_a_running_job() {
+    let h = scratch("broker-kill-job");
+    codex_state(&h, "running");
+    write_settings(&h, json!({"procwatch": {"brokerLeakMode": "kill"}}));
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    sweep_once(&mut f, &h);
+    assert!(f.signals.is_empty(), "a running job is never interrupted");
+}
+
+#[test]
+fn the_advisory_names_the_leaked_tree_with_its_stop_command_once_per_cooldown() {
+    let h = scratch("broker-advisory");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let dir = h.join(".anti-hall/ah-engine");
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = json!({"pid": 700, "cwd": "/work/app", "children": 26, "mem": "1.4 GB", "age_s": 172800, "stop_cmd": "kill 710 701 700"});
+    std::fs::write(
+        dir.join("procwatch-report.json"),
+        json!({"ts_s": now, "modes": {}, "orphans": {"count": 0, "listed": []}, "broker_leaks": {"count": 1, "mode": "report", "listed": [entry]}}).to_string(),
+    )
+    .unwrap();
+    let env = script_env(&h, None);
+    let p = json!({"session_id": "s1"});
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("1 leaked Codex broker tree(s)") && t.contains("broker pid 700 in /work/app") && t.contains("kill 710 701 700"), "{t}");
+    assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "the cooldown holds");
+}
+
+// ---- #777: kill mode needs plugin-path provenance and an exact workspace ----
+
+fn real_of(p: &str) -> String {
+    std::fs::canonicalize(p).expect("exists").to_string_lossy().into_owned()
+}
+
+fn kill_mode(h: &Path) {
+    write_settings(h, json!({"procwatch": {"brokerLeakMode": "kill"}}));
+}
+
+#[test]
+fn a_workspace_with_a_space_is_read_whole_and_its_running_job_protects_the_tree() {
+    let h = scratch("broker-space");
+    kill_mode(&h);
+    let spaced = ws(&h, "my app");
+    ws(&h, "my"); // the truncated parse would land on a real, idle directory
+    codex_state_for(&h, "running", &spaced);
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    f.rows.iter_mut().find(|r| r.pid == 700).expect("broker").cmd = broker_cmd(BROKER_SCRIPT, &spaced);
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 0, "the whole path is the workspace, so its running job is seen");
+    assert!(f.signals.is_empty(), "a live broker tree is never stopped");
+}
+
+#[test]
+fn a_workspace_with_a_space_and_a_later_flag_is_cut_at_the_flag_not_at_the_space() {
+    let h = scratch("broker-space-idle");
+    let spaced = ws(&h, "my app");
+    codex_state_for(&h, "completed", &spaced);
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    f.rows.iter_mut().find(|r| r.pid == 700).expect("broker").cmd = broker_cmd(BROKER_SCRIPT, &spaced);
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["listed"][0]["cwd"], real_of(&spaced).as_str());
+}
+
+#[test]
+fn a_broker_script_outside_the_codex_plugin_path_is_not_a_finding() {
+    let h = scratch("broker-unrelated");
+    kill_mode(&h);
+    codex_state(&h, "completed");
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    let cwd = ws(&h, "app");
+    f.rows.iter_mut().find(|r| r.pid == 700).expect("broker").cmd = broker_cmd("/work/unrelated/app-server-broker.mjs", &cwd);
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 0, "basename alone is no provenance");
+    assert!(f.signals.is_empty());
+}
+
+#[test]
+fn a_real_plugin_broker_without_a_job_is_found_and_stopped_in_kill_mode() {
+    let h = scratch("broker-real");
+    kill_mode(&h);
+    codex_state(&h, "completed");
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 1);
+    assert_eq!(report["broker_leaks"]["withheld"], 0);
+    assert_eq!(f.signals.iter().filter(|s| !s.1).count(), 27, "the whole tree is signalled");
+}
+
+#[test]
+fn a_missing_or_nonexistent_workspace_is_reported_and_never_signalled() {
+    for (tag, cmd) in [
+        ("gone", broker_cmd(BROKER_SCRIPT, "/no/such/dir/anywhere")),
+        ("noflag", format!("node {BROKER_SCRIPT} serve --endpoint unix:/s/broker.sock --pid-file /s/pid")),
+    ] {
+        let h = scratch(&format!("broker-unknown-{tag}"));
+        kill_mode(&h);
+        codex_state(&h, "completed");
+        let mut f = broker_fixture(&h, 25, 2 * DAY);
+        f.rows.iter_mut().find(|r| r.pid == 700).expect("broker").cmd = cmd;
+        let (report, recs) = sweep_once(&mut f, &h);
+        assert_eq!(report["broker_leaks"]["count"], 1, "still reported ({tag})");
+        assert_eq!(report["broker_leaks"]["withheld"], 1, "{tag}");
+        assert_eq!(report["broker_leaks"]["listed"][0]["withheld"], "workspace_unknown", "{tag}");
+        assert!(f.signals.is_empty(), "unknown workspace: report only ({tag})");
+        assert_eq!(recs.iter().filter(|r| r.0 == "orphan_kill_withheld").count(), 1, "{tag}");
+    }
+}
+
+#[test]
+fn a_symlinked_workspace_matches_the_job_recorded_under_its_realpath() {
+    let h = scratch("broker-symlink");
+    kill_mode(&h);
+    let real = ws(&h, "real");
+    let link = h.join("work/link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink");
+    codex_state_for(&h, "running", &real);
+    let mut f = broker_fixture(&h, 25, 2 * DAY);
+    f.rows.iter_mut().find(|r| r.pid == 700).expect("broker").cmd = broker_cmd(BROKER_SCRIPT, &link.to_string_lossy());
+    let (report, _) = sweep_once(&mut f, &h);
+    assert_eq!(report["broker_leaks"]["count"], 0);
+    assert!(f.signals.is_empty());
 }

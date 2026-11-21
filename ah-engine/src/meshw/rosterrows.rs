@@ -839,7 +839,7 @@ fn enrich(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<Snap>) -> R<()> {
 
 /// The ghost-row fold: a `primary-<hash>` label folds into its canonical row, carrying its unread count and hints.
 fn fold(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<&Snap>) -> R<()> {
-    let aliases = crate::meshw::common::read_aliases(&e.inv.home);
+    let aliases = crate::meshw::common::read_aliases(&e.inv.home, &e.inv.env);
     let present: HashSet<String> = rows.iter().filter_map(|r| str_field(r, "id").map(str::to_string)).collect();
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for (i, r) in rows.iter().enumerate() {
@@ -1543,7 +1543,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-roster-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-roster-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         d.canonicalize().unwrap()

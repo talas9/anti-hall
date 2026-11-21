@@ -303,17 +303,7 @@ fn plan(inv: &Inv, asked: &str, session: &str) -> R<Planned> {
 /// `registerStoreDescriptor`'s same-worktree test for the registry's id-collision guard (`sameRegistryWorktree`): the paths are equal,
 /// resolve to the same directory, or one is the key-bearing root the other resolves to.
 fn same_registry_worktree(existing: &str, incoming: &str) -> bool {
-    if existing == incoming {
-        return true;
-    }
-    let real = |p: &str| ident::realpath(p).unwrap_or_else(|| ident::resolve_abs(p));
-    let (ra, rb) = (real(existing), real(incoming));
-    if ra == rb {
-        return true;
-    }
-    let root = |p: &str| ident::resolve_context(p, false).ok().and_then(|c| c.worktree_root);
-    let (xa, xb) = (root(existing), root(incoming));
-    xa.as_deref().is_some_and(|x| x == rb) || xb.as_deref().is_some_and(|x| x == ra) || (xa.is_some() && xa == xb)
+    ident::same_registry_worktree(existing, incoming)
 }
 
 /// Perform a planned registration (`registerChildDescriptor`, `registerStoreDescriptor`, then the retirement of the checkout's phantoms).
@@ -655,7 +645,7 @@ mod tests {
     }
 
     fn fx(tag: &str) -> Fx {
-        let base = std::env::temp_dir().join(format!("ah-ct-{tag}-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-ct-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: a stale directory of an earlier run of this test
         let (home, repo) = (base.join("home"), base.join("repo"));
         std::fs::create_dir_all(&home).unwrap();

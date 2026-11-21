@@ -61,6 +61,8 @@ fn a_supervised_start_during_a_crash_loop_stop_exits_0_without_starting_and_logs
         assert_eq!(wait_exit(&mut c), 0, "{reason}: a stop is exit 0, which a supervisor leaves alone");
     }
     assert!(!logged(&r, "supervised_start"), "no start is logged while the loop stop holds");
+    let ring = std::fs::read_to_string(r.join("eng").join("exit-reasons.json")).unwrap();
+    assert_eq!(ring.matches("\"kind\":\"crashloop\"").count(), 2, "each declined start leaves a crashloop exit row: {ring}");
     assert!(cmd(&r).args(["status", "--json"]).output().unwrap().stdout.windows(14).all(|w| w != b"\"running\":true"), "no daemon runs");
     ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
 }

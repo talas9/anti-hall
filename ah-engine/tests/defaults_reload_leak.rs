@@ -27,7 +27,7 @@ fn set_gc_every_calls(plugin: &Path, v: u64) {
 #[test]
 #[allow(clippy::undocumented_unsafe_blocks)] // test-only env mutation in a single-test process
 fn a_changed_integer_entry_leaks_only_its_own_entry_not_a_second_copy_of_its_text() {
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-reload-leak-{}", std::process::id())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-reload-leak-{}", std::process::id())));
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(root.join("eng")).unwrap();
     let plugin = root.join("plugin");

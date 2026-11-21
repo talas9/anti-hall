@@ -2,6 +2,9 @@
 //! tests' threads, and the overlay is process-global. The thresholds live in `defaults_overlay_cost.toml` beside this file.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::defaults;
 use serde_json::json;
 use std::hint::black_box;
@@ -35,7 +38,7 @@ fn the_overlay_adds_at_most_the_configured_nanoseconds_per_read() {
         limit(&t, "rounds"),
         limit(&t, if cfg!(debug_assertions) { "max_added_ns_debug" } else { "max_added_ns_release" }),
     );
-    let dir = std::env::temp_dir().join(format!("ah-overlay-cost-{}", std::process::id()));
+    let dir = testtmp::path(format!("ah-overlay-cost-{}", std::process::id()));
     // SAFETY: set before the first load and before any other thread exists; the defaults then come from this checkout, never from
     // a snapshot cache in the real state directory
     unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };

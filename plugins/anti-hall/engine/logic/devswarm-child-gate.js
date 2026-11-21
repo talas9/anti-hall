@@ -77,7 +77,6 @@ function cgResolvedId() {
 }
 
 function cgDq(s) { return '"' + s.replace(/["\\$`]/g, function (c) { return '\\' + c; }) + '"'; }
-function cgShQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'"; }
 
 // `wakeReassertLine(env, true)`: the child's mailbox-wake re-verify line (Claude only).
 function cgWakeLine(l) {
@@ -103,7 +102,7 @@ function cgHeadline(kinds) {
 function cgFrame(body, ctx, kinds) {
   var guard = ah.cfg('devswarm_gates.child_gate_guard_name');
   var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: cgShQuote(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
   var reason = text.message('block', guard, {
     what: cgHeadline(kinds),
     instead: ah.cfg('devswarm_gates.cg_short_instead'),
@@ -379,8 +378,22 @@ function cgNative(ctx) {
       n = isFinite(v) && v >= 0 ? v : null;
     }
   }
+  // the engine's own wake prompts stay pending natively (a task nothing accepts) and are never mail: the child's last pull counted them
+  if (n !== null && n > 0) n = Math.max(0, n - cgNativeWake(ctx));
   ctx.native = n;
   return n;
+}
+
+// How many of the native queue's pending messages the child's last pull found to be wake prompts: the wake-tick marker's field while
+// the marker is fresh and known; 0 (nothing is subtracted) for a stale, absent or unknown one.
+function cgNativeWake(ctx) {
+  var id = cgBuilder();
+  if (!dgSafeId(id)) return 0;
+  var m = cgJson(ctx.home + '/' + cgDirRel() + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + id + '.json');
+  if (!m || typeof m !== 'object' || m.known !== true || !cgFinite(m.ts)) return 0;
+  if ((ctx.now - m.ts) > ah.cfgNum('devswarm_gates.cg_wake_marker_fresh_ms')) return 0;
+  var w = m[ah.cfg('mesh_write.marker_native_wake_field')];
+  return cgFinite(w) && w > 0 ? w : 0;
 }
 
 // `hasUnreadParentMessages`: true, false or 'unknown'.

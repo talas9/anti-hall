@@ -996,7 +996,7 @@ fn the_probe_warm_up_never_slows_the_first_reply_and_fills_the_cache() {
     std::fs::write(bindir.join("python3"), "#!/bin/sh\nsleep 3\necho 'Python 3.13.0'\n").unwrap();
     std::fs::set_permissions(bindir.join("python3"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     drop(e0);
-    let path = format!("{}:/usr/bin:/bin", std::env::temp_dir().join(format!("ah-r-prewarm-dir-{}", std::process::id())).join("fakebin").display());
+    let path = format!("{}:/usr/bin:/bin", crate::common::testtmp::path(format!("ah-r-prewarm-dir-{}", std::process::id())).join("fakebin").display());
     let e = Env::new("prewarm", &[("PATH", path.as_str()), ("AH_HOOK_TIMEOUT_MS", "5000")]);
     let fake = PathBuf::from(&path.split(':').next().unwrap());
     std::fs::create_dir_all(&fake).unwrap();

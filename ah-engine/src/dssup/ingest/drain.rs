@@ -371,7 +371,7 @@ impl Drainer {
             cursor_path: existing.as_ref().and_then(|r| r.cursor_path.clone()),
             nudge_command: existing.as_ref().and_then(|r| r.nudge_command.clone()),
         };
-        let same = |a: &str, b: &str| a == b || ident::realpath(a).is_some_and(|x| ident::realpath(b).is_some_and(|y| x == y));
+        let same = ident::same_registry_worktree;
         if let Err(e) = store.upsert_registry(&row, now_ms(), same) {
             self.log(&defaults::render("devswarm_ingest.msg_register_failed", &[("ws", ws), ("err", &e)]));
         }

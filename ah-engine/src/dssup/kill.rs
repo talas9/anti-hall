@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn the_linux_proc_link_is_read_through_its_template() {
         crate::defaults::init().unwrap();
-        let d = std::env::temp_dir().join(format!("ah-proccwd-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-proccwd-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: our own scratch
         std::fs::create_dir_all(d.join("4242")).unwrap();
         std::os::unix::fs::symlink("/work/ws-1", d.join("4242/cwd")).unwrap();
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn find_claude_prefers_path_then_the_configured_directories() {
         crate::defaults::init().unwrap();
-        let d = std::env::temp_dir().join(format!("ah-findclaude-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-findclaude-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: our own scratch
         std::fs::create_dir_all(d.join("bin")).unwrap();
         std::fs::create_dir_all(d.join("home/.local/bin")).unwrap();

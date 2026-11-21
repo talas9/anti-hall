@@ -2,6 +2,9 @@
 //! unavailable", not "owner ended": the Stop advises it and does not block. A complete scan that shows no such owner still blocks.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)]
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::io::Write;
@@ -23,7 +26,7 @@ fn launch(id: &str, desc: &str) -> [String; 2] {
 }
 
 fn stop_blocks_with(tag: &str, pre: &[String], pad_bytes: usize, post: &[String]) -> (bool, String) {
-    let home = std::env::temp_dir().join(format!("ah-tgunk-{tag}-{}", std::process::id()));
+    let home = testtmp::path(format!("ah-tgunk-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&home).ok();
     std::fs::create_dir_all(&home).unwrap();
     let real = std::fs::canonicalize(&home).unwrap();

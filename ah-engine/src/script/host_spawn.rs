@@ -306,7 +306,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn interp(tag: &str, body: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ah-sp-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-sp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("py");
@@ -371,7 +371,7 @@ mod tests {
 
     fn fake_python(tag: &str, body: &str) -> HashMap<String, String> {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("ah-sp-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-sp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("python3");
@@ -428,7 +428,7 @@ mod tests {
             }),
             "earlier workers drain"
         );
-        let count = std::env::temp_dir().join(format!("ah-sp-warm-count-{}", std::process::id()));
+        let count = crate::testtmp::path(format!("ah-sp-warm-count-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_file(&count));
         // the probe blocks on a gate file, so "the request never waits on the warm worker" is proved by structure (the request has
         // returned while the worker is still held), not by how long a cold start happens to take on a loaded machine

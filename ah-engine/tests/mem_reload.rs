@@ -112,7 +112,7 @@ fn fifty_defaults_reloads_do_not_keep_a_copy_of_the_defaults_each() {
     let n = |k: &str| b[k].as_integer().unwrap() as u64;
     let (reloads, warmup, leak_cap, heap_cap) = (n("reloads"), n("warmup"), n("leak_bytes_per_reload"), n("heap_kb_per_reload"));
 
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-mem-reload-{}-{}", std::process::id(), nanos())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-mem-reload-{}-{}", std::process::id(), nanos())));
     let state: PathBuf = root.join("state");
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(&state).unwrap();

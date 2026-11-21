@@ -249,3 +249,116 @@ value = " (another project: {folder})"
 [procwatch.f_cwd]
 doc = "Payload field of the session directory."
 value = "cwd"
+
+# ---- leaked Codex companion broker trees ----------------------------------------------------------------------
+# The Codex companion starts `app-server-broker.mjs serve` once per workspace; the broker keeps a `codex app-server` child and every
+# `node_repl` process that child started. When the Claude session that started it ends, the broker is reparented to init (parent 1)
+# and its tree stays up. A tree is a leak when its broker is an orphan, no Codex job is queued or running for its workspace, and the
+# tree is over a limit below. A job state that cannot be read counts as an active job (report only, never a stop).
+
+[procwatch.mode_broker_leak]
+doc = "Mode of the leaked Codex broker tree check: off | report | kill. Report lists each leaked tree with the exact command that stops it; kill stops exactly the listed pids of a tree (descendants first, then the broker), one pid at a time, never by pattern and never a broker whose workspace has a queued or running job."
+value = { section = "procwatch", key = "brokerLeakMode", env = "ANTIHALL_PROCWATCH_BROKER_LEAK", aliases = [], option = "", default = "report", values = ["off", "report", "kill"] }
+
+[procwatch.broker_re]
+doc = "Regular expression (Rust syntax, case-insensitive) of the command line of a Codex companion broker process. Provenance: the broker script must sit at the Codex plugin's install path (the plugin cache `plugins/cache/openai-codex/codex/<version>/scripts/`), not just share the file name, so an unrelated script of the same name is never a candidate."
+value = '(?i)/plugins/cache/openai-codex/codex/[^/\s]+/scripts/app-server-broker\.mjs\s+serve\b'
+
+[procwatch.broker_cwd_re]
+doc = "Regular expression whose first group is the workspace directory in a broker's command line: everything after `--cwd` up to the next ` --<flag>` or the end of the command (a path may contain spaces). The broker's own working directory is used when the flag is absent. The value must be an existing directory, otherwise the workspace is unknown and the tree is withheld from a stop."
+value = '--cwd\s+(.+?)(?:\s+--[A-Za-z][\w-]*(?:\s|$)|\s*$)'
+
+[procwatch.broker_min_children]
+doc = "A broker tree with MORE descendants than this is a leak."
+value = 20
+
+[procwatch.broker_min_mem_mb]
+doc = "A broker tree using MORE memory than this, in MB (broker and descendants together), is a leak."
+value = 1024
+unit = "MB"
+
+[procwatch.broker_min_age_s]
+doc = "An orphaned broker older than this is a leak even when its tree is small."
+value = 21600
+unit = "s"
+
+[procwatch.broker_max_kills_per_run]
+doc = "The most pids one sweep stops in the broker check (one tree has held 350 descendants)."
+value = 1000
+
+[procwatch.broker_max_listed]
+doc = "The most leaked trees one report lists (the count is kept exactly)."
+value = 10
+
+[procwatch.broker_max_pids]
+doc = "The most pids one stop command names; a longer tree is cut and flagged."
+value = 2000
+
+[procwatch.broker_kill_cmd]
+doc = "The command an owner can run to stop one leaked tree; {pids} is the space-separated pid list, descendants first."
+value = "kill {pids}"
+
+[procwatch.broker_state_parent]
+doc = "The directory, relative to the home, that holds the Codex companion's plugin data directories."
+value = ".claude/plugins/data"
+
+[procwatch.broker_state_dir_re]
+doc = "Regular expression of the names of the plugin data directories that hold Codex companion job state."
+value = '^codex-'
+
+[procwatch.broker_state_folder]
+doc = "The folder under a Codex plugin data directory that holds one folder per workspace."
+value = "state"
+
+[procwatch.broker_state_file]
+doc = "The name of the job state file inside a workspace's folder."
+value = "state.json"
+
+[procwatch.broker_active_statuses]
+doc = "Job statuses that mean the broker is in use."
+value = ["queued", "running"]
+
+[procwatch.broker_f_jobs]
+doc = "The state file field that holds the job list."
+value = "jobs"
+
+[procwatch.broker_f_status]
+doc = "The job field that holds its status."
+value = "status"
+
+[procwatch.broker_f_workspace]
+doc = "The job field that holds its workspace directory."
+value = "workspaceRoot"
+
+[procwatch.broker_withheld_unknown_workspace]
+doc = "Reason recorded on a leaked tree that kill mode withheld because its workspace is unknown (no `--cwd`, or not an existing directory): reported only, never signalled."
+value = "workspace_unknown"
+
+[procwatch.impact_kill_withheld]
+doc = "Impact kind recorded once per leaked broker tree whose stop was withheld in kill mode (unknown workspace)."
+value = "orphan_kill_withheld"
+
+[procwatch.broker_cooldown_s]
+doc = "Least time between two leaked-broker advisories to the same session."
+value = 3600
+unit = "s"
+
+[procwatch.msg_broker_what]
+doc = "Leaked-broker summary line; {n} trees, {list} the named ones, {more} the remainder note."
+value = "{n} leaked Codex broker tree(s): {list}{more}."
+
+[procwatch.msg_broker_item]
+doc = "One leaked tree in the summary; {pid} the broker, {cwd} its workspace, {children} descendants, {mem} memory, {age} age, {cmd} the stop command."
+value = "broker pid {pid} in {cwd}: {children} child processes, {mem}, up {age}. Stop it with: {cmd}"
+
+[procwatch.msg_broker_why]
+doc = "Why a leaked broker tree matters; {mode} is the broker check's mode."
+value = "The tree stays up after its Codex job ended and holds memory and swap. Mode: {mode}."
+
+[procwatch.msg_broker_instead]
+doc = "What to do about a leaked broker tree."
+value = "check that no Codex job runs in that workspace, then run the listed stop command."
+
+[procwatch.msg_broker_cut]
+doc = "Appended to a stop command whose pid list was cut at the bound."
+value = " (list cut at {max} pids; run again for the rest)"

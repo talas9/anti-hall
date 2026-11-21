@@ -26,7 +26,7 @@ struct Soak {
 
 impl Soak {
     fn new() -> Soak {
-        let dir = std::env::temp_dir().join(format!("ahd-soak-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-soak-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join("home")).unwrap();
         // A transcript larger than the widest tail window any check reads, in the shape of a real one: user prompts, assistant

@@ -3,7 +3,7 @@ use super::*;
 use std::collections::HashMap;
 
 fn home(tag: &str) -> String {
-    let d = std::env::temp_dir().join(format!("ah-ed-{tag}-{}-{}", std::process::id(), now_ms() as u64));
+    let d = crate::testtmp::path(format!("ah-ed-{tag}-{}-{}", std::process::id(), now_ms() as u64));
     crate::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d.to_string_lossy().to_string()

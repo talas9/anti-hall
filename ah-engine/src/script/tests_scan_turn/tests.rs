@@ -20,7 +20,7 @@ fn fixture() -> String {
         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu1\",\"content\":\"Task #1 created successfully: Open one\"}]}}\n",
     );
     text.push_str("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"last line\"}]}}");
-    let p = std::env::temp_dir().join(format!("ah-scan-turn-{}.jsonl", std::process::id()));
+    let p = crate::testtmp::path(format!("ah-scan-turn-{}.jsonl", std::process::id()));
     std::fs::write(&p, text).unwrap();
     p.to_string_lossy().into_owned()
 }
