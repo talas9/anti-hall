@@ -2345,6 +2345,47 @@ fn a_hung_daemon_whose_process_is_gone_is_marked_down_and_passes_every_call() {
     let log = e.health_log();
     assert_eq!((code, again), (0, 0), "a daemon whose process is gone passes every call: {log}");
     assert!(down && !slow, "a gone daemon is marked down, never slow (down={down} slow={slow}): {log}");
+    let journal = std::fs::read_to_string(e.eng().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+    assert!(journal.contains("client_marker\tdown\tno_process\t"), "the down marker write is counted with its reason: {journal}");
+}
+
+/// #905, the connect/exchange failure site: a failed exchange (a bad reply frame) while a daemon process is still there (it holds the
+/// singleton lock, a live pid) is load, not down: the slow marker, a force push held now and while it lasts, a read passing. With
+/// client.down_requires_gone 0 the old behaviour comes back (the down marker, every call passes). Each marker write is counted.
+#[test]
+fn a_failed_exchange_with_a_live_daemon_marks_it_slow_and_holds_a_force_push() {
+    use std::os::fd::AsRawFd;
+    let _timing = wrapper_timing_lock();
+    for (name, switch) in [("failalive", "1"), ("failalive0", "0")] {
+        let e = Env::new(name, &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9"), ("AH_ENGINE_DOWN_REQUIRES_GONE", switch)]);
+        let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+        std::fs::create_dir_all(e.eng()).unwrap();
+        // the daemon's singleton lock: held (flock) by this test for the whole case, naming a live pid
+        let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(e.eng().join("e.sock.lock")).unwrap();
+        // SAFETY: `lock` is an open file owned by this scope; `flock` takes only its descriptor and a flag.
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        std::fs::write(e.eng().join("e.sock.lock"), stand_in.id().to_string()).unwrap();
+        fake_server(&e, || Some(b"{\"decision\":\"allow\"}".to_vec())); // a reply that is no frame: a failed exchange
+        let (_, code, _) = e.wrapper_hook(DENY_IN);
+        let (down, slow) = (e.fresh_down_marker(), e.fresh_slow_marker());
+        let (_, read, _) = e.wrapper_hook(READ_IN);
+        let (_, again, _) = e.wrapper_hook(DENY_IN);
+        ah_engine::discard::harmless(stand_in.kill());
+        ah_engine::discard::harmless(stand_in.wait());
+        drop(lock);
+        let log = e.health_log();
+        let journal = std::fs::read_to_string(e.eng().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+        assert_eq!(read, 0, "{name}: a read passes: {log}");
+        if switch == "1" {
+            assert_eq!((code, again), (2, 2), "{name}: a force push against a live daemon is held, now and on the marker: {log}");
+            assert!(slow && !down, "{name}: a live daemon is marked slow, never down (down={down} slow={slow}): {log}");
+            assert!(journal.contains("client_marker\tslow\tfailed\t"), "{name}: the slow marker write is counted with its reason: {journal}");
+        } else {
+            assert_eq!((code, again), (0, 0), "{name}: switch off: the old down marker passes every call: {log}");
+            assert!(down && !slow, "{name}: switch off marks it down (down={down} slow={slow}): {log}");
+            assert!(journal.contains("client_marker\tdown\tunchecked\t"), "{name}: the down marker write is counted with its reason: {journal}");
+        }
+    }
 }
 
 /// Codex P1 on the merge: in ack mode a daemon that acknowledged the request and then stopped beating must reach the hung path
