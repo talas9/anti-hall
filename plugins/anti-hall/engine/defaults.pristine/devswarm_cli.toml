@@ -3623,6 +3623,54 @@ value = "create"
 doc = "Setting devswarm.spawnSource: the branch a `mesh spawn` / `devswarm spawn` create branches from when no -s / --source is given (the repository's integration branch). Empty (default): hivecontrol's own default, the branch checked out in the Primary, which is the wrong base when the Primary sits on a feature branch."
 value = { type = "string", section = "devswarm", key = "spawnSource", env = "ANTIHALL_DEVSWARM_SPAWN_SOURCE", option = "devswarm_spawn_source", default = "" }
 
+[devswarm_cli.sp_set_source_fallback]
+doc = "Setting devswarm.spawnSourceFallback: when the CONFIGURED devswarm.spawnSource (not an explicit -s / --source) names a branch that exists neither locally nor on origin, branch from the repository's default branch instead and say so in the result. An explicit -s <missing> is never replaced. Off: the configured source is always passed."
+value = { type = "bool", section = "devswarm", key = "spawnSourceFallback", env = "ANTIHALL_DEVSWARM_SPAWN_SOURCE_FALLBACK", option = "devswarm_spawn_source_fallback", default = true }
+
+[devswarm_cli.sp_git_ls_remote]
+doc = "The git query that asks origin whether a branch exists (`origin <refs/heads/branch>` follows): exit 0 found, the absent status below when it is not there, anything else (unreachable remote, no origin) proves nothing."
+value = ["ls-remote", "--exit-code", "--heads"]
+
+[devswarm_cli.sp_ls_remote_absent_status]
+doc = "The exit status of `git ls-remote --exit-code` when no ref matched."
+value = 2
+
+[devswarm_cli.sp_fallback_message]
+doc = "The result's line when the configured source does not exist and the default branch stands in. {configured} {used}."
+value = "configured source \"{configured}\" does not exist here, used {used}"
+
+[devswarm_cli.sp_error_no_default]
+doc = "The cause of a spawn that created nothing because the configured source does not exist and the repository default branch is unknown (origin/HEAD unset), so no safe base exists. {configured}."
+value = "configured source \"{configured}\" does not exist here and the default branch is unknown (origin/HEAD is not set); no base was guessed. Pass -s <branch> explicitly or fix devswarm.spawnSource"
+
+[devswarm_cli.sp_retry_source_placeholder]
+doc = "The placeholder a retry command shows where the person must name the source branch."
+value = "<branch>"
+
+[devswarm_cli.sp_nothing_created]
+doc = "The first words of the error of a spawn that created nothing. {error} (the cause) {retry} (the exact command to run again once the cause is fixed)."
+value = "NOTHING CREATED: no branch and no workspace were made. Cause: {error} Retry (after fixing the cause): {retry}"
+
+[devswarm_cli.sp_retry_prefix]
+doc = "The command a retry starts with (the branch and the arguments the spawn ran with follow)."
+value = "ah-engine mesh spawn"
+
+[devswarm_cli.sp_shell_safe_re]
+doc = "An argument made only of these characters is printed in a retry command as it is; any other is single-quoted."
+value = "^[A-Za-z0-9_@%+=:,./-]+$"
+
+[devswarm_cli.sp_counter_kind]
+doc = "The advisory counter kind of the spawn source decisions (reported under advisory by the telemetry verb)."
+value = "spawn_source"
+
+[devswarm_cli.sp_counter_fallback]
+doc = "The counter metric: a configured source that does not exist was replaced by the default branch."
+value = "fallback"
+
+[devswarm_cli.sp_counter_nothing_created]
+doc = "The counter metric: a spawn ended with nothing created."
+value = "nothing_created"
+
 [devswarm_cli.sp_set_from_origin]
 doc = "Setting devswarm.spawnFromOrigin: before a create from the default branch, fetch origin and fast-forward the local default branch (refuse when it is behind and cannot be updated, unless --from-local)."
 value = { type = "bool", section = "devswarm", key = "spawnFromOrigin", env = "", option = "devswarm_spawn_from_origin", default = true }

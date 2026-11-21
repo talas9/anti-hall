@@ -39,9 +39,14 @@ pub enum Ctr {
     SlowMarkerPass,
     CapacityHoldNormalised,
     CapacityTextExempt,
+    CapacityInlineCode,
+    CapacityScriptRead,
+    CapacityScriptUnread,
+    CapacityGhUnknown,
+    CapacityUnknownCommand,
 }
 
-const NCTR: usize = 23;
+const NCTR: usize = 28;
 static COUNTERS: [AtomicU64; NCTR] = [const { AtomicU64::new(0) }; NCTR];
 
 impl Ctr {
@@ -71,6 +76,11 @@ impl Ctr {
             Ctr::SlowMarkerPass => "slow_marker_pass",
             Ctr::CapacityHoldNormalised => "capacity_hold_normalised",
             Ctr::CapacityTextExempt => "capacity_text_exempt",
+            Ctr::CapacityInlineCode => "capacity_inline_code",
+            Ctr::CapacityScriptRead => "capacity_script_read",
+            Ctr::CapacityScriptUnread => "capacity_script_unread",
+            Ctr::CapacityGhUnknown => "capacity_gh_unknown",
+            Ctr::CapacityUnknownCommand => "capacity_unknown_command",
         }
     }
     const ALL: [Ctr; NCTR] = [
@@ -97,6 +107,11 @@ impl Ctr {
         Ctr::SlowMarkerPass,
         Ctr::CapacityHoldNormalised,
         Ctr::CapacityTextExempt,
+        Ctr::CapacityInlineCode,
+        Ctr::CapacityScriptRead,
+        Ctr::CapacityScriptUnread,
+        Ctr::CapacityGhUnknown,
+        Ctr::CapacityUnknownCommand,
     ];
 }
 
