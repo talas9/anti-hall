@@ -357,6 +357,10 @@ value = "the engine is not installed"
 doc = "The {why} of the engine-unreachable notice when the daemon-down marker is fresh."
 value = "the engine is marked down"
 
+[msg.launcher_unreachable_why_slow]
+doc = "The {why} of the engine-unreachable notice when the slow-streak marker (files.daemon_slow_marker) is fresh: the engine is loaded, not down; the call passed because it is in no dispatch.capacity_hold class."
+value = "the engine is too busy right now (several late replies in a row)"
+
 [msg.launcher_unreachable_why_handed_back]
 doc = "The {why} of the engine-unreachable notice when the engine handed the call back."
 value = "the engine handed the call back"

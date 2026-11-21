@@ -309,6 +309,10 @@ pub const STRS: &[(&str, &str)] = &[
         "the engine is marked down",
     ),
     (
+        "msg.launcher_unreachable_why_slow",
+        "the engine is too busy right now (several late replies in a row)",
+    ),
+    (
         "msg.launcher_unreachable_why_handed_back",
         "the engine handed the call back",
     ),

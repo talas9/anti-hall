@@ -1281,6 +1281,13 @@ mod tests {
             "python3 -m espefuse burn_key K",
             "git --git-dir=.git push",
             "git branch -D feature",
+            "if git push -f origin main; then :; fi",
+            "while ! git push; do sleep 1; done",
+            "until git push; do sleep 1; done",
+            "GIT_SSH_COMMAND=\"ssh -i k\" git push -f",
+            "git -C \"/a b\" push -f",
+            "ssh host 'git push -f'",
+            "ssh -p 22 host git push --force",
         ] {
             assert!(class(held).is_some(), "held: {held}");
         }

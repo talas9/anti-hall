@@ -1371,7 +1371,7 @@ pub fn run() -> i32 {
         }
         limits::bump(Ctr::SlowMarkerPass);
         l.log_line(&format!("slow_marker_pass event={}", l.event));
-        l.unreachable_notice_for("msg.launcher_unreachable_why_down");
+        l.unreachable_notice_for("msg.launcher_unreachable_why_slow");
         return 0;
     }
     let eng_ms = match l.event_timeout_s() {
