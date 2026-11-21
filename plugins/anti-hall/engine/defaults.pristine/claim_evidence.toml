@@ -45,7 +45,7 @@ doc = "Claims the claim-evidence guard let pass because a tool of this turn (cla
 value = { kind = "counter", unit = "claims", labels = ["claim"] }
 
 [metric.claim_evidence_suppressed]
-doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, planned, labelled, quoted)."
+doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted)."
 value = { kind = "counter", unit = "claims", labels = ["reason"] }
 
 [claim_evidence.guard_name]
@@ -180,6 +180,10 @@ value = ['\b(?:requires?|requiring|required|ensures?)\s+that\b']
 doc = "A purpose clause that opens the claim's own clause (rule 1): 'to make a test pass', 'so that the build goes green', 'in order to get CI green' name the goal of an action, not a result. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = ['\b(?:to|so\s+that|in\s+order\s+to)\s+(?:make|makes|making|get|gets|getting|have|keep|keeps|force|forces|let|lets)\b']
 
+[claim_evidence.instruction_res]
+doc = "An instruction or check request that opens the claim's own clause (rule 1, GH #933): 'and make sure CI passes', 'ensure the tests pass', 'check that the build is green' ask for a result, they do not report one. Only the imperative or infinitive forms count ('I made sure CI passes' stays a claim). Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:make|making)\s+sure(?:\s+(?:that|if|whether))?\b|\bensur(?:e|es|ing)(?:\s+(?:that|if|whether))?\b|\b(?:verify|check|confirm|see)\s+(?:that|if|whether)\b']
+
 [claim_evidence.cond_coord_res]
 doc = "A claim that is the second part of a condition or intent clause (rule 1): 'merge as soon as its work is reviewed and tests pass', 'once the PR is approved or CI is green'. The text before the claim opens with a condition word (as soon as, once, when, after, until, if ...), has a short subject (at most 3 words), a present-tense verb (is, are, be, get, has, have) and at most 2 more words, and ends with 'and' or 'or' right before the claim. A past-tense clause ('when CI started and tests pass') has no such verb and stays a claim. Empty list turns the row off. Regular expressions, case-insensitive, matched against the clause before the claim; each must end with $."
 value = ['\b(?:as soon as|once|when|whenever|after|until|if|unless|before|assuming|provided)\b(?:\s+[\w#\x27-]+){0,3}?\s+(?:is|are|be|gets?|has|have)\b(?:\s+[\w#\x27-]+){0,2}?\s+(?:and|or)\s+$']
@@ -269,6 +273,7 @@ value = [
   { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
   { reason = "purpose", list = "claim_evidence.purpose_res", reach = "claim_evidence.reach_clause" },
+  { reason = "instruction", list = "claim_evidence.instruction_res", reach = "claim_evidence.reach_clause" },
   { reason = "condition", list = "claim_evidence.cond_coord_res", reach = "claim_evidence.reach_verb", idiom = "claim_evidence.opener_idiom_re" },
 ]
 
@@ -295,7 +300,7 @@ min = 0
 max = 50
 
 [claim_evidence.msg_suppressed]
-doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, condition, reported, criterion, purpose, planned, labelled, quoted), {claim} the claim kind, {quote} the words found."
+doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted), {claim} the claim kind, {quote} the words found."
 value = "suppressed ({reason}): \"{quote}\" ({claim})"
 
 # ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
