@@ -313,6 +313,110 @@ pub fn apply_mem_limit(mb: u64) -> String {
     }
 }
 
+/// Raise this process's open-file limit (RLIMIT_NOFILE soft limit) to `want` (`daemon.nofile`; 0 = leave it), never lowering
+/// it, clamped to the hard limit and, on macOS, to the `daemon.nofile_sysctl` per-process ceiling (setrlimit refuses more). A
+/// daemon started by launchd otherwise runs with launchd's default of 256 and a file watcher over a large state directory hit
+/// EMFILE (GH #912). Returns a status word for `status` and the log: `ok:<n>` (raised), `kept:<n>` (already at least that),
+/// `off` or `err:<errno>`.
+pub fn apply_nofile(want: u64) -> String {
+    if want == 0 {
+        return "off".into();
+    }
+    let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `cur` is a live, writable `rlimit`.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut cur) } != 0 {
+        return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    // macOS refuses a soft limit above the per-process ceiling
+    #[cfg(target_os = "macos")]
+    let ceiling = sysctl_u64(crate::defaults::text("daemon.nofile_sysctl")).unwrap_or(libc::rlim_t::MAX);
+    #[cfg(not(target_os = "macos"))]
+    let ceiling = libc::rlim_t::MAX;
+    let target: libc::rlim_t = want.min(cur.rlim_max).min(ceiling);
+    if cur.rlim_cur >= target {
+        return format!("kept:{}", cur.rlim_cur);
+    }
+    let lim = libc::rlimit { rlim_cur: target, rlim_max: cur.rlim_max };
+    // SAFETY: `lim` is a live `rlimit` that `setrlimit` only reads.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+        return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    format!("ok:{target}")
+}
+
+/// An integer sysctl by name (`None` when it cannot be read).
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &str) -> Option<u64> {
+    let c = std::ffi::CString::new(name).ok()?;
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: `c` is NUL-terminated; `v` is a writable int of `len` bytes; no new value is set.
+    let rc = unsafe { libc::sysctlbyname(c.as_ptr(), (&mut v as *mut libc::c_int).cast(), &mut len, std::ptr::null_mut(), 0) };
+    (rc == 0 && v > 0).then_some(v as u64)
+}
+
+/// The current open-file soft limit of this process (0 when it cannot be read).
+pub fn nofile_limit() -> u64 {
+    let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `cur` is a live, writable `rlimit`.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut cur) } != 0 {
+        return 0;
+    }
+    cur.rlim_cur
+}
+
+/// The descriptors this process has open now: the entries of the first readable directory of `daemon.fd_dirs` (`/dev/fd` on
+/// macOS, `/proc/self/fd` on Linux), less the one the listing itself opens. `None` when none can be read.
+pub fn open_fds() -> Option<u64> {
+    crate::defaults::list("daemon.fd_dirs").into_iter().find_map(|d| std::fs::read_dir(d).ok().map(|r| (r.count() as u64).saturating_sub(1)))
+}
+
+/// The state word of `open` descriptors against `limit`: `daemon.fd_state_hard` at or past `daemon.fd_hard_pct` percent of the
+/// limit, `daemon.fd_state_soft` at or past `daemon.fd_soft_pct`, else `daemon.fd_state_ok`.
+pub fn fd_state(open: u64, limit: u64) -> &'static str {
+    use crate::defaults::{num, text};
+    let pct = |p: u64| limit.saturating_mul(p) / 100;
+    if limit > 0 && open >= pct(num("daemon.fd_hard_pct")) {
+        text("daemon.fd_state_hard")
+    } else if limit > 0 && open >= pct(num("daemon.fd_soft_pct")) {
+        text("daemon.fd_state_soft")
+    } else {
+        text("daemon.fd_state_ok")
+    }
+}
+
+/// The `fds` block of `status`: open descriptors, the limit, the state word, the start-up result of raising the limit
+/// (`applied`), the descriptors the file watcher holds (`watch`) and the per-file ones it skipped for its budget (`watch_skipped`).
+pub fn fd_status(applied: &str) -> serde_json::Value {
+    let (open, limit) = (open_fds(), nofile_limit());
+    let state = open.map_or(crate::defaults::text("daemon.fd_state_ok"), |o| fd_state(o, limit));
+    serde_json::json!({
+        "open": open, "limit": limit, "state": state, "applied": applied, "watch": crate::watch::notify::open_fds(),
+        "watch_skipped": crate::watch::notify::skipped_fds(),
+        "soft_pct": crate::defaults::num("daemon.fd_soft_pct"), "hard_pct": crate::defaults::num("daemon.fd_hard_pct"),
+    })
+}
+
+/// Log the descriptor state once each time it changes (soft and hard are warnings in the engine log; the return to ok is
+/// logged too). Called on the health snapshot tick.
+pub fn fd_watch() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static LAST: AtomicU8 = AtomicU8::new(0);
+    let (Some(open), limit) = (open_fds(), nofile_limit()) else { return };
+    let state = fd_state(open, limit);
+    let code = [crate::defaults::text("daemon.fd_state_ok"), crate::defaults::text("daemon.fd_state_soft"), crate::defaults::text("daemon.fd_state_hard")]
+        .iter()
+        .position(|s| *s == state)
+        .unwrap_or(0) as u8;
+    if LAST.swap(code, Ordering::Relaxed) != code {
+        crate::health::log_event(
+            crate::defaults::text("daemon.fd_log_kind"),
+            state,
+            &crate::defaults::render("daemon.fd_log_detail", &[("open", &open), ("limit", &limit), ("watch", &crate::watch::notify::open_fds())]),
+        );
+    }
+}
+
 /// One `<Key>: <n> kB` line of a `/proc/<pid>/status` text, in KB (`None` when the key is absent or not a number).
 pub fn status_field_kb(status: &str, key: &str) -> Option<u64> {
     status.lines().find_map(|l| l.strip_prefix(key)).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<u64>().ok())

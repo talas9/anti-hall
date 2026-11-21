@@ -139,6 +139,8 @@ pub struct Shared {
     started: Instant,
     /// Result of applying the memory rlimit, for `status`.
     pub rlimit: String,
+    /// Result of raising the open-file limit at start (`daemon.nofile`), for `status`.
+    pub nofile: String,
     /// True once the daemon stopped taking new clients.
     pub draining: AtomicBool,
     /// The exit timer of a clean drain (`daemon.drain_max_ms`) is armed.
@@ -230,6 +232,7 @@ impl Shared {
             depth: AtomicUsize::new(0),
             started: Instant::now(),
             rlimit: "off".into(),
+            nofile: "off".into(),
             draining: AtomicBool::new(false),
             drain_timer: AtomicBool::new(false),
             db_closing: AtomicBool::new(false),
@@ -660,6 +663,7 @@ impl Shared {
             "repeat_blocks": crate::learn::repeat_blocks(),
             "degraded": degraded,
             "mem_limit": self.rlimit,
+            "fds": limits::fd_status(&self.nofile),
             "malloc_stack_logging": cfg.malloc_stack_logging,
             "storage": self.storage,
             "rss_cap_kb": cfg.rss_cap_kb,
@@ -2364,6 +2368,7 @@ pub fn serve(start_reason: &str) -> i32 {
     let store = crate::cfgstore::ConfigStore::load();
     let cfg = store.snapshot().config.clone();
     let rlimit = limits::apply_mem_limit(cfg.mem_mb);
+    let nofile = limits::apply_nofile(defaults::num("daemon.nofile"));
     limits::apply_nice(cfg.nice);
     health::exits::mark_start();
     health::starts::record(start_reason);
@@ -2372,6 +2377,11 @@ pub fn serve(start_reason: &str) -> i32 {
     let starts = next_start_count();
     health::start_log_thread();
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
+    health::log_event(
+        defaults::text("daemon.nofile_log_kind"),
+        &nofile,
+        &defaults::render("daemon.nofile_log_detail", &[("want", &defaults::num("daemon.nofile")), ("limit", &limits::nofile_limit())]),
+    );
     crate::client::release_spawn_lock();
     crate::dispatch::sweep_stale_spool();
 
@@ -2382,6 +2392,7 @@ pub fn serve(start_reason: &str) -> i32 {
     let mut sh = Shared::new(cfg, &crate::version(), host_rules, rules_path);
     sh.config = store;
     sh.rlimit = rlimit;
+    sh.nofile = nofile;
     sh.starts = starts;
     // Storage is opened after the singleton lock, so only one daemon ever writes the databases. A storage failure
     // is logged and the daemon serves hooks anyway (they never depend on storage); impact then stays in memory.
@@ -2591,6 +2602,7 @@ fn telemetry_flusher(sh: Arc<Shared>) {
         if last_health.elapsed() >= Duration::from_millis(cfg.effective.num("telemetry.health_snapshot_ms")) {
             last_health = Instant::now();
             sh.telemetry.event(sh.health_event());
+            limits::fd_watch();
         }
         if last.elapsed() >= Duration::from_millis(cfg.effective.num("telemetry.flush_ms")) {
             last = Instant::now();

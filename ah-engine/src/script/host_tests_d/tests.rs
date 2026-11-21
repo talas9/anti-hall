@@ -3,11 +3,46 @@
 use super::*;
 use serde_json::json;
 
-fn home(tag: &str) -> String {
+/// A scratch home removed when it drops (also on a failed assertion), so a run leaves nothing in the temp dir (#895: several
+/// hundred `ah-hostd-*` directories once piled up there). It reads as the path string.
+struct Home(String);
+
+impl std::ops::Deref for Home {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for Home {
+    fn as_ref(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for Home {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        std::ffi::OsStr::new(&self.0)
+    }
+}
+
+impl std::fmt::Display for Home {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        crate::discard::harmless(std::fs::remove_dir_all(&self.0)); // keep: cleanup of a scratch directory
+    }
+}
+
+fn home(tag: &str) -> Home {
     let d = crate::testtmp::path(format!("ah-hostd-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
-    std::fs::canonicalize(&d).unwrap().to_string_lossy().to_string()
+    Home(std::fs::canonicalize(&d).unwrap().to_string_lossy().to_string())
 }
 
 fn env(h: &str) -> RequestEnv {

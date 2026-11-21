@@ -159,3 +159,94 @@ pub fn stop_child(sock: &Path, child: &mut std::process::Child) {
     ah_engine::discard::harmless(child.kill());
     ah_engine::discard::harmless(child.wait());
 }
+
+/// Every daemon a test starts as its own child lives in a `Daemon`: dropping it (also on a failed assertion) stops the
+/// daemon and reaps it, and a panic hook kills the daemons the panicking thread still holds, so no `ah-engine serve` ever
+/// outlives its test (#895). It derefs to the `Child`; `into_child` hands the child back and ends the guarding.
+pub struct Daemon {
+    child: Option<std::process::Child>,
+    sock: Option<std::path::PathBuf>,
+}
+
+type Registry = std::sync::Mutex<Vec<(std::thread::ThreadId, u32)>>;
+
+fn registry() -> &'static Registry {
+    static REG: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    REG.get_or_init(|| {
+        // The hook only touches the panicking thread's own daemons: tests run in parallel threads, and a failure in one
+        // must not kill a daemon another test is still using. The earlier hook still runs (the failure message).
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let me = std::thread::current().id();
+            if let Ok(reg) = registry().lock() {
+                for (_, pid) in reg.iter().filter(|(t, _)| *t == me) {
+                    // Only a child not yet reaped is killed: a test may have waited its daemon through the guard (Deref), and
+                    // then the pid is free for reuse by an unrelated process. WNOWAIT leaves a zombie for the guard's own wait.
+                    // SAFETY: a zeroed siginfo_t is a valid out-buffer; `waitid` and `kill` take plain integers otherwise.
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let ours = unsafe { libc::waitid(libc::P_PID, *pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } == 0;
+                    if ours {
+                        // SAFETY: see above; the pid is still this process's unreaped child, so it cannot name another process.
+                        unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+                    }
+                }
+            }
+            prev(info);
+        }));
+        Registry::default()
+    })
+}
+
+impl Daemon {
+    /// Guard `child` (a freshly spawned `ah-engine serve`); it is killed and waited for on drop.
+    pub fn new(child: std::process::Child) -> Daemon {
+        if let Ok(mut reg) = registry().lock() {
+            reg.push((std::thread::current().id(), child.id()));
+        }
+        Daemon { child: Some(child), sock: None }
+    }
+    /// Like `new`, and the drop first asks the daemon to stop over `sock` (the polite way), then kills.
+    pub fn with_sock(child: std::process::Child, sock: std::path::PathBuf) -> Daemon {
+        let mut d = Daemon::new(child);
+        d.sock = Some(sock);
+        d
+    }
+    /// The child back, no longer guarded (the caller owns its end).
+    pub fn into_child(mut self) -> std::process::Child {
+        self.forget();
+        self.child.take().expect("daemon child present until into_child")
+    }
+    fn forget(&self) {
+        if let (Some(c), Ok(mut reg)) = (&self.child, registry().lock()) {
+            reg.retain(|(_, pid)| *pid != c.id());
+        }
+    }
+}
+
+impl std::ops::Deref for Daemon {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        self.child.as_ref().expect("daemon child present until into_child")
+    }
+}
+
+impl std::ops::DerefMut for Daemon {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        self.child.as_mut().expect("daemon child present until into_child")
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        self.forget();
+        if let Some(mut c) = self.child.take() {
+            match &self.sock {
+                Some(sock) => stop_child(sock, &mut c),
+                None => {
+                    ah_engine::discard::harmless(c.kill()); // keep: already exited is fine
+                    ah_engine::discard::harmless(c.wait());
+                }
+            }
+        }
+    }
+}

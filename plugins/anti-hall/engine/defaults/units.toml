@@ -208,7 +208,7 @@ min = 1024
 unit = "bytes"
 
 [units.plist_template]
-doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {supervise} (the units.plist_supervise block, or nothing while maintenance.unitsSupervise is off) {interval} {log}; every value is XML-escaped."
+doc = "The LaunchAgent of the engine unit. {label} {args} (one units.plist_arg per argument) {env} (the units.plist_env block, or nothing) {supervise} (the units.plist_supervise block, or nothing while maintenance.unitsSupervise is off) {limits} (the units.plist_limits block, or nothing while daemon.nofile is 0) {interval} {log}; every value is XML-escaped."
 value = '''
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -222,7 +222,7 @@ value = '''
   </array>
 {env}  <key>RunAtLoad</key>
   <true/>
-{supervise}  <key>StartInterval</key>
+{supervise}{limits}  <key>StartInterval</key>
   <integer>{interval}</integer>
   <key>StandardOutPath</key>
   <string>{log}</string>
@@ -254,6 +254,20 @@ unit = "s"
 [units.process_type]
 doc = "launchd ProcessType of the engine unit."
 value = "Background"
+
+[units.plist_limits]
+doc = "The resource limits of the LaunchAgent: the open-file limit (soft and hard NumberOfFiles) of the daemon launchd starts. Without it launchd's default (256) applies and a file watcher over a large state directory ran the daemon out of descriptors (GH #912). {nofile} is daemon.nofile."
+value = '''  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>{nofile}</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>{nofile}</integer>
+  </dict>
+'''
 
 [units.plist_arg]
 doc = "One ProgramArguments entry of the LaunchAgent. {arg}."
@@ -292,7 +306,7 @@ doc = "The file name suffix of a systemd timer."
 value = ".timer"
 
 [units.service_template]
-doc = "The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing; {supervise_unit} and {supervise_service} are the units.service_supervise_unit and units.service_supervise_service blocks, or nothing while maintenance.unitsSupervise is off."
+doc = "The systemd user service of the engine unit. {exec} is the quoted command line; {env} is one units.service_env line per variable, or nothing; {supervise_unit} and {supervise_service} are the units.service_supervise_unit and units.service_supervise_service blocks, or nothing while maintenance.unitsSupervise is off; {limits} is the units.service_limits line, or nothing while daemon.nofile is 0."
 value = '''
 [Unit]
 Description=anti-hall engine daemon (starts it when none is running)
@@ -300,7 +314,12 @@ Description=anti-hall engine daemon (starts it when none is running)
 [Service]
 Type=simple
 {env}ExecStart={exec}
-{supervise_service}'''
+{limits}{supervise_service}'''
+
+[units.service_limits]
+doc = "The open-file limit line of the systemd service (GH #912). {nofile} is daemon.nofile."
+value = """LimitNOFILE={nofile}
+"""
 
 [units.service_supervise_unit]
 doc = "The [Unit] lines of the supervised service: the start-rate limit. {interval} {burst}."

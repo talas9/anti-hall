@@ -629,11 +629,11 @@ fn fast_orphan_checks(sc: &Sc) {
     }
 }
 
-fn spawn_scratch_serve(sc: &Sc) -> std::process::Child {
+fn spawn_scratch_serve(sc: &Sc) -> crate::common::Daemon {
     let mut c = Command::new(BIN);
     c.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     sc.env(&mut c);
-    c.spawn().unwrap()
+    crate::common::Daemon::new(c.spawn().unwrap())
 }
 
 fn wait_ping(sock: &Path) {
@@ -646,18 +646,20 @@ fn dmn_02_down_and_dmn_01_up() {
     sc.own_plugin();
     sc.doctor(&[]).has("info", &["the engine daemon is not running (it starts on the first hook call)"]);
     // a real daemon in the scratch home
-    let mut child = Command::new(BIN)
-        .arg("serve")
-        .env_clear()
-        .env("PATH", &sc.path)
-        .env("HOME", &sc.home)
-        .env("AH_ENGINE_PLUGIN_ROOT", &sc.plugin)
-        .env("TMPDIR", std::env::temp_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = crate::common::Daemon::new(
+        Command::new(BIN)
+            .arg("serve")
+            .env_clear()
+            .env("PATH", &sc.path)
+            .env("HOME", &sc.home)
+            .env("AH_ENGINE_PLUGIN_ROOT", &sc.plugin)
+            .env("TMPDIR", std::env::temp_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let sock = ah_engine::paths::socket_in(&sc.state());
     let t = std::time::Instant::now();
     while t.elapsed().as_secs() < 10 && ah_engine::client::ping(&sock).is_none() {
