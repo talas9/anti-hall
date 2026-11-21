@@ -31,15 +31,37 @@ impl Env {
             .env_remove("AH_ENGINE_NOSPAWN");
         c
     }
+    #[track_caller]
     fn hook(&self, version: &str, input: &str) -> (String, i32) {
+        self.hook_with(version, input, false)
+    }
+    /// [`Env::hook`] for a call that polls a daemon still cold-starting: the call may also be held (see below).
+    #[track_caller]
+    fn hook_cold(&self, version: &str, input: &str) -> (String, i32) {
+        self.hook_with(version, input, true)
+    }
+    #[track_caller]
+    fn hook_with(&self, version: &str, input: &str, cold: bool) -> (String, i32) {
         let mut ch = self.cmd(version).arg("hook").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         ch.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
         let o = ch.wait_with_output().unwrap();
         // A guard event that cannot be answered because the daemon is unavailable now fails open for this call.
         let code = o.status.code().unwrap_or(-1);
-        // the one notice (#229) a call passed through while the daemon is not yet up may print, once per session
+        // the one notice (#229) a call passed through while the daemon is not yet up may print, once per session; and, only for a call
+        // that polls a cold start (`cold`), the configured hold notice (#901) for DENY_IN (a force push, a hold class of
+        // dispatch.capacity_hold): a daemon still starting past client.cold_guard_wait_ms (an unoptimised build under parallel tests)
+        // is load by design, so the risky call is held, never passed, and the caller polls until the daemon answers. Anywhere else a
+        // hold is a false load reading and fails the test (#908: a reload on the accept loop once read as an idle daemon). The notice
+        // text is the plugin's (dispatch.msg_capacity_hold), not a copy here.
         let err = String::from_utf8_lossy(&o.stderr);
-        assert!(err.is_empty() || (err.contains("did not answer this") && err.contains("went through unchecked")), "client wrote to stderr: {err}");
+        let hold = ah_engine::defaults::text("dispatch.msg_capacity_hold");
+        let hold_lead = hold.split('{').next().unwrap_or("").trim();
+        let held = cold && !hold_lead.is_empty() && err.contains(hold_lead);
+        assert!(err.is_empty() || held || (err.contains("did not answer this") && err.contains("went through unchecked")), "client wrote to stderr: {err}");
+        if held {
+            assert_eq!(code, 2, "a held call exits 2, nothing ran: {err}");
+            assert!(o.stdout.is_empty(), "a held call prints no verdict");
+        }
         (String::from_utf8_lossy(&o.stdout).trim().to_string(), code)
     }
     fn ctl(&self, verb: &str) -> Option<String> {
@@ -141,7 +163,7 @@ fn stale_socket_and_dead_lock_are_recovered() {
 #[test]
 fn newer_client_hands_off_to_new_build() {
     let e = Env::new("handoff");
-    assert!(wait_for(|| !e.hook("0.1.0", DENY_IN).0.is_empty()));
+    assert!(wait_for(|| !e.hook_cold("0.1.0", DENY_IN).0.is_empty()));
     let old = e.pid().unwrap();
     assert!(e.ctl("ping").unwrap().contains(" 0.1.0 ") || e.ctl("ping").unwrap().starts_with("pong 0.1.0"));
     // client at 0.2.0: the in-flight request is still answered by the old daemon
@@ -153,7 +175,7 @@ fn newer_client_hands_off_to_new_build() {
     let mut ping = String::new();
     assert!(
         wait_for(|| {
-            let (out, _) = e.hook("0.2.0", DENY_IN);
+            let (out, _) = e.hook_cold("0.2.0", DENY_IN);
             if !out.contains("deny") {
                 return false;
             }
@@ -179,7 +201,7 @@ fn older_client_does_not_restart_newer_daemon() {
 #[test]
 fn rules_reload_on_file_change_and_bad_edit_keeps_old_rules() {
     let e = Env::new("reload");
-    assert!(wait_for(|| !e.hook("0.1.0", DENY_IN).0.is_empty()));
+    assert!(wait_for(|| !e.hook_cold("0.1.0", DENY_IN).0.is_empty()));
     let fingerprint = || -> String {
         let st: serde_json::Value = serde_json::from_str(&e.ctl("status").expect("daemon status")).unwrap();
         st["rules"]["fingerprint"].as_str().expect("the rules fingerprint").to_string()
