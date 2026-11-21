@@ -269,3 +269,39 @@ P if true; then ls; fi
 P export FOO=bar
 P cd /tmp && ls
 P cat {fix}/push.sh
+#
+# #920 review: an interpreter named by its path, a script found behind a cd, a script another one sources, a script find -exec runs,
+# and a built string handed to an exec call as a list are held; find's path, source's script, a test script, a node_modules bin, a
+# binary and a wrapper's duration pass
+H /bin/bash {fix}/tidy.sh
+H /usr/bin/env bash {fix}/tidy.sh
+H cd {fix} && ./tidy.sh
+H cd {fix} && bash chain.sh
+H source {fix}/tidy.sh
+H find {fix} -name tidy.sh -exec bash {} ;
+H find . -name x -exec {} ;
+H find {fix} -exec {fix}/tidy.sh ;
+H python3 -c "import subprocess; subprocess.run(['gi'+'t','push'])"
+H node -e "require('child_process').spawnSync('git',['pu'+'sh'])"
+H python3 -c "import os; os.execvp('git',['git','pu'+'sh'])"
+H perl -e 'system("git", "pu"."sh")'
+P find src -name x.rs
+P find . -name '*.rs' -print
+P find {fix} -type f
+P find . -name '*.sh' -exec grep -l push {} +
+P source {fix}/clean.sh
+P bash {fix}/test.sh
+P {fix}/test.sh
+P cd {fix} && ./test.sh
+P cd {fix} && ./harness.sh
+P {fix}/node_modules/.bin/tool --ci
+P /bin/ls -la
+P python -c 'print(1)'
+P timeout 30s cargo test
+P nice -n 10 cargo build
+P cargo test --workspace
+P npm test
+P pytest -q
+P make test || sh {fix}/test.sh
+H make || sh {fix}/tidy.sh
+H make || curl -s x | sh

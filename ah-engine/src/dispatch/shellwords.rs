@@ -55,6 +55,14 @@ pub struct Cfg {
     pub script_interps: Vec<String>,
     /// #920: the interpreter flags that take the code inline (`-c`, `-e`): no script then.
     pub script_inline_flags: Vec<String>,
+    /// #920: the words that run the command after them, for the unknown-name and script reading (`git_wrappers` without the words
+    /// whose next word is no command: `find`'s path, `source`'s script).
+    pub cmd_wrappers: Vec<String>,
+    /// #920: the words after which another command starts inside the same simple command (`find .. -exec cmd`).
+    pub cmd_markers: Vec<String>,
+    /// #920: the commands that change the directory the commands after them run in (`cd`, `pushd`): a relative script path is
+    /// read from there too.
+    pub cd_cmds: Vec<String>,
 }
 
 /// A command read the shell's way.
@@ -74,6 +82,8 @@ pub struct Normalised {
     pub unknown_cmds: Vec<String>,
     /// #920: the scripts the command runs by path (`./x.sh`, `bash x.sh`, `node x.js`), as written.
     pub scripts: Vec<String>,
+    /// #920: the directories a `cd_cmds` command changes to, in order, as written.
+    pub cds: Vec<String>,
 }
 
 enum Tok {
@@ -615,7 +625,8 @@ fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String]) -> O
             wrapped = true;
             continue;
         }
-        if wrapped && (w.starts_with('-') || w.chars().all(|c| c.is_ascii_digit()) || is_assign(w)) {
+        // a wrapper's option and its value (`timeout 30s`, `nice -n 10`), an assignment (`env A=1`)
+        if wrapped && (w.starts_with('-') || w.starts_with(|c: char| c.is_ascii_digit()) || is_assign(w)) {
             continue;
         }
         return Some((w, i));
@@ -648,35 +659,59 @@ pub fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
 /// What reading a script a command runs by path gave.
 #[derive(Debug, PartialEq)]
 pub enum Script {
-    /// Its text (small enough, no NUL byte).
+    /// Its text (at most the read cap, no NUL byte).
     Text(String),
-    /// There is a file but it was not read: larger than the cap, binary, or unreadable.
+    /// The text of a script over the read cap but within the scan cap (no NUL byte): matched as written, not read the shell's way.
+    Large(String),
+    /// There is a file but it was not read: larger than the scan cap, binary, or unreadable.
     Unread,
     /// Nothing to read: reading is off (`cap` 0), the path is no file.
     Skip,
 }
 
-/// Reads the script at `path` (a relative one from `cwd`) when it is at most `cap` bytes (0 = never read).
-pub fn read_script(path: &str, cwd: Option<&str>, cap: usize) -> Script {
+/// `path` with a leading `~` (alone or before a `/`) spelled as `home`, the way the shell expands it.
+fn tilde(path: &str, home: Option<&std::ffi::OsStr>) -> std::path::PathBuf {
+    match (path.strip_prefix('~'), home) {
+        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with('/') => std::path::Path::new(h).join(rest.trim_start_matches('/')),
+        _ => std::path::PathBuf::from(path),
+    }
+}
+
+/// The directories a relative script path is read from: `cwd` (the process's own when `None`), then each directory the command
+/// changes to (`cds`, in order, each from the one before; a leading `~` is `home`).
+pub fn dirs(cwd: Option<&str>, cds: &[String], home: Option<&std::ffi::OsStr>) -> Vec<std::path::PathBuf> {
+    let mut at = cwd.map(std::path::PathBuf::from).unwrap_or_default();
+    let mut out = vec![at.clone()];
+    for d in cds {
+        at = at.join(tilde(d, home)); // an absolute directory replaces the one before
+        out.push(at.clone());
+    }
+    out
+}
+
+/// Reads the script at `path` (a leading `~` is `home`; a relative path from the last of `dirs` that holds it: the directory the
+/// command changed to last before the one it started in) when it is at most
+/// `cap` bytes (0 = never read), or as written when it is at most `scan` bytes.
+pub fn read_script(path: &str, dirs: &[std::path::PathBuf], home: Option<&std::ffi::OsStr>, cap: usize, scan: usize) -> Script {
     use std::io::Read;
     if cap == 0 {
         return Script::Skip;
     }
-    let p = std::path::Path::new(path);
-    let full = match cwd {
-        Some(c) if !p.is_absolute() => std::path::Path::new(c).join(p),
-        _ => p.to_path_buf(),
+    let p = tilde(path, home);
+    let found = if p.is_absolute() || dirs.is_empty() {
+        std::fs::metadata(&p).ok().map(|m| (p.clone(), m))
+    } else {
+        dirs.iter().rev().map(|d| d.join(&p)).find_map(|f| std::fs::metadata(&f).ok().filter(|m| m.is_file()).map(|m| (f, m)))
     };
-    let Ok(meta) = std::fs::metadata(&full) else { return Script::Skip };
-    if !meta.is_file() {
-        return Script::Skip;
-    }
-    if usize::try_from(meta.len()).map_or(true, |n| n > cap) {
+    let Some((full, meta)) = found.filter(|(_, m)| m.is_file()) else { return Script::Skip };
+    let limit = cap.max(scan);
+    if usize::try_from(meta.len()).map_or(true, |n| n > limit) {
         return Script::Unread;
     }
     let mut bytes = Vec::new();
-    match std::fs::File::open(&full).and_then(|f| f.take(cap as u64 + 1).read_to_end(&mut bytes)) {
+    match std::fs::File::open(&full).and_then(|f| f.take(limit as u64 + 1).read_to_end(&mut bytes)) {
         Ok(n) if n <= cap && !bytes.contains(&0) => Script::Text(String::from_utf8_lossy(&bytes).into_owned()),
+        Ok(n) if n <= limit && !bytes.contains(&0) => Script::Large(String::from_utf8_lossy(&bytes).into_owned()),
         _ => Script::Unread,
     }
 }
@@ -698,6 +733,7 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
             if n.gh_unknown.is_none() {
                 n.gh_unknown = m.gh_unknown;
             }
+            n.cds.extend(m.cds);
             merge(&mut n.scripts, m.scripts); // unknown_cmds: the top level only (a quoted word that holds a space is text more often than a command)
             n.extra.push(m.text);
             n.extra.extend(m.extra);
@@ -717,6 +753,7 @@ struct Found {
     gh_unknown: Option<String>,
     unknown_cmds: Vec<String>,
     scripts: Vec<String>,
+    cds: Vec<String>,
 }
 
 /// One reading of `cmd`, and its words that hold a space (read again by [`normalise`]).
@@ -770,21 +807,31 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         if more.gh_unknown.is_none() && !cfg.gh_rule.is_empty() {
             more.gh_unknown = unknown_sub(group, "gh", &cfg.gh_known, &cfg.gh_opts_with_arg, &cfg.git_wrappers);
         }
-        if let Some((cmd, at)) = command_at(group, &cfg.git_wrappers) {
+        // the commands of the group: the first, and one after each marker word (`find . -exec cmd {} ;`)
+        let starts = std::iter::once(0).chain(group.iter().enumerate().filter(|(_, (w, ..))| cfg.cmd_markers.iter().any(|m| m == w)).map(|(i, _)| i + 1));
+        for seg in starts.map(|s| &group[s..]) {
+            let Some((cmd, at)) = command_at(seg, &cfg.cmd_wrappers) else { continue };
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
             }
-            // a script run by path: the command word itself, or the first non-option word after an interpreter
-            if cmd.contains('/') && !cmd.ends_with('/') {
-                merge(&mut more.scripts, vec![cmd.to_string()]);
-            } else if cfg.script_interps.iter().any(|i| i == cmd) {
-                let rest = &group[at + 1..];
+            // the directory the later commands run in
+            if cfg.cd_cmds.iter().any(|c| c == cmd) {
+                let to = seg[at + 1..].iter().map(|(w, ..)| w.as_str()).find(|w| !w.is_empty() && !w.starts_with('-') && !is_redir(w));
+                if let Some(d) = to.filter(|d| !d.contains(['$', '`'])) {
+                    more.cds.push(d.to_string());
+                }
+            }
+            // a script run by path: the first non-option word after an interpreter (one named by its path too: /bin/sh x), or the
+            // command word itself
+            if cfg.script_interps.iter().any(|i| i == base(cmd)) {
+                let rest = &seg[at + 1..];
                 let flag = rest.iter().position(|(w, ..)| cfg.script_inline_flags.iter().any(|f| f == w));
                 let inline = flag.is_some();
                 // the code of a one-liner is read as a command too (a word with no space is not re-read otherwise: `sh -c ./d.sh`)
                 if let Some((_, _, code)) = flag.and_then(|f| rest.get(f + 1)) {
-                    if !code.is_empty() {
+                    // one that holds a space or a separator is re-read below with every such word already
+                    if !code.is_empty() && !code.contains(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|')) {
                         nested.push(code.clone());
                     }
                 }
@@ -792,6 +839,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
                 if let (false, Some(sc)) = (inline, script) {
                     merge(&mut more.scripts, vec![sc.to_string()]);
                 }
+            } else if cmd.contains('/') && !cmd.ends_with('/') {
+                merge(&mut more.scripts, vec![cmd.to_string()]);
             }
         }
         for (w, _, r) in group.iter() {
@@ -826,6 +875,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
                             found.gh_unknown = m.gh_unknown;
                         }
                         merge(&mut found.scripts, m.scripts);
+                        found.cds.extend(m.cds);
                         extra.push(m.text);
                         extra.extend(m.extra);
                         nested.extend(more);
@@ -846,8 +896,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         }
     }
     emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
-    let Found { gh_unknown, unknown_cmds, scripts } = found;
-    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts }, nested))
+    let Found { gh_unknown, unknown_cmds, scripts, cds } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds }, nested))
 }
 
 #[cfg(test)]
@@ -872,6 +922,9 @@ mod tests {
             unknown_known: v(&["ls", "cd", "echo", "if", "then", "fi", "export", "git", "gh", "for", "do", "done"]),
             script_interps: v(&["bash", "sh", "python3", "node", "source", "."]),
             script_inline_flags: v(&["-c", "-e"]),
+            cmd_wrappers: v(&["sudo", "env", "time", "if", "then", "do", "{"]),
+            cmd_markers: v(&["-exec", "-execdir"]),
+            cd_cmds: v(&["cd", "pushd"]),
             ..Cfg::default()
         }
     }
@@ -903,6 +956,46 @@ mod tests {
         assert!(n("ls x.sh").scripts.is_empty());
     }
 
+    /// #920 review: a path a command takes as its argument is no command name (`find src`), `source`'s word is a script, an
+    /// interpreter named by its path reads its script, a script after `find -exec` is found, and `cd` targets are listed.
+    #[test]
+    fn arguments_are_no_command_and_scripts_are_found_behind_paths_and_markers() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let c = Cfg { git_wrappers: v(&["find", "source", ".", "-exec", "sudo"]), unknown_known: v(&["find", "ls", "cd", "source", "sudo"]), ..cfg() };
+        let n = |x: &str| normalise(x, &c).unwrap();
+        assert!(n("find src -name x.rs -type f").unknown_cmds.is_empty(), "find's path is no command");
+        assert_eq!(n("source env.sh").scripts, ["env.sh"], "source reads its script");
+        assert!(n("source env.sh").unknown_cmds.is_empty());
+        assert_eq!(n(". ./e.sh").scripts, ["./e.sh"]);
+        assert_eq!(n("/bin/bash s/p.sh").scripts, ["s/p.sh"], "an interpreter by path reads its script, it is none itself");
+        assert_eq!(n("/usr/bin/python3 -c x").scripts, Vec::<String>::new());
+        assert_eq!(n("find . -name p.sh -exec ./s/p.sh {} ;").scripts, ["./s/p.sh"]);
+        assert_eq!(n("find . -exec bash s/p.sh ;").scripts, ["s/p.sh"]);
+        assert_eq!(n("cd sub && ./p.sh; pushd ~/x; cd $D").cds, ["sub", "~/x"], "a dynamic directory is unknown");
+        assert_eq!(n("sh -c 'cd sub && ./p.sh'").cds, ["sub"]);
+    }
+
+    #[test]
+    fn a_relative_script_is_read_from_cwd_or_a_cd_target_and_tilde_is_home() {
+        let dir = std::env::temp_dir().join(format!("ah-920-dirs-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/p.sh"), "git push\n").unwrap();
+        std::fs::write(dir.join("big.sh"), format!("{}git push\n", "#\n".repeat(40))).unwrap();
+        let d = dir.to_str().unwrap();
+        let home = std::ffi::OsString::from(d);
+        let ds = dirs(Some(d), &["sub".into()], None);
+        assert_eq!(ds, [dir.clone(), dir.join("sub")]);
+        assert_eq!(read_script("./p.sh", &ds, None, 50, 0), Script::Text("git push\n".into()), "read from the cd target");
+        assert_eq!(read_script("./p.sh", &ds[..1], None, 50, 0), Script::Skip);
+        std::fs::write(dir.join("p.sh"), "ls\n").unwrap();
+        assert_eq!(read_script("./p.sh", &ds, None, 50, 0), Script::Text("git push\n".into()), "the last cd target first, as the shell runs it");
+        assert_eq!(read_script("~/sub/p.sh", &[], Some(&home), 50, 0), Script::Text("git push\n".into()), "~ is home");
+        assert_eq!(dirs(Some("/a"), &["~/b".into()], Some(&home))[1], dir.join("b"));
+        assert_eq!(read_script("big.sh", &ds, None, 50, 0), Script::Unread, "over the cap, no scan");
+        assert!(matches!(read_script("big.sh", &ds, None, 50, 500), Script::Large(t) if t.ends_with("git push\n")), "within the scan cap");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_script_is_read_up_to_the_cap_and_a_binary_on_path_is_no_alias() {
         let dir = std::env::temp_dir().join(format!("ah-920-sw-{}", std::process::id()));
@@ -915,12 +1008,12 @@ mod tests {
         #[cfg(unix)]
         std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let d = dir.to_str().unwrap();
-        assert_eq!(read_script("small.sh", Some(d), 50), Script::Text("git push\n".into()), "a relative path is read from cwd");
-        assert_eq!(read_script("big.sh", Some(d), 50), Script::Unread, "over the cap");
-        assert_eq!(read_script("bin.sh", Some(d), 50), Script::Unread, "a NUL byte is a binary");
-        assert_eq!(read_script("nope.sh", Some(d), 50), Script::Skip);
-        assert_eq!(read_script("small.sh", Some(d), 0), Script::Skip, "cap 0 = reading off");
-        assert_eq!(read_script(small.to_str().unwrap(), None, 50), Script::Text("git push\n".into()));
+        assert_eq!(read_script("small.sh", &[d.into()], None, 50, 0), Script::Text("git push\n".into()), "a relative path is read from cwd");
+        assert_eq!(read_script("big.sh", &[d.into()], None, 50, 0), Script::Unread, "over the cap");
+        assert_eq!(read_script("bin.sh", &[d.into()], None, 50, 0), Script::Unread, "a NUL byte is a binary");
+        assert_eq!(read_script("nope.sh", &[d.into()], None, 50, 0), Script::Skip);
+        assert_eq!(read_script("small.sh", &[d.into()], None, 0, 0), Script::Skip, "cap 0 = reading off");
+        assert_eq!(read_script(small.to_str().unwrap(), &[], None, 50, 0), Script::Text("git push\n".into()));
         let path = std::env::join_paths([dir.as_path()]).unwrap();
         assert!(on_path("zztool920", Some(&path)));
         assert!(!on_path("small.sh", Some(&path)), "a file without the exec bit is no command");

@@ -475,9 +475,16 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         gh_rule: one(cfg.get("gh").and_then(|g| g.get("rule"))),
         gh_known: strs(cfg.get("gh").and_then(|g| g.get("known"))),
         gh_opts_with_arg: strs(cfg.get("gh").and_then(|g| g.get("opts_with_arg"))),
-        unknown_known: if one(cfg.get("unknown").and_then(|u| u.get("rule"))).is_empty() { Vec::new() } else { strs(cfg.get("unknown").and_then(|u| u.get("known"))) },
+        unknown_known: if one(cfg.get("unknown").and_then(|u| u.get("rule"))).is_empty() {
+            Vec::new()
+        } else {
+            strs(cfg.get("unknown").and_then(|u| u.get("known")))
+        },
         script_interps: strs(cfg.get("script").and_then(|s| s.get("interpreters"))),
         script_inline_flags: strs(cfg.get("script").and_then(|s| s.get("inline_flags"))),
+        cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
+        cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
+        cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
     })
 }
 
@@ -531,7 +538,12 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
                 let hit = texts.iter().position(|t| re.is_match(t));
                 if let Some(at) = hit {
                     let inline = cfg.get("inline_rules").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|r| r.as_str() == Some(*name)));
-                    return Decision { rule: Some(name.to_string()), normalised: at > 0 && !re.is_match(command), text_exempt: false, via: inline.then_some("inline_code") };
+                    return Decision {
+                        rule: Some(name.to_string()),
+                        normalised: at > 0 && !re.is_match(command),
+                        text_exempt: false,
+                        via: inline.then_some("inline_code"),
+                    };
                 }
                 raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
             }
@@ -566,28 +578,55 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None }
 }
 
-/// #920: the scripts a command runs by path (`./x.sh`, `bash x.sh`, `node x.js`; at most `script.max_refs`), read when at most
-/// `script.max_bytes` and matched by the same `rules` the command is (read the way the shell does, comments gone): held under
-/// `script.rule_prefix` + the rule. A script that is too big, binary or unreadable is held under `script.rule_unread` only when the
-/// command is otherwise risky-looking (it matches `script.risky`); a path that is no file, or reading off (`max_bytes` 0), holds nothing.
+/// #920: the scripts a command runs by path (`./x.sh`, `bash x.sh`, `node x.js`; at most `script.max_refs` read in all), read when at
+/// most `script.max_bytes` and matched by the same `rules` the command is (read the way the shell does, comments gone), and the
+/// scripts each one runs in turn (`script.depth` levels); a relative path is read from the payload's cwd and each directory the
+/// command `cd`s to, a leading `~` from `script.home_env`; the rules in `script.body_skip` are not matched in a script. Held under `script.rule_prefix` + the rule. A text script over
+/// `max_bytes` but within `script.scan_bytes` is matched as written by the `script.scan_rules`. A script that is still bigger, binary or
+/// unreadable is held under `script.rule_unread` only when the command is otherwise risky-looking (it matches `script.risky`); a
+/// path that is no file, or reading off (`max_bytes` 0), holds nothing.
 fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalised, ncfg: &shellwords::Cfg, rules: &[(&str, defaults::V)]) -> Option<Decision> {
     let sc = cfg.get("script")?;
     let int = |k: &str| sc.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
     let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
-    let cwd = payload.get(text("cwd_field")).and_then(Value::as_str);
+    let skip: Vec<&str> = sc.get("body_skip").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let scan_rules: Vec<&str> = sc.get("scan_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let home = Some(text("home_env")).filter(|k| !k.is_empty()).and_then(std::env::var_os);
+    let dirs = shellwords::dirs(payload.get(text("cwd_field")).and_then(Value::as_str), &n.cds, home.as_deref());
     let compile = |pat: &str| regex::RegexBuilder::new(pat).case_insensitive(true).build().ok();
-    let mut unread = false;
-    for path in n.scripts.iter().take(int("max_refs")) {
-        match shellwords::read_script(path, cwd, int("max_bytes")) {
+    let held =
+        |name: &str| Some(Decision { rule: Some(format!("{}{name}", text("rule_prefix"))), normalised: true, text_exempt: false, via: Some("script_read") });
+    let (mut unread, mut seen, mut queue) = (false, Vec::new(), n.scripts.iter().map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
+    while let Some((path, depth)) = queue.pop_front() {
+        if seen.contains(&path) {
+            continue;
+        }
+        if seen.len() >= int("max_refs") {
+            break;
+        }
+        seen.push(path.clone());
+        match shellwords::read_script(&path, &dirs, home.as_deref(), int("max_bytes"), int("scan_bytes")) {
             shellwords::Script::Text(body) => {
                 let norm = shellwords::normalise(&body, ncfg);
                 let texts: Vec<&str> = match &norm {
                     Some(nb) => std::iter::once(nb.text.as_str()).chain(nb.extra.iter().map(String::as_str)).collect(),
                     None => vec![body.as_str()],
                 };
-                for (name, pat) in rules {
+                // a rule for what no reading can tell (`$cmd`) holds nearly every real script: `script.body_skip`
+                for (name, pat) in rules.iter().filter(|(name, _)| !skip.contains(name)) {
                     if pat.as_str().and_then(compile).is_some_and(|re| texts.iter().any(|t| re.is_match(t))) {
-                        return Some(Decision { rule: Some(format!("{}{name}", text("rule_prefix"))), normalised: true, text_exempt: false, via: Some("script_read") });
+                        return held(name);
+                    }
+                }
+                // the scripts this one runs (`source ./lib.sh`, `sh other.sh`), read from the same directories the shell reads them from
+                if depth < int("depth") {
+                    queue.extend(norm.iter().flat_map(|nb| nb.scripts.iter().map(|p| (p.clone(), depth + 1))));
+                }
+            }
+            shellwords::Script::Large(body) => {
+                for (name, pat) in rules.iter().filter(|(name, _)| scan_rules.contains(name)) {
+                    if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
+                        return held(name);
                     }
                 }
             }
@@ -597,8 +636,12 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
     }
     let risky = compile(text("risky")).filter(|_| !text("risky").is_empty());
     let rule = text("rule_unread");
-    (unread && !rule.is_empty() && risky.is_some_and(|re| re.is_match(&n.text)))
-        .then(|| Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("script_unread") })
+    (unread && !rule.is_empty() && risky.is_some_and(|re| re.is_match(&n.text))).then(|| Decision {
+        rule: Some(rule.to_string()),
+        normalised: true,
+        text_exempt: false,
+        via: Some("script_unread"),
+    })
 }
 
 /// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
@@ -1493,7 +1536,7 @@ mod tests {
             assert_eq!(class(&cmd).is_some(), want, "{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd));
             if want { held += 1 } else { passed += 1 }
         }
-        assert!(held >= 60 && passed >= 25, "corpus read: {held} held, {passed} pass");
+        assert!(held >= 185 && passed >= 87, "corpus read: {held} held, {passed} pass");
     }
 
     /// #920: the gaps #918 left: a script run by path is read (and held only for what it does), an interpreter one-liner's code is matched,
@@ -1506,8 +1549,13 @@ mod tests {
         let cap = defaults::raw("dispatch.capacity_hold").get("script").and_then(|s| s.get("max_bytes")).and_then(|v| v.as_integer()).unwrap() as usize;
         std::fs::write(dir.join("push.sh"), "#!/bin/sh\ngit push origin main\n").unwrap();
         std::fs::write(dir.join("ok.sh"), "#!/bin/sh\n# git push later\nls\n").unwrap();
-        std::fs::write(dir.join("deploy-all.sh"), "x".repeat(cap + 1)).unwrap();
-        std::fs::write(dir.join("build.sh"), "x".repeat(cap + 1)).unwrap();
+        std::fs::write(dir.join("deploy-all.sh"), "x\0".repeat(cap)).unwrap();
+        std::fs::write(dir.join("build.sh"), "x\0".repeat(cap)).unwrap();
+        std::fs::write(dir.join("large.sh"), format!("{}git push\n", "#\n".repeat(cap / 2 + 1))).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/lib.sh"), "git push origin HEAD\n").unwrap();
+        std::fs::write(dir.join("run.sh"), ". ./sub/lib.sh\n").unwrap();
+        std::fs::write(dir.join("sub/run2.sh"), "sh lib.sh\n").unwrap();
         let cwd = dir.to_str().unwrap();
         let decide = |c: &str| capacity_decide(&serde_json::json!({"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": c}}));
         let got = |c: &str| {
@@ -1517,8 +1565,12 @@ mod tests {
         let want = |rule: &str, via: &'static str| (Some(rule.to_string()), Some(via));
         assert_eq!(got("bash push.sh"), want("script:git-push", "script_read"), "a relative script is read from the payload's cwd");
         assert_eq!(got("./push.sh --now"), want("script:git-push", "script_read"));
-        assert_eq!(got("bash deploy-all.sh"), want("script-unread", "script_unread"), "too big to read and risky-looking");
-        assert_eq!(got("bash build.sh"), (None, None), "too big to read and nothing risky about it");
+        assert_eq!(got("bash deploy-all.sh"), want("script-unread", "script_unread"), "binary and risky-looking");
+        assert_eq!(got("bash build.sh"), (None, None), "binary and nothing risky about it");
+        assert_eq!(got("bash large.sh"), want("script:git-push", "script_read"), "over the read cap, within the scan cap: matched as written");
+        assert_eq!(got("bash run.sh"), want("script:git-push", "script_read"), "a script another one sources");
+        assert_eq!(got("cd sub && sh run2.sh"), want("script:git-push", "script_read"), "read from the cd target, and what it runs from there");
+        assert_eq!(got("/bin/sh run.sh"), want("script:git-push", "script_read"), "an interpreter named by its path");
         assert_eq!(got("bash ok.sh"), (None, None), "a comment is no command");
         assert_eq!(got("bash missing.sh"), (None, None));
         assert_eq!(got("cat push.sh"), (None, None), "a plain read of a script");
