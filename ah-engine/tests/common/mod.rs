@@ -36,13 +36,13 @@ pub fn launcher_bin() -> std::path::PathBuf {
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let out = std::process::Command::new(cargo)
-        .args(["build", "--release", "--quiet"])
+        // the target dir is named, not inherited: a CARGO_TARGET_DIR in the developer's or CI's environment would build elsewhere
+        .args(["build", "--release", "--quiet", "--target-dir"])
+        .arg(dir.join("target"))
         .current_dir(&dir)
         .output()
         .unwrap_or_else(|e| panic!("no ah-hook binary and cargo could not start to build ah-launcher ({e}); set AH_HOOK_BIN"));
-    found().unwrap_or_else(|| {
-        panic!("no ah-hook binary: building ah-launcher failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr))
-    })
+    found().unwrap_or_else(|| panic!("no ah-hook binary: building ah-launcher failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr)))
 }
 #[allow(unused_imports)] // each test binary uses a subset
 pub use scale::{scaled, scaled_ms, time_scale};
