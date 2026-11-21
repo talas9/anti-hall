@@ -118,17 +118,13 @@ mod argv_tests {
     fn a_primary_seat_is_not_woken_natively_and_the_skip_is_counted() {
         let home = std::env::temp_dir().join("ah-native-wake-primary-900");
         let env = std::collections::HashMap::new();
-        let mut drain = crate::metrics::Metrics::default();
-        crate::metrics::drain_pending(&mut drain);
+        crate::metrics::reset_this_thread(); // this thread's own bumps: the process-wide table is shared by parallel tests
         // a Primary seat gets no nativeWake answer
         assert!(super::wake(&home, "primary-0123abcd", "", &env, None).is_none());
-        let mut m = crate::metrics::Metrics::default();
-        crate::metrics::drain_pending(&mut m);
         let why = crate::defaults::text("agent_tracker.native_wake_skip_primary");
-        assert_eq!(m.counter("native_wake_skipped", &[("reason", why)]), 1); // the skip is counted
+        assert_eq!(crate::metrics::bumped_on_this_thread("native_wake_skipped", &[("reason", why)]), 1); // the skip is counted
+        crate::metrics::reset_this_thread();
         assert!(super::wake(&home, "child-1", "", &env, None).is_none());
-        let mut m = crate::metrics::Metrics::default();
-        crate::metrics::drain_pending(&mut m);
-        assert_eq!(m.counter_total("native_wake_skipped"), 0); // a child label is not skipped by the Primary rule
+        assert_eq!(crate::metrics::bumped_on_this_thread("native_wake_skipped", &[("reason", why)]), 0); // a child label is not skipped by the Primary rule
     }
 }
