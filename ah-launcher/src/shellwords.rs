@@ -41,6 +41,20 @@ pub struct Cfg {
     pub brace_cap: usize,
     /// How deep a heredoc body's substitutions are read as commands (0 = not at all).
     pub body_depth: usize,
+    /// #920: the hold rule a gh subcommand outside `gh_known` falls under (empty = off: a gh alias is a command no word list knows),
+    /// the subcommands gh itself defines, and the options in front of the subcommand that take their value as the next word.
+    pub gh_rule: String,
+    /// The subcommands gh itself defines.
+    pub gh_known: Vec<String>,
+    /// The gh options that take their value as the next word.
+    pub gh_opts_with_arg: Vec<String>,
+    /// #920: the command names that are no alias or function (builtins, keywords, read-only binaries); a command word outside this
+    /// list is reported in `Normalised::unknown_cmds`. Empty = off.
+    pub unknown_known: Vec<String>,
+    /// #920: the interpreters whose first non-option word is a script they run (`bash x.sh`, `python3 x.py`, `source x`).
+    pub script_interps: Vec<String>,
+    /// #920: the interpreter flags that take the code inline (`-c`, `-e`): no script then.
+    pub script_inline_flags: Vec<String>,
 }
 
 /// A command read the shell's way.
@@ -53,6 +67,13 @@ pub struct Normalised {
     pub git_unknown: Option<String>,
     /// More texts the rules match: each re-reading of the joined words, and the commands a heredoc body substitutes.
     pub extra: Vec<String>,
+    /// #920: the first gh subcommand that is not in `gh_known` (a gh alias, an extension), if any.
+    pub gh_unknown: Option<String>,
+    /// #920: command names that are in no word list of `unknown_known`: what a shell alias or function defined earlier in the session
+    /// would be called. The caller drops the ones that resolve to a binary on PATH.
+    pub unknown_cmds: Vec<String>,
+    /// #920: the scripts the command runs by path (`./x.sh`, `bash x.sh`, `node x.js`), as written.
+    pub scripts: Vec<String>,
 }
 
 enum Tok {
@@ -526,6 +547,140 @@ fn unwrap_sub(w: &str) -> &str {
     inner.unwrap_or(w)
 }
 
+/// Appends the items of `more` that `into` does not hold yet.
+fn merge(into: &mut Vec<String>, more: Vec<String>) {
+    for m in more {
+        if !into.contains(&m) {
+            into.push(m);
+        }
+    }
+}
+
+/// The first subcommand of command `cmd` (git, gh) that is not in `known`: `cmd` must be at the start of a command (opened, after
+/// assignments only, or behind a wrapper), its options in `opts` take the next word, any other option is skipped.
+fn unknown_sub(group: &[(String, bool, String)], cmd: &str, known: &[String], opts: &[String], wrappers: &[String]) -> Option<String> {
+    let wrapper = |w: &str| wrappers.iter().any(|x| x.eq_ignore_ascii_case(base(w)));
+    for j in 0..group.len() {
+        // the command spelled in any case runs it on a case-insensitive file system
+        let Some((w, opened)) = opener(&group[j].0) else { continue };
+        if !base(w).eq_ignore_ascii_case(cmd) {
+            continue;
+        }
+        let at_command = opened || group[..j].iter().all(|(w, ..)| is_assign(w)) || group[..j].iter().any(|(w, ..)| wrapper(w));
+        if !at_command {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < group.len() {
+            let w = group[k].0.trim_end_matches([')', '`', '}']);
+            if opts.iter().any(|o| o == w) {
+                k += 2;
+            } else if w.starts_with('-') || w.is_empty() {
+                k += 1;
+            } else {
+                if !known.iter().any(|s| s == w) {
+                    return Some(w.to_string());
+                }
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// A redirection word (`>out`, `2>&1`, `<in`), not a process substitution (`<(..)`).
+fn is_redir(word: &str) -> bool {
+    let w = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    (w.starts_with('<') || w.starts_with('>')) && !w[1..].starts_with('(')
+}
+
+/// The word a simple command runs (assignments, redirections, wrappers and their options skipped), with the words after it.
+/// `None` when it is dynamic (`$x`, which the dynamic-command rule holds) or the group runs nothing.
+fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String]) -> Option<(&'a str, usize)> {
+    let wrapper = |w: &str| wrappers.iter().any(|x| x.eq_ignore_ascii_case(base(w)));
+    let mut wrapped = false;
+    for (i, (word, ..)) in group.iter().enumerate() {
+        if word.starts_with('$') && !word.starts_with("$(") {
+            return None;
+        }
+        if is_redir(word) {
+            continue;
+        }
+        let Some((w, _)) = opener(word) else { continue };
+        let w = w.trim_end_matches([')', '`', '}']);
+        if w.is_empty() {
+            continue;
+        }
+        if wrapper(w) {
+            wrapped = true;
+            continue;
+        }
+        if wrapped && (w.starts_with('-') || w.chars().all(|c| c.is_ascii_digit()) || is_assign(w)) {
+            continue;
+        }
+        return Some((w, i));
+    }
+    None
+}
+
+/// A plain command name: what an alias or a function is called (no path, no expansion, no punctuation a shell reads).
+fn plain_name(w: &str) -> bool {
+    w.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        && w.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-'))
+        && !w.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Whether `name` resolves to an executable file in a directory of `path` (a PATH value): a real binary is no alias or function.
+pub fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
+    let Some(path) = path else { return false };
+    std::env::split_paths(path).any(|dir| {
+        let p = dir.join(name);
+        std::fs::metadata(&p).is_ok_and(|m| {
+            #[cfg(unix)]
+            let exec = std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0;
+            #[cfg(not(unix))]
+            let exec = true;
+            m.is_file() && exec
+        })
+    })
+}
+
+/// What reading a script a command runs by path gave.
+#[derive(Debug, PartialEq)]
+pub enum Script {
+    /// Its text (small enough, no NUL byte).
+    Text(String),
+    /// There is a file but it was not read: larger than the cap, binary, or unreadable.
+    Unread,
+    /// Nothing to read: reading is off (`cap` 0), the path is no file.
+    Skip,
+}
+
+/// Reads the script at `path` (a relative one from `cwd`) when it is at most `cap` bytes (0 = never read).
+pub fn read_script(path: &str, cwd: Option<&str>, cap: usize) -> Script {
+    use std::io::Read;
+    if cap == 0 {
+        return Script::Skip;
+    }
+    let p = std::path::Path::new(path);
+    let full = match cwd {
+        Some(c) if !p.is_absolute() => std::path::Path::new(c).join(p),
+        _ => p.to_path_buf(),
+    };
+    let Ok(meta) = std::fs::metadata(&full) else { return Script::Skip };
+    if !meta.is_file() {
+        return Script::Skip;
+    }
+    if usize::try_from(meta.len()).map_or(true, |n| n > cap) {
+        return Script::Unread;
+    }
+    let mut bytes = Vec::new();
+    match std::fs::File::open(&full).and_then(|f| f.take(cap as u64 + 1).read_to_end(&mut bytes)) {
+        Ok(n) if n <= cap && !bytes.contains(&0) => Script::Text(String::from_utf8_lossy(&bytes).into_owned()),
+        _ => Script::Unread,
+    }
+}
+
 /// Reads `cmd` the way the shell does. `None` when a quote is left open: the caller then matches the raw text only.
 pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
     let (mut n, mut nested) = once(cmd, cfg, 0)?;
@@ -540,6 +695,10 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
             if n.git_unknown.is_none() {
                 n.git_unknown = m.git_unknown;
             }
+            if n.gh_unknown.is_none() {
+                n.gh_unknown = m.gh_unknown;
+            }
+            merge(&mut n.scripts, m.scripts); // unknown_cmds: the top level only (a quoted word that holds a space is text more often than a command)
             n.extra.push(m.text);
             n.extra.extend(m.extra);
             next.extend(more);
@@ -552,13 +711,27 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
     Some(n)
 }
 
+/// What one reading of a command found besides its text (see the fields of [`Normalised`]).
+#[derive(Default)]
+struct Found {
+    gh_unknown: Option<String>,
+    unknown_cmds: Vec<String>,
+    scripts: Vec<String>,
+}
+
 /// One reading of `cmd`, and its words that hold a space (read again by [`normalise`]).
 fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)> {
     let toks = split(cmd, cfg)?;
     let (mut text, mut stripped, mut git_unknown, mut extra) = (String::new(), false, None, Vec::new());
+    let mut found = Found::default();
     let mut nested: Vec<String> = Vec::new();
     let mut group: Vec<(String, bool, String)> = Vec::new();
-    let emit = |group: &mut Vec<(String, bool, String)>, text: &mut String, stripped: &mut bool, git_unknown: &mut Option<String>, nested: &mut Vec<String>| {
+    let emit = |group: &mut Vec<(String, bool, String)>,
+                text: &mut String,
+                stripped: &mut bool,
+                git_unknown: &mut Option<String>,
+                nested: &mut Vec<String>,
+                more: &mut Found| {
         if group.is_empty() {
             return;
         }
@@ -592,33 +765,32 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             }
         }
         if git_unknown.is_none() && !cfg.git_rule.is_empty() {
-            let wrapper = |w: &str| cfg.git_wrappers.iter().any(|x| x.eq_ignore_ascii_case(base(w)));
-            for j in 0..group.len() {
-                // git spelled in any case runs git on a case-insensitive file system
-                let Some((w, opened)) = opener(&group[j].0) else { continue };
-                if !base(w).eq_ignore_ascii_case("git") {
-                    continue;
-                }
-                let at_command = opened || group[..j].iter().all(|(w, ..)| is_assign(w)) || group[..j].iter().any(|(w, ..)| wrapper(w));
-                if !at_command {
-                    continue;
-                }
-                let mut k = j + 1;
-                while k < group.len() {
-                    let w = group[k].0.trim_end_matches([')', '`', '}']);
-                    if cfg.git_opts_with_arg.iter().any(|o| o == w) {
-                        k += 2;
-                    } else if w.starts_with('-') || w.is_empty() {
-                        k += 1;
-                    } else {
-                        if !cfg.git_known.iter().any(|s| s == w) {
-                            *git_unknown = Some(w.to_string());
-                        }
-                        break;
+            *git_unknown = unknown_sub(group, "git", &cfg.git_known, &cfg.git_opts_with_arg, &cfg.git_wrappers);
+        }
+        if more.gh_unknown.is_none() && !cfg.gh_rule.is_empty() {
+            more.gh_unknown = unknown_sub(group, "gh", &cfg.gh_known, &cfg.gh_opts_with_arg, &cfg.git_wrappers);
+        }
+        if let Some((cmd, at)) = command_at(group, &cfg.git_wrappers) {
+            // a command name no list knows: what a shell alias or function defined earlier in the session is called
+            if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
+                merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
+            }
+            // a script run by path: the command word itself, or the first non-option word after an interpreter
+            if cmd.contains('/') && !cmd.ends_with('/') {
+                merge(&mut more.scripts, vec![cmd.to_string()]);
+            } else if cfg.script_interps.iter().any(|i| i == cmd) {
+                let rest = &group[at + 1..];
+                let flag = rest.iter().position(|(w, ..)| cfg.script_inline_flags.iter().any(|f| f == w));
+                let inline = flag.is_some();
+                // the code of a one-liner is read as a command too (a word with no space is not re-read otherwise: `sh -c ./d.sh`)
+                if let Some((_, _, code)) = flag.and_then(|f| rest.get(f + 1)) {
+                    if !code.is_empty() {
+                        nested.push(code.clone());
                     }
                 }
-                if git_unknown.is_some() {
-                    break;
+                let script = rest.iter().map(|(w, ..)| w.as_str()).find(|w| !w.is_empty() && !w.starts_with('-') && !is_assign(w) && !is_redir(w));
+                if let (false, Some(sc)) = (inline, script) {
+                    merge(&mut more.scripts, vec![sc.to_string()]);
                 }
             }
         }
@@ -641,7 +813,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         match t {
             Tok::Word(w, live, r) => group.push((w, live, r)),
             Tok::Body(b, runs) => {
-                emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested);
+                emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
                 // the body is data (matched as written); what it substitutes runs, so that is read as a command, once as written
                 // and once with its quotes and comment marks blanked (they are literal in a body, so they hide nothing there)
                 if runs && depth < cfg.body_depth {
@@ -650,6 +822,10 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
                         if git_unknown.is_none() {
                             git_unknown = m.git_unknown;
                         }
+                        if found.gh_unknown.is_none() {
+                            found.gh_unknown = m.gh_unknown;
+                        }
+                        merge(&mut found.scripts, m.scripts);
                         extra.push(m.text);
                         extra.extend(m.extra);
                         nested.extend(more);
@@ -658,7 +834,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
                 text.push_str(&b);
             }
             Tok::Sep(s) => {
-                emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested);
+                emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
                 if !text.is_empty() && !text.ends_with(['\n', ' ']) {
                     text.push(' ');
                 }
@@ -669,8 +845,9 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             }
         }
     }
-    emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested);
-    Some((Normalised { text, stripped, git_unknown, extra }, nested))
+    emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
+    let Found { gh_unknown, unknown_cmds, scripts } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts }, nested))
 }
 
 #[cfg(test)]
@@ -686,14 +863,69 @@ mod tests {
             git_rule: "git-unknown-subcommand".into(),
             git_known: v(&["status", "log", "commit"]),
             git_opts_with_arg: v(&["-C", "-c"]),
-            git_wrappers: v(&["sudo", "env", "time", "if", "{"]),
+            git_wrappers: v(&["sudo", "env", "time", "if", "then", "do", "{"]),
             passes: 3,
             brace_cap: 64,
             body_depth: 2,
+            gh_rule: "gh-unknown-subcommand".into(),
+            gh_known: v(&["pr", "issue", "api"]),
+            unknown_known: v(&["ls", "cd", "echo", "if", "then", "fi", "export", "git", "gh", "for", "do", "done"]),
+            script_interps: v(&["bash", "sh", "python3", "node", "source", "."]),
+            script_inline_flags: v(&["-c", "-e"]),
+            ..Cfg::default()
         }
     }
     fn n(c: &str) -> Normalised {
         normalise(c, &cfg()).unwrap_or_else(|| panic!("balanced: {c}"))
+    }
+
+    /// #920: a gh subcommand outside the known list is a gh alias; a command name outside the known list is what a shell alias or
+    /// function is called; the scripts a command runs by path are listed, an inline one-liner is no script.
+    #[test]
+    fn aliases_unknown_names_and_scripts_are_found() {
+        assert_eq!(n("gh co 12").gh_unknown.as_deref(), Some("co"));
+        assert_eq!(n("sudo gh zz").gh_unknown.as_deref(), Some("zz"));
+        assert_eq!(n("gh pr merge 1").gh_unknown, None);
+        assert_eq!(n("echo gh co").gh_unknown, None, "gh as an argument is no gh command");
+        assert_eq!(n("zzgp; ls").unknown_cmds, ["zzgp"]);
+        assert_eq!(n("FOO=1 zzgp x && ls").unknown_cmds, ["zzgp"]);
+        assert_eq!(n("if true; then zzgp; fi").unknown_cmds, ["true", "zzgp"], "wrappers and their keywords are skipped");
+        assert_eq!(n("sudo -u root ls").unknown_cmds, ["root"], "a wrapper option value is read as the command (a false hold, never a pass)");
+        assert!(n("ls -la; cd x; export A=1").unknown_cmds.is_empty());
+        assert!(n("\"$x\" a; ./run.sh; foo() { ls; }; >out ls").unknown_cmds.is_empty(), "dynamic words, paths, definitions, redirections");
+        assert!(n("git commit -m \"fix the bug\"").unknown_cmds.is_empty(), "a quoted argument is text, not a command");
+        assert_eq!(n("bash x.sh a").scripts, ["x.sh"]);
+        assert_eq!(n("sudo ./d.sh").scripts, ["./d.sh"]);
+        assert_eq!(n("FOO=1 python3 -u t/p.py").scripts, ["t/p.py"]);
+        assert_eq!(n("source ./e").scripts, ["./e"]);
+        assert!(n("bash -c 'ls'").scripts.is_empty() && n("python3 -c x").scripts.is_empty(), "inline code is no script");
+        assert_eq!(n("sh -c './d.sh'").scripts, ["./d.sh"], "a nested shell's script is read too");
+        assert!(n("ls x.sh").scripts.is_empty());
+    }
+
+    #[test]
+    fn a_script_is_read_up_to_the_cap_and_a_binary_on_path_is_no_alias() {
+        let dir = std::env::temp_dir().join(format!("ah-920-sw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (small, big, bin, tool) = (dir.join("small.sh"), dir.join("big.sh"), dir.join("bin.sh"), dir.join("zztool920"));
+        std::fs::write(&small, "git push\n").unwrap();
+        std::fs::write(&big, "x".repeat(100)).unwrap();
+        std::fs::write(&bin, b"a\0b").unwrap();
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let d = dir.to_str().unwrap();
+        assert_eq!(read_script("small.sh", Some(d), 50), Script::Text("git push\n".into()), "a relative path is read from cwd");
+        assert_eq!(read_script("big.sh", Some(d), 50), Script::Unread, "over the cap");
+        assert_eq!(read_script("bin.sh", Some(d), 50), Script::Unread, "a NUL byte is a binary");
+        assert_eq!(read_script("nope.sh", Some(d), 50), Script::Skip);
+        assert_eq!(read_script("small.sh", Some(d), 0), Script::Skip, "cap 0 = reading off");
+        assert_eq!(read_script(small.to_str().unwrap(), None, 50), Script::Text("git push\n".into()));
+        let path = std::env::join_paths([dir.as_path()]).unwrap();
+        assert!(on_path("zztool920", Some(&path)));
+        assert!(!on_path("small.sh", Some(&path)), "a file without the exec bit is no command");
+        assert!(!on_path("zztool920", None));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

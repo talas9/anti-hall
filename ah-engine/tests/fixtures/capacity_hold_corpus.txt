@@ -220,3 +220,52 @@ P echo $((1<<2))
 P git commit -m "$(cat <<'EOF'\nfix: x\nEOF\n)"
 P git commit -m "$(cat <<'EOF'\nfix: don't hold this\nEOF\n)"
 P echo "$(git log -1 --format="%s")"
+#
+# #920 gaps left by #918: a script run by path is read ({fix} is the fixtures/capacity_scripts directory), an interpreter one-liner's
+# code is matched for a recursive delete, a push API or an exec of a built command string, a gh alias and a shell alias or function
+# (a name no list knows that is no binary on PATH) are held; the reads and local work beside them pass
+H bash {fix}/push.sh
+H {fix}/push.sh
+H sudo bash {fix}/push.sh
+H sh -c '{fix}/push.sh'
+H source {fix}/push.sh
+H . {fix}/push.sh
+H python3 {fix}/push.py
+H node {fix}/push.js
+H FOO=1 bash {fix}/push.sh
+H python3 -c "import shutil; shutil.rmtree('/x')"
+H python3 -c 'import shutil; shutil.rmtree(p)'
+H node -e "require('fs').rmSync('x',{recursive:true})"
+H perl -e 'use File::Path; remove_tree("x")'
+H ruby -e 'require "fileutils"; FileUtils.rm_rf("x")'
+H python3 -c "import dulwich.porcelain as p; p.push('.', 'origin')"
+H python3 -c "import subprocess; subprocess.run(cmd, shell=True)"
+H python3 -c "import os; os.system('gi'+'t push')"
+H node -e "require('child_process').execSync('gi'+'t push')"
+H node -e "const c=process.argv[1]; require('child_process').execSync(c)"
+H zzalias920 push
+H cd /tmp && zzdeploy920
+H FOO=1 zzalias920
+H if true; then zzalias920; fi
+H gh co 12
+H gh x
+H sudo gh zzext
+P bash {fix}/clean.sh
+P {fix}/clean.sh
+P python3 -c "print(1)"
+P node -e "console.log(process.version)"
+P python3 -c "import subprocess; subprocess.run(['git', 'status'])"
+P node -e "require('child_process').execSync('ls')"
+P node -e "[1].push(2)"
+P python3 -c "import os; os.system('ls -la')"
+P ls -la
+P cargo --version
+P gh pr list
+P gh issue list
+P git commit -m "fix the bug now"
+P ./zz-no-such-script-920.sh
+P for f in a b; do echo $f; done
+P if true; then ls; fi
+P export FOO=bar
+P cd /tmp && ls
+P cat {fix}/push.sh

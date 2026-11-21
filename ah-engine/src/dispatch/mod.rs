@@ -444,6 +444,9 @@ pub(crate) struct Decision {
     pub rule: Option<String>,
     pub normalised: bool,
     pub text_exempt: bool,
+    /// #920: the class the hold falls in beyond its rule (counted): `inline_code`, `script_read`, `script_unread`, `gh_unknown`,
+    /// `unknown_command`.
+    pub via: Option<&'static str>,
 }
 
 /// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
@@ -455,6 +458,7 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
     let strs = |v: Option<&'static defaults::V>| -> Vec<String> {
         v.and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect()).unwrap_or_default()
     };
+    let one = |v: Option<&'static defaults::V>| -> String { v.and_then(|v| v.as_str()).unwrap_or_default().to_string() };
     let count = |k: &str| cfg.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
     let (text, git) = (cfg.get("text"), cfg.get("git"));
     Some(shellwords::Cfg {
@@ -468,6 +472,12 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         passes: count("passes"),
         brace_cap: count("brace_cap"),
         body_depth: count("body_depth"),
+        gh_rule: one(cfg.get("gh").and_then(|g| g.get("rule"))),
+        gh_known: strs(cfg.get("gh").and_then(|g| g.get("known"))),
+        gh_opts_with_arg: strs(cfg.get("gh").and_then(|g| g.get("opts_with_arg"))),
+        unknown_known: if one(cfg.get("unknown").and_then(|u| u.get("rule"))).is_empty() { Vec::new() } else { strs(cfg.get("unknown").and_then(|u| u.get("known"))) },
+        script_interps: strs(cfg.get("script").and_then(|s| s.get("interpreters"))),
+        script_inline_flags: strs(cfg.get("script").and_then(|s| s.get("inline_flags"))),
     })
 }
 
@@ -483,7 +493,7 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
 /// (#907: in-word quotes and backslashes gone, only an unquoted separator splits, the free text of a gh pr/issue/release command
 /// blanked); a git subcommand that is no known one (an alias, an external command) is held under its own rule.
 pub(crate) fn capacity_decide(payload: &Value) -> Decision {
-    let none = Decision { rule: None, normalised: false, text_exempt: false };
+    let none = Decision { rule: None, normalised: false, text_exempt: false, via: None };
     let cfg = defaults::raw("dispatch.capacity_hold");
     let Some(tool) = payload.get("tool_name").and_then(Value::as_str) else { return none };
     let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
@@ -503,7 +513,7 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     if ncfg.is_some() && norm.is_none() {
         let rule = cfg.get("unreadable").and_then(|v| v.as_str()).unwrap_or_default();
         if !rule.is_empty() {
-            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false };
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None };
         }
     }
     // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
@@ -520,22 +530,75 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
             Ok(re) => {
                 let hit = texts.iter().position(|t| re.is_match(t));
                 if let Some(at) = hit {
-                    return Decision { rule: Some(name.to_string()), normalised: at > 0 && !re.is_match(command), text_exempt: false };
+                    let inline = cfg.get("inline_rules").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|r| r.as_str() == Some(*name)));
+                    return Decision { rule: Some(name.to_string()), normalised: at > 0 && !re.is_match(command), text_exempt: false, via: inline.then_some("inline_code") };
                 }
                 raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
             }
             Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
         }
     }
-    if let Some(n) = &norm {
+    if let (Some(n), Some(ncfg)) = (&norm, &ncfg) {
         if n.git_unknown.is_some() {
             let rule = cfg.get("git").and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
             if !rule.is_empty() {
-                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false };
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None };
+            }
+        }
+        // #920: a gh subcommand no list knows is a gh alias (or an extension); held as an unknown git subcommand is
+        if n.gh_unknown.is_some() && !ncfg.gh_rule.is_empty() {
+            return Decision { rule: Some(ncfg.gh_rule.clone()), normalised: true, text_exempt: false, via: Some("gh_unknown") };
+        }
+        if let Some(d) = capacity_script(cfg, payload, n, ncfg, rules) {
+            return d;
+        }
+        // #920: a command name no list knows that is no binary on PATH: a shell alias or function defined earlier in the session
+        let unknown = cfg.get("unknown");
+        let rule = unknown.and_then(|u| u.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
+        if !rule.is_empty() {
+            let lookup = unknown.and_then(|u| u.get("path_lookup")).and_then(|v| v.as_integer()) != Some(0);
+            let path = std::env::var_os(unknown.and_then(|u| u.get("path_env")).and_then(|v| v.as_str()).unwrap_or_default());
+            if n.unknown_cmds.iter().any(|c| !(lookup && shellwords::on_path(c, path.as_deref()))) {
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command") };
             }
         }
     }
-    Decision { rule: None, normalised: false, text_exempt: raw_only_hit }
+    Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None }
+}
+
+/// #920: the scripts a command runs by path (`./x.sh`, `bash x.sh`, `node x.js`; at most `script.max_refs`), read when at most
+/// `script.max_bytes` and matched by the same `rules` the command is (read the way the shell does, comments gone): held under
+/// `script.rule_prefix` + the rule. A script that is too big, binary or unreadable is held under `script.rule_unread` only when the
+/// command is otherwise risky-looking (it matches `script.risky`); a path that is no file, or reading off (`max_bytes` 0), holds nothing.
+fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalised, ncfg: &shellwords::Cfg, rules: &[(&str, defaults::V)]) -> Option<Decision> {
+    let sc = cfg.get("script")?;
+    let int = |k: &str| sc.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
+    let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+    let cwd = payload.get(text("cwd_field")).and_then(Value::as_str);
+    let compile = |pat: &str| regex::RegexBuilder::new(pat).case_insensitive(true).build().ok();
+    let mut unread = false;
+    for path in n.scripts.iter().take(int("max_refs")) {
+        match shellwords::read_script(path, cwd, int("max_bytes")) {
+            shellwords::Script::Text(body) => {
+                let norm = shellwords::normalise(&body, ncfg);
+                let texts: Vec<&str> = match &norm {
+                    Some(nb) => std::iter::once(nb.text.as_str()).chain(nb.extra.iter().map(String::as_str)).collect(),
+                    None => vec![body.as_str()],
+                };
+                for (name, pat) in rules {
+                    if pat.as_str().and_then(compile).is_some_and(|re| texts.iter().any(|t| re.is_match(t))) {
+                        return Some(Decision { rule: Some(format!("{}{name}", text("rule_prefix"))), normalised: true, text_exempt: false, via: Some("script_read") });
+                    }
+                }
+            }
+            shellwords::Script::Unread => unread = true,
+            shellwords::Script::Skip => {}
+        }
+    }
+    let risky = compile(text("risky")).filter(|_| !text("risky").is_empty());
+    let rule = text("rule_unread");
+    (unread && !rule.is_empty() && risky.is_some_and(|re| re.is_match(&n.text)))
+        .then(|| Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("script_unread") })
 }
 
 /// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
@@ -568,6 +631,9 @@ pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
     let rule = d.rule?;
     if d.normalised {
         crate::obs::counters::advisory("capacity_hold", "normalised");
+    }
+    if let Some(via) = d.via {
+        crate::obs::counters::advisory("capacity_hold", via);
     }
     let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity_hold", &format!("{event}: {rule}"));
@@ -1417,16 +1483,53 @@ mod tests {
     fn capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads() {
         let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
         let (mut held, mut passed) = (0, 0);
+        let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
         for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
             let (want, cmd) = match line.split_once(' ') {
-                Some(("H", c)) => (true, c.replace("\\n", "\n")),
-                Some(("P", c)) => (false, c.replace("\\n", "\n")),
+                Some(("H", c)) => (true, c.replace("\\n", "\n").replace("{fix}", fix)),
+                Some(("P", c)) => (false, c.replace("\\n", "\n").replace("{fix}", fix)),
                 _ => continue,
             };
             assert_eq!(class(&cmd).is_some(), want, "{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd));
             if want { held += 1 } else { passed += 1 }
         }
-        assert!(held >= 35 && passed >= 11, "corpus read: {held} held, {passed} pass");
+        assert!(held >= 60 && passed >= 25, "corpus read: {held} held, {passed} pass");
+    }
+
+    /// #920: the gaps #918 left: a script run by path is read (and held only for what it does), an interpreter one-liner's code is matched,
+    /// a gh alias and a shell alias or function are held, each counted by its class (`via`); a script too big to read is held only
+    /// when the command looks risky, and plain reads and local work pass.
+    #[test]
+    fn capacity_hold_reads_scripts_inline_code_and_unknown_names_and_counts_the_class() {
+        let dir = std::env::temp_dir().join(format!("ah-920-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap = defaults::raw("dispatch.capacity_hold").get("script").and_then(|s| s.get("max_bytes")).and_then(|v| v.as_integer()).unwrap() as usize;
+        std::fs::write(dir.join("push.sh"), "#!/bin/sh\ngit push origin main\n").unwrap();
+        std::fs::write(dir.join("ok.sh"), "#!/bin/sh\n# git push later\nls\n").unwrap();
+        std::fs::write(dir.join("deploy-all.sh"), "x".repeat(cap + 1)).unwrap();
+        std::fs::write(dir.join("build.sh"), "x".repeat(cap + 1)).unwrap();
+        let cwd = dir.to_str().unwrap();
+        let decide = |c: &str| capacity_decide(&serde_json::json!({"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": c}}));
+        let got = |c: &str| {
+            let d = decide(c);
+            (d.rule, d.via)
+        };
+        let want = |rule: &str, via: &'static str| (Some(rule.to_string()), Some(via));
+        assert_eq!(got("bash push.sh"), want("script:git-push", "script_read"), "a relative script is read from the payload's cwd");
+        assert_eq!(got("./push.sh --now"), want("script:git-push", "script_read"));
+        assert_eq!(got("bash deploy-all.sh"), want("script-unread", "script_unread"), "too big to read and risky-looking");
+        assert_eq!(got("bash build.sh"), (None, None), "too big to read and nothing risky about it");
+        assert_eq!(got("bash ok.sh"), (None, None), "a comment is no command");
+        assert_eq!(got("bash missing.sh"), (None, None));
+        assert_eq!(got("cat push.sh"), (None, None), "a plain read of a script");
+        assert_eq!(got("python3 -c \"import shutil; shutil.rmtree(p)\""), want("inline-delete-api", "inline_code"));
+        assert_eq!(got("node -e \"require('child_process').execSync('gi'+'t push')\""), want("inline-exec-dynamic", "inline_code"));
+        assert_eq!(got("python3 -c \"print(1)\""), (None, None));
+        assert_eq!(got("gh co 12"), want("gh-unknown-subcommand", "gh_unknown"));
+        assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
+        assert_eq!(got("ls -la && cd /tmp"), (None, None));
+        assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// #901/#904: the read exemption fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`,
