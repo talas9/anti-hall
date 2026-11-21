@@ -51,5 +51,7 @@ Handover, resume and compaction guards.
 - `maintenance.progressPrune` = true: Switch: archive stale per-session progress files into the history ledger...
 - `maintenance.precompactSnapshot` = true: Where the PreCompact snapshot switch is read from (maintenance.precompactSnapshot, default on)
 - `context.handoverResume` = true: Where the handover resume switch is read from (context.handoverResume, default on)
+- `guards.handoverGateOnChangeRepeatS` = 1800: Unchanged post-handover gate reminder interval, seconds
+- `guards.handoverGateOnChange` = true: Send the post-handover gate on change
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

@@ -254,8 +254,8 @@ var cb = {
     if (via === cb.c('ctxbudget.ah_via_workspace')) {
       var wsK = cfg && isFinite(cfg.workspaceMaxTokens) ? Math.round(cfg.workspaceMaxTokens / 1000) : 0;
       return text.message('order', cb.c('ctxbudget.ah_guard'), {
-        what: cb.r('ctxbudget.ah_what_workspace', { usedK: Math.round((result.used || 0) / 1000), k: wsK }), why: cb.c('ctxbudget.ah_ws_why'),
-        instead: cb.r('ctxbudget.ah_ws_instead', { skill: w.skill, file: hp ? cb.r('ctxbudget.ah_fire_main_file', { path: hp }) : '' }),
+        what: cb.r('ctxbudget.ah_what_workspace', { usedK: Math.round((result.used || 0) / 1000), k: wsK }), why: cb.c('ctxbudget.ah_why_workspace'),
+        instead: cb.r('ctxbudget.ah_instead_workspace', { skill: w.skill, file: hp ? cb.r('ctxbudget.ah_fire_main_file', { path: hp }) : '' }),
       });
     }
     if (via === cb.c('ctxbudget.ah_via_tokens')) {

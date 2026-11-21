@@ -575,17 +575,13 @@ value = "workspace"
 doc = "The first line of the workspace ceiling order; {usedK} is the context in thousands of tokens, {k} the ceiling in thousands."
 value = "start the next PR in a fresh session: this workspace's context is ~{usedK}K tokens, over its {k}K ceiling."
 
-[ctxbudget.ah_ws_why]
+[ctxbudget.ah_why_workspace]
 doc = "The Why line of the workspace ceiling order."
 value = "A workspace that carries one PR's context into the next pays for the old context on every turn; a fresh session per PR starts small."
 
-[ctxbudget.ah_ws_instead]
+[ctxbudget.ah_instead_workspace]
 doc = "The instructions of the workspace ceiling order; {skill} names the handover skill, {file} the expected handover file clause (ctxbudget.ah_fire_main_file or empty)."
 value = "(1) finish and push the current PR (or its current step) first; (2) write an anti-hall session handover YOURSELF following {skill}{file}; (3) tell the Primary over the mesh that this workspace reached its context ceiling and that the next PR should start in a fresh session (a new workspace, or this one cleared with the handover), not in this context. This fires once per session."
-
-[ctxbudget.ah_fired_metric]
-doc = "The counter of auto-handover fires (metric.auto_handover_fired)."
-value = "auto_handover_fired"
 
 [metric.auto_handover_fired]
 doc = "Auto-handover fires (the once-per-arm handover order), by via: pct (the percent line), tokens (autoHandover.maxTokens), workspace (a DevSwarm workspace past autoHandover.workspaceMaxTokens, GH #884: ordered to a fresh session), and the same words with the Stop-side prefix (ctxbudget.ah_via_stop_prefix) when the Stop check fired it."
