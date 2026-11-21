@@ -54,6 +54,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("check", cmd_check),
         ("gen-hooks", cmd_gen_hooks),
         ("version", cmd_version),
+        ("capacity-hashes", crate::dispatch::cmd_capacity_hashes),
         ("ctl", cmd_ctl),
         ("diag", cmd_diag),
         ("stop", cmd_stop),

@@ -447,6 +447,9 @@ pub(crate) struct Decision {
     /// #920: the class the hold falls in beyond its rule (counted): `inline_code`, `script_read`, `script_unread`, `gh_unknown`,
     /// `unknown_command`.
     pub via: Option<&'static str>,
+    /// #928: the exemptions that kept a false hold away (counted): `trusted_script` (a script whose path and content hash are on the
+    /// trusted list), `local_tool` (a tool in a project-local tool directory), `wrapper_opt` (a wrapper option's value skipped).
+    pub exempt: Vec<&'static str>,
 }
 
 /// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
@@ -485,6 +488,14 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
         cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
         cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
+        local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
+        repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
+        wrapper_opts: cfg
+            .get("script")
+            .and_then(|s| s.get("wrapper_opts"))
+            .and_then(|t| t.as_table())
+            .map(|t| t.iter().map(|(k, v)| (k.to_string(), strs(Some(v)))).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -500,7 +511,7 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
 /// (#907: in-word quotes and backslashes gone, only an unquoted separator splits, the free text of a gh pr/issue/release command
 /// blanked); a git subcommand that is no known one (an alias, an external command) is held under its own rule.
 pub(crate) fn capacity_decide(payload: &Value) -> Decision {
-    let none = Decision { rule: None, normalised: false, text_exempt: false, via: None };
+    let none = Decision { rule: None, normalised: false, text_exempt: false, via: None, exempt: Vec::new() };
     let cfg = defaults::raw("dispatch.capacity_hold");
     let Some(tool) = payload.get("tool_name").and_then(Value::as_str) else { return none };
     let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
@@ -511,16 +522,20 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     let Some(command) = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str) else { return none };
     let Some(rules) = cfg.get("rules").and_then(|v| v.as_table()) else { return none };
     let ncfg = capacity_norm_cfg(cfg);
+    let mut exempt: Vec<&'static str> = Vec::new();
     let norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
+    if norm.as_ref().is_some_and(|n| n.opt_skips > 0) {
+        exempt.push("wrapper_opt");
+    }
     if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) {
-        return none;
+        return Decision { exempt, ..none };
     }
     // #918 review: a command the reading can not balance (a quote or a substitution left open) is matched quote-blind otherwise,
     // so any such tail would switch the reading off: it is held under `unreadable` (empty = off)
     if ncfg.is_some() && norm.is_none() {
         let rule = cfg.get("unreadable").and_then(|v| v.as_str()).unwrap_or_default();
         if !rule.is_empty() {
-            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None };
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None, exempt };
         }
     }
     // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
@@ -543,6 +558,7 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
                         normalised: at > 0 && !re.is_match(command),
                         text_exempt: false,
                         via: inline.then_some("inline_code"),
+                        exempt,
                     };
                 }
                 raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
@@ -554,28 +570,45 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         if n.git_unknown.is_some() {
             let rule = cfg.get("git").and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
             if !rule.is_empty() {
-                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None };
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None, exempt };
             }
         }
         // #920: a gh subcommand no list knows is a gh alias (or an extension); held as an unknown git subcommand is
         if n.gh_unknown.is_some() && !ncfg.gh_rule.is_empty() {
-            return Decision { rule: Some(ncfg.gh_rule.clone()), normalised: true, text_exempt: false, via: Some("gh_unknown") };
+            return Decision { rule: Some(ncfg.gh_rule.clone()), normalised: true, text_exempt: false, via: Some("gh_unknown"), exempt };
         }
-        if let Some(d) = capacity_script(cfg, payload, n, ncfg, rules) {
-            return d;
-        }
-        // #920: a command name no list knows that is no binary on PATH: a shell alias or function defined earlier in the session
+        // #920: a command name no list knows that is no binary on PATH: a shell alias or function defined earlier in the session.
+        // #928: a tool only in a project-local tool directory (.venv/bin, node_modules/.bin, target/debug) inside the repo is known, and
+        // (#929 review) its file is read as a script run by path is, so a planted tool that pushes is held for what it does
         let unknown = cfg.get("unknown");
         let rule = unknown.and_then(|u| u.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
-        if !rule.is_empty() {
-            let lookup = unknown.and_then(|u| u.get("path_lookup")).and_then(|v| v.as_integer()) != Some(0);
-            let path = std::env::var_os(unknown.and_then(|u| u.get("path_env")).and_then(|v| v.as_str()).unwrap_or_default());
-            if n.unknown_cmds.iter().any(|c| !(lookup && shellwords::on_path(c, path.as_deref()))) {
-                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command") };
+        let lookup = unknown.and_then(|u| u.get("path_lookup")).and_then(|v| v.as_integer()) != Some(0);
+        let path = std::env::var_os(unknown.and_then(|u| u.get("path_env")).and_then(|v| v.as_str()).unwrap_or_default());
+        let dirs = shellwords::dirs(payload.get(cfg.get("script").and_then(|s| s.get("cwd_field")).and_then(|v| v.as_str()).unwrap_or_default()).and_then(Value::as_str), &n.cds, None);
+        let mut local: Vec<String> = Vec::new();
+        let mut unresolved = false;
+        for c in &n.unknown_cmds {
+            if lookup && shellwords::on_path(c, path.as_deref()) {
+                continue;
+            }
+            match shellwords::local_tool(c, &dirs, &ncfg.local_dirs, &ncfg.repo_marker).filter(|_| lookup) {
+                Some(p) => local.push(p.to_string_lossy().into_owned()),
+                None => unresolved = true,
             }
         }
+        if !local.is_empty() {
+            exempt.push("local_tool");
+        }
+        if let Some(mut d) = capacity_script(cfg, payload, n, ncfg, rules, &local, &mut exempt) {
+            exempt.append(&mut d.exempt);
+            d.exempt = exempt;
+            return d;
+        }
+        if !rule.is_empty() && unresolved {
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command"), exempt };
+        }
     }
-    Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None }
+    Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None, exempt }
 }
 
 /// #920: the scripts a command runs by path (`./x.sh`, `bash x.sh`, `node x.js`; at most `script.max_refs` read in all), read when at
@@ -585,18 +618,39 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
 /// `max_bytes` but within `script.scan_bytes` is matched as written by the `script.scan_rules`. A script that is still bigger, binary or
 /// unreadable is held under `script.rule_unread` only when the command is otherwise risky-looking (it matches `script.risky`); a
 /// path that is no file, or reading off (`max_bytes` 0), holds nothing.
-fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalised, ncfg: &shellwords::Cfg, rules: &[(&str, defaults::V)]) -> Option<Decision> {
+fn capacity_script(
+    cfg: &defaults::V,
+    payload: &Value,
+    n: &shellwords::Normalised,
+    ncfg: &shellwords::Cfg,
+    rules: &[(&str, defaults::V)],
+    local: &[String],
+    exempt: &mut Vec<&'static str>,
+) -> Option<Decision> {
     let sc = cfg.get("script")?;
     let int = |k: &str| sc.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
     let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
     let skip: Vec<&str> = sc.get("body_skip").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let raw_rules: Vec<&str> = sc.get("raw_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let scan_rules: Vec<&str> = sc.get("scan_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let home = Some(text("home_env")).filter(|k| !k.is_empty()).and_then(std::env::var_os);
     let dirs = shellwords::dirs(payload.get(text("cwd_field")).and_then(Value::as_str), &n.cds, home.as_deref());
     let compile = |pat: &str| regex::RegexBuilder::new(pat).case_insensitive(true).build().ok();
-    let held =
-        |name: &str| Some(Decision { rule: Some(format!("{}{name}", text("rule_prefix"))), normalised: true, text_exempt: false, via: Some("script_read") });
-    let (mut unread, mut seen, mut queue) = (false, Vec::new(), n.scripts.iter().map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
+    let trusted: Vec<(&str, &str)> = sc
+        .get("trusted")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|e| Some((e.get("path")?.as_str()?, e.get("sha256")?.as_str()?))).collect())
+        .unwrap_or_default();
+    let held = |name: &str| {
+        Some(Decision {
+            rule: Some(format!("{}{name}", text("rule_prefix"))),
+            normalised: true,
+            text_exempt: false,
+            via: Some("script_read"),
+            exempt: Vec::new(),
+        })
+    };
+    let (mut unread, mut seen, mut queue) = (false, Vec::new(), n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
     while let Some((path, depth)) = queue.pop_front() {
         if seen.contains(&path) {
             continue;
@@ -605,6 +659,20 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
             break;
         }
         seen.push(path.clone());
+        // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's) is
+        // not matched; any edit changes the hash and the script is checked like any other
+        if !trusted.is_empty() {
+            let id = shellwords::script_identity(&path, &dirs, home.as_deref(), int("trusted_max_bytes"), &ncfg.repo_marker);
+            if let Some((rel, bytes)) = id {
+                let sha = crate::dssup::recon::view::sha256_hex(&bytes);
+                if trusted.iter().any(|(g, h)| shellwords::glob_match(g, &rel) && h.eq_ignore_ascii_case(&sha)) {
+                    if !exempt.contains(&"trusted_script") {
+                        exempt.push("trusted_script");
+                    }
+                    continue;
+                }
+            }
+        }
         match shellwords::read_script(&path, &dirs, home.as_deref(), int("max_bytes"), int("scan_bytes")) {
             shellwords::Script::Text(body) => {
                 let norm = shellwords::normalise(&body, ncfg);
@@ -615,6 +683,13 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
                 // a rule for what no reading can tell (`$cmd`) holds nearly every real script: `script.body_skip`
                 for (name, pat) in rules.iter().filter(|(name, _)| !skip.contains(name)) {
                     if pat.as_str().and_then(compile).is_some_and(|re| texts.iter().any(|t| re.is_match(t))) {
+                        return held(name);
+                    }
+                }
+                // #928: a rule that reads quotes (an argv list: `['git', op]` against `['git', 'status']`) is matched on the script as written
+                // too, since the shell reading drops the quotes that tell a name from a variable
+                for (name, pat) in rules.iter().filter(|(name, _)| raw_rules.contains(name)) {
+                    if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
                         return held(name);
                     }
                 }
@@ -641,7 +716,56 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
         normalised: true,
         text_exempt: false,
         via: Some("script_unread"),
+        exempt: Vec::new(),
     })
+}
+
+/// #928: `capacity-hashes [<path>...]`: the current sha256 of each file on the trusted-scripts list (`dispatch.capacity_hold` `script.trusted`),
+/// found from the repo root of the current directory (the nearest parent holding `unknown.repo_marker`), with its state against the list,
+/// and the hash of every path given with the entry to paste. Read-only: the list is only ever refreshed by an owner's edit.
+pub(crate) fn cmd_capacity_hashes(p: &crate::cli::Parsed) -> i32 {
+    let cfg = defaults::raw("dispatch.capacity_hold");
+    let marker = cfg.get("unknown").and_then(|u| u.get("repo_marker")).and_then(|v| v.as_str()).unwrap_or_default();
+    let max = cfg.get("script").and_then(|s| s.get("trusted_max_bytes")).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
+    let cwd = vec![std::env::current_dir().unwrap_or_default()];
+    let root = cwd[0].ancestors().find(|a| !marker.is_empty() && a.join(marker).exists()).map(std::path::Path::to_path_buf);
+    let mut rows: Vec<(&'static str, String, String)> = Vec::new();
+    let (w_match, w_changed, w_missing, w_current) = (
+        defaults::text("dispatch.msg_capacity_hash_match"),
+        defaults::text("dispatch.msg_capacity_hash_changed"),
+        defaults::text("dispatch.msg_capacity_hash_missing"),
+        defaults::text("dispatch.msg_capacity_hash_current"),
+    );
+    let sha = |bytes: &[u8]| crate::dssup::recon::view::sha256_hex(bytes);
+    for e in cfg.get("script").and_then(|s| s.get("trusted")).and_then(|v| v.as_array()).into_iter().flatten() {
+        let (Some(path), Some(want)) = (e.get("path").and_then(|v| v.as_str()), e.get("sha256").and_then(|v| v.as_str())) else { continue };
+        let found = root.as_ref().and_then(|r| shellwords::script_identity(&r.join(path).to_string_lossy(), &[], None, max, marker)).filter(|(rel, _)| rel == path);
+        match found {
+            Some((_, bytes)) => {
+                let now = sha(&bytes);
+                let state = if now.eq_ignore_ascii_case(want) { w_match } else { w_changed };
+                rows.push((state, path.to_string(), now));
+            }
+            None => rows.push((w_missing, path.to_string(), String::new())),
+        }
+    }
+    for a in p.rest.iter().filter(|a| !a.starts_with("--")) {
+        match shellwords::script_identity(a, &cwd, None, max, marker) {
+            Some((rel, bytes)) => rows.push((w_current, rel, sha(&bytes))),
+            None => rows.push((w_missing, a.clone(), String::new())),
+        }
+    }
+    let mut out = Vec::new();
+    for (state, path, hash) in &rows {
+        let word = *state;
+        if p.json {
+            out.push(serde_json::json!({"state": word, "path": path, "sha256": hash}).to_string());
+        } else {
+            out.push(defaults::render("dispatch.msg_capacity_hash_line", &[("state", &word), ("path", path), ("sha256", hash)]));
+        }
+    }
+    println!("{}", out.join("\n"));
+    0
 }
 
 /// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
@@ -668,6 +792,9 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 /// retry hint) when [`capacity_hold`] puts it in a hold class, else `None` (it passes).
 pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
     let d = capacity_decide(payload);
+    for e in &d.exempt {
+        crate::obs::counters::advisory("capacity_hold", e);
+    }
     if d.text_exempt {
         crate::obs::counters::advisory("capacity_hold", "text_exempt");
     }
@@ -1525,7 +1652,7 @@ mod tests {
     #[test]
     fn capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads() {
         let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
-        let (mut held, mut passed) = (0, 0);
+        let (mut held, mut passed, mut wrong) = (0, 0, Vec::<String>::new());
         let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
         for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
             let (want, cmd) = match line.split_once(' ') {
@@ -1533,10 +1660,69 @@ mod tests {
                 Some(("P", c)) => (false, c.replace("\\n", "\n").replace("{fix}", fix)),
                 _ => continue,
             };
-            assert_eq!(class(&cmd).is_some(), want, "{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd));
+            if class(&cmd).is_some() != want {
+                wrong.push(format!("{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd)));
+            }
             if want { held += 1 } else { passed += 1 }
         }
-        assert!(held >= 185 && passed >= 87, "corpus read: {held} held, {passed} pass");
+        assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
+        assert!(held >= 244 && passed >= 101, "corpus read: {held} held, {passed} pass");
+    }
+
+    /// #928: the exemptions that kept a false hold away are counted (wrapper_opt, local_tool, trusted_script) and the commands pass.
+    #[test]
+    fn capacity_hold_counts_the_false_hold_exemptions() {
+        let d = |c: &str, cwd: Option<&str>| {
+            let mut p = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}});
+            if let Some(w) = cwd {
+                p["cwd"] = w.into();
+            }
+            capacity_decide(&p)
+        };
+        let sudo = d("sudo -u deploy ls /var/log", None);
+        assert_eq!((sudo.rule, sudo.exempt), (None, vec!["wrapper_opt"]));
+        let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
+        let local = d("tool --ci", Some(fix));
+        assert_eq!((local.rule, local.exempt), (None, vec!["local_tool"]));
+        // outside the repo's tool directories the same name is an unknown command
+        assert_eq!(d("tool --ci", Some("/")).rule.as_deref(), Some("unknown-command"));
+        // the cleanup of a variable is never exempt, whatever made it (the own-temp exemption is gone)
+        let own = d(r#"t=$(mktemp -d); rm -rf "$t""#, None);
+        assert_eq!((own.rule.as_deref(), own.exempt), (Some("recursive-delete"), Vec::<&str>::new()));
+    }
+
+    /// #928 (#929 rework): a script on `script.trusted` (repo-relative path glob + sha256 of its content) is not matched; the same bytes
+    /// at another path, or any edit of it, are checked like any other script. The seeded entries are the repo's own test scripts.
+    #[test]
+    fn capacity_hold_trusts_a_script_by_path_and_content_hash_only() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let real = std::fs::read(repo.join("ah-engine/test.sh")).unwrap();
+        let d = |c: &str, cwd: &std::path::Path| capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}, "cwd": cwd.to_str().unwrap()}));
+        // the unchanged file, from the checkout and from a copy at the same relative path in another repo
+        let at = d("bash ah-engine/test.sh", repo);
+        assert_eq!((at.rule, at.exempt), (None, vec!["trusted_script"]), "the seeded test script is trusted at its current hash");
+        let tmp = std::env::temp_dir().join(format!("ah-928-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp); // keep: this test's own scratch dir, named by pid
+        std::fs::create_dir_all(tmp.join("ah-engine")).unwrap();
+        std::fs::create_dir_all(tmp.join("other")).unwrap();
+        std::fs::write(tmp.join(".git"), "gitdir: x").unwrap();
+        std::fs::write(tmp.join("ah-engine/test.sh"), &real).unwrap();
+        std::fs::write(tmp.join("other/test.sh"), &real).unwrap();
+        let copy = d("bash ah-engine/test.sh", &tmp);
+        assert_eq!((copy.rule, copy.exempt), (None, vec!["trusted_script"]), "path and hash decide, not the checkout");
+        // the same bytes at a path no entry names are checked like any other script
+        let other = capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "bash other/test.sh"}, "cwd": tmp.to_str().unwrap()}));
+        assert!(other.exempt.is_empty(), "no entry names other/test.sh: {:?}", other.exempt);
+        // a modified copy is checked normally: what it adds is matched
+        let mut edited = real.clone();
+        edited.extend_from_slice(b"\ngit push origin main\n");
+        std::fs::write(tmp.join("ah-engine/test.sh"), &edited).unwrap();
+        let bad = d("bash ah-engine/test.sh", &tmp);
+        assert_eq!(bad.rule.as_deref(), Some("script:git-push"), "an edit changes the hash: {:?}", bad.exempt);
+        assert!(bad.exempt.is_empty());
+        // the command text itself is still matched around a trusted script
+        assert_eq!(d("bash ah-engine/test.sh; git push", repo).rule.as_deref(), Some("git-push"));
+        std::fs::remove_dir_all(&tmp).unwrap(); // keep: this test's own scratch dir
     }
 
     /// #920: the gaps #918 left: a script run by path is read (and held only for what it does), an interpreter one-liner's code is matched,

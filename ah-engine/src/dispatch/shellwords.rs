@@ -63,6 +63,14 @@ pub struct Cfg {
     /// #920: the commands that change the directory the commands after them run in (`cd`, `pushd`): a relative script path is
     /// read from there too.
     pub cd_cmds: Vec<String>,
+    /// #928: the project-local tool directories (`.venv/bin`, `node_modules/.bin`, `target/debug`) whose executables are known
+    /// commands when they resolve inside the repo, and the entry (`.git`) that marks the repo root. Empty = off.
+    pub local_dirs: Vec<String>,
+    /// The entry that marks the repo root.
+    pub repo_marker: String,
+    /// #928: per wrapper word (`sudo`, `env`, `nice`, `timeout`), the options that take the next word as their value, so that
+    /// value is not read as the command.
+    pub wrapper_opts: Vec<(String, Vec<String>)>,
 }
 
 /// A command read the shell's way.
@@ -84,6 +92,8 @@ pub struct Normalised {
     pub scripts: Vec<String>,
     /// #920: the directories a `cd_cmds` command changes to, in order, as written.
     pub cds: Vec<String>,
+    /// #928: how many wrapper-option values were skipped to find a command (`sudo -u bob cmd`).
+    pub opt_skips: usize,
 }
 
 enum Tok {
@@ -605,11 +615,18 @@ fn is_redir(word: &str) -> bool {
 }
 
 /// The word a simple command runs (assignments, redirections, wrappers and their options skipped), with the words after it.
-/// `None` when it is dynamic (`$x`, which the dynamic-command rule holds) or the group runs nothing.
-fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String]) -> Option<(&'a str, usize)> {
+/// `None` when it is dynamic (`$x`, which the dynamic-command rule holds) or the group runs nothing. A wrapper's option that takes
+/// a value (`sudo -u bob`, `env -u X`, `timeout -s KILL`; `opts`) skips that value too, counted in `skips` (#928).
+fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String], opts: &[(String, Vec<String>)], skips: &mut usize) -> Option<(&'a str, usize)> {
     let wrapper = |w: &str| wrappers.iter().any(|x| x.eq_ignore_ascii_case(base(w)));
     let mut wrapped = false;
+    let (mut cur, mut skip_value) = (String::new(), false);
     for (i, (word, ..)) in group.iter().enumerate() {
+        if skip_value {
+            skip_value = false;
+            *skips += 1;
+            continue;
+        }
         if word.starts_with('$') && !word.starts_with("$(") {
             return None;
         }
@@ -623,6 +640,12 @@ fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String]) -> O
         }
         if wrapper(w) {
             wrapped = true;
+            cur = base(w).to_ascii_lowercase();
+            continue;
+        }
+        // an option that takes its value as the next word (`sudo -u bob`): that word is no command
+        if wrapped && opts.iter().any(|(k, os)| *k == cur && os.iter().any(|o| o == w)) {
+            skip_value = true;
             continue;
         }
         // a wrapper's option and its value (`timeout 30s`, `nice -n 10`), an assignment (`env A=1`)
@@ -652,6 +675,33 @@ pub fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
             #[cfg(not(unix))]
             let exec = true;
             m.is_file() && exec
+        })
+    })
+}
+
+/// #928: whether `name` is an executable in a project-local tool directory (`local_dirs`: `.venv/bin`, `node_modules/.bin`,
+/// `target/debug`) of one of `dirs` (the cwd and each directory the command changes to) or of their parents up to the repo root (the
+/// nearest parent that holds `marker`), with the real path inside that root: a symlink that leaves the repo, or a directory outside
+/// any repo, is no known tool. Its real path, so the caller reads it as a script run by path is (#929 review: a planted tool is read).
+pub fn local_tool(name: &str, dirs: &[std::path::PathBuf], local_dirs: &[String], marker: &str) -> Option<std::path::PathBuf> {
+    if local_dirs.is_empty() || marker.is_empty() || !plain_name(name) {
+        return None;
+    }
+    dirs.iter().filter_map(|d| std::fs::canonicalize(d).ok()).find_map(|d| {
+        let root = d.ancestors().find(|a| a.join(marker).exists()).map(std::path::Path::to_path_buf)?;
+        d.ancestors().take_while(|a| a.starts_with(&root)).find_map(|a| {
+            local_dirs.iter().find_map(|l| {
+                std::fs::canonicalize(a.join(l).join(name)).ok().filter(|p| {
+                    p.starts_with(&root)
+                        && std::fs::metadata(p).is_ok_and(|m| {
+                            #[cfg(unix)]
+                            let exec = std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0;
+                            #[cfg(not(unix))]
+                            let exec = true;
+                            m.is_file() && exec
+                        })
+                })
+            })
         })
     })
 }
@@ -689,21 +739,26 @@ pub fn dirs(cwd: Option<&str>, cds: &[String], home: Option<&std::ffi::OsStr>) -
     out
 }
 
-/// Reads the script at `path` (a leading `~` is `home`; a relative path from the last of `dirs` that holds it: the directory the
-/// command changed to last before the one it started in) when it is at most
-/// `cap` bytes (0 = never read), or as written when it is at most `scan` bytes.
-pub fn read_script(path: &str, dirs: &[std::path::PathBuf], home: Option<&std::ffi::OsStr>, cap: usize, scan: usize) -> Script {
-    use std::io::Read;
-    if cap == 0 {
-        return Script::Skip;
-    }
+/// The file a script path names: a leading `~` is `home`; a relative path is found from the last of `dirs` that holds it (the directory the
+/// command changed to last before the one it started in). `None` when it is no regular file.
+pub fn script_file(path: &str, dirs: &[std::path::PathBuf], home: Option<&std::ffi::OsStr>) -> Option<(std::path::PathBuf, std::fs::Metadata)> {
     let p = tilde(path, home);
     let found = if p.is_absolute() || dirs.is_empty() {
         std::fs::metadata(&p).ok().map(|m| (p.clone(), m))
     } else {
         dirs.iter().rev().map(|d| d.join(&p)).find_map(|f| std::fs::metadata(&f).ok().filter(|m| m.is_file()).map(|m| (f, m)))
     };
-    let Some((full, meta)) = found.filter(|(_, m)| m.is_file()) else { return Script::Skip };
+    found.filter(|(_, m)| m.is_file())
+}
+
+/// Reads the script at `path` (see [`script_file`]) when it is at most
+/// `cap` bytes (0 = never read), or as written when it is at most `scan` bytes.
+pub fn read_script(path: &str, dirs: &[std::path::PathBuf], home: Option<&std::ffi::OsStr>, cap: usize, scan: usize) -> Script {
+    use std::io::Read;
+    if cap == 0 {
+        return Script::Skip;
+    }
+    let Some((full, meta)) = script_file(path, dirs, home) else { return Script::Skip };
     let limit = cap.max(scan);
     if usize::try_from(meta.len()).map_or(true, |n| n > limit) {
         return Script::Unread;
@@ -714,6 +769,44 @@ pub fn read_script(path: &str, dirs: &[std::path::PathBuf], home: Option<&std::f
         Ok(n) if n <= limit && !bytes.contains(&0) => Script::Large(String::from_utf8_lossy(&bytes).into_owned()),
         _ => Script::Unread,
     }
+}
+
+/// #928: the bytes of the script `path` names (see [`script_file`]) when it is at most `max` bytes, with its repo-relative path
+/// (the real path below the nearest parent that holds `marker`, `/`-separated): what the trusted-scripts list is matched against.
+/// `None` for a file that is no regular file, too big, unreadable, outside any repo or whose real path is not valid UTF-8.
+pub fn script_identity(path: &str, dirs: &[std::path::PathBuf], home: Option<&std::ffi::OsStr>, max: usize, marker: &str) -> Option<(String, Vec<u8>)> {
+    use std::io::Read;
+    if max == 0 || marker.is_empty() {
+        return None;
+    }
+    let (full, meta) = script_file(path, dirs, home)?;
+    if usize::try_from(meta.len()).map_or(true, |n| n > max) {
+        return None;
+    }
+    let real = std::fs::canonicalize(full).ok()?;
+    let root = real.ancestors().skip(1).find(|a| a.join(marker).exists())?;
+    let rel = real.strip_prefix(root).ok()?.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+    let mut bytes = Vec::new();
+    std::fs::File::open(&real).and_then(|f| f.take(max as u64 + 1).read_to_end(&mut bytes)).ok()?;
+    (bytes.len() <= max).then_some((rel, bytes))
+}
+
+/// #928: whether `text` matches the path glob `pat`: `*` is any run of characters but `/`, `**` any run (slashes too), `?` one
+/// character but `/`; everything else is itself.
+pub fn glob_match(pat: &str, text: &str) -> bool {
+    fn go(p: &[u8], t: &[u8]) -> bool {
+        match p.split_first() {
+            None => t.is_empty(),
+            Some((b'*', rest)) if rest.first() == Some(&b'*') => {
+                let rest = &rest[1..];
+                (0..=t.len()).any(|i| go(rest, &t[i..]))
+            }
+            Some((b'*', rest)) => (0..=t.len()).take_while(|&i| i == 0 || t[i - 1] != b'/').any(|i| go(rest, &t[i..])),
+            Some((b'?', rest)) => t.first().is_some_and(|&c| c != b'/') && go(rest, &t[1..]),
+            Some((c, rest)) => t.first() == Some(c) && go(rest, &t[1..]),
+        }
+    }
+    go(pat.as_bytes(), text.as_bytes())
 }
 
 /// Reads `cmd` the way the shell does. `None` when a quote is left open: the caller then matches the raw text only.
@@ -734,6 +827,7 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
                 n.gh_unknown = m.gh_unknown;
             }
             n.cds.extend(m.cds);
+            n.opt_skips += m.opt_skips;
             merge(&mut n.scripts, m.scripts); // unknown_cmds: the top level only (a quoted word that holds a space is text more often than a command)
             n.extra.push(m.text);
             n.extra.extend(m.extra);
@@ -754,6 +848,7 @@ struct Found {
     unknown_cmds: Vec<String>,
     scripts: Vec<String>,
     cds: Vec<String>,
+    opt_skips: usize,
 }
 
 /// One reading of `cmd`, and its words that hold a space (read again by [`normalise`]).
@@ -810,7 +905,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         // the commands of the group: the first, and one after each marker word (`find . -exec cmd {} ;`)
         let starts = std::iter::once(0).chain(group.iter().enumerate().filter(|(_, (w, ..))| cfg.cmd_markers.iter().any(|m| m == w)).map(|(i, _)| i + 1));
         for seg in starts.map(|s| &group[s..]) {
-            let Some((cmd, at)) = command_at(seg, &cfg.cmd_wrappers) else { continue };
+            let Some((cmd, at)) = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &mut more.opt_skips) else { continue };
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
@@ -896,8 +991,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         }
     }
     emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
-    let Found { gh_unknown, unknown_cmds, scripts, cds } = found;
-    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds }, nested))
+    let Found { gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips }, nested))
 }
 
 #[cfg(test)]
@@ -1108,5 +1203,87 @@ mod tests {
         assert!(normalise("g\"i\"t reset --hard; echo \"$(echo \"'\")\"", &cfg()).is_some());
         assert!(normalise("git commit -m \"$(cat <<'EOF'\nfix: don't\nEOF\n)\"", &cfg()).is_some());
         assert!(normalise("echo \"$(git log -1 --format=\"%s\")\"", &cfg()).is_some());
+    }
+
+    #[test]
+    fn issue_928_glob_match_reads_star_as_one_component_and_double_star_as_any() {
+        assert!(glob_match("ah-engine/test.sh", "ah-engine/test.sh"));
+        assert!(!glob_match("ah-engine/test.sh", "ah-engine/test.shx"));
+        assert!(!glob_match("ah-engine/test.sh", "x/ah-engine/test.sh"));
+        assert!(glob_match("ah-engine/*.sh", "ah-engine/test.sh"));
+        assert!(!glob_match("ah-engine/*.sh", "ah-engine/tests/wrapper.sh"));
+        assert!(glob_match("ah-engine/**/wrapper.sh", "ah-engine/tests/wrapper.sh"));
+        assert!(glob_match("a/t?.sh", "a/t1.sh"));
+        assert!(!glob_match("a/t?.sh", "a/t/.sh"));
+    }
+
+    #[test]
+    fn issue_928_a_script_is_identified_by_its_repo_relative_path_and_bytes() {
+        let root = std::env::temp_dir().join(format!("ah-928id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        let (repo, out) = (root.join("repo"), root.join("out"));
+        std::fs::create_dir_all(repo.join("ah-engine")).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(repo.join(".git"), "gitdir: x").unwrap();
+        std::fs::write(repo.join("ah-engine/test.sh"), "echo hi\n").unwrap();
+        std::fs::write(out.join("t.sh"), "echo hi\n").unwrap();
+        let id = |p: &str, d: &std::path::Path, max| script_identity(p, &[d.to_path_buf()], None, max, ".git");
+        assert_eq!(id("ah-engine/test.sh", &repo, 100), Some(("ah-engine/test.sh".to_string(), b"echo hi\n".to_vec())));
+        assert_eq!(id("./test.sh", &repo.join("ah-engine"), 100).map(|x| x.0).as_deref(), Some("ah-engine/test.sh"), "from a subdirectory");
+        assert!(id("t.sh", &out, 100).is_none(), "outside any repo");
+        assert!(id("ah-engine/test.sh", &repo, 3).is_none(), "over the cap");
+        assert!(id("ah-engine/test.sh", &repo, 0).is_none(), "off");
+        assert!(script_identity("ah-engine/test.sh", &[repo.clone()], None, 100, "").is_none(), "off without the marker");
+        std::fs::remove_dir_all(&root).unwrap(); // keep: this test's own scratch dir
+    }
+
+    #[test]
+    fn issue_928_a_wrapper_options_value_is_no_command() {
+        let mut c = cfg();
+        c.cmd_wrappers = vec!["sudo".into(), "env".into(), "timeout".into()];
+        c.wrapper_opts = vec![("sudo".into(), vec!["-u".into(), "-g".into()]), ("env".into(), vec!["-u".into()]), ("timeout".into(), vec!["-s".into()])];
+        let u = |t: &str| normalise(t, &c).map(|n| (n.unknown_cmds, n.opt_skips)).unwrap();
+        assert_eq!(u("sudo -u deploy ls"), (vec![], 1));
+        assert_eq!(u("sudo -g a -u b ls"), (vec![], 2));
+        assert_eq!(u("env -u X ls"), (vec![], 1));
+        assert_eq!(u("timeout -s KILL 30 ls"), (vec![], 1));
+        // an option not in the list takes no value: its next word is the command, and an unknown one is still reported
+        assert_eq!(u("sudo -E zzz"), (vec!["zzz".to_string()], 0));
+        // the value is skipped, the command behind it is still read
+        assert_eq!(u("sudo -u deploy zzz"), (vec!["zzz".to_string()], 1));
+        let mut none = c.clone();
+        none.wrapper_opts.clear();
+        assert_eq!(normalise("sudo -u deploy ls", &none).map(|n| n.unknown_cmds).unwrap(), vec!["deploy".to_string()]);
+    }
+
+    #[test]
+    fn issue_928_a_tool_in_a_project_local_dir_inside_the_repo_is_known() {
+        let root = std::env::temp_dir().join(format!("ah-928-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        let (repo, other) = (root.join("repo"), root.join("other"));
+        let bin = repo.join(".venv/bin");
+        let sub = repo.join("pkg/src");
+        for d in [&bin, &sub, &other.join(".venv/bin")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(repo.join(".git"), "gitdir: x").unwrap();
+        for p in [bin.join("mytool"), other.join(".venv/bin/mytool")] {
+            std::fs::write(&p, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        std::os::unix::fs::symlink(other.join(".venv/bin/mytool"), bin.join("escape")).unwrap();
+        std::fs::write(bin.join("plain"), "x").unwrap(); // not executable
+        let l = vec![".venv/bin".to_string()];
+        let t = |name: &str, d: &std::path::Path| local_tool(name, &[d.to_path_buf()], &l, ".git").is_some();
+        assert!(t("mytool", &repo), "in the repo root");
+        assert!(t("mytool", &sub), "from a subdirectory, up to the repo root");
+        assert!(!t("mytool", &other), "outside any repo");
+        assert!(!t("escape", &repo), "a symlink that leaves the repo");
+        assert!(!t("plain", &repo), "not executable");
+        assert!(!t("absent", &repo));
+        assert!(local_tool("mytool", std::slice::from_ref(&repo), &[], ".git").is_none(), "off without the list");
+        assert!(local_tool("mytool", std::slice::from_ref(&repo), &l, "").is_none(), "off without the marker");
+        assert!(local_tool("../x", std::slice::from_ref(&repo), &l, ".git").is_none(), "a path is no tool name");
+        std::fs::remove_dir_all(&root).unwrap(); // keep: this test's own scratch dir
     }
 }
