@@ -4854,7 +4854,7 @@ value = "The workspace has no local descriptor (it never registered); the app wa
 # ---- #876: archive safety and the archive-request answer ----
 
 [devswarm_cli.archive_work_guard]
-doc = "Whether `archive` (and the direct archive of `archive-request`) first checks the workspace's worktree and refuses when it holds uncommitted changes, commits no origin ref has, or a state git cannot read. Off lets an archive discard such work. A worktree that no longer exists is archived (nothing is lost). Respawn is exempt: it parks the work on a pushed branch first."
+doc = "Whether `archive` (and the direct archive of `archive-request`) first checks the workspace's worktree and refuses when it holds uncommitted changes, commits no origin ref has, or a state git cannot read. Off lets an archive discard such work. A worktree that no longer exists is archived (nothing is lost). Respawn parks the work on a pushed branch first; its archive then refuses only a commit made after the park."
 value = true
 
 [devswarm_cli.act_unsafe_dirty]
