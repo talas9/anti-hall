@@ -207,11 +207,11 @@ doc = "Holds the session id that already got the cold-start notice, so the notic
 value = "cold-guard.notice"
 
 [files.daemon_down_marker]
-doc = "Short-lived client marker: when a hook client finds the daemon absent or hung, other clients skip connecting until this expires."
+doc = "Short-lived client marker: when a hook client finds the daemon provably gone (no socket file, the singleton lock names a pid that no longer exists, or a spawn failed), other clients skip connecting until this expires, and every call passes (roadmap C9). A failed exchange or a hung daemon whose process is still there writes files.daemon_slow_marker instead (#905, client.down_requires_gone)."
 value = "daemon.down.until"
 
 [files.daemon_slow_marker]
-doc = "Short-lived client marker (client.down_marker_ttl_ms), the load sibling of files.daemon_down_marker: written instead of it when client.slow_down_n consecutive replies came late (a daemon that is there but loaded, not down). Clients skip connecting until it expires, as for the down marker, but a guard call no check could decide then falls under dispatch.capacity_hold (a push, a merge, a recursive delete is held with a retry hint; a read passes), in the engine's client and in the ah-hook launcher alike. A daemon that is really down (absent, hung, a failed spawn) writes the down marker and removes this one, so it keeps passing every call (roadmap C9)."
+doc = "Short-lived client marker (client.down_marker_ttl_ms), the load sibling of files.daemon_down_marker: written instead of it when client.slow_down_n consecutive replies came late (a daemon that is there but loaded, not down). Clients skip connecting until it expires, as for the down marker, but a guard call no check could decide then falls under dispatch.capacity_hold (a push, a merge, a recursive delete is held with a retry hint; a read passes), in the engine's client and in the ah-hook launcher alike. Also written when an exchange fails or the daemon is hung (client.heartbeat_stale_ms) while its process is still there (#905: a stopped or loaded daemon is load, not down; client.down_requires_gone). A daemon that is provably gone (no socket file, no process, a failed spawn) writes the down marker and removes this one, so it keeps passing every call (roadmap C9)."
 value = "daemon.slow.until"
 
 [files.supervisor_unhealthy_marker]
@@ -679,13 +679,13 @@ value = 400
 unit = "ms"
 
 [client.down_marker_ttl_ms]
-doc = "How long other clients skip connecting after one client finds the daemon absent or failed, or hung (client.heartbeat_stale_ms) and not replaced (files.daemon_down_marker), or after client.slow_down_n consecutive slow replies (files.daemon_slow_marker); this prevents hook pile-ups while a restart is attempted."
+doc = "How long other clients skip connecting after one client finds the daemon provably gone (files.daemon_down_marker), or failed or hung (client.heartbeat_stale_ms) and not replaced while its process is still there, or after client.slow_down_n consecutive slow replies (both files.daemon_slow_marker); this prevents hook pile-ups while a restart is attempted."
 value = 3000
 env = "AH_ENGINE_DOWN_MARKER_TTL_MS"
 unit = "ms"
 
 [client.slow_down_n]
-doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: it fails open and the next client asks the daemon again."
+doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as loaded and marked slow (files.daemon_slow_marker, #901). A single call that gets no reply in the window never marks it down: it fails open and the next client asks the daemon again."
 value = 5
 env = "AH_ENGINE_SLOW_DOWN_N"
 min = 1
@@ -693,6 +693,13 @@ min = 1
 [client.timeout_skip_name_key_by_check]
 doc = "Per check, the defaults key holding the name its script checks in the skip file (~/.anti-hall/skip.json). A check the daemon gave no answer for in a completed reply (a busy or unusable reply, a dropped answer) passes when that guard is skipped, as its script would; a check without a row is looked up by its own name. A skip of everything never covers guardkit.destructive_guards."
 value = { git = "git.guard_name", api-guard = "api_guard.guard_name", edit-guard = "edit_guard.guard_name", ship-it-guard = "ship_it.guard_name", command = "command.guard_name", merge-gate = "merge_gate.guard_name", swarm-guard = "swarm_guard.guard_name", compact-declaration-guard = "compact_decl.guard_name", inbox-read-guard = "inbox_read.skip_name", ask-guard = "ask_guard.guard_name" }
+
+[client.down_requires_gone]
+doc = "#905: 1 = a failed exchange or a hung daemon (client.heartbeat_stale_ms) writes the down marker (files.daemon_down_marker: every call passes) only when the daemon is provably gone: no socket file, the singleton lock names a pid that no longer exists, or (a failed exchange) no process holds the singleton lock; a failed spawn always counts as gone. While its process is still there (loaded, stopped) it writes the slow marker instead (files.daemon_slow_marker), so a guard call in a hold class of dispatch.capacity_hold is held and a read passes. 0 = the old behaviour: every failed exchange or hung daemon marks it down. Each marker write is counted per marker and reason (diagnostics.marker_counter_kind)."
+value = 1
+env = "AH_ENGINE_DOWN_REQUIRES_GONE"
+min = 0
+max = 1
 
 [client.slow_window_ms]
 doc = "Window in which consecutive slow daemon replies are counted toward client.slow_down_n; a streak older than this starts over."

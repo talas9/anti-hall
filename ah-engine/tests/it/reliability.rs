@@ -2129,7 +2129,8 @@ fn signal(pid: u32, sig: libc::c_int) {
 }
 
 /// A daemon frozen by SIGSTOP (alive, holding its socket and singleton lock, making no progress) costs at most one slow call:
-/// every later hook call is under a second and fails open, also after the down marker's TTL has run out.
+/// every later hook call is under a second, also after the marker's TTL has run out. #905: its process is still there, so it is
+/// load, never down: the slow marker, never the down marker, so a force push is held (dispatch.capacity_hold) and a read passes.
 #[test]
 fn a_stopped_daemon_costs_at_most_one_slow_call() {
     let _timing = wrapper_timing_lock();
@@ -2142,8 +2143,13 @@ fn a_stopped_daemon_costs_at_most_one_slow_call() {
     let max_ms = clamped_num("client.progress_stale_ms", 1000) + 500;
     let (_, code, dt) = e.wrapper_hook(DENY_IN);
     println!("TIMING hung-daemon call 0 wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
-    assert!(code == 0 || code == 2, "call 0 exited {code}");
+    assert_eq!(code, 2, "#905: a force push against a stopped (present) daemon is held, never passed: {}", e.health_log());
     assert!(dt <= common::scaled(Duration::from_millis(max_ms)), "the one slow call is bounded by client.progress_stale_ms + slack = {max_ms} ms: {dt:?}");
+    assert!(e.fresh_slow_marker() && !e.fresh_down_marker(), "#905: a stopped daemon's process exists: slow marker, never down{}", e.diag());
+    let (_, read, _) = e.wrapper_hook(READ_IN);
+    assert_eq!(read, 0, "#905: a read still passes on the slow marker{}", e.diag());
+    let (_, held, _) = e.wrapper_hook(DENY_IN);
+    assert_eq!(held, 2, "#905: a force push is held on the slow marker{}", e.diag());
     let mut times = Vec::new();
     for phase in 0..2 {
         if phase == 1 {
@@ -2299,7 +2305,9 @@ fn a_stale_heartbeat_fails_fast_and_never_kills_a_process_that_is_not_the_daemon
     });
     let (_, code, dt) = e.wrapper_hook(DENY_IN);
     println!("TIMING stale-heartbeat wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
-    let marked = e.fresh_down_marker();
+    // #905: the process the heartbeat names is still there, so this is load: the slow marker, never the down marker
+    let marked = e.fresh_slow_marker() && !e.fresh_down_marker();
+    let (_, read, _) = e.wrapper_hook(READ_IN);
     // past the down marker, the same unchanged heartbeat confirms the hang: the replacement path runs and must spare it
     e.wait_down_marker_expired();
     let (_, code2, dt2) = e.wrapper_hook(DENY_IN);
@@ -2308,11 +2316,35 @@ fn a_stale_heartbeat_fails_fast_and_never_kills_a_process_that_is_not_the_daemon
     ah_engine::discard::harmless(stand_in.kill());
     ah_engine::discard::harmless(stand_in.wait());
     let log = e.health_log();
-    assert_eq!((code, code2), (0, 0), "a hung daemon fails open: {log}");
+    assert_eq!((code, code2), (2, 2), "#905: a hung daemon whose process is there holds a force push, never passes it: {log}");
+    assert_eq!(read, 0, "#905: a read passes on the slow marker: {log}");
     assert!(dt < common::scaled(Duration::from_secs(1)) && dt2 < common::scaled(Duration::from_secs(1)), "a stale heartbeat must fail fast: {dt:?} {dt2:?}");
-    assert!(marked, "a hung daemon is marked down at once: {log}");
+    assert!(marked, "a hung daemon whose process is there is marked slow at once, never down: {log}");
     assert!(log.contains("\tclient_hung_spared\t"), "the confirming call reached the replacement path: {log}");
     assert!(survived, "a pid that is not the engine's daemon must never be signalled");
+}
+
+/// #905: a hung daemon (stale heartbeat) whose process is provably gone (the singleton lock names a pid that no longer exists) is
+/// really down: the down marker, never the slow one, so every call keeps passing (C9), a force push included.
+#[test]
+fn a_hung_daemon_whose_process_is_gone_is_marked_down_and_passes_every_call() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("hbgone", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+    let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+    fake_heartbeat(&e, stand_in.id(), false);
+    ah_engine::discard::harmless(stand_in.kill());
+    ah_engine::discard::harmless(stand_in.wait()); // reaped: the pid the lock and heartbeat name is gone
+    fake_server(&e, || {
+        std::thread::sleep(Duration::from_millis(1500));
+        Some(ah_engine::frame::encode(ah_engine::frame::Kind::Ok, &format!("{}late deny", ah_engine::hookio::EXIT2)))
+    });
+    let (_, code, dt) = e.wrapper_hook(DENY_IN);
+    println!("TIMING gone-daemon stale-heartbeat wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
+    let (down, slow) = (e.fresh_down_marker(), e.fresh_slow_marker());
+    let (_, again, _) = e.wrapper_hook(DENY_IN);
+    let log = e.health_log();
+    assert_eq!((code, again), (0, 0), "a daemon whose process is gone passes every call: {log}");
+    assert!(down && !slow, "a gone daemon is marked down, never slow (down={down} slow={slow}): {log}");
 }
 
 /// Codex P1 on the merge: in ack mode a daemon that acknowledged the request and then stopped beating must reach the hung path
@@ -2340,7 +2372,8 @@ fn an_acked_request_whose_daemon_stops_beating_is_hung_not_slow() {
     ah_engine::discard::harmless(stand_in.kill());
     ah_engine::discard::harmless(stand_in.wait());
     let log = e.health_log();
-    assert_eq!(code, 0, "a hung daemon fails open: {log}");
+    assert_eq!(code, 2, "#905: a hung daemon whose process is there holds a force push: {log}");
+    assert!(e.fresh_slow_marker() && !e.fresh_down_marker(), "#905: slow marker, never down: {log}");
     assert!(log.contains("\tclient_hung\t"), "the stale heartbeat must be seen in ack mode: {log}");
     assert!(dt < common::scaled(Duration::from_secs(2)), "an acked-then-silent daemon must fail fast, not wait the slow window: {dt:?} {log}");
 }

@@ -93,7 +93,8 @@ pub enum Exch {
     /// failure follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
     Slow(String),
     /// Past the deadline, and the daemon's heartbeat (`files.heartbeat`) is older than `client.heartbeat_stale_ms`: the process is
-    /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). `true` = confirmed (the same heartbeat
+    /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). #905: a process that is still there is
+    /// marked slow (risky calls held), only one that is provably gone is marked down. `true` = confirmed (the same heartbeat
     /// stayed unchanged for `client.heartbeat_confirm_ms` since an earlier call suspected it), and only then is it recovered.
     Hung(String, bool),
 }
@@ -559,22 +560,56 @@ fn clear_supervisor_unhealthy() {
     crate::discard::harmless(std::fs::remove_file(state_file("supervisor_unhealthy_marker"))); // keep: absent marker is the desired state
 }
 
-fn mark_daemon_down(reason: &str) {
+/// Mark the daemon really down (`cause`: why it is provably gone, the counter's reason). Only for a daemon that is gone: no socket,
+/// no process, a failed spawn ([`mark_unusable`] decides for a failed exchange or a hung daemon).
+fn mark_daemon_down(reason: &str, cause: &str) {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
     // really down: the load marker goes, so a call in the window passes (C9) instead of being weighed as load
     clear_daemon_slow_marker();
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
     crate::discard::logged("daemon_down_marker_write", crate::atomic::write(state_file("daemon_down_marker"), until.to_string()));
-    health::log_event("client_down", "daemon", reason);
+    crate::obs::counters::marker("down", cause);
+    health::log_event("client_down", cause, reason);
 }
 
 /// #901: the slow streak tripped. The daemon is there but loaded, not down: later clients skip it as they would a down one, but on
 /// the slow marker, never the down marker, so a guard call in a hold class of `dispatch.capacity_hold` is held, never let through.
-fn mark_daemon_slow(reason: &str) {
+/// #905: also a failed exchange or a hung daemon whose process is still there (`cause` names which, the counter's reason).
+fn mark_daemon_slow(reason: &str, cause: &str) {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
     crate::discard::logged("daemon_slow_marker_write", crate::atomic::write(state_file("daemon_slow_marker"), until.to_string()));
-    health::log_event("client_slow_marked", "daemon", reason);
+    crate::obs::counters::marker("slow", cause);
+    health::log_event("client_slow_marked", cause, reason);
+}
+
+/// #905: why the daemon is provably gone, or `None` while a daemon process may still be there. Gone = no socket file, or the
+/// singleton lock names a pid that no longer exists. A lock that names no pid proves nothing (a process that is starting), and a
+/// reused pid reads as alive: both err toward "there", where risky calls are held rather than let through.
+fn daemon_gone(sock: &Path) -> Option<&'static str> {
+    if std::fs::symlink_metadata(sock).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Some("no_socket");
+    }
+    let holder = std::fs::read_to_string(paths::lock_for(sock)).ok().and_then(|t| t.trim().parse::<u32>().ok()).filter(|p| *p != 0)?;
+    (!health::pid_alive(holder)).then_some("no_process")
+}
+
+/// #905: the daemon could not be used (a failed exchange, a hung daemon; `alive` names which for the counter). It is marked down only
+/// when it is provably gone ([`daemon_gone`], or `gone`: the caller's own proof); a daemon whose process is still there (loaded,
+/// stopped) is load: the slow marker, and this call counts as a late one (`LAST_SLOW`), so a guard call in a hold class of
+/// `dispatch.capacity_hold` is held, now and while the marker lasts. `client.down_requires_gone` 0 restores marking it down every
+/// time. True when it was marked down.
+fn mark_unusable(sock: &Path, why: &str, alive: &str, gone: Option<&str>) -> bool {
+    match daemon_gone(sock).or(gone) {
+        Some(gone) => mark_daemon_down(why, gone),
+        None if defaults::num("client.down_requires_gone") == 0 => mark_daemon_down(why, "unchecked"),
+        None => {
+            LAST_SLOW.set(true);
+            mark_daemon_slow(why, alive);
+            return false;
+        }
+    }
+    true
 }
 
 fn clear_daemon_slow_marker() {
@@ -915,11 +950,14 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
         Exch::Failed(why) => {
             wait_marker(false);
             note_unavailable();
-            mark_daemon_down(&why);
-            if !health::crashloop_tripped(cfg)
-                && let Some(_spawn_lock) = spawn_lock_if_absent(&sock)
+            // the spawn lock is taken only when no daemon holds the singleton lock: no daemon process is there, provably gone
+            let spawn = if health::crashloop_tripped(cfg) { None } else { spawn_lock_if_absent(&sock) };
+            let down = mark_unusable(&sock, &why, "failed", spawn.is_some().then_some("no_lock_holder"));
+            if let Some(_spawn_lock) = spawn
+                && start_daemon(false, &why).is_none()
+                && !down
             {
-                let _ = start_daemon(false, &why);
+                mark_daemon_down(&why, "spawn"); // no daemon is coming: really down
             }
             health::breaker_failure(cfg, &why);
             None
@@ -932,20 +970,21 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             LAST_SLOW.set(true);
             health::log_event("client_slow", "daemon", &why);
             if slow_streak_tripped() {
-                mark_daemon_slow(&why); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
+                mark_daemon_slow(&why, "slow_streak"); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
             }
             None
         }
         Exch::Hung(why, confirmed) => {
-            // stopped or wedged, not slow: this call fails open and the daemon is skipped until the marker expires. A first
+            // stopped or wedged, not slow: this call gets no verdict and the daemon is skipped until the marker expires (#905: the
+            // slow marker while its process is there, so risky calls are held; the down marker only once it is gone). A first
             // stale sample only raises a suspicion; the first call after the marker that finds the same heartbeat still
-            // unchanged confirms it, and the daemon is replaced (the new one clears the down marker). The marker comes first,
+            // unchanged confirms it, and the daemon is replaced (the new one clears the marker). The marker comes first,
             // so a client cut off mid-way still leaves it; the wait marker stays until the replacement is done, so the
             // wrapper's watchdog does not cut it off (single-flight: one call pays it).
             note_unavailable();
             clear_slow_streak();
             health::log_event("client_hung", "daemon", &why);
-            mark_daemon_down(&why);
+            mark_unusable(&sock, &why, "hung", None);
             if confirmed && replace_hung_daemon(cfg, &why) {
                 clear_daemon_down_marker();
             }
@@ -987,7 +1026,7 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
             let Some(child) = start_daemon_with(true, "absent", starter) else {
                 wait_marker(false);
                 note_unavailable();
-                mark_daemon_down("spawn");
+                mark_daemon_down("spawn", "spawn");
                 return None;
             };
             // `Some(None)`: the service manager accepted the ask, so the supervised daemon is on its way; this call waits for it
@@ -1078,7 +1117,7 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     note_unavailable();
     let _spawn_lock = spawn_lock_if_absent(sock)?;
     let Some(mut child) = start_daemon(false, "absent") else {
-        mark_daemon_down("spawn");
+        mark_daemon_down("spawn", "spawn");
         return None;
     };
     if answer_now {

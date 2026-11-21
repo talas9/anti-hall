@@ -367,6 +367,10 @@ max = 65536
 doc = "Name (in the state directory) of the file the trace ring is written to when a hard limit trips; each dump replaces the previous one."
 value = "trace-dump.jsonl"
 
+[diagnostics.marker_counter_kind]
+doc = "The journal kind under which the client's marker writes (#905) are counted: per marker (down, slow) and reason (down: no_socket, no_process, no_lock_holder, spawn, unchecked; slow: failed, hung, slow_streak). The counter report shows them under client_markers."
+value = "client_marker"
+
 [diagnostics.advisory_counter_kind]
 doc = "The journal kind under which the advisory counters (flagged, asked, confirmed, injected, suppressed, jev_error per advisory kind) are kept in the shared counter journal."
 value = "advisory"
