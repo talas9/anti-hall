@@ -52,21 +52,30 @@ fn spawn_span(lines: &[String], at: usize) -> &[String] {
 /// An `env_clear()`ed child has no inherited plugin root (cargo's pinned `AH_ENGINE_PLUGIN_ROOT` is cleared with the rest), so its own
 /// statement must name one. A helper that builds the base environment for a later `Command` (`base_env`) counts when the file as a
 /// whole passes the root on every call path, which this scan cannot see: such a file names it next to its `env_clear()` in the helper.
+/// Files whose cleared children run no real engine, so there is no plugin root to resolve (each with its reason).
+const CLEARED_NO_ENGINE: [(&str, &str); 1] =
+    [("monitor_engine_only.rs", "runs the monitor command under /bin/sh with a stub engine script; the real engine never starts")];
+
 #[test]
 fn every_cleared_environment_names_its_plugin_root() {
     let mut bad = Vec::new();
     for (path, lines) in tests() {
+        if CLEARED_NO_ENGINE.iter().any(|(f, _)| path.file_name().is_some_and(|n| n == *f)) {
+            continue;
+        }
         for (i, line) in lines.iter().enumerate() {
             if line.contains(".env_clear()") || line.trim_start().starts_with("c.env_clear") {
-                let span = spawn_span(&lines, i);
-                let to = (i + 40).min(lines.len());
-                if !span.iter().chain(lines[i..to].iter()).any(|l| NAMES_ROOT.iter().any(|n| l.contains(n))) {
+                // only this statement's own span: a forward window would let a neighbouring spawn's root cover a site that has none
+                if !spawn_span(&lines, i).iter().any(|l| NAMES_ROOT.iter().any(|n| l.contains(n))) {
                     bad.push(format!("{}:{}", path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap().display(), i + 1));
                 }
             }
         }
     }
     assert!(bad.is_empty(), "env_clear() with no plugin root (pass crate::common::plugin_root() as AH_ENGINE_PLUGIN_ROOT): {bad:#?}");
+    for (f, why) in CLEARED_NO_ENGINE {
+        assert!(!why.is_empty() && tests().iter().any(|(p, _)| p.file_name().is_some_and(|n| n == f)), "stale exemption {f}");
+    }
 }
 
 /// Reading `$HOME` in a test to build a path is reading the real home. The files below are the known, justified cases; a new one
