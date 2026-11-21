@@ -6,7 +6,7 @@
 //!
 //! - `AH_TEST_TIME_SCALE=<n>` wins when set (CI sets it); a value below 1 is 1.
 //! - otherwise the factor is `ceil(load1 / (cores * load_per_core))`, 1 when the machine is quiet.
-//! - never above `max`.
+//! - never above `max` (on an unoptimised build, `max` times `debug_factor`: the build factor applies after the clamp).
 //! - a build without optimisations (`cfg!(debug_assertions)`, plain `cargo test`) runs the same product code several times slower
 //!   (a cold daemon start 0.3 s optimised, 0.8 to 1.5 s unoptimised), so the factor is multiplied by `debug_factor`; the wall-clock
 //!   bounds are the optimised build's contract (`test.sh` runs them on an optimised profile), and the factor is 1 there.

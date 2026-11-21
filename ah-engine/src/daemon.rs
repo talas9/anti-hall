@@ -158,6 +158,9 @@ pub struct Shared {
     /// per worker: 0 = idle, else (ms since `started`) + 1 at its last progress on the current request (picked up, a check
     /// started or finished, the interpreter ran: [`crate::deadline::beat`]); the watchdog's stuck rule measures from it
     busy_since: Vec<Arc<AtomicU64>>,
+    /// A rules/config reload the accept loop asked for is running on its own thread ([`reload_off_loop`]); the loop asks for no other
+    /// until it ends.
+    reloading: Arc<AtomicBool>,
     stall_ms: AtomicU64,
     test_thread_panics: AtomicU64,
     /// CPU and memory against their budgets (`diagnostics.budget_*`), updated by the watchdog.
@@ -241,6 +244,7 @@ impl Shared {
             loop_beat: AtomicU64::new(0),
             loop_ended: AtomicBool::new(false),
             busy_since: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
+            reloading: Arc::new(AtomicBool::new(false)),
             stall_ms: AtomicU64::new(0),
             test_thread_panics: AtomicU64::new(0),
             budget: Mutex::new(crate::budget::State::default()),
@@ -1840,6 +1844,32 @@ fn worker(sh: Arc<Shared>, idx: usize) {
 /// every new daemon would give up on the lock). A forced drain (stall, stuck worker, memory cap) is cut off after
 /// `daemon.drain_grace_ms`; any other drain (handoff, stop, idle, SIGTERM) after `daemon.drain_max_ms`. A forced drain
 /// that follows a clean one arms the shorter timer too.
+/// Reload the rules and the config on a thread of its own, never on the accept loop (#908): a reload re-reads every defaults file
+/// (about 0.13 s optimised, 0.75 s unoptimised, more on a loaded machine), and while the loop ran it no connection was accepted or
+/// acknowledged and no worker was busy, so a client read the idle heartbeat as a daemon not working on its request and held a risky
+/// call as load. `ctl reload` already runs the same two calls on a worker, beside the loop and the other workers. A thread that cannot
+/// be started reloads here, as before.
+fn reload_off_loop(sh: &Arc<Shared>) {
+    struct Done(Arc<AtomicBool>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0.store(false, SeqCst); // also after a panic, so a failed reload never stops the next one
+        }
+    }
+    sh.reloading.store(true, SeqCst);
+    let job = Arc::clone(sh);
+    let spawned = std::thread::Builder::new().name("ah-reload".into()).spawn(move || {
+        let _done = Done(Arc::clone(&job.reloading));
+        job.reload();
+        job.reload_config();
+    });
+    if spawned.is_err() {
+        let _done = Done(Arc::clone(&sh.reloading));
+        sh.reload();
+        sh.reload_config();
+    }
+}
+
 fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     let first = !sh.draining.swap(true, SeqCst);
     if first {
@@ -2803,8 +2833,8 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         if draining && !got_any && lk(&sh.queue).is_empty() && sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) {
             return; // queue drained, nothing in flight
         }
-        // every ~200 ms: SIGHUP or a rules-file change
-        if !draining && last_check.elapsed() >= defaults::millis("daemon.rules_check_ms") {
+        // every ~200 ms: SIGHUP or a rules-file change (not while a reload it asked for still runs: the signal stays pending)
+        if !draining && !sh.reloading.load(SeqCst) && last_check.elapsed() >= defaults::millis("daemon.rules_check_ms") {
             last_check = Instant::now();
             // the rules file can move with the plugin (an update installs a new root) or appear as a user override
             let wanted = paths::rules_file();
@@ -2814,8 +2844,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             }
             let now = crate::layers::host_fingerprint(&wanted, defaults::env_var("rules").is_some());
             if moved || HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
-                sh.reload();
-                sh.reload_config();
+                reload_off_loop(sh);
             }
         }
         // config files (D18): a settled change is validated and swapped in without a restart
