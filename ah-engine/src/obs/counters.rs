@@ -305,6 +305,13 @@ pub fn advisory(kind: &str, metric: &str) {
     note(defaults::text("diagnostics.advisory_counter_kind"), kind, metric, Val { n: 1, ..Val::default() });
 }
 
+/// #905: count one client marker write (`marker`: `down` or `slow`) and the reason it was written (no socket, no process, a failed
+/// spawn; a failed exchange or a hung daemon whose process is there; a slow streak). The report keeps them under `client_markers`.
+pub fn marker(marker: &str, reason: &str) {
+    trace::push("client_marker", &format!("{marker}.{reason}"), "", 0);
+    note(defaults::text("diagnostics.marker_counter_kind"), marker, reason, Val { n: 1, ..Val::default() });
+}
+
 /// Count one run of the duty or stage `name` of `kind` (`duty` or `stage`) with its outcome, CPU and wall time.
 pub fn account(kind: &'static str, name: &str, outcome: Outcome, cpu_us: u64, wall_us: u64) {
     trace::push(kind, name, outcome.name(), wall_us);
@@ -334,7 +341,14 @@ pub fn report(f: &Folded) -> Value {
     let mut sites: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
     let mut acct: BTreeMap<&str, BTreeMap<&str, Map<String, Value>>> = BTreeMap::new();
     let mut adv: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
+    let mut markers: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
     for ((kind, name, outcome), v) in &f.rows {
+        if kind == defaults::text("diagnostics.marker_counter_kind") {
+            let e = markers.entry(name).or_default();
+            let cur = e.get(outcome.as_str()).and_then(Value::as_u64).unwrap_or(0);
+            e.insert(outcome.clone(), json!(cur + v.n));
+            continue;
+        }
         if kind == defaults::text("diagnostics.advisory_counter_kind") {
             let e = adv.entry(name).or_default();
             let cur = e.get(outcome.as_str()).and_then(Value::as_u64).unwrap_or(0);
@@ -367,6 +381,7 @@ pub fn report(f: &Folded) -> Value {
         "node_handback": hb,
         "accounting": acct,
         "advisory": adv,
+        "client_markers": markers,
         "counters": {"dropped": f.dropped, "soft_hits": f.soft_hits, "malformed": f.malformed},
     })
 }
@@ -437,6 +452,17 @@ mod tests {
         assert_eq!(r["accounting"]["duty"]["reconcile"]["calls"], 2);
         assert_eq!(r["accounting"]["duty"]["reconcile"]["error"], 1);
         assert_eq!(r["accounting"]["duty"]["reconcile"]["held"], 0);
+    }
+
+    /// #905: each client marker write is counted per marker and reason, and the report shows them under `client_markers`.
+    #[test]
+    fn client_marker_writes_are_reported_per_marker_and_reason() {
+        let k = defaults::text("diagnostics.marker_counter_kind");
+        let line = format!("{k}\tslow\thung\t1\t0\t0\n{k}\tslow\thung\t1\t0\t0\n{k}\tdown\tno_process\t1\t0\t0\n");
+        let r = report(&fold(&line, 99, 99, "other"));
+        assert_eq!(r["client_markers"]["slow"]["hung"], 2);
+        assert_eq!(r["client_markers"]["down"]["no_process"], 1);
+        assert!(r["accounting"].get(k).is_none(), "marker counts are not duty accounting");
     }
 
     /// An abandoned decision leaves one event-log line with its site and reason, and a flood of the same one stays one line.
