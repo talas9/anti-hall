@@ -22,6 +22,19 @@ function idOneLine(s, max) {
   return o;
 }
 
+// The id TaskStop takes for a teammate: its spawn result's idle_order.spawn_id_field (teammate_id, `name@session-xxxx`); a bare name
+// and the internal agent_id are answered "No task found".
+var idStopIds = {};
+function idStopId(name) { return typeof idStopIds[name] === 'string' && idStopIds[name] !== '' ? idStopIds[name] : name; }
+// The teammate a stop's (or a "No task found" answer's) id names: the name whose TaskStop id it is, else the part before the last
+// idle_sweep.stop_id_sep of a `name@session-xxxx` id (its spawn is outside the window), else the id itself (a bare name).
+function idStopName(id) {
+  var names = Object.keys(idStopIds);
+  for (var i = 0; i < names.length; i++) if (idStopIds[names[i]] === id) return names[i];
+  var at = id.lastIndexOf(ah.cfg('idle_sweep.stop_id_sep'));
+  return at > 0 ? id.slice(0, at) : id;
+}
+
 function idMessage(list, codex, now) {
   var words = ah.cfg(codex ? 'idle_sweep.words_codex' : 'idle_sweep.words_claude'), maxNamed = ah.cfgNum('idle_sweep.max_named'), labelMax = ah.cfgNum('idle_sweep.label_max');
   var shown = list.slice(0, maxNamed).map(function (a) {
@@ -29,7 +42,7 @@ function idMessage(list, codex, now) {
   });
   var more = list.length > maxNamed ? text.render(ah.cfg('idle_sweep.more'), { m: list.length - maxNamed }) : '';
   var n = list.length, be = ah.cfg(n === 1 ? 'idle_sweep.be_one' : 'idle_sweep.be_many');
-  var call = text.render(ah.cfg(codex ? 'idle_sweep.call_codex' : 'idle_sweep.call_claude'), { id: list[0].id });
+  var call = text.render(ah.cfg(codex ? 'idle_sweep.call_codex' : 'idle_sweep.call_claude'), { id: list[0].id, stop_id: idStopId(list[0].id) });
   return text.message('order', ah.cfg('idle_sweep.guard_name'), {
     what: text.render(ah.cfg('idle_sweep.what'), { n: n, be: be, past: words.past, shown: shown.join(', '), more: more }),
     why: text.render(ah.cfg('idle_sweep.why'), { why_head: words.why_head, past: words.past }),
@@ -83,14 +96,18 @@ function idWaiting(tp, now, finished) {
       var rec = null;
       try { rec = JSON.parse(raw); } catch (z) { rec = null; }
       var res = rec && typeof rec === 'object' ? rec[resultField] : null;
-      if (res && typeof res === 'object' && res.status === spawnTag && typeof res[nameField] === 'string') delete ended[res[nameField]];
+      if (res && typeof res === 'object' && res.status === spawnTag && typeof res[nameField] === 'string') {
+        delete ended[res[nameField]];
+        var sid = res[ah.cfg('idle_order.spawn_id_field')];
+        if (typeof sid === 'string' && sid !== '') idStopIds[res[nameField]] = sid;
+      }
     }
     var gone = goneRe.exec(raw);
-    if (gone && typeof gone[1] === 'string') { ended[gone[1]] = true; delete state[gone[1]]; }
+    if (gone && typeof gone[1] === 'string') { var gn = idStopName(gone[1]); ended[gn] = true; delete state[gn]; }
     if (stopRe.test(raw)) {
       // the teammate a stop names (task_id), seen or not yet idle
       var stopped = taskIdRe.exec(raw);
-      if (stopped) { ended[stopped[1]] = true; delete state[stopped[1]]; }
+      if (stopped) { var sn = idStopName(stopped[1]); ended[sn] = true; delete state[sn]; }
     }
     // a message to a stopped teammate resumes it: it may idle (and be listed) again
     if (retaskRe.test(raw) && !stopRe.test(raw)) Object.keys(ended).forEach(function (n) { if (raw.indexOf('"' + n + '"') >= 0) delete ended[n]; });
@@ -135,7 +152,7 @@ function idOrder(p, tp, agents, codex, now) {
   var plans = [], texts = [];
   var plan = idleOrder.plan(kind, p.session_id, cands, now, keep);
   plans.push(plan);
-  if (plan.due.length > 0) texts.push(text.render(ah.cfg('idle_order.msg_teammate'), { n: plan.due.length, list: idleOrder.list(plan.due, 'idle_order.item_mate'), id: plan.due[0].id }));
+  if (plan.due.length > 0) texts.push(text.render(ah.cfg('idle_order.msg_teammate'), { n: plan.due.length, list: idleOrder.list(plan.due, 'idle_order.item_mate'), id: plan.due[0].id, stop_id: idStopId(plan.due[0].id) }));
   // teammates that said they wait on background work and went quiet: check them, with the same owner check and a live-row check
   var waitKind = ah.cfg('idle_order.kind_waiting'), waiting = idWaiting(tp, now, agents.map(function (a) { return a.id; })), wc = [], wk = [];
   if (waiting.length > 0) {
@@ -150,7 +167,7 @@ function idOrder(p, tp, agents, codex, now) {
   }
   var wplan = idleOrder.plan(waitKind, p.session_id, wc, now, wk);
   plans.push(wplan);
-  if (wplan.due.length > 0) texts.push(text.render(ah.cfg('idle_order.msg_waiting'), { n: wplan.due.length, list: idleOrder.list(wplan.due, 'idle_order.item_mate'), id: wplan.due[0].id }));
+  if (wplan.due.length > 0) texts.push(text.render(ah.cfg('idle_order.msg_waiting'), { n: wplan.due.length, list: idleOrder.list(wplan.due, 'idle_order.item_mate'), id: wplan.due[0].id, stop_id: idStopId(wplan.due[0].id) }));
   // GH #764: agents that are idle past the threshold while they still own an open task: the coordinator is ordered to resume or reassign it
   var openKind = ah.cfg('idle_order.kind_open_task'), oplan = idleOrder.plan(openKind, p.session_id, oc, now, []);
   plans.push(oplan);
@@ -177,6 +194,8 @@ function idAdvisory(p, now) {
     found = ah.transcript.teammates(tp, ah.cfgNum('idle_sweep.scan_bytes'));
     if (found === null) return '';
     if (found.unsure) { ah.unable('idle-agent-sweep:teammates_scan_unsure'); return ''; }
+    idStopIds = {};
+    found.teammates.forEach(function (f) { if (typeof f.stopId === 'string') idStopIds[f.name] = f.stopId; });
     agents = found.teammates.map(function (f) { return { id: f.name, label: f.name, idleSinceMs: f.idleSinceMs }; });
   }
   // An agent idle past the stale bound is long gone (its stop may have failed as "No task found"), not idle: it drops out.

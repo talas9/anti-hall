@@ -3396,9 +3396,15 @@ mod claim_evidence_guard {
         assert_eq!(m.counter("claim_evidence_tool_ok", &[("claim", "shipped")]), 1, "the pass is counted");
         assert!(blocked(&run("ce-art-err", "Artifact", publish.clone(), "Published nothing, failed", true)).is_some(), "an errored result backs nothing");
         assert!(blocked(&run("ce-art-read", "Artifact", json!({"action": "read"}), "Version 2 of the page", false)).is_some(), "a read result is no publish");
-        assert!(blocked(&run("ce-bash-published", "Bash", json!({"command": "echo Published ok"}), "Published ok", false)).is_some(), "another tool's text never counts");
+        assert!(
+            blocked(&run("ce-bash-published", "Bash", json!({"command": "echo Published ok"}), "Published ok", false)).is_some(),
+            "another tool's text never counts"
+        );
         assert_eq!(run("ce-mcp-deploy", "mcp__host__deploy_site", json!({}), "{\"status\": \"deployed\"}", false), ALLOW);
-        assert!(blocked(&run("ce-mcp-list", "mcp__host__list_sites", json!({}), "{\"status\": \"deployed\"}", false)).is_some(), "a listing tool is no deploy tool");
+        assert!(
+            blocked(&run("ce-mcp-list", "mcp__host__list_sites", json!({}), "{\"status\": \"deployed\"}", false)).is_some(),
+            "a listing tool is no deploy tool"
+        );
     }
 
     /// A task notification (or other injected user text) between a check and the reply is no new turn: the check still counts.
@@ -4277,7 +4283,11 @@ mod afk_mode {
         }
         // a cron tick (the host scheduler's turn, whatever its text) is not the owner either
         let tick = "check the deploy and report";
-        std::fs::write(format!("{h}/t.jsonl"), json!({"type": "user", "turnOrigin": "scheduled", "message": {"role": "user", "content": tick}}).to_string() + "\n").unwrap();
+        std::fs::write(
+            format!("{h}/t.jsonl"),
+            json!({"type": "user", "turnOrigin": "scheduled", "message": {"role": "user", "content": tick}}).to_string() + "\n",
+        )
+        .unwrap();
         run(&h, "UserPromptSubmit", json!({"prompt": tick}), &[]);
         assert!(denied(&h), "a scheduled turn is no presence");
         std::fs::remove_file(format!("{h}/t.jsonl")).unwrap();
@@ -4296,7 +4306,11 @@ mod afk_mode {
         // the window passed: blocked again
         let (now, sess) = (crate::checks::taskkit::time::now_ms(), format!("{h}/.anti-hall/afk-sess-s1.json"));
         let old = now - 11 * 60_000;
-        std::fs::write(format!("{h}/.anti-hall/afk.json"), json!({"on": true, "how": "prompt", "since": old - 5000, "epoch": "e", "counted": true}).to_string()).unwrap();
+        std::fs::write(
+            format!("{h}/.anti-hall/afk.json"),
+            json!({"on": true, "how": "prompt", "since": old - 5000, "epoch": "e", "counted": true}).to_string(),
+        )
+        .unwrap();
         std::fs::write(&sess, json!({"epoch": "e", "present": old}).to_string()).unwrap();
         assert!(denied(&h), "an owner prompt older than the window no longer counts");
         // the machine-wide presence alone (a prompt in any session) is no presence in this one
@@ -5031,6 +5045,29 @@ mod inline_rule_counters {
         let body = json!({"v": 1, "version": "t", "firstTs": now - 60_000, "ts": ts, "armed": true, "calls": n, "work": n, "blocks": 0, "lastBlockAt": 0, "skippedWouldBlock": 0, "pre": []});
         std::fs::create_dir_all(format!("{h}/.anti-hall")).unwrap();
         std::fs::write(format!("{h}/.anti-hall/coordinator-work-session-{sid}.json"), body.to_string()).unwrap();
+    }
+
+    /// Ignored-rules 5/6: the mesh commands the engine's own messages prescribe (`ackCommand`, `agents nudge`) quote the binary path; they
+    /// are bookkeeping, not work, so they never count toward the window - unlike a commit, which the same full window stops.
+    #[test]
+    fn a_quoted_engine_path_mesh_or_nudge_call_is_bookkeeping_and_not_counted_in_the_window() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let at = defaults::raw("coordinator_work.block_setting").get("default").and_then(|v| v.as_integer()).unwrap() as usize;
+        for (cmd, stopped) in [
+            ("'/Users/x/.anti-hall/ah-engine/bin/ah-engine' mesh inbox ack-primary 03db --receipt r1", false),
+            ("\"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents nudge abc other why", false),
+            ("~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat 03db --summary x", false),
+            ("git commit --allow-empty -m x", true),
+        ] {
+            let h = home("ir-quoted");
+            let proj = project(&h);
+            seed_window(&h, "sw", at - 1);
+            drained();
+            let v = run_forced("coordinator-work-guard", &bash(&proj, "sw", cmd), &env_of(&h, false));
+            let blocked = matches!(v, Some(Some(Verdict::Exact(_))));
+            assert_eq!(blocked, stopped, "{cmd}: {v:?}");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
     }
 
     #[test]

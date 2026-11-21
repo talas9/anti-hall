@@ -306,8 +306,8 @@ doc = "Advisory advice; {verb} close or stop, {call} the exact call for the firs
 value = "{verb} each finished agent you will not reuse."
 
 [idle_sweep.call_claude]
-doc = "The call that stops a Claude teammate; {id} is its name."
-value = 'TaskStop {"task_id":"{id}"}'
+doc = "The call that stops a Claude teammate; {id} is its name, {stop_id} the id TaskStop takes (the spawn result's idle_order.spawn_id_field, teammate_id `name@session-xxxx`; a bare name is answered No task found, ignored-rules audit 2026-11-20)."
+value = 'TaskStop {"task_id":"{stop_id}"}'
 
 [idle_sweep.call_codex]
 doc = "The call that closes a Codex agent; {id} is its id."
@@ -338,6 +338,10 @@ value = '[\x00-\x1F\x7F-\x9F]'
 [idle_sweep.prefilter]
 doc = "A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms)."
 value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\""]
+
+[idle_sweep.stop_id_sep]
+doc = "The separator of a teammate's TaskStop id (`name@session-xxxx`): in the waiting-teammate scan, a stop (or No task found answer) whose id matches no spawn in the window still names the teammate before the last separator."
+value = "@"
 
 [idle_sweep.task_stop_marks]
 doc = "How a TaskStop call appears in a transcript line."
@@ -658,8 +662,8 @@ doc = "The order for idle child workspaces with no open task and no unread mail.
 value = "⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Ask each to report, give it new work, or archive it: `{cli} archive-request {id}`."
 
 [idle_order.msg_teammate]
-doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name."
-value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{id}\"}`) or give it new work."
+doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it."
+value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{stop_id}\"}`) or give it new work."
 
 [idle_order.kind_workspace]
 doc = "The kind label of a child workspace in the idle-order counter."
@@ -717,9 +721,13 @@ value = "toolUseResult"
 doc = "The field of that answer that names the spawned teammate; the answer's status is idle_sweep.spawned_status."
 value = "name"
 
+[idle_order.spawn_id_field]
+doc = "The field of that answer that holds the id TaskStop takes for the spawned teammate: teammate_id (`name@session-xxxx`). Not agent_id: that is the internal `a<name>-<hex>` id, and it and the bare name are both answered No task found (PR #893 review, CC 2.1.294 to 2.1.329). Kept for the {stop_id} of the orders, and a stop naming it counts as that teammate's stop."
+value = "teammate_id"
+
 [idle_order.msg_waiting]
-doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name. It asserts nothing about the job; it orders the check."
-value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {list}. Check that the work is running; if not, resume it now (`SendMessage {\"to\":\"{id}\"}`) or stop it (`TaskStop {\"task_id\":\"{id}\"}`)."
+doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it. It asserts nothing about the job; it orders the check."
+value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {list}. Check that the work is running; if not, resume it now (`SendMessage {\"to\":\"{id}\"}`) or stop it (`TaskStop {\"task_id\":\"{stop_id}\"}`)."
 
 [idle_order.kind_waiting]
 doc = "The kind label of a teammate waiting on background work in the idle-order counter."

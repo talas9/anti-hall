@@ -1527,6 +1527,10 @@ value = "verify the handover and record the result."
 doc = "One-line description of the tasklist-hygiene check in the generated reference."
 value = "Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
+[tasklist_hygiene.skip_subagent]
+doc = "true: a subagent's task call (its payload carries a coordinator_work.agent_markers field) marked done gets no delete order and no done tip: a subagent's list is the spawner's, and its order to delete a task it may not edit was ignored by design (ignored-rules audit 2026-11-20). Only those two are skipped: the taskListEnforce = block refusal, the budget line and the deleted count still apply."
+value = true
+
 [tasklist_hygiene.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
 value = "tasklist-hygiene"
@@ -1558,6 +1562,10 @@ value = "Write the ledger entry yourself (Write or Edit tool, no heredoc). Ledge
 [tasklist_hygiene.event_nudge]
 doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."
 value = "nudge"
+
+[tasklist_hygiene.event_subagent_skipped]
+doc = "Counter event: the check stayed silent on a task call of a subagent (tasklist_hygiene.skip_subagent), so its order to delete a task it may not edit was not sent."
+value = "subagent_skipped"
 
 [tasklist_hygiene.event_deleted]
 doc = "Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge)."

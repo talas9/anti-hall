@@ -23,10 +23,13 @@ use std::collections::HashSet;
 /// A teammate that finished its work and was not stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finished {
-    /// The teammate's name (what TaskStop takes).
+    /// The teammate's name (the label; TaskStop takes `stop_id`).
     pub name: String,
     /// When its last turn ended, in milliseconds since the epoch.
     pub idle_since_ms: f64,
+    /// The id TaskStop takes: the spawn result's `idle_order.spawn_id_field` (`teammate_id`, `name@session-xxxx`; the bare name and
+    /// the internal `agent_id` are answered "No task found"). Empty when the spawn result carried none.
+    pub stop_id: String,
 }
 
 struct Res {
@@ -81,7 +84,10 @@ struct Ev {
 }
 
 struct Info {
+    /// The spawn result's internal `agent_id` (`a<name>-<hex>`).
     agent_id: String,
+    /// The spawn result's `idle_order.spawn_id_field` (`teammate_id`, `name@session-xxxx`): the id TaskStop takes.
+    stop_id: String,
 }
 
 /// One content block of a user entry, as the Node walk reads it.
@@ -419,7 +425,13 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
             && sc.answers(str_of(tr, "tool_use_id"), "idle_sweep.launch_tools")
         {
             sc.event(name, Kind::Spawn, ts, seq, "");
-            sc.team_info.set(name, Info { agent_id: str_of(tur, "agent_id").unwrap_or("").to_string() });
+            sc.team_info.set(
+                name,
+                Info {
+                    agent_id: str_of(tur, "agent_id").unwrap_or("").to_string(),
+                    stop_id: str_of(tur, defaults::text("idle_order.spawn_id_field")).unwrap_or("").to_string(),
+                },
+            );
         }
         // Walk each content block, or the single non-array content itself.
         let blocks: Vec<Blk<'_>> = match content {
@@ -485,7 +497,15 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
         if tuid.as_ref().is_some_and(|t| sc.errored.contains(t) && !sc.gone.contains(t)) {
             continue;
         }
-        let named: Vec<String> = sc.team_info.items.iter().filter(|(_, info)| info.agent_id == id).map(|(n, _)| n.clone()).collect();
+        // Every id form a stop may carry: the spawn's internal agent_id, its TaskStop id (`name@session-xxxx`), or the bare name (below).
+        // A teammate whose spawn is outside the window is never listed (its idle reports are only read for a spawned name).
+        let named: Vec<String> = sc
+            .team_info
+            .items
+            .iter()
+            .filter(|(_, info)| info.agent_id == id || (!info.stop_id.is_empty() && info.stop_id == id))
+            .map(|(n, _)| n.clone())
+            .collect();
         for name in named {
             if !sc.team_events.has(&id) {
                 sc.event(&name, Kind::Stop, sts, sseq, "");
@@ -540,7 +560,11 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
             }
         }
         if state == State::Idle && r.finished_reason.is_match(&last_reason) && last_idle.is_finite() && !background.contains(name) {
-            finished.push(Finished { name: name.clone(), idle_since_ms: last_idle });
+            finished.push(Finished {
+                name: name.clone(),
+                idle_since_ms: last_idle,
+                stop_id: sc.team_info.items.iter().find(|(n, _)| n == name).map(|(_, i)| i.stop_id.clone()).unwrap_or_default(),
+            });
         }
     }
     Ok(finished)
