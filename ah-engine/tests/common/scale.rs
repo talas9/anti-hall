@@ -7,6 +7,9 @@
 //! - `AH_TEST_TIME_SCALE=<n>` wins when set (CI sets it); a value below 1 is 1.
 //! - otherwise the factor is `ceil(load1 / (cores * load_per_core))`, 1 when the machine is quiet.
 //! - never above `max`.
+//! - a build without optimisations (`cfg!(debug_assertions)`, plain `cargo test`) runs the same product code several times slower
+//!   (a cold daemon start 0.3 s optimised, 0.8 to 1.5 s unoptimised), so the factor is multiplied by `debug_factor`; the wall-clock
+//!   bounds are the optimised build's contract (`test.sh` runs them on an optimised profile), and the factor is 1 there.
 //!
 //! `load_per_core` and `max` live in `tests/budgets.toml`, `[time_scale]` (local tooling thresholds, not engine settings).
 //! On a quiet machine the factor is 1, so a bound is exactly as strict as written; only an upper bound is scaled, never a
@@ -29,18 +32,19 @@ pub fn time_scale() -> u64 {
         let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budgets.toml")).unwrap();
         let cfg: toml::Value = toml::from_str(&text).unwrap();
         let max = num(&cfg, "max").max(1.0) as u64;
+        let build = if cfg!(debug_assertions) { num(&cfg, "debug_factor").max(1.0) as u64 } else { 1 };
         if let Some(n) = std::env::var("AH_TEST_TIME_SCALE").ok().and_then(|v| v.trim().parse::<u64>().ok()) {
-            return n.clamp(1, max);
+            return n.clamp(1, max) * build;
         }
         let mut load = [0f64; 3];
         // SAFETY: `getloadavg` writes at most 3 doubles into the array it is given, which has room for 3.
         let got = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
         if got < 1 {
-            return 1;
+            return build;
         }
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
         let per_core = num(&cfg, "load_per_core").max(0.01);
-        ((load[0] / (cores * per_core)).ceil() as u64).clamp(1, max)
+        ((load[0] / (cores * per_core)).ceil() as u64).clamp(1, max) * build
     })
 }
 
