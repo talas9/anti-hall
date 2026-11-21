@@ -591,6 +591,7 @@ impl L {
         texts.extend(norm.iter().flat_map(|n| n.extra.iter().map(String::as_str)));
         let (mut raw_only_hit, mut via_norm) = (false, false);
         let mut rule = None;
+        let mut via: Option<Ctr> = None; // #920: the class the hold falls in beyond its rule (counted)
         if listed {
             for (name, pat) in rules {
                 let Some(pat) = pat.as_str() else { continue };
@@ -604,6 +605,15 @@ impl L {
                         if let Some(at) = texts.iter().position(|t| re.is_match(t.as_bytes())) {
                             via_norm = at > 0 && !re.is_match(command.as_bytes());
                             rule = Some(name.clone());
+                            if cfg
+                                .get("inline_rules")
+                                .and_then(|v| v.as_array())
+                                .is_some_and(|a| {
+                                    a.iter().any(|r| r.as_str() == Some(name.as_str()))
+                                })
+                            {
+                                via = Some(Ctr::CapacityInlineCode);
+                            }
                             break;
                         }
                         raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped)
@@ -627,6 +637,40 @@ impl L {
                 via_norm = true;
                 rule = Some(r.to_string());
             }
+            // #920: a gh subcommand no list knows (a gh alias), a script run by path, a command name no list knows that is no binary
+            // on PATH (a shell alias or function defined earlier in the session), as the engine's dispatch::capacity_decide
+            if rule.is_none()
+                && let (Some(n), Some(nc)) = (&norm, &ncfg)
+            {
+                if n.gh_unknown.is_some() && !nc.gh_rule.is_empty() {
+                    rule = Some(nc.gh_rule.clone());
+                    via = Some(Ctr::CapacityGhUnknown);
+                } else if let Some((r, c)) = self.capacity_script(cfg, &p, n, nc, rules) {
+                    rule = Some(r);
+                    via = Some(c);
+                } else if let Some(u) = cfg.get("unknown")
+                    && let Some(r) = u
+                        .get("rule")
+                        .and_then(|v| v.as_str())
+                        .filter(|r| !r.is_empty())
+                {
+                    let lookup = u.get("path_lookup").and_then(|v| v.as_integer()) != Some(0);
+                    let path = std::env::var_os(
+                        u.get("path_env")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default(),
+                    );
+                    if n.unknown_cmds
+                        .iter()
+                        .any(|c| !(lookup && shellwords::on_path(c, path.as_deref())))
+                    {
+                        rule = Some(r.to_string());
+                        via = Some(Ctr::CapacityUnknownCommand);
+                        via_norm = true;
+                    }
+                }
+                via_norm |= via.is_some();
+            }
         }
         if listed
             && rule.is_none()
@@ -649,6 +693,9 @@ impl L {
         if via_norm {
             limits::bump(Ctr::CapacityHoldNormalised);
         }
+        if let Some(c) = via {
+            limits::bump(c);
+        }
         limits::bump(Ctr::CapacityHold);
         self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
         let msg = self.s.msg(
@@ -657,6 +704,132 @@ impl L {
         );
         write_out(b"", format!("{msg}\n").as_bytes());
         true
+    }
+
+    /// #920: the scripts a command runs by path (at most `script.max_refs` read in all), read when at most `script.max_bytes` and
+    /// matched by the same rules (read the way the shell does, comments gone), and the scripts each runs in turn (`script.depth`
+    /// levels), from the payload's cwd and each directory the command `cd`s to: the rule (`script.rule_prefix` + the rule) and its
+    /// counter. A text script within `script.scan_bytes` is matched as written by `script.scan_rules`; a bigger, binary or unreadable
+    /// one is held under `script.rule_unread` only when the command matches `script.risky`. As the engine's
+    /// dispatch::capacity_script.
+    fn capacity_script(
+        &self,
+        cfg: &toml::Value,
+        payload: &serde_json::Value,
+        n: &shellwords::Normalised,
+        ncfg: &shellwords::Cfg,
+        rules: &toml::value::Table,
+    ) -> Option<(String, Ctr)> {
+        let sc = cfg.get("script")?;
+        let int = |k: &str| {
+            sc.get(k)
+                .and_then(|v| v.as_integer())
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or_default()
+        };
+        let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+        let skip: Vec<&str> = sc
+            .get("body_skip")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let scan_rules: Vec<&str> = sc
+            .get("scan_rules")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let home = Some(text("home_env"))
+            .filter(|k| !k.is_empty())
+            .and_then(std::env::var_os);
+        let dirs = shellwords::dirs(
+            payload.get(text("cwd_field")).and_then(|v| v.as_str()),
+            &n.cds,
+            home.as_deref(),
+        );
+        let compile = |pat: &str| {
+            regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .ok()
+        };
+        let held = |name: &str| {
+            Some((
+                format!("{}{name}", text("rule_prefix")),
+                Ctr::CapacityScriptRead,
+            ))
+        };
+        let mut unread = false;
+        let mut seen: Vec<String> = Vec::new();
+        let mut queue: std::collections::VecDeque<(String, usize)> =
+            n.scripts.iter().map(|p| (p.clone(), 0)).collect();
+        while let Some((path, depth)) = queue.pop_front() {
+            if seen.contains(&path) {
+                continue;
+            }
+            if seen.len() >= int("max_refs") {
+                break;
+            }
+            seen.push(path.clone());
+            match shellwords::read_script(
+                &path,
+                &dirs,
+                home.as_deref(),
+                int("max_bytes"),
+                int("scan_bytes"),
+            ) {
+                shellwords::Script::Text(body) => {
+                    let norm = shellwords::normalise(&body, ncfg);
+                    let texts: Vec<&str> = match &norm {
+                        Some(nb) => std::iter::once(nb.text.as_str())
+                            .chain(nb.extra.iter().map(String::as_str))
+                            .collect(),
+                        None => vec![body.as_str()],
+                    };
+                    // a rule for what no reading can tell (`$cmd`) holds nearly every real script
+                    for (name, pat) in rules
+                        .iter()
+                        .filter(|(name, _)| !skip.contains(&name.as_str()))
+                    {
+                        if pat
+                            .as_str()
+                            .and_then(compile)
+                            .is_some_and(|re| texts.iter().any(|t| re.is_match(t.as_bytes())))
+                        {
+                            return held(name);
+                        }
+                    }
+                    // the scripts this one runs (`source ./lib.sh`, `sh other.sh`)
+                    if depth < int("depth") {
+                        queue.extend(
+                            norm.iter().flat_map(|nb| {
+                                nb.scripts.iter().map(move |p| (p.clone(), depth + 1))
+                            }),
+                        );
+                    }
+                }
+                shellwords::Script::Large(body) => {
+                    for (name, pat) in rules
+                        .iter()
+                        .filter(|(name, _)| scan_rules.contains(&name.as_str()))
+                    {
+                        if pat
+                            .as_str()
+                            .and_then(compile)
+                            .is_some_and(|re| re.is_match(body.as_bytes()))
+                        {
+                            return held(name);
+                        }
+                    }
+                }
+                shellwords::Script::Unread => unread = true,
+                shellwords::Script::Skip => {}
+            }
+        }
+        let rule = text("rule_unread");
+        let risky = compile(text("risky")).filter(|_| !text("risky").is_empty());
+        (unread && !rule.is_empty() && risky.is_some_and(|re| re.is_match(n.text.as_bytes())))
+            .then(|| (rule.to_string(), Ctr::CapacityScriptUnread))
     }
 
     /// #907: the word lists of the shell-word normaliser from `dispatch.capacity_hold` (`normalise` 0 switches it off: the raw text
@@ -695,6 +868,19 @@ impl L {
             passes: count("passes"),
             brace_cap: count("brace_cap"),
             body_depth: count("body_depth"),
+            gh_rule: one(cfg.get("gh").and_then(|g| g.get("rule"))),
+            gh_known: strs(cfg.get("gh").and_then(|g| g.get("known"))),
+            gh_opts_with_arg: strs(cfg.get("gh").and_then(|g| g.get("opts_with_arg"))),
+            unknown_known: if one(cfg.get("unknown").and_then(|u| u.get("rule"))).is_empty() {
+                Vec::new()
+            } else {
+                strs(cfg.get("unknown").and_then(|u| u.get("known")))
+            },
+            script_interps: strs(cfg.get("script").and_then(|s| s.get("interpreters"))),
+            script_inline_flags: strs(cfg.get("script").and_then(|s| s.get("inline_flags"))),
+            cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
+            cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
+            cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
         })
     }
 

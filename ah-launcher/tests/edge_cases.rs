@@ -150,14 +150,18 @@ fn the_capacity_hold_corpus_is_held_and_passed_by_the_launcher_too() {
     let p = engine(&env, "echo should-not-run");
     std::fs::create_dir_all(&env.state).unwrap();
     std::fs::write(env.state.join("daemon.slow.until"), until.to_string()).unwrap();
+    const FIX: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../ah-engine/tests/fixtures/capacity_scripts"
+    );
     let (mut held, mut passed) = (0, 0);
     for (i, line) in include_str!("../../ah-engine/tests/fixtures/capacity_hold_corpus.txt")
         .lines()
         .enumerate()
     {
         let (want, cmd) = match line.split_once(' ') {
-            Some(("H", c)) => (2, c.replace("\\n", "\n")),
-            Some(("P", c)) => (0, c.replace("\\n", "\n")),
+            Some(("H", c)) => (2, c.replace("\\n", "\n").replace("{fix}", FIX)),
+            Some(("P", c)) => (0, c.replace("\\n", "\n").replace("{fix}", FIX)),
             _ => continue,
         };
         let payload = serde_json::json!({"session_id": format!("s-{i}"), "tool_name": "Bash", "tool_input": {"command": cmd}});
@@ -167,7 +171,7 @@ fn the_capacity_hold_corpus_is_held_and_passed_by_the_launcher_too() {
         if want == 2 { held += 1 } else { passed += 1 }
     }
     assert!(
-        held >= 35 && passed >= 11,
+        held >= 185 && passed >= 87,
         "corpus read: {held} held, {passed} pass"
     );
 }
