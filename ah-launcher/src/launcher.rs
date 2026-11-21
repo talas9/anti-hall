@@ -575,6 +575,11 @@ impl L {
         let norm = ncfg
             .as_ref()
             .and_then(|c| shellwords::normalise(command, c));
+        if let Some(n) = norm.as_ref().filter(|n| n.opt_skips > 0) {
+            for _ in 0..n.opt_skips {
+                limits::bump(Ctr::CapacityWrapperOpt);
+            }
+        }
         // #901/#904: a plain read that only names the words passes (read_only, minus read_only_unless), as
         // dispatch::capacity_read_only; a broken or empty exemption exempts nothing
         if listed
@@ -645,24 +650,54 @@ impl L {
                 if n.gh_unknown.is_some() && !nc.gh_rule.is_empty() {
                     rule = Some(nc.gh_rule.clone());
                     via = Some(Ctr::CapacityGhUnknown);
-                } else if let Some((r, c)) = self.capacity_script(cfg, &p, n, nc, rules) {
-                    rule = Some(r);
-                    via = Some(c);
-                } else if let Some(u) = cfg.get("unknown")
-                    && let Some(r) = u
-                        .get("rule")
-                        .and_then(|v| v.as_str())
-                        .filter(|r| !r.is_empty())
-                {
-                    let lookup = u.get("path_lookup").and_then(|v| v.as_integer()) != Some(0);
+                } else {
+                    // #920: a command name no list knows that is no binary on PATH (a shell alias or function). #928: a tool only in a
+                    // project-local tool directory inside the repo is known, and (#929 review) its file is read as a script run by path is
+                    let u = cfg.get("unknown");
+                    let lookup = u
+                        .and_then(|u| u.get("path_lookup"))
+                        .and_then(|v| v.as_integer())
+                        != Some(0);
                     let path = std::env::var_os(
-                        u.get("path_env")
+                        u.and_then(|u| u.get("path_env"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_default(),
                     );
-                    if n.unknown_cmds
-                        .iter()
-                        .any(|c| !(lookup && shellwords::on_path(c, path.as_deref())))
+                    let dirs = shellwords::dirs(
+                        p.get(
+                            cfg.get("script")
+                                .and_then(|s| s.get("cwd_field"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default(),
+                        )
+                        .and_then(|v| v.as_str()),
+                        &n.cds,
+                        None,
+                    );
+                    let mut local: Vec<String> = Vec::new();
+                    let mut unresolved = false;
+                    for c in &n.unknown_cmds {
+                        if lookup && shellwords::on_path(c, path.as_deref()) {
+                            continue;
+                        }
+                        match shellwords::local_tool(c, &dirs, &nc.local_dirs, &nc.repo_marker)
+                            .filter(|_| lookup)
+                        {
+                            Some(lp) => {
+                                limits::bump(Ctr::CapacityLocalTool);
+                                local.push(lp.to_string_lossy().into_owned());
+                            }
+                            None => unresolved = true,
+                        }
+                    }
+                    if let Some((r, c)) = self.capacity_script(cfg, &p, n, nc, rules, &local) {
+                        rule = Some(r);
+                        via = Some(c);
+                    } else if unresolved
+                        && let Some(r) = u
+                            .and_then(|u| u.get("rule"))
+                            .and_then(|v| v.as_str())
+                            .filter(|r| !r.is_empty())
                     {
                         rule = Some(r.to_string());
                         via = Some(Ctr::CapacityUnknownCommand);
@@ -719,6 +754,7 @@ impl L {
         n: &shellwords::Normalised,
         ncfg: &shellwords::Cfg,
         rules: &toml::value::Table,
+        local: &[String],
     ) -> Option<(String, Ctr)> {
         let sc = cfg.get("script")?;
         let int = |k: &str| {
@@ -730,6 +766,11 @@ impl L {
         let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
         let skip: Vec<&str> = sc
             .get("body_skip")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let raw_rules: Vec<&str> = sc
+            .get("raw_rules")
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
             .unwrap_or_default();
@@ -759,10 +800,20 @@ impl L {
                 Ctr::CapacityScriptRead,
             ))
         };
+        // #928: the trusted-scripts list: (repo-relative path glob, sha256 of the file's content)
+        let trusted: Vec<(&str, &str)> = sc
+            .get("trusted")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| Some((e.get("path")?.as_str()?, e.get("sha256")?.as_str()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut unread = false;
         let mut seen: Vec<String> = Vec::new();
         let mut queue: std::collections::VecDeque<(String, usize)> =
-            n.scripts.iter().map(|p| (p.clone(), 0)).collect();
+            n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect();
         while let Some((path, depth)) = queue.pop_front() {
             if seen.contains(&path) {
                 continue;
@@ -771,6 +822,30 @@ impl L {
                 break;
             }
             seen.push(path.clone());
+            // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's)
+            // is not matched; any edit changes the hash and the script is checked like any other
+            if !trusted.is_empty()
+                && let Some((rel, bytes)) = shellwords::script_identity(
+                    &path,
+                    &dirs,
+                    home.as_deref(),
+                    int("trusted_max_bytes"),
+                    &ncfg.repo_marker,
+                )
+            {
+                use sha2::{Digest, Sha256};
+                let sha: String = Sha256::digest(&bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                if trusted
+                    .iter()
+                    .any(|(g, h)| shellwords::glob_match(g, &rel) && h.eq_ignore_ascii_case(&sha))
+                {
+                    limits::bump(Ctr::CapacityTrustedScript);
+                    continue;
+                }
+            }
             match shellwords::read_script(
                 &path,
                 &dirs,
@@ -795,6 +870,19 @@ impl L {
                             .as_str()
                             .and_then(compile)
                             .is_some_and(|re| texts.iter().any(|t| re.is_match(t.as_bytes())))
+                        {
+                            return held(name);
+                        }
+                    }
+                    // #928: a rule that reads quotes is matched on the script as written too
+                    for (name, pat) in rules
+                        .iter()
+                        .filter(|(name, _)| raw_rules.contains(&name.as_str()))
+                    {
+                        if pat
+                            .as_str()
+                            .and_then(compile)
+                            .is_some_and(|re| re.is_match(body.as_bytes()))
                         {
                             return held(name);
                         }
@@ -881,6 +969,28 @@ impl L {
             cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
             cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
             cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
+            local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
+            repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
+            wrapper_opts: cfg
+                .get("script")
+                .and_then(|s| s.get("wrapper_opts"))
+                .and_then(|t| t.as_table())
+                .map(|t| {
+                    t.iter()
+                        .map(|(k, v)| (k.to_string(), strs(Some(v))))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            wrapper_split_opts: cfg
+                .get("script")
+                .and_then(|s| s.get("wrapper_split_opts"))
+                .and_then(|t| t.as_table())
+                .map(|t| {
+                    t.iter()
+                        .map(|(k, v)| (k.to_string(), strs(Some(v))))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
