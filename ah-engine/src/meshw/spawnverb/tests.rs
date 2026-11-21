@@ -9,6 +9,10 @@ use std::cell::RefCell;
 struct Repo {
     exists: Vec<&'static str>,
     remote: i32,
+    /// What `ls-remote` prints (`<sha>\t<ref>` lines).
+    ls_out: String,
+    /// origin/HEAD resolves.
+    head_ok: bool,
     calls: RefCell<Vec<Vec<String>>>,
 }
 
@@ -17,9 +21,9 @@ impl Runner for Repo {
         self.calls.borrow_mut().push(spec.args.clone());
         let has = |w: &str| spec.args.iter().any(|a| a == w);
         let (status, stdout) = if has("symbolic-ref") {
-            (0, "refs/remotes/origin/main\n".to_string())
+            if self.head_ok { (0, "refs/remotes/origin/main\n".to_string()) } else { (1, String::new()) }
         } else if has("ls-remote") {
-            (self.remote, String::new())
+            (self.remote, self.ls_out.clone())
         } else if has("rev-parse") {
             let hit = spec
                 .args
@@ -52,7 +56,8 @@ fn run(configured: Option<&str>, rest: &[&str], repo: &Repo, extra_env: &[(&str,
 }
 
 fn repo(exists: Vec<&'static str>, remote: i32) -> Repo {
-    Repo { exists, remote, calls: RefCell::new(Vec::new()) }
+    let ls_out = if remote == 0 { "abc\trefs/heads/dev\n".to_string() } else { String::new() };
+    Repo { exists, remote, ls_out, head_ok: true, calls: RefCell::new(Vec::new()) }
 }
 
 fn str_at<'a>(v: &'a OVal, path: &[&str]) -> Option<&'a str> {
@@ -112,17 +117,62 @@ fn the_setting_turns_the_fallback_off() {
     assert!(out.get("sourceFallback").is_none(), "{}", out.stringify());
 }
 
-/// Every nothing-created outcome is unmistakable: ok:false, created:false, exit 2, and the error opens with the verdict and the
-/// exact retry command.
+/// The nothing-created answer: ok:false, created:false, exit 2, an error that opens with the verdict and a retry that is the exact command.
 #[test]
-fn a_failed_create_says_nothing_was_created_and_gives_the_retry() {
+fn the_nothing_created_answer_says_so_and_gives_the_retry() {
+    let ans = nothing_created(s("spawn"), "feat-x", &["-p", "go", "a b", "-s", "main"], "boom", OVal::Null, OVal::Null, None, None);
+    let out = OVal::parse(ans.stdout.trim()).unwrap();
+    assert_eq!(ans.code, 2);
+    assert_eq!(out.get("ok"), Some(&OVal::Bool(false)));
+    assert_eq!(out.get("created"), Some(&OVal::Bool(false)));
+    assert!(str_at(&out, &["error"]).unwrap_or_default().starts_with("NOTHING CREATED"), "{}", out.stringify());
+    assert_eq!(str_at(&out, &["retry"]), Some("ah-engine mesh spawn feat-x -p go 'a b' -s main"));
+}
+
+/// Only a CLI that exited with a non-zero code, no signal, no overflow and no timeout is proof that nothing was created.
+#[test]
+fn only_a_clean_nonzero_exit_proves_nothing_was_created() {
+    use crate::meshw::hivecontrol::{Call, Full};
+    let exited = |code: i32| Full { call: Call { ok: false, error: "exited".into(), ..Call::default() }, code: Some(code), ..Full::default() };
+    assert!(proved_nothing_created(&exited(1)));
+    assert!(!proved_nothing_created(&exited(0)), "an overflow after exit 0 proves nothing");
+    assert!(!proved_nothing_created(&Full { overflow: true, ..exited(1) }));
+    assert!(!proved_nothing_created(&Full { signal: Some(9), code: None, ..exited(1) }));
+    assert!(!proved_nothing_created(&Full { spawn_failed: Some(std::io::ErrorKind::NotFound), code: None, ..exited(1) }));
+    assert!(!proved_nothing_created(&Full { call: Call { timed_out: true, ..exited(1).call }, ..exited(1) }));
+}
+
+/// A create that failed without a proven non-zero exit (here: the CLI could not be started) keeps the old, non-claiming shape.
+#[test]
+fn a_failure_without_proof_does_not_claim_nothing_was_created() {
     let r = repo(vec![], 2);
     let (code, out) = run(Some("dev"), &["-p", "go"], &r, &[]);
     assert_eq!(code, 2);
     assert_eq!(out.get("ok"), Some(&OVal::Bool(false)));
+    assert!(out.get("created").is_none() && out.get("retry").is_none(), "{}", out.stringify());
+    assert!(!str_at(&out, &["error"]).unwrap_or_default().contains("NOTHING CREATED"));
+}
+
+/// A configured source that is absent while the default branch is unknown creates nothing: no base is guessed.
+#[test]
+fn an_absent_source_with_an_unknown_default_creates_nothing() {
+    let mut r = repo(vec![], 2);
+    r.head_ok = false;
+    let (code, out) = run(Some("dev"), &["-p", "go"], &r, &[]);
+    assert_eq!(code, 2);
     assert_eq!(out.get("created"), Some(&OVal::Bool(false)), "{}", out.stringify());
     let error = str_at(&out, &["error"]).unwrap_or_default();
-    assert!(error.starts_with("NOTHING CREATED"), "{error}");
-    assert!(error.contains("ah-engine mesh spawn feat-x -p go -s main"), "{error}");
-    assert_eq!(str_at(&out, &["retry"]), Some("ah-engine mesh spawn feat-x -p go -s main"));
+    assert!(error.starts_with("NOTHING CREATED") && error.contains("default branch is unknown"), "{error}");
+    assert_eq!(str_at(&out, &["retry"]), Some("ah-engine mesh spawn feat-x -p go -s <branch>"));
+    assert!(out.get("timings").and_then(|t| t.get("createMs")).is_none(), "no create was attempted: {}", out.stringify());
+    assert!(!r.calls.borrow().iter().any(|c| c.iter().any(|a| a == "fetch")));
+}
+
+/// `ls-remote` matches ref TAILS: a branch that only exists as `refs/heads/feature/refs/heads/dev` is not `dev`.
+#[test]
+fn a_tail_only_ls_remote_match_is_not_the_branch() {
+    let mut r = repo(vec![], 0);
+    r.ls_out = "abc\trefs/heads/feature/refs/heads/dev\n".to_string();
+    let (_, out) = run(Some("dev"), &["-p", "go"], &r, &[]);
+    assert_eq!(str_at(&out, &["sourceFallback", "used"]), Some("main"), "{}", out.stringify());
 }

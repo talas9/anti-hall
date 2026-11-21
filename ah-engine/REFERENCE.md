@@ -12323,6 +12323,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_err_add_failed` | `worktree add failed` |  |  | The repair error when git gave no text. |
 | `devswarm_cli.sp_err_branch_elsewhere` | `branch {branch} is checked out in another worktree` |  |  | The repair error when the branch is checked out in another worktree. {branch}. |
 | `devswarm_cli.sp_err_pinned_missing` | `pinned commit {sha} is missing from the local submodule clone and could not b...` |  |  | The repair error when the pinned commit cannot be fetched. {sha} {error}. |
+| `devswarm_cli.sp_error_no_default` | `configured source "{configured}" does not exist here and the default branch i...` |  |  | The cause of a spawn that created nothing because the configured source does not exist and the repository default branch is unknown (origin/HEAD unset), so no safe base exists. {configured}. |
 | `devswarm_cli.sp_evidence` | `heartbeat, registry-session, registry-inbox, descriptor` |  |  | The launch evidence names: a fresh heartbeat, the child's session in the registry, its inbox in the registry, its descriptor file. |
 | `devswarm_cli.sp_fail_already_exists` | `already exists` |  |  | The error of a submodule worktree whose path was not empty. |
 | `devswarm_cli.sp_fail_echo_path_re` | `git worktree add\s+(?:-b\s+\S+\s+)?(\S+)` |  |  | The path of an echoed `git worktree add` (group 1). |
@@ -12334,7 +12335,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_fail_lookback` | `600` |  |  | How many characters before a fatal line are searched for the command it belongs to. |
 | `devswarm_cli.sp_fail_worktree_word_re` | `\bworktree\b` |  |  | A mention of a worktree in the create output. |
 | `devswarm_cli.sp_fallback_message` | `configured source "{configured}" does not exist here, used {used}` |  |  | The result's line when the configured source does not exist and the default branch stands in. {configured} {used}. |
-| `devswarm_cli.sp_fallback_message_unknown_default` | `configured source "{configured}" does not exist here, used DevSwarm's default...` |  |  | The result's line when the configured source does not exist and the default branch is unknown (origin/HEAD unset), so DevSwarm's own default applies. {configured}. |
 | `devswarm_cli.sp_fallback_source` | `main` |  |  | The source branch hivecontrol uses when nothing else names one. |
 | `devswarm_cli.sp_fetch_failed_texts` | `fetch failed, fetch of commit failed, commit not found on origin` |  |  | The errors of a submodule fetch that gave no text: the plain fetch, the fetch of the commit, nothing found. |
 | `devswarm_cli.sp_fetch_ran` | `ran` |  |  | The fetch decision when the fetch ran. |
@@ -12409,6 +12409,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_repair_timeout_ms` | `60000` |  |  | Timeout of one git command of the submodule worktree repair. |
 | `devswarm_cli.sp_result_paths` | `workspace, path, worktreePath` |  |  | The fields of the create answer that may hold the new worktree path, at the top level or under the nested object named first. |
 | `devswarm_cli.sp_retry_prefix` | `ah-engine mesh spawn` |  |  | The command a retry starts with (the branch and the arguments the spawn ran with follow). |
+| `devswarm_cli.sp_retry_source_placeholder` | `<branch>` |  |  | The placeholder a retry command shows where the person must name the source branch. |
 | `devswarm_cli.sp_scope_re` | `^\s*scope\s*:\s*(.+)$` |  |  | The `scope:` line of a brief (multi-line, case-insensitive; group 1: the globs). |
 | `devswarm_cli.sp_secret_like_re` | `^\.env\|\.pem$\|^credentials` |  |  | File names that look like secrets in a leftover aside directory (case-insensitive). |
 | `devswarm_cli.sp_secret_warning` | `A leftover directory {leftover} holds secret-like file(s) ({names}) in the wo...` |  |  | The warning about secret-like files left in an aside directory. {leftover} {names}. |

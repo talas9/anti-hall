@@ -3639,9 +3639,13 @@ value = 2
 doc = "The result's line when the configured source does not exist and the default branch stands in. {configured} {used}."
 value = "configured source \"{configured}\" does not exist here, used {used}"
 
-[devswarm_cli.sp_fallback_message_unknown_default]
-doc = "The result's line when the configured source does not exist and the default branch is unknown (origin/HEAD unset), so DevSwarm's own default applies. {configured}."
-value = "configured source \"{configured}\" does not exist here, used DevSwarm's default source"
+[devswarm_cli.sp_error_no_default]
+doc = "The cause of a spawn that created nothing because the configured source does not exist and the repository default branch is unknown (origin/HEAD unset), so no safe base exists. {configured}."
+value = "configured source \"{configured}\" does not exist here and the default branch is unknown (origin/HEAD is not set); no base was guessed. Pass -s <branch> explicitly or fix devswarm.spawnSource"
+
+[devswarm_cli.sp_retry_source_placeholder]
+doc = "The placeholder a retry command shows where the person must name the source branch."
+value = "<branch>"
 
 [devswarm_cli.sp_nothing_created]
 doc = "The first words of the error of a spawn that created nothing. {error} (the cause) {retry} (the exact command to run again once the cause is fixed)."
