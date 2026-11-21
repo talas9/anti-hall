@@ -2455,6 +2455,36 @@ fn a_live_daemon_that_fails_every_exchange_holds_risky_calls_only_for_load_hold_
     assert_eq!(breaker, 0, "an open breaker whose hold run is past the cap passes a force push: {log}");
 }
 
+/// #905 review: the hold cap counts a continuous run of holds only. A hold run that ended long ago (an idle gap past
+/// client.load_hold_gap_ms) never lets the next failed exchange with a live daemon pass a force push: a new run starts and it is held.
+#[test]
+fn an_old_hold_run_after_an_idle_gap_never_lets_a_force_push_through() {
+    use std::os::fd::AsRawFd;
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("holdgap", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+    let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(e.eng().join("e.sock.lock")).unwrap();
+    // SAFETY: `lock` is an open file owned by this scope; `flock` takes only its descriptor and a flag.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    std::fs::write(e.eng().join("e.sock.lock"), stand_in.id().to_string()).unwrap();
+    fake_server(&e, || Some(b"{\"decision\":\"allow\"}".to_vec())); // a reply that is no frame: a failed exchange
+    let old = ah_engine::health::now_ms().saturating_sub(600_000); // a hold run ten minutes ago, nothing since
+    let stamp = e.eng().join(ah_engine::defaults::text("files.load_hold_since"));
+    std::fs::write(&stamp, old.to_string()).unwrap(); // a run start alone: its last hold is the start
+    let (_, code, _) = e.wrapper_hook(DENY_IN);
+    let (down, slow) = (e.fresh_down_marker(), e.fresh_slow_marker());
+    let run = std::fs::read_to_string(&stamp).unwrap_or_default();
+    ah_engine::discard::harmless(stand_in.kill());
+    ah_engine::discard::harmless(stand_in.wait());
+    drop(lock);
+    let log = e.health_log();
+    assert_eq!(code, 2, "an old hold run never lets a force push through: {log}");
+    assert!(slow && !down, "a new hold run: slow marker, never down (down={down} slow={slow}): {log}");
+    let since = run.split_whitespace().next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    assert!(since > old, "a new hold run starts after the idle gap: {run:?}");
+}
+
 /// Codex P1 on the merge: in ack mode a daemon that acknowledged the request and then stopped beating must reach the hung path
 /// (fail fast, replacement), not wait out the slow window.
 #[test]

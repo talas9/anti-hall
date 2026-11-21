@@ -223,7 +223,7 @@ doc = "Client marker holding the count of consecutive slow (late) daemon replies
 value = "daemon.slow.streak"
 
 [files.load_hold_since]
-doc = "Client marker (#905): when the client first held risky calls for a daemon that is there but unusable (a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there). An OK reply or a new daemon removes it; once it is older than client.load_hold_max_ms the daemon is treated as down."
+doc = "Client marker (#905): the start of the current run of holds of risky calls for a daemon that is there but unusable (a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there) and the time of its last hold. An OK reply or a new daemon removes it; a gap longer than client.load_hold_gap_ms since the last hold starts a new run; a run longer than client.load_hold_max_ms treats the daemon as down."
 value = "daemon.loadhold.since"
 
 [files.heartbeat]
@@ -709,6 +709,12 @@ max = 1
 doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
 value = 300000
 env = "AH_ENGINE_LOAD_HOLD_MAX_MS"
+unit = "ms"
+
+[client.load_hold_gap_ms]
+doc = "#905: the longest gap between two holds of the same hold run (files.load_hold_since); a hold after a longer gap starts a new run, so an old run nothing answered after never lets the next risky call through when client.load_hold_max_ms is reached."
+value = 60000
+env = "AH_ENGINE_LOAD_HOLD_GAP_MS"
 unit = "ms"
 
 [client.slow_window_ms]

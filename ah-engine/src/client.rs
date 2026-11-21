@@ -608,15 +608,24 @@ fn breaker_daemon_there() -> bool {
 /// (`files.load_hold_since`, written by the first such hold, removed by an OK reply or a new daemon). Past
 /// `client.load_hold_max_ms` (0 = no cap) the daemon is treated as down, so a live but broken daemon (one that fails every exchange
 /// or is never replaced) cannot hold pushes forever: protective, not disruptive.
+/// The run is continuous: the file holds `<start> <last hold>`, every hold refreshes the last one, and a gap longer than
+/// `client.load_hold_gap_ms` since the last hold (an idle session, an old run nothing answered after) starts a new run, so a stale
+/// run never lets the next risky call through.
 fn load_hold_expired() -> bool {
-    let max = defaults::num("client.load_hold_max_ms");
     let p = state_file("load_hold_since");
-    let Some(since) = std::fs::read_to_string(&p).ok().and_then(|t| t.trim().parse::<u64>().ok()) else {
-        crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
-        crate::discard::logged("load_hold_since_write", crate::atomic::write(&p, health::now_ms().to_string()));
-        return false;
+    let now = health::now_ms();
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut nums = text.split_whitespace().map(|n| n.parse::<u64>().ok());
+    let since = nums.next().flatten();
+    let last = nums.next().flatten().or(since);
+    let since = match (since, last) {
+        (Some(s), Some(l)) if now.saturating_sub(l) <= defaults::num("client.load_hold_gap_ms") => s,
+        _ => now, // no run yet, an unreadable stamp, or the last hold too long ago: a new run
     };
-    max != 0 && health::now_ms().saturating_sub(since) > max
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
+    crate::discard::logged("load_hold_since_write", crate::atomic::write(&p, format!("{since} {now}")));
+    let max = defaults::num("client.load_hold_max_ms");
+    max != 0 && now.saturating_sub(since) > max
 }
 
 /// #905: the daemon could not be used (a failed exchange, a hung daemon; `alive` names which for the counter). It is marked down only
