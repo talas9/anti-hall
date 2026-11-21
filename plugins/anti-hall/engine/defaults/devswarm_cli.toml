@@ -4850,3 +4850,42 @@ value = "The app has no workspace row for {worktree} yet, so it is registered un
 [devswarm_cli.aa_only_note]
 doc = "Added to an archive answer when the workspace had no local descriptor and only the app was asked to archive it."
 value = "The workspace has no local descriptor (it never registered); the app was asked to archive it and nothing local changed."
+
+# ---- #876: archive safety and the archive-request answer ----
+
+[devswarm_cli.archive_work_guard]
+doc = "Whether `archive` (and the direct archive of `archive-request`) first checks the workspace's worktree and refuses when it holds uncommitted changes, commits no origin ref has, or a state git cannot read. Off lets an archive discard such work. A worktree that no longer exists is archived (nothing is lost). Respawn parks the work on a pushed branch first; its archive then refuses only a commit made after the park."
+value = true
+
+[devswarm_cli.act_unsafe_dirty]
+doc = "The unsaved-work part of an archive refusal: the tree has uncommitted changes."
+value = "uncommitted changes"
+
+[devswarm_cli.act_unsafe_unpushed]
+doc = "The unsaved-work part of an archive refusal: commits no origin ref has. Placeholder: {n}."
+value = "{n} unpushed commit(s)"
+
+[devswarm_cli.act_unsafe_unreadable]
+doc = "The unsaved-work part of an archive refusal: git could not say whether commits are unpushed."
+value = "an unpushed-commit count git could not read"
+
+[devswarm_cli.act_unsafe_after_park]
+doc = "The unsaved-work part of a respawn's archive refusal: the workspace committed after its work was parked, and no park branch holds that commit."
+value = "a commit made after the park (no park branch holds it)"
+
+[devswarm_cli.act_unsafe_unreadable_why]
+doc = "The whole unsaved-work part when git could not read the worktree at all. Placeholder: {why} git's reason."
+value = "a worktree git could not read ({why})"
+
+[devswarm_cli.act_unsafe_join]
+doc = "Separator between the parts of the unsaved work in an archive refusal."
+value = " and "
+
+[devswarm_cli.act_msg_unsafe_work]
+doc = "The archive refusal for a workspace with unsaved work. Placeholders: {id} the quoted workspace id, {what} the unsaved work, {wt} its worktree."
+value = "refused to archive {id}: {wt} holds {what}. Have it commit and push (and open the PR), or park the work, then archive again. Nothing was archived."
+
+[devswarm_cli.archive_request_needs]
+doc = "What an archive-request answer says it still needs: the request only posts a message, it archives nothing. Placeholder: {id} the workspace."
+value = "NOT archived yet: the child must confirm with its user and run `archive {id}`. A merged, idle child with nothing unpushed can be archived at once with `archive {id}`; the Primary is re-ordered about it until it is archived."
+
