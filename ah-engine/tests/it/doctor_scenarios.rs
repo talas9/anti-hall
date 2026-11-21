@@ -261,18 +261,9 @@ impl Sc {
     }
 }
 
-/// The built-in doctor of the thin client (`ah-hook --plugin-root <plugin> doctor --builtin`): AH_HOOK_BIN, else the release or debug
-/// build of `ah-launcher` in this checkout.
+/// The built-in doctor of the thin client (`ah-hook --plugin-root <plugin> doctor --builtin`): the launcher of `common::launcher_bin`.
 fn builtin_doctor(plugin: &Path) -> Command {
-    let bin = std::env::var_os("AH_HOOK_BIN")
-        .map(PathBuf::from)
-        .filter(|p| p.is_file())
-        .or_else(|| {
-            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
-            ["release", "debug"].iter().map(|b| root.join(b).join("ah-hook")).find(|p| p.is_file())
-        })
-        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN");
-    let mut c = Command::new(bin);
+    let mut c = Command::new(crate::common::launcher_bin());
     c.arg("--plugin-root").arg(plugin).arg("doctor").arg("--builtin").env("AH_WRAPPER_TEST", "1");
     c
 }

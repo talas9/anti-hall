@@ -15,16 +15,34 @@ pub fn plugin_root() -> std::path::PathBuf {
 
 /// The built thin client (`ah-launcher`, binary `ah-hook`): AH_HOOK_BIN, else its release or debug build in this checkout. The
 /// hook command of both hosts is this binary (the plugin ships no shell wrapper), so a test that drives "the hook" runs it.
+///
+/// #908: when none exists it is built here (`cargo build --release` in `ah-launcher/`, by the same cargo that runs the tests) instead of
+/// failing the dozen tests that drive the hook: a fresh clone has no launcher build, and those tests were red on it for that alone.
+/// Parallel tests and test processes wait on cargo's own build lock, so the build runs once. Only when the build itself fails does a
+/// test fail, with cargo's output in the message.
 pub fn launcher_bin() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("AH_HOOK_BIN").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return p;
     }
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
-    ["release", "debug"]
-        .iter()
-        .map(|b| root.join(b).join("ah-hook"))
-        .find(|p| p.is_file())
-        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN")
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher");
+    let found = || ["release", "debug"].iter().map(|b| dir.join("target").join(b).join("ah-hook")).find(|p| p.is_file());
+    if let Some(p) = found() {
+        return p;
+    }
+    static BUILT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = BUILT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = found() {
+        return p;
+    }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = std::process::Command::new(cargo)
+        .args(["build", "--release", "--quiet"])
+        .current_dir(&dir)
+        .output()
+        .unwrap_or_else(|e| panic!("no ah-hook binary and cargo could not start to build ah-launcher ({e}); set AH_HOOK_BIN"));
+    found().unwrap_or_else(|| {
+        panic!("no ah-hook binary: building ah-launcher failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr))
+    })
 }
 #[allow(unused_imports)] // each test binary uses a subset
 pub use scale::{scaled, scaled_ms, time_scale};
