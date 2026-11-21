@@ -579,11 +579,12 @@ impl L {
             return false;
         }
         // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
-        let texts: Vec<&str> = match &norm {
+        let mut texts: Vec<&str> = match &norm {
             Some(n) if n.stripped => vec![n.text.as_str()],
             Some(n) => vec![command, n.text.as_str()],
             None => vec![command],
         };
+        texts.extend(norm.iter().flat_map(|n| n.extra.iter().map(String::as_str)));
         let (mut raw_only_hit, mut via_norm) = (false, false);
         let mut rule = None;
         if listed {
@@ -597,8 +598,7 @@ impl L {
                 {
                     Ok(re) => {
                         if let Some(at) = texts.iter().position(|t| re.is_match(t.as_bytes())) {
-                            via_norm =
-                                texts.len() > 1 && at == 1 && !re.is_match(command.as_bytes());
+                            via_norm = at > 0 && !re.is_match(command.as_bytes());
                             rule = Some(name.clone());
                             break;
                         }
@@ -670,6 +670,11 @@ impl L {
             git_known: strs(git.and_then(|g| g.get("known"))),
             git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
             git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
+            passes: cfg
+                .get("passes")
+                .and_then(|v| v.as_integer())
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or_default(),
         })
     }
 

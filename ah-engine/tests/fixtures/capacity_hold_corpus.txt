@@ -147,3 +147,65 @@ P cat f | python3 -c 'print(1)'
 P cat f | node script.js
 P git log | python3 -m json.tool
 P ls | wc -l
+#
+# The security review of PR #918 (#907): what the shell does that a word list misses (a comment, a heredoc body, <( ), $"..",
+# \u/\U, brace lists, a command opened by ( { ! $( or a backtick, GIT on a case-insensitive file system, a nested shell's string,
+# an expansion as the command word, options before a gh action, wrapper option values before a shell)
+H $'\u0067it' push -f
+H $'\U00000067it' push -f
+H git${IFS}reset${IFS}--hard
+H {git,reset,--hard}
+H {rm,-rf,/x}
+H gh pr {merge,1}
+H git {reset,--hard}
+H bash -c 'g"i"t reset --hard'
+H eval "g\"i\"t reset --hard"
+H env -S 'git pf'
+H env -S 'g"i"t reset --hard'
+H git -c core.pager='sh -c "g\"i\"t pf"' log
+H $(printf gi)t push -f
+H g=git; $g push -f
+H $"git" pf
+H (git pf)
+H { git pf; }
+H if git pf; then :; fi
+H ! git pf
+H echo "$(git pf)"
+H x=$(git pf)
+H echo `git pf`
+H GIT pf
+H echo x #'\ngit push -f\n: #'
+H cat <<EOF\ngh pr view 1 -b '\nEOF\ngit push -f\ncat <<EOF\n'\nEOF
+H gh pr view 1 --body-file <(git push -f)
+H gh pr view 1 -t <(git pf)
+H gh pr -t x merge 1
+H gh pr -R o/r merge 1
+H gh pr view 1 -t x -b #'\ngit push -f\n: #'
+H bash <<'EOF'\ng"i"t reset --hard\nEOF
+H sh <<< 'g"i"t reset --hard'
+H echo Z2l0 | base64 -d | xargs -n 1 sh -c
+H cat f | sudo -u root sh
+H source <(echo 'g"i"t reset --hard')
+H eval "$(echo Z2l0IHB1c2g= | base64 -d)"
+H git pu\\nsh -f
+H cat <<EOF\n$(git pf)\nEOF
+#
+# #918 review reads that must still pass
+P gh pr view 1 -b "x\" ; gh pr merge 1"
+P echo hi # it's fine
+P grep -rn "git push -f" .
+P rg 'rm -rf' src
+P git log --grep "push --force"
+P echo "{a,b}"
+P cat <<'EOF' > notes.md\nsome text with a ' quote\nEOF
+P echo "$HOME"
+P find . -name "*.rs" | xargs grep -n foo
+P git status && git log -1
+P ls ${HOME}
+P for f in a b; do echo $f; done
+P echo $(git rev-parse HEAD)
+P echo "$(git status)"
+P x=$(git log -1 --format=%H)
+P gh issue view 1 --comments
+P gh pr list --search "fix tests"
+P awk '{print $1, $2}' f

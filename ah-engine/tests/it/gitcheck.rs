@@ -1877,6 +1877,13 @@ fn gh_text_values_are_data_not_commands() {
         format!("gh issue create --title t --body \"x\" ; {g} -f"),
         format!("gh pr create --title t --body \"a; x\" && {g} --force"),
         format!("gh issue create --title t --body \"$({g} -f)\""),
+        // the #918 review: a value that is a process substitution, a comment or a heredoc body hiding the next line, a backtick
+        format!("gh pr view 1 --body-file <({g} -f)"),
+        format!("gh issue create -t t -F <({g} -f)"),
+        format!("gh issue create -t t --body-file >({g} -f)"),
+        format!("gh issue create -t x -b #'\n{g} -f\n: #'"),
+        format!("cat <<EOF\ngh issue create -b '\nEOF\n{g} -f\ncat <<EOF\n'\nEOF"),
+        format!("gh issue create -t t --body \"`{g} -f`\""),
     ] {
         let (_, err, code) = e.hook(&blocked);
         assert_eq!(code, 2, "{blocked}: {err}");

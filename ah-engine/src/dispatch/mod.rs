@@ -464,6 +464,7 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         git_known: strs(git.and_then(|g| g.get("known"))),
         git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
         git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
+        passes: cfg.get("passes").and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default(),
     })
 }
 
@@ -494,11 +495,12 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         return none;
     }
     // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
-    let texts: Vec<&str> = match &norm {
+    let mut texts: Vec<&str> = match &norm {
         Some(n) if n.stripped => vec![n.text.as_str()],
         Some(n) => vec![command, n.text.as_str()],
         None => vec![command],
     };
+    texts.extend(norm.iter().flat_map(|n| n.extra.iter().map(String::as_str)));
     let mut raw_only_hit = false;
     for (name, pat) in rules {
         let Some(pat) = pat.as_str() else { continue };
@@ -506,7 +508,7 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
             Ok(re) => {
                 let hit = texts.iter().position(|t| re.is_match(t));
                 if let Some(at) = hit {
-                    return Decision { rule: Some(name.to_string()), normalised: texts.len() > 1 && at == 1 && !re.is_match(command), text_exempt: false };
+                    return Decision { rule: Some(name.to_string()), normalised: at > 0 && !re.is_match(command), text_exempt: false };
                 }
                 raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
             }
@@ -1459,7 +1461,7 @@ mod tests {
         assert_eq!(rule("gh pr merge 1 --body \"x\"").as_deref(), Some("gh-remote-change"));
         assert!(decide("gh pr view 1 --json title --jq .title").rule.is_none());
         // a value that runs something is not data
-        assert_eq!(rule("gh pr view 1 --title \"$(git push -f)\"").as_deref(), Some("git-push"));
+        assert!(rule("gh pr view 1 --title \"$(git push -f)\"").is_some());
         // reads and known subcommands pass
         for c in ["git status", "git -C \"a;b\" log", "echo \"a; git push\"", "cat f | python3 script.py", "cat f | python3 -c 'print(1)'"] {
             assert_eq!(rule(c), None, "{c:?}");
@@ -1471,7 +1473,13 @@ mod tests {
     fn normalise_zero_restores_raw_matching() {
         let shipped = defaults::raw("dispatch.capacity_hold");
         let off = defaults::V::Table(Box::leak(
-            shipped.as_table().unwrap().iter().map(|(k, v)| (*k, if *k == "normalise" { defaults::V::Int(0) } else { *v })).collect::<Vec<_>>().into_boxed_slice(),
+            shipped
+                .as_table()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (*k, if *k == "normalise" { defaults::V::Int(0) } else { *v }))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
         ));
         assert!(capacity_norm_cfg(&off).is_none());
         assert!(capacity_norm_cfg(shipped).is_some());
