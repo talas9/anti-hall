@@ -37,6 +37,10 @@ pub struct Cfg {
     pub git_wrappers: Vec<String>,
     /// How many times the joined words are read again (a string a nested shell runs is a command too); 0 = once only.
     pub passes: usize,
+    /// The most words one brace list expands to (0 = brace lists are not expanded).
+    pub brace_cap: usize,
+    /// How deep a heredoc body's substitutions are read as commands (0 = not at all).
+    pub body_depth: usize,
 }
 
 /// A command read the shell's way.
@@ -52,7 +56,9 @@ pub struct Normalised {
 }
 
 enum Tok {
-    Word(String, bool),
+    /// The word with quoted separators blanked, whether it can run something, and its value as the shell passes it on (quotes
+    /// removed, nothing blanked: what a nested shell would read).
+    Word(String, bool, String),
     Sep(&'static str),
     /// A heredoc body (its delimiter line kept) and whether it can run something (an unquoted delimiter and a substitution).
     Body(String, bool),
@@ -103,27 +109,167 @@ fn lit(out: &mut String, c: char) {
     out.push(if matches!(c, ';' | '&' | '|' | '\n' | '\r') { ' ' } else { c });
 }
 
-/// Splits `cmd` into words and unquoted separators. `None` when a quote is left open (the caller matches the raw text then). A word is
-/// "live" when it holds a substitution (`$(..)`, `${..}`, a backtick) outside single quotes: it can run something.
+/// A heredoc opening at `cs[i]` (`<<`, not the here-string `<<<`): its delimiter, `<<-` (leading tabs dropped), and whether the
+/// delimiter is quoted (the body then runs nothing).
+fn heredoc_at(cs: &[char], i: usize) -> Option<(String, bool, bool)> {
+    if cs.get(i) != Some(&'<') || cs.get(i + 1) != Some(&'<') || cs.get(i + 2) == Some(&'<') || (i > 0 && cs[i - 1] == '<') {
+        return None;
+    }
+    let mut j = i + 2;
+    let tabs = cs.get(j) == Some(&'-');
+    if tabs {
+        j += 1;
+    }
+    while matches!(cs.get(j), Some(' ' | '\t')) {
+        j += 1;
+    }
+    let (mut delim, mut quoted) = (String::new(), false);
+    while let Some(&d) = cs.get(j) {
+        if d.is_whitespace() || matches!(d, ';' | '|' | '&' | '<' | '>' | '(' | ')') {
+            break;
+        }
+        if matches!(d, '\'' | '"' | '\\') {
+            quoted = true;
+        } else {
+            delim.push(d);
+        }
+        j += 1;
+    }
+    (!delim.is_empty()).then_some((delim, tabs, quoted))
+}
+
+/// The bodies of the heredocs a line opened, read from `*i` (just past that line's newline) up to each delimiter line: each body
+/// (its delimiter line kept) and whether it can run something.
+fn heredoc_bodies(cs: &[char], i: &mut usize, opened: Vec<(String, bool, bool)>) -> Vec<(String, bool)> {
+    let n = cs.len();
+    let mut out = Vec::new();
+    for (delim, tabs, quoted) in opened {
+        let mut body = String::new();
+        while *i < n {
+            let end = cs[*i..].iter().position(|d| *d == '\n').map_or(n, |p| *i + p);
+            let line: String = cs[*i..end].iter().collect();
+            *i = (end + 1).min(n);
+            body.push_str(&line);
+            if (if tabs { line.trim_start_matches('\t') } else { line.as_str() }) == delim {
+                break;
+            }
+            body.push('\n');
+        }
+        let runs = !quoted && (body.contains("$(") || body.contains('`') || body.contains("${"));
+        out.push((body, runs));
+    }
+    out
+}
+
+/// Where a substitution that opens at `cs[i]` (`$(` or a backtick) ends: the index just past its closing `)` or backtick. Inside it
+/// a new quoting context starts, as in the shell (`"$(echo ")")"` is one word): quotes, escapes, nested parentheses, comments,
+/// arithmetic and heredoc bodies are skipped. `None` when it does not close.
+fn sub_end(cs: &[char], i: usize) -> Option<usize> {
+    if cs.get(i) == Some(&'`') {
+        let mut j = i + 1;
+        loop {
+            match *cs.get(j)? {
+                '\\' => j += 2,
+                '`' => return Some(j + 1),
+                _ => j += 1,
+            }
+        }
+    }
+    let (mut j, mut depth, mut arith) = (i + 2, 1usize, 0usize);
+    let mut pending: Vec<(String, bool, bool)> = Vec::new();
+    loop {
+        let c = *cs.get(j)?;
+        let start = j == i + 2 || matches!(cs[j - 1], ' ' | '\t' | '\n' | ';' | '|' | '&' | '(');
+        match c {
+            '\\' => j += 2,
+            '\'' => {
+                j += 1;
+                while *cs.get(j)? != '\'' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            '"' => {
+                j += 1;
+                loop {
+                    match *cs.get(j)? {
+                        '\\' => j += 2,
+                        '"' => break,
+                        '$' if cs.get(j + 1) == Some(&'(') => j = sub_end(cs, j)?,
+                        '`' => j = sub_end(cs, j)?,
+                        _ => j += 1,
+                    }
+                }
+                j += 1;
+            }
+            '`' => j = sub_end(cs, j)?,
+            '#' if start => {
+                while j < cs.len() && cs[j] != '\n' {
+                    j += 1;
+                }
+            }
+            '\n' => {
+                j += 1;
+                heredoc_bodies(cs, &mut j, std::mem::take(&mut pending));
+            }
+            '(' => {
+                if cs.get(j + 1) == Some(&'(') && (start || cs[j - 1] == '$') {
+                    arith += 1;
+                }
+                depth += 1;
+                j += 1;
+            }
+            ')' => {
+                if arith > 0 && cs.get(j + 1) == Some(&')') {
+                    arith -= 1;
+                }
+                depth -= 1;
+                j += 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            '<' if arith == 0 => {
+                if let Some(h) = heredoc_at(cs, j) {
+                    pending.push(h);
+                }
+                j += 1;
+            }
+            _ => j += 1,
+        }
+    }
+}
+
+/// Splits `cmd` into words and unquoted separators. `None` when a quote or a substitution is left open (the caller holds the call
+/// under `unreadable`). A word is "live" when it holds a substitution (`$(..)`, `${..}`, a backtick, `<(..)`, `>(..)`) outside single
+/// quotes: it can run something.
 #[allow(unused_assignments)] // the last flush! resets state nothing reads
-fn split(cmd: &str) -> Option<Vec<Tok>> {
+fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
     let cs: Vec<char> = cmd.chars().collect();
     let n = cs.len();
     let mut toks: Vec<Tok> = Vec::new();
-    let (mut cur, mut live, mut in_word, mut brace) = (String::new(), false, false, false);
-    // the heredocs opened on the current line: delimiter, `<<-` (leading tabs dropped), quoted (the body runs nothing)
+    // cur: the word with quoted separators blanked; raw: its value as the shell passes it on
+    let (mut cur, mut raw, mut live, mut in_word, mut brace) = (String::new(), String::new(), false, false, false);
     let mut pending: Vec<(String, bool, bool)> = Vec::new();
+    let mut arith = 0usize;
     let mut i = 0;
+    macro_rules! put {
+        ($c:expr) => {{
+            let c: char = $c;
+            lit(&mut cur, c);
+            raw.push(c);
+        }};
+    }
     macro_rules! flush {
         () => {
             if in_word {
-                let w = std::mem::take(&mut cur);
-                if brace {
-                    for w in braces(&w, 64) {
-                        toks.push(Tok::Word(w, live));
+                let (w, r) = (std::mem::take(&mut cur), std::mem::take(&mut raw));
+                if brace && cfg.brace_cap > 0 {
+                    for (k, w) in braces(&w, cfg.brace_cap).into_iter().enumerate() {
+                        toks.push(Tok::Word(w, live, if k == 0 { r.clone() } else { String::new() }));
                     }
                 } else {
-                    toks.push(Tok::Word(w, live));
+                    toks.push(Tok::Word(w, live, r));
                 }
                 live = false;
                 in_word = false;
@@ -155,7 +301,7 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                     Some('\n') => {}
                     Some(d) => {
                         in_word = true;
-                        lit(&mut cur, d);
+                        put!(d);
                     }
                     None => {}
                 }
@@ -170,7 +316,7 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                     if d == '\'' {
                         break;
                     }
-                    lit(&mut cur, d);
+                    put!(d);
                 }
             }
             '"' => {
@@ -178,28 +324,43 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                 i += 1;
                 loop {
                     let d = *cs.get(i)?;
-                    i += 1;
                     match d {
-                        '"' => break,
-                        '\\' => match cs.get(i).copied() {
-                            Some(e @ ('$' | '`' | '"' | '\\')) => {
-                                lit(&mut cur, e);
-                                i += 1;
+                        '"' => {
+                            i += 1;
+                            break;
+                        }
+                        '\\' => {
+                            i += 1;
+                            match cs.get(i).copied() {
+                                Some(e @ ('$' | '`' | '"' | '\\')) => {
+                                    put!(e);
+                                    i += 1;
+                                }
+                                Some('\n') => i += 1,
+                                _ => put!('\\'),
                             }
-                            Some('\n') => i += 1,
-                            _ => cur.push('\\'),
-                        },
-                        '`' => {
+                        }
+                        // a substitution opens a new quoting context: copied as written, up to its close
+                        '`' | '$' if d == '`' || cs.get(i + 1) == Some(&'(') => {
                             live = true;
-                            cur.push(d);
+                            let end = sub_end(&cs, i)?;
+                            for &e in &cs[i..end] {
+                                cur.push(e);
+                                raw.push(e);
+                            }
+                            i = end;
                         }
                         '$' => {
-                            if matches!(cs.get(i), Some('(' | '{')) {
+                            if cs.get(i + 1) == Some(&'{') {
                                 live = true;
                             }
-                            cur.push(d);
+                            put!(d);
+                            i += 1;
                         }
-                        _ => lit(&mut cur, d),
+                        _ => {
+                            put!(d);
+                            i += 1;
+                        }
                     }
                 }
             }
@@ -216,7 +377,9 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                             let e = *cs.get(i)?;
                             i += 1;
                             match e {
-                                'n' | 't' | 'r' => cur.push(' '),
+                                'n' => put!('\n'),
+                                't' => put!('\t'),
+                                'r' => put!('\r'),
                                 'u' | 'U' => {
                                     let (mut v, mut k) = (0u32, 0);
                                     while k < if e == 'u' { 4 } else { 8 } {
@@ -229,13 +392,13 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                                             None => break,
                                         }
                                     }
-                                    lit(&mut cur, char::from_u32(v).unwrap_or(' '));
+                                    put!(char::from_u32(v).unwrap_or(' '));
                                 }
                                 'x' | '0'..='7' => {
                                     let radix = if e == 'x' { 16 } else { 8 };
                                     let mut v = if e == 'x' { 0 } else { e.to_digit(8).unwrap_or(0) };
                                     let mut k = 0;
-                                    while k < if e == 'x' { 2 } else { 2 } {
+                                    while k < 2 {
                                         match cs.get(i).and_then(|h| h.to_digit(radix)) {
                                             Some(h) => {
                                                 v = v * radix + h;
@@ -245,12 +408,12 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                                             None => break,
                                         }
                                     }
-                                    lit(&mut cur, char::from_u32(v).unwrap_or(' '));
+                                    put!(char::from_u32(v).unwrap_or(' '));
                                 }
-                                other => lit(&mut cur, other),
+                                other => put!(other),
                             }
                         }
-                        _ => lit(&mut cur, d),
+                        _ => put!(d),
                     }
                 }
             }
@@ -259,27 +422,17 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                 toks.push(Tok::Sep(if c == ';' { ";" } else { "\n" }));
                 i += 1;
                 // the bodies of the heredocs this line opened: data up to each delimiter line
-                let opened = if c == '\n' { std::mem::take(&mut pending) } else { Vec::new() };
-                for (delim, tabs, quoted) in opened {
-                    let mut body = String::new();
-                    while i < n {
-                        let end = cs[i..].iter().position(|d| *d == '\n').map_or(n, |p| i + p);
-                        let line: String = cs[i..end].iter().collect();
-                        i = (end + 1).min(n);
-                        body.push_str(&line);
-                        if (if tabs { line.trim_start_matches('\t') } else { line.as_str() }) == delim {
-                            break;
-                        }
-                        body.push('\n');
+                if c == '\n' {
+                    for (body, runs) in heredoc_bodies(&cs, &mut i, std::mem::take(&mut pending)) {
+                        toks.push(Tok::Body(body, runs));
+                        toks.push(Tok::Sep("\n"));
                     }
-                    let runs = !quoted && (body.contains("$(") || body.contains('`') || body.contains("${"));
-                    toks.push(Tok::Body(body, runs));
-                    toks.push(Tok::Sep("\n"));
                 }
             }
             '|' => {
                 if i > 0 && cs[i - 1] == '>' && in_word {
                     cur.push('|');
+                    raw.push('|');
                     i += 1;
                 } else {
                     flush!();
@@ -307,6 +460,7 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                 } else if (i > 0 && matches!(cs[i - 1], '>' | '<') && in_word) || next == Some('>') {
                     in_word = true;
                     cur.push('&');
+                    raw.push('&');
                     i += 1;
                 } else {
                     flush!();
@@ -315,6 +469,12 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                 }
             }
             _ => {
+                // arithmetic ($(( )) or (( ))): its << is a shift, not a heredoc
+                if c == '(' && next == Some('(') && (!in_word || cur.ends_with('$')) {
+                    arith += 1;
+                } else if c == ')' && next == Some(')') && arith > 0 {
+                    arith -= 1;
+                }
                 in_word = true;
                 if c == '`' || (matches!(c, '$' | '<' | '>') && matches!(next, Some('(' | '{')) && (c == '$' || next == Some('('))) {
                     live = true;
@@ -322,33 +482,13 @@ fn split(cmd: &str) -> Option<Vec<Tok>> {
                 if c == '{' && (i == 0 || cs[i - 1] != '$') {
                     brace = true;
                 }
-                // a heredoc (not a here-string): its delimiter word, read ahead
-                if c == '<' && next == Some('<') && cs.get(i + 2) != Some(&'<') && (i == 0 || cs[i - 1] != '<') {
-                    let mut j = i + 2;
-                    let tabs = cs.get(j) == Some(&'-');
-                    if tabs {
-                        j += 1;
-                    }
-                    while matches!(cs.get(j), Some(' ' | '\t')) {
-                        j += 1;
-                    }
-                    let (mut delim, mut quoted) = (String::new(), false);
-                    while let Some(&d) = cs.get(j) {
-                        if d.is_whitespace() || matches!(d, ';' | '|' | '&' | '<' | '>' | '(' | ')') {
-                            break;
-                        }
-                        if matches!(d, '\'' | '"' | '\\') {
-                            quoted = true;
-                        } else {
-                            delim.push(d);
-                        }
-                        j += 1;
-                    }
-                    if !delim.is_empty() {
-                        pending.push((delim, tabs, quoted));
+                if arith == 0 {
+                    if let Some(h) = heredoc_at(&cs, i) {
+                        pending.push(h);
                     }
                 }
                 cur.push(c);
+                raw.push(c);
                 i += 1;
             }
         }
@@ -375,6 +515,17 @@ fn opener(word: &str) -> Option<(&str, bool)> {
     (opened || !is_assign(word)).then_some((w, opened))
 }
 
+/// The body of a word that is one whole substitution (`$(..)`, `<(..)`, `>(..)` or a backtick pair), else the word itself.
+fn unwrap_sub(w: &str) -> &str {
+    let mut cs = w.chars();
+    let inner = match (cs.next(), cs.next()) {
+        (Some('`'), _) => w[1..].strip_suffix('`'),
+        (Some('$' | '<' | '>'), Some('(')) => w[2..].strip_suffix(')'),
+        _ => None,
+    };
+    inner.unwrap_or(w)
+}
+
 /// Reads `cmd` the way the shell does. `None` when a quote is left open: the caller then matches the raw text only.
 pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
     let (mut n, mut nested) = once(cmd, cfg, 0)?;
@@ -384,8 +535,7 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
         let mut next = Vec::new();
         for w in nested.drain(..) {
             // a substitution's body is the command (`"$(git pf)"`)
-            let body =
-                ["$(", "<(", ">(", "`"].iter().find_map(|o| w.strip_prefix(o).and_then(|r| r.strip_suffix(if *o == "`" { "`" } else { ")" }))).unwrap_or(&w);
+            let body = unwrap_sub(&w);
             let Some((m, more)) = once(body, cfg, 1) else { continue };
             if n.git_unknown.is_none() {
                 n.git_unknown = m.git_unknown;
@@ -404,18 +554,18 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
 
 /// One reading of `cmd`, and its words that hold a space (read again by [`normalise`]).
 fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)> {
-    let toks = split(cmd)?;
+    let toks = split(cmd, cfg)?;
     let (mut text, mut stripped, mut git_unknown, mut extra) = (String::new(), false, None, Vec::new());
     let mut nested: Vec<String> = Vec::new();
-    let mut group: Vec<(String, bool)> = Vec::new();
-    let emit = |group: &mut Vec<(String, bool)>, text: &mut String, stripped: &mut bool, git_unknown: &mut Option<String>, nested: &mut Vec<String>| {
+    let mut group: Vec<(String, bool, String)> = Vec::new();
+    let emit = |group: &mut Vec<(String, bool, String)>, text: &mut String, stripped: &mut bool, git_unknown: &mut Option<String>, nested: &mut Vec<String>| {
         if group.is_empty() {
             return;
         }
         // gh <pr|issue|release> ...: the value words of the text options are data
         if !cfg.text_verb.is_empty() {
-            if let Some(v) = group.iter().position(|(w, _)| base(w) == cfg.text_verb) {
-                let sub = group[v + 1..].iter().map(|(w, _)| w.as_str()).find(|w| cfg.text_subs.iter().any(|s| s == w) || *w == "api");
+            if let Some(v) = group.iter().position(|(w, ..)| base(w) == cfg.text_verb) {
+                let sub = group[v + 1..].iter().map(|(w, ..)| w.as_str()).find(|w| cfg.text_subs.iter().any(|s| s == w) || *w == "api");
                 if sub.is_some_and(|s| s != "api") {
                     let mut k = v + 1;
                     while k < group.len() {
@@ -449,7 +599,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
                 if !base(w).eq_ignore_ascii_case("git") {
                     continue;
                 }
-                let at_command = opened || group[..j].iter().all(|(w, _)| is_assign(w)) || group[..j].iter().any(|(w, _)| wrapper(w));
+                let at_command = opened || group[..j].iter().all(|(w, ..)| is_assign(w)) || group[..j].iter().any(|(w, ..)| wrapper(w));
                 if !at_command {
                     continue;
                 }
@@ -472,12 +622,13 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
                 }
             }
         }
-        for (w, _) in group.iter() {
+        for (w, _, r) in group.iter() {
             if w.is_empty() {
                 continue;
             }
-            if w.contains(char::is_whitespace) {
-                nested.push(w.clone());
+            // what a nested shell would read: the value as passed on, its quoted newlines and separators intact
+            if r.contains(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|')) {
+                nested.push(r.clone());
             }
             if !text.is_empty() && !text.ends_with(['\n', ' ']) {
                 text.push(' ');
@@ -488,12 +639,12 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
     };
     for t in toks {
         match t {
-            Tok::Word(w, live) => group.push((w, live)),
+            Tok::Word(w, live, r) => group.push((w, live, r)),
             Tok::Body(b, runs) => {
                 emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested);
                 // the body is data (matched as written); what it substitutes runs, so that is read as a command, once as written
                 // and once with its quotes and comment marks blanked (they are literal in a body, so they hide nothing there)
-                if runs && depth < 2 {
+                if runs && depth < cfg.body_depth {
                     let plain: String = b.chars().map(|c| if matches!(c, '\'' | '"' | '#') { ' ' } else { c }).collect();
                     for (m, more) in [once(&b, cfg, depth + 1), once(&plain, cfg, depth + 1)].into_iter().flatten() {
                         if git_unknown.is_none() {
@@ -537,6 +688,8 @@ mod tests {
             git_opts_with_arg: v(&["-C", "-c"]),
             git_wrappers: v(&["sudo", "env", "time", "if", "{"]),
             passes: 3,
+            brace_cap: 64,
+            body_depth: 2,
         }
     }
     fn n(c: &str) -> Normalised {
@@ -615,5 +768,20 @@ mod tests {
         for c in ["echo $(git log -1 --format=%H)", "echo \"$(git status)\"", "x=$(git log -1)", "x=git ls"] {
             assert_eq!(n(c).git_unknown, None, "{c}");
         }
+    }
+
+    #[test]
+    fn review_918_second_pass() {
+        // an arithmetic shift is no heredoc: the next line is still read
+        assert!(n("echo $((1<<2))\ng\"i\"t reset --hard").text.contains("git reset --hard"));
+        assert!(n("(( n = 1 << 2 ))\ng\"i\"t reset --hard").text.contains("git reset --hard"));
+        // a nested shell keeps the quoted newline: the comment ends at it
+        for c in ["bash -c 'echo x #\ng\"i\"t reset --hard'", "echo `#'\ng\"i\"t reset --hard\n: #'`", "echo $(#'\ng\"i\"t reset --hard\n: #')\n)"] {
+            assert!(n(c).extra.iter().any(|t| t.contains("git reset --hard")), "{c}");
+        }
+        // a substitution inside double quotes opens a new quoting context
+        assert!(normalise("g\"i\"t reset --hard; echo \"$(echo \"'\")\"", &cfg()).is_some());
+        assert!(normalise("git commit -m \"$(cat <<'EOF'\nfix: don't\nEOF\n)\"", &cfg()).is_some());
+        assert!(normalise("echo \"$(git log -1 --format=\"%s\")\"", &cfg()).is_some());
     }
 }

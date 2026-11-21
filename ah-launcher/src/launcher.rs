@@ -569,8 +569,12 @@ impl L {
             return false;
         };
         // #907: the command read the way the shell reads it (in-word quotes and backslashes gone, only an unquoted separator splits,
-        // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a quote left open: the raw text only
-        let norm = Self::capacity_norm_cfg(cfg).and_then(|c| shellwords::normalise(command, &c));
+        // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a command it can not balance is held
+        // under `unreadable` (#918 review: the quote-blind raw text alone would let any such tail switch the reading off)
+        let ncfg = Self::capacity_norm_cfg(cfg);
+        let norm = ncfg
+            .as_ref()
+            .and_then(|c| shellwords::normalise(command, c));
         // #901/#904: a plain read that only names the words passes (read_only, minus read_only_unless), as
         // dispatch::capacity_read_only; a broken or empty exemption exempts nothing
         if listed
@@ -624,6 +628,18 @@ impl L {
                 rule = Some(r.to_string());
             }
         }
+        if listed
+            && rule.is_none()
+            && ncfg.is_some()
+            && norm.is_none()
+            && let Some(r) = cfg
+                .get("unreadable")
+                .and_then(|v| v.as_str())
+                .filter(|r| !r.is_empty())
+        {
+            via_norm = true;
+            rule = Some(r.to_string());
+        }
         if rule.is_none() && raw_only_hit {
             limits::bump(Ctr::CapacityTextExempt);
         }
@@ -661,6 +677,12 @@ impl L {
         };
         let one =
             |v: Option<&toml::Value>| v.and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let count = |k: &str| {
+            cfg.get(k)
+                .and_then(|v| v.as_integer())
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or_default()
+        };
         let (text, git) = (cfg.get("text"), cfg.get("git"));
         Some(shellwords::Cfg {
             text_verb: one(text.and_then(|t| t.get("verb"))),
@@ -670,11 +692,9 @@ impl L {
             git_known: strs(git.and_then(|g| g.get("known"))),
             git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
             git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
-            passes: cfg
-                .get("passes")
-                .and_then(|v| v.as_integer())
-                .and_then(|v| usize::try_from(v).ok())
-                .unwrap_or_default(),
+            passes: count("passes"),
+            brace_cap: count("brace_cap"),
+            body_depth: count("body_depth"),
         })
     }
 

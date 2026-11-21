@@ -189,6 +189,13 @@ H source <(echo 'g"i"t reset --hard')
 H eval "$(echo Z2l0IHB1c2g= | base64 -d)"
 H git pu\\nsh -f
 H cat <<EOF\n$(git pf)\nEOF
+H echo $((1<<2))\ng"i"t reset --hard
+H (( n = 1 << 2 ))\ng"i"t reset --hard
+H bash -c 'echo x #\ng"i"t reset --hard'
+H echo `#'\ng"i"t reset --hard\n: #'`
+H echo $(#'\ng"i"t reset --hard\n: #')\n)
+H g"i"t reset --hard; echo "$(echo "'")"
+H g"i"t reset --hard; echo 'x
 #
 # #918 review reads that must still pass
 P gh pr view 1 -b "x\" ; gh pr merge 1"
@@ -209,3 +216,7 @@ P x=$(git log -1 --format=%H)
 P gh issue view 1 --comments
 P gh pr list --search "fix tests"
 P awk '{print $1, $2}' f
+P echo $((1<<2))
+P git commit -m "$(cat <<'EOF'\nfix: x\nEOF\n)"
+P git commit -m "$(cat <<'EOF'\nfix: don't hold this\nEOF\n)"
+P echo "$(git log -1 --format="%s")"

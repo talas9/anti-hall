@@ -455,6 +455,7 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
     let strs = |v: Option<&'static defaults::V>| -> Vec<String> {
         v.and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect()).unwrap_or_default()
     };
+    let count = |k: &str| cfg.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
     let (text, git) = (cfg.get("text"), cfg.get("git"));
     Some(shellwords::Cfg {
         text_verb: text.and_then(|t| t.get("verb")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
@@ -464,7 +465,9 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         git_known: strs(git.and_then(|g| g.get("known"))),
         git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
         git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
-        passes: cfg.get("passes").and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default(),
+        passes: count("passes"),
+        brace_cap: count("brace_cap"),
+        body_depth: count("body_depth"),
     })
 }
 
@@ -490,9 +493,18 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
     let Some(command) = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str) else { return none };
     let Some(rules) = cfg.get("rules").and_then(|v| v.as_table()) else { return none };
-    let norm = capacity_norm_cfg(cfg).and_then(|c| shellwords::normalise(command, &c));
+    let ncfg = capacity_norm_cfg(cfg);
+    let norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
     if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) {
         return none;
+    }
+    // #918 review: a command the reading can not balance (a quote or a substitution left open) is matched quote-blind otherwise,
+    // so any such tail would switch the reading off: it is held under `unreadable` (empty = off)
+    if ncfg.is_some() && norm.is_none() {
+        let rule = cfg.get("unreadable").and_then(|v| v.as_str()).unwrap_or_default();
+        if !rule.is_empty() {
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false };
+        }
     }
     // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
     let mut texts: Vec<&str> = match &norm {
