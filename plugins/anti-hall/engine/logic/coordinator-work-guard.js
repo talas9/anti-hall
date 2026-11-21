@@ -316,6 +316,7 @@ function cwMain(payload, post) {
 
   if (!post) {
     var r = classify();
+    if (!r.work) { var mr = new RegExp(ah.cfg('coordinator_work.mesh_read_re')).exec(command); if (mr) ah.metric('coordinator_work_mesh_read_pass', ['verb', mr[1]]); } // #900: a mesh mailbox read/ack/peek is never a file-changing step
     if (S.unsure) { ah.unable('coordinator-work-guard:classify_unsure'); S.unsure = false; r = { work: true, blockable: true }; } // unreadable: counted as blockable work (the stricter side)
     var v = { work: r.work, blockable: r.blockable };
     var pre = cwCheckPre(st, { now: now, work: r.work, blockable: r.blockable }, cfg);

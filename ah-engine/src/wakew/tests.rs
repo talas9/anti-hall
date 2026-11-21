@@ -273,3 +273,104 @@ fn an_update_is_announced_once_per_newer_version() {
     let v = read::parse_json(&std::fs::read_to_string(read::seen_path(&h, "w1")).unwrap()).unwrap();
     assert_eq!(v.get("updateAnnouncedVersion"), Some(&J::Str("1.10.0".into())));
 }
+
+// ---- wake coalescing (GH #884) ----------------------------------------------------------------------------------------------
+
+fn mail(total2: f64, unread: Option<f64>, now_ms: f64, coalesce: Option<f64>) -> Snapshot {
+    Snapshot { now_ms, unread, coalesce_ms: coalesce, ..child(0.0, Some(total2), None) }
+}
+
+/// One wake per state change: mail that lands while the workspace has read nothing since its last wake is held (the cursor moves,
+/// so it never fires later as new mail); a drained inbox ends the outstanding wake. Before, every message printed a wake line and
+/// each one cost the workspace a turn.
+#[test]
+fn new_mail_while_nothing_was_read_since_the_last_wake_is_held_and_a_drain_ends_it() {
+    let on = Some(600_000.0);
+    let armed = State { armed: true, ..State::default() };
+    let (st, lines) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, on));
+    assert_eq!(lines.len(), 1, "the first message wakes: {lines:?}");
+    assert_eq!((st.held, st.woke_ms), (0, Some(1_000.0)));
+    let (st, lines) = tick(&st, &mail(2.0, Some(2.0), 31_000.0, on));
+    assert!(lines.is_empty(), "a second message, nothing read since the wake: held: {lines:?}");
+    assert_eq!((st.held, st.last_total2, st.held_pending), (1, 2.0, true), "counted, and the cursor moved");
+    let (st, lines) = tick(&st, &mail(2.0, Some(0.0), 40_000.0, on));
+    assert!(lines.is_empty() && st.woke_ms.is_none() && !st.held_pending, "drained: no wake outstanding");
+    let (st, lines) = tick(&st, &mail(3.0, Some(1.0), 50_000.0, on));
+    assert_eq!((lines.len(), st.woke_ms), (1, Some(50_000.0)), "new mail after the drain wakes again: {lines:?}");
+}
+
+/// The advisor's case: woken for message 1, the workspace read it, but the watcher never saw an unread count of 0 (message 2 landed
+/// before the summary was rewritten). The unread count is 1 again, yet it is new mail the workspace has not been woken for: it wakes.
+#[test]
+fn a_workspace_that_read_its_mail_since_the_wake_is_woken_for_the_next_one_even_at_the_same_unread_count() {
+    let on = Some(600_000.0);
+    let armed = State { armed: true, ..State::default() };
+    let (st, _) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, on));
+    let (st, lines) = tick(&st, &mail(2.0, Some(1.0), 20_000.0, on));
+    assert_eq!((lines.len(), st.held), (1, 0), "message 1 was read (2 arrived, 1 unread): woken for message 2: {lines:?}");
+}
+
+/// Held mail that is still unread when the re-wake window passes wakes the workspace again on a tick with no new mail.
+#[test]
+fn held_mail_still_unread_after_the_rewake_window_wakes_once_without_new_mail() {
+    let on = Some(600_000.0);
+    let armed = State { armed: true, ..State::default() };
+    let (st, _) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, on));
+    let (st, held) = tick(&st, &mail(2.0, Some(2.0), 2_000.0, on));
+    assert!(held.is_empty() && st.held_pending);
+    let (st, lines) = tick(&st, &mail(2.0, Some(2.0), 300_000.0, on));
+    assert!(lines.is_empty(), "inside the window: still held: {lines:?}");
+    let (st, lines) = tick(&st, &mail(2.0, Some(2.0), 601_000.0, on));
+    assert_eq!(lines, vec!["[wake-watch] new mesh mail for child w1: mesh-direct direct total 1 -> 2 (+1). Drain your own inbox on your next turn."]);
+    assert!(!st.held_pending && st.woke_ms == Some(601_000.0));
+    let (_, lines) = tick(&st, &mail(2.0, Some(2.0), 1_300_000.0, on));
+    assert!(lines.is_empty(), "nothing held any more: no repeat: {lines:?}");
+}
+
+#[test]
+fn without_coalescing_or_an_unread_count_every_message_wakes() {
+    let armed = State { armed: true, ..State::default() };
+    // coalescing off (devswarm.wakeWatchCoalesce false, or a Primary watcher)
+    let (st, a) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, None));
+    let (_, b) = tick(&st, &mail(2.0, Some(2.0), 2_000.0, None));
+    assert_eq!((a.len(), b.len()), (1, 1));
+    // the summary row has no unread count: never held
+    let on = Some(600_000.0);
+    let (st, a) = tick(&armed, &mail(1.0, None, 1_000.0, on));
+    let (_, b) = tick(&st, &mail(2.0, None, 2_000.0, on));
+    assert_eq!((a.len(), b.len()), (1, 1));
+}
+
+#[test]
+fn the_direct_read_carries_the_rows_unread_count() {
+    let h = home("unread");
+    write(&read::summary_path(&h, "rk"), r#"{"workspaces":{"w1":{"total":9,"directTotalFromOthers":7,"directUnread":2}}}"#);
+    let hashes = Hashes { repo_key: Some("rk".into()), fallback: None };
+    let d = read::read_direct(&h, Some(&hashes), "w1");
+    assert_eq!((d.total, d.unread), (Some(7.0), Some(2.0)));
+    let coalesce = crate::defaults::list("wake_watch.coalesce_roles");
+    assert_eq!(coalesce, vec!["child"], "the Primary's own mail is not coalesced");
+}
+
+/// A restarted watcher (a deploy re-execs it) keeps no wake in memory, but the cursor a held wake moved past was saved: unread mail
+/// found at arm, with no new mail, still gets the one re-wake after the window. New mail at arm wakes at once, as before.
+#[test]
+fn a_restarted_watcher_still_re_wakes_mail_that_was_held_before_the_restart() {
+    let on = Some(600_000.0);
+    let saved = State { last_total2: 5.0, ..State::default() };
+    let (st, lines) = tick(&saved, &mail(5.0, Some(2.0), 1_000.0, on));
+    assert_eq!(lines.len(), 1, "only the arm line: {lines:?}");
+    assert!(st.held_pending);
+    let (st, lines) = tick(&st, &mail(5.0, Some(2.0), 300_000.0, on));
+    assert!(lines.is_empty(), "inside the window: {lines:?}");
+    let (st, lines) = tick(&st, &mail(5.0, Some(2.0), 601_000.0, on));
+    assert_eq!(lines, vec!["[wake-watch] new mesh mail for child w1: mesh-direct direct total 3 -> 5 (+2). Drain your own inbox on your next turn."]);
+    let (_, lines) = tick(&st, &mail(5.0, Some(2.0), 1_300_000.0, on));
+    assert!(lines.is_empty(), "one re-wake only: {lines:?}");
+    // mail that arrived while the watcher was down wakes on the arm tick, never held
+    let (_, lines) = tick(&saved, &mail(6.0, Some(3.0), 1_000.0, on));
+    assert_eq!(lines.len(), 2, "arm line and a wake: {lines:?}");
+    // coalescing off: nothing is seeded
+    let (st, _) = tick(&saved, &mail(5.0, Some(2.0), 1_000.0, None));
+    assert!(!st.held_pending);
+}

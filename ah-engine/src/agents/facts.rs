@@ -187,8 +187,9 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
         }
         // a wake opens a turn that counts as a poke unless it calls a tool; any other prompt (not a tool result) closes the open one
         if !blocks.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) {
-            if wake_origin(v) {
+            if let Some(sender) = wake_sender(v, content) {
                 a.poke_open = true;
+                a.poke_sender = sender;
             } else {
                 a.poke_open = false;
                 a.poke_tools = false;
@@ -451,17 +452,33 @@ fn cache_expiry(a: &Agent, fresh: Option<(u64, u64, u64)>, ts: u64, now: u64) {
     }
 }
 
-/// Whether a user line is a wake: a prompt the host sent on its own (a finished background task, an automatic continuation) instead of
-/// the owner or a tool result (`agent_waste.poke.origins` lists the origin kinds).
-fn wake_origin(v: &Value) -> bool {
+/// Who sent a wake, `None` when the user line is no wake. A wake is a prompt the host sent on its own (a finished background task, an
+/// automatic continuation: `agent_waste.poke.origins`) or the prompt of a native wake (it starts with `agent_tracker.wake_prefix`),
+/// instead of the owner or a tool result. The sender (GH #884: a tool-less woken turn is counted against whoever woke it) is the first
+/// row of `agent_waste.poke.senders` whose text the prompt contains, else `default_sender` (the host itself).
+fn wake_sender(v: &Value, content: Option<&Value>) -> Option<String> {
+    let cfg = defaults::raw("agent_waste.poke");
+    let text = content.map(result_text).unwrap_or_default();
+    let native = text.trim_start().starts_with(defaults::text("agent_tracker.wake_prefix"));
     let kind = v.get(tr("origin")).and_then(|o| o.get(tr("origin_kind"))).and_then(Value::as_str);
-    kind.is_some_and(|k| defaults::raw("agent_waste.poke").get("origins").map(V::strings).unwrap_or_default().contains(&k))
+    if !native && !kind.is_some_and(|k| cfg.get("origins").map(V::strings).unwrap_or_default().contains(&k)) {
+        return None;
+    }
+    let rows = cfg.get("senders").and_then(V::as_array).unwrap_or_default();
+    let hit = rows.iter().find(|r| r.get("contains").and_then(V::as_str).is_some_and(|m| !m.is_empty() && text.contains(m)));
+    Some(hit.and_then(|r| r.get("sender").and_then(V::as_str)).unwrap_or(cfg.str_field("default_sender")).to_string())
 }
 
 /// A woken turn that ended with no tool call (GH #884): the wake cost a whole turn and no work came of it.
 fn poke_close(a: &mut Agent, ts: u64, now: u64) {
     if a.poke_open && !a.poke_tools && a.poke_tokens >= wlim("agent_waste.poke", "min_tokens") {
         waste_event("poke_turn", a.poke_tokens, ts, now);
+        if now.saturating_sub(ts) <= wlim("agent_waste.limits", "count_max_age_ms") {
+            let sender =
+                if a.poke_sender.is_empty() { defaults::raw("agent_waste.poke").str_field("default_sender").to_string() } else { a.poke_sender.clone() };
+            crate::metrics::bump_by("poke_turns_by_sender", &[("sender", sender.as_str())], 1);
+            crate::metrics::bump_by("poke_tokens_by_sender", &[("sender", sender.as_str())], a.poke_tokens);
+        }
     }
     a.poke_open = false;
     a.poke_tools = false;

@@ -290,3 +290,56 @@ fn an_advisor_iteration_does_not_inflate_the_context_size_but_a_real_crossing_st
     let (_, out, err) = e.run("Stop", &stop_map, &stop(&codex(210_000)), &[]);
     assert!(format!("{out}{err}").contains("handover:"), "210K of 237.5K is 88%: {out:?} {err:?}");
 }
+
+/// GH #894: the post-handover new-work gate repeated the same directive on every prompt. It is sent when its state changes (the
+/// handover point or the context band) and again only after guards.handoverGateOnChangeRepeatS; off restores every prompt.
+#[test]
+fn the_post_handover_gate_is_sent_on_a_state_change_not_on_every_prompt() {
+    let gate = "new work exceeds the post-handover budget";
+    for (name, extra, second) in [("gate-on", None, false), ("gate-off", Some(("ANTIHALL_HANDOVER_GATE_ON_CHANGE", "false")), true)] {
+        let e = Env::new(name);
+        let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+        let tr = e.transcript(180_000); // 90 percent
+        std::fs::create_dir_all(e.dir.join("home/.anti-hall/auto-handover")).unwrap();
+        std::fs::write(e.dir.join("home/.anti-hall/auto-handover/e2e.json"), r#"{"fired":true,"firedPct":85,"lastNagPct":89,"handoverPct":80}"#).unwrap();
+        let mut env = vec![WINDOW];
+        env.extend(extra);
+        let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &env);
+        assert!(out.contains(gate), "{name}: the first armed prompt gets the gate: {out:?}");
+        let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &env);
+        assert_eq!(out.contains(gate), second, "{name}: the same state on the next prompt: {out:?}");
+        if !second {
+            // the context grows into the next band (autoHandover.nagStepPct, 5 points): the gate speaks again
+            let tr = e.transcript(191_000); // 95.5 percent
+            let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &env);
+            assert!(out.contains(gate), "{name}: a new band is a state change: {out:?}");
+        }
+    }
+}
+
+/// GH #884 item 4: a DevSwarm workspace grew from 74K to 284K with no handover (on a 1M window the percent line is far away and the
+/// main token ceiling is 500K). A workspace session past autoHandover.workspaceMaxTokens (150K) is ordered to finish its PR and
+/// continue in a fresh session; a main session at the same size is not.
+#[test]
+fn a_workspace_past_its_context_ceiling_is_ordered_to_a_fresh_session_and_a_main_session_is_not() {
+    let e = Env::new("ws-ceiling");
+    let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    let tr = e.transcript(160_000); // 16 percent of the 1M window
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW]);
+    assert!(!out.contains("handover:"), "a main session at 160K of 1M: nothing: {out:?}");
+    let e = Env::new("ws-ceiling-child");
+    let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    let tr = e.transcript(160_000);
+    let child = ("DEVSWARM_SOURCE_BRANCH", "main");
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW, child]);
+    assert!(!out.contains("NODE-") && out.contains("over its 150K ceiling") && out.contains("next PR in a fresh session"), "{out:?}");
+    // once per session: the next prompt does not repeat the order
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW, child]);
+    assert!(!out.contains("150K ceiling"), "fires once: {out:?}");
+    // the ceiling is a setting: 0 switches it off
+    let e = Env::new("ws-ceiling-off");
+    let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    let tr = e.transcript(160_000);
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW, child, ("ANTIHALL_AUTO_HANDOVER_WORKSPACE_MAX_TOKENS", "0")]);
+    assert!(!out.contains("handover:"), "ceiling off: {out:?}");
+}

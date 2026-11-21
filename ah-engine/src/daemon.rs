@@ -1198,7 +1198,10 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             Answer::Decided(r, routes) if r.code == Some(2) || (r.code == Some(0) && crate::dispatch::combine::json_blocks(&r.out)) => {
                 Verdict::Routed(Box::new(Verdict::Block(block_text_of(r))), routes.clone())
             }
-            Answer::Decided(r, routes) if !r.out.is_empty() => Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone()),
+            // an empty additionalContext says nothing: an allow, not an advisory (GH #894)
+            Answer::Decided(r, routes) if crate::dispatch::combine::says_something(&meta.event, r) => {
+                Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone())
+            }
             Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
         };
         if let Verdict::Routed(_, routes) = &v {
@@ -1212,7 +1215,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         let cut = matches!(a, Answer::Decided(..)) && crate::budget::take_drop_reason().is_some();
         if let Answer::Decided(r, _) = a
             && !cut
-            && (!r.out.is_empty() || r.code == Some(2))
+            && crate::dispatch::combine::says_something(&meta.event, r)
         {
             // #312: it said something (a message or a block): delivery is counted at the end of the request. B1: with the session's model and project
             let who = crate::funnel::ctx(session, &p, &phash);

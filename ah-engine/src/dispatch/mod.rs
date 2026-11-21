@@ -451,6 +451,9 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
     let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
     let command = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str)?;
     let rules = cfg.get("rules").and_then(|v| v.as_table())?;
+    if capacity_read_only(cfg, command) {
+        return None;
+    }
     for (name, pat) in rules {
         let Some(pat) = pat.as_str() else { continue };
         match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
@@ -460,6 +463,26 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
         }
     }
     None
+}
+
+/// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
+/// `read_only` (a read-only reader first, nothing chained, substituted or redirected) and does not match `read_only_unless` (a reader
+/// flag that runs a command). Fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`, exempts
+/// nothing, so the rules decide. The ah-hook launcher applies the same keys.
+pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
+    let compile = |key: &str| -> Option<Result<regex::Regex, ()>> {
+        let pat = cfg.get(key).and_then(|v| v.as_str()).filter(|p| !p.is_empty())?;
+        Some(regex::RegexBuilder::new(pat).case_insensitive(true).build().map_err(|e| crate::discard::note("capacity_hold_rule", &format!("{key}: {e}"))))
+    };
+    let Some(Ok(read_only)) = compile("read_only") else { return false };
+    if !read_only.is_match(command) {
+        return false;
+    }
+    match compile("read_only_unless") {
+        None => true,
+        Some(Ok(unless)) => !unless.is_match(command),
+        Some(Err(())) => false,
+    }
 }
 
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
@@ -1255,6 +1278,30 @@ mod tests {
             "espefuse.py --port /dev/x burn_key K",
             "espefuse --port /dev/x write-protect-efuse X",
             "idf.py -p /dev/x efuse-burn-key K",
+            // #901: command position in its usual spellings
+            "cd x && git push -f",
+            "bash -c \"git push -f\"",
+            "sh -lc 'git push origin +main'",
+            "sudo rm -rf /x",
+            "timeout 30 git push",
+            "(git push)",
+            "echo ok; git push",
+            "git status\ngit push",
+            "/usr/bin/git push --force",
+            "env A=1 B=2 git push",
+            "taskpolicy -c utility nice -n 19 git push",
+            "find . -name x | xargs rm -rf",
+            "npx firebase deploy --only functions",
+            "python3 -m espefuse burn_key K",
+            "git --git-dir=.git push",
+            "git branch -D feature",
+            "if git push -f origin main; then :; fi",
+            "while ! git push; do sleep 1; done",
+            "until git push; do sleep 1; done",
+            "GIT_SSH_COMMAND=\"ssh -i k\" git push -f",
+            "git -C \"/a b\" push -f",
+            "ssh host 'git push -f'",
+            "ssh -p 22 host git push --force",
         ] {
             assert!(class(held).is_some(), "held: {held}");
         }
@@ -1268,11 +1315,71 @@ mod tests {
             "espefuse summary",
             "cargo build",
             "ls -rf",
+            // #901: a read that merely names the trigger words passes
+            "grep -rn \"git push\" .",
+            "rg 'rm -rf' src",
+            "echo \"git push --force\"",
+            "git log --grep push",
+            "git log --oneline -- push.rs",
+            "grep -n \"firebase deploy\" README.md",
+            "rg 'npm publish' docs",
         ] {
             assert_eq!(class(pass), None, "passes: {pass}");
         }
         let write = serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}});
         assert_eq!(capacity_hold(&write), None, "a tool outside dispatch.capacity_hold.tools passes");
+    }
+
+    /// #901/#904: the shared corpus (tests/fixtures/capacity_hold_corpus.txt, also run through the ah-hook launcher): every spelling
+    /// the security review of #904 found an allowed-prefix anchor let through, and every edge of the read exemption, is held; a
+    /// plain read that only names the words passes. A held case that passes is a fail-open.
+    #[test]
+    fn capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads() {
+        let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        let (mut held, mut passed) = (0, 0);
+        for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
+            let (want, cmd) = match line.split_once(' ') {
+                Some(("H", c)) => (true, c.replace("\\n", "\n")),
+                Some(("P", c)) => (false, c.replace("\\n", "\n")),
+                _ => continue,
+            };
+            assert_eq!(class(&cmd).is_some(), want, "{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd));
+            if want { held += 1 } else { passed += 1 }
+        }
+        assert!(held >= 35 && passed >= 11, "corpus read: {held} held, {passed} pass");
+    }
+
+    /// #901/#904: the read exemption fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`,
+    /// exempts nothing, so a read that names the words is held by the rules again.
+    #[test]
+    fn a_broken_read_exemption_exempts_nothing() {
+        let shipped = defaults::raw("dispatch.capacity_hold");
+        let read = "grep -rn \"git push\" .";
+        assert!(capacity_read_only(shipped, read));
+        let ro = shipped.get("read_only").copied().unwrap();
+        let with = |pairs: Vec<(&'static str, defaults::V)>| defaults::V::Table(Box::leak(pairs.into_boxed_slice()));
+        assert!(
+            !capacity_read_only(&with(vec![("read_only", ro), ("read_only_unless", defaults::V::Str("("))]), read),
+            "an uncompilable read_only_unless exempts nothing"
+        );
+        assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str("("))]), read), "an uncompilable read_only exempts nothing");
+        assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str(""))]), read), "an empty read_only exempts nothing");
+        assert!(capacity_read_only(&with(vec![("read_only", ro)]), read), "no read_only_unless: the read passes");
+    }
+
+    /// #901: a hold rule that does not compile is skipped, which fails open silently. Every shipped rule and both read-exemption keys
+    /// compile both in the engine (Unicode) and in the ah-hook launcher (ASCII on bytes).
+    #[test]
+    fn every_capacity_hold_rule_compiles_in_the_engine_and_the_launcher() {
+        let cfg = defaults::raw("dispatch.capacity_hold");
+        let rules = cfg.get("rules").and_then(|v| v.as_table()).unwrap();
+        assert!(!rules.is_empty());
+        let keys = ["read_only", "read_only_unless"].map(|k| (k, *cfg.get(k).unwrap_or_else(|| panic!("{k} is shipped"))));
+        for (name, pat) in rules.iter().copied().chain(keys) {
+            let pat = pat.as_str().unwrap();
+            regex::RegexBuilder::new(pat).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name}: {e}"));
+            regex::bytes::RegexBuilder::new(pat).unicode(false).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name} (ascii): {e}"));
+        }
     }
 
     /// The over-cap tool-name scan (a payload past the stdin cap is spooled and its top-level `tool_name` found structurally, so the

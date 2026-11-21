@@ -145,12 +145,14 @@ var cb = {
     return v ? v.split(new RegExp('[' + cb.c('ctxbudget.ah_marker_seps').join('') + ']')).map(function (s) { return s.trim(); }).filter(Boolean) : [];
   },
   resolveEffective: function () {
-    var off = { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: 0, nagQuietMin: 0, gateNewWork: false, gateBudgetPct: 0, decisivePrompt: false, gateHousekeepingMarkers: [] };
+    var off = { enabled: false, pct: 0, maxTokens: 0, workspaceMaxTokens: 0, nag: false, nagStepPct: 0, nagQuietMin: 0, gateNewWork: false, gateBudgetPct: 0, decisivePrompt: false, gateHousekeepingMarkers: [] };
     var envRaw = ah.env.get(cb.c('ctxbudget.env_pct_off'));
     if (envRaw !== null && String(envRaw).trim() !== '' && parseInt(envRaw, 10) === 0) return off;
     if (!ah.settings.bool('ctxbudget.set_ah_enabled')) return off;
     return {
       enabled: true, pct: ah.settings.num('ctxbudget.set_ah_pct'), maxTokens: Math.floor(ah.settings.num('ctxbudget.set_ah_max_tokens')),
+      // GH #884: a DevSwarm workspace (child) session has its own, lower context ceiling
+      workspaceMaxTokens: devswarmGate.isChild() ? Math.floor(ah.settings.num('ctxbudget.set_ah_ws_max_tokens')) : 0,
       nag: ah.settings.bool('ctxbudget.set_ah_nag'), nagStepPct: ah.settings.num('ctxbudget.set_ah_nag_step'), nagQuietMin: ah.settings.num('ctxbudget.set_ah_nag_quiet'),
       gateNewWork: ah.settings.bool('ctxbudget.set_ah_gate'), gateBudgetPct: ah.settings.num('ctxbudget.set_ah_gate_budget'),
       decisivePrompt: ah.settings.bool('ctxbudget.set_ah_decisive'), gateHousekeepingMarkers: cb.markers(),
@@ -158,7 +160,10 @@ var cb = {
   },
   overThreshold: function (result, cfg) {
     if (!result || !cfg || !cfg.enabled) return null;
-    var byPct = isFinite(result.pct) && result.pct >= cfg.pct, byTokens = cfg.maxTokens > 0 && typeof result.used === 'number' && isFinite(result.used) && result.used >= cfg.maxTokens;
+    var used = typeof result.used === 'number' && isFinite(result.used) ? result.used : null;
+    var byPct = isFinite(result.pct) && result.pct >= cfg.pct, byTokens = cfg.maxTokens > 0 && used !== null && used >= cfg.maxTokens;
+    // the workspace ceiling first: in a workspace its order (a fresh session per PR) is the one that fits
+    if (cfg.workspaceMaxTokens > 0 && used !== null && used >= cfg.workspaceMaxTokens) return cb.c('ctxbudget.ah_via_workspace');
     if (byPct && result.windowKnown !== false) return cb.c('ctxbudget.ah_via_pct');
     if (byTokens) return cb.c('ctxbudget.ah_via_tokens');
     if (byPct) return 'pct-unknown-window';
@@ -244,8 +249,15 @@ var cb = {
   },
   // ---- texts ----
   compactCommand: function (hp, codex) { return codex ? cb.c('ctxbudget.ah_compact_codex') : cb.r('ctxbudget.ah_compact_claude', { path: hp || cb.c('ctxbudget.ah_compact_no_path') }); },
-  fire: function (result, via, p, maxTokens, hp) {
+  fire: function (result, via, p, maxTokens, hp, cfg) {
     var codex = cb.codexPayload(p), w = cb.words(p), what;
+    if (via === cb.c('ctxbudget.ah_via_workspace')) {
+      var wsK = cfg && isFinite(cfg.workspaceMaxTokens) ? Math.round(cfg.workspaceMaxTokens / 1000) : 0;
+      return text.message('order', cb.c('ctxbudget.ah_guard'), {
+        what: cb.r('ctxbudget.ah_what_workspace', { usedK: Math.round((result.used || 0) / 1000), k: wsK }), why: cb.c('ctxbudget.ah_why_workspace'),
+        instead: cb.r('ctxbudget.ah_instead_workspace', { skill: w.skill, file: hp ? cb.r('ctxbudget.ah_fire_main_file', { path: hp }) : '' }),
+      });
+    }
     if (via === cb.c('ctxbudget.ah_via_tokens')) {
       var ceilingK = isFinite(maxTokens) && maxTokens > 0 ? Math.round(maxTokens / 1000) : null;
       what = cb.r('ctxbudget.ah_what_tokens', { usedK: Math.round((result.used || 0) / 1000), ceiling: ceilingK != null ? cb.r('ctxbudget.ah_ceiling', { k: ceilingK }) : '' });
@@ -277,6 +289,12 @@ var cb = {
       why: cb.c('ctxbudget.ah_gate_why'), instead: cb.r('ctxbudget.ah_gate_instead', { ask: codex ? cb.c('ctxbudget.ah_gate_ask_codex') : cb.c('ctxbudget.ah_gate_ask_claude'), reset: w.reset }),
       allowed: cb.c('ctxbudget.ah_gate_allowed'), override: cb.c('ctxbudget.ah_gate_override'),
     });
+  },
+  // The state of the post-handover gate (GH #894): the handover point and the context band (autoHandover.nagStepPct points). An
+  // unchanged state is told again only after the on-change profile's repeat interval (ctxbudget.ah_gate_profile).
+  gateFacts: function (result, latch, cfg) {
+    var step = isFinite(cfg.nagStepPct) && cfg.nagStepPct > 0 ? cfg.nagStepPct : 1;
+    return { hp: Math.round(latch.handoverPct), band: Math.floor(result.pct / step) };
   },
   gateBackstop: function (pct, latch, cfg, p) {
     var w = cb.words(p);

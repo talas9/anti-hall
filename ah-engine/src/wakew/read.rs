@@ -115,10 +115,12 @@ pub struct Part {
     pub error: Option<String>,
     /// The count, `None` for "no data yet" (never a fabricated zero).
     pub total: Option<f64>,
+    /// The workspace's unread direct mail (`wake_watch.field_direct_unread`), `None` when the row has none (GH #884).
+    pub unread: Option<f64>,
 }
 
 fn unresolvable() -> Part {
-    Part { ok: false, error: Some(text("wake_watch.err_unresolvable").to_string()), total: None }
+    Part { ok: false, error: Some(text("wake_watch.err_unresolvable").to_string()), total: None, unread: None }
 }
 
 fn workspace_row<'a>(summary: &'a Option<J>, id: &str) -> Option<&'a J> {
@@ -134,6 +136,11 @@ fn inbound_total(row: &J) -> Option<f64> {
     finite(row.get("directTotalFromOthers"))
 }
 
+/// The row as one direct read: its inbound total and its unread direct mail.
+fn direct_part(row: &J) -> Part {
+    Part { ok: true, error: None, total: inbound_total(row), unread: finite(row.get(text("wake_watch.field_direct_unread"))) }
+}
+
 /// `readPrimarySnapshot(home, hashes, id)`: the repo-key bucket first, the legacy bucket when the row is absent there.
 pub fn read_direct(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
     let Some(h) = hashes.filter(|h| !id.is_empty() && !h.empty()) else { return unresolvable() };
@@ -141,15 +148,15 @@ pub fn read_direct(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
     if let Some(row) = workspace_row(&a, id)
         && finite(row.get("total")).is_some()
     {
-        return Part { ok: true, error: None, total: inbound_total(row) };
+        return direct_part(row);
     }
     let b = h.fallback.as_deref().and_then(|k| read_summary(home, k));
     if let Some(row) = workspace_row(&b, id)
         && finite(row.get("total")).is_some()
     {
-        return Part { ok: true, error: None, total: inbound_total(row) };
+        return direct_part(row);
     }
-    Part { ok: true, error: None, total: None }
+    Part { ok: true, error: None, total: None, unread: None }
 }
 
 /// `readBroadcastSnapshot`: the heartbeat- and own-sender-excluded unread broadcast count of the row the direct channel would
@@ -164,7 +171,7 @@ pub fn read_broadcast(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
         b = h.fallback.as_deref().and_then(|k| read_summary(home, k));
         row = workspace_row(&b, id).filter(|w| finite(w.get("total")).is_some());
     }
-    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))) }
+    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None }
 }
 
 /// `attachBroadcastChannel`: fold the broadcast channel into a snapshot, failing closed with whatever the direct channels said.
@@ -195,7 +202,7 @@ pub fn read_child(home: &Path, inbox: &Path, hashes: Option<&Hashes>, id: &str) 
     let nd_total = count_messages(inbox);
     let mesh = read_direct(home, hashes, id);
     let error = if mesh.ok { None } else { Some(format!("{}{}", text("wake_watch.err_prefix_mesh"), mesh.error.clone().unwrap_or_default())) };
-    Snapshot { ok: mesh.ok, error, total: Some(nd_total), total2: Some(mesh.total), ..Snapshot::default() }
+    Snapshot { ok: mesh.ok, error, total: Some(nd_total), total2: Some(mesh.total), unread: mesh.unread, ..Snapshot::default() }
 }
 
 // ---- the persisted seen-state --------------------------------------------------------------------------------------------------

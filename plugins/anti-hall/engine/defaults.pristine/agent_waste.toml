@@ -127,8 +127,16 @@ doc = "When a turn counts as a cache expiry. ttl_ms: the idle time between two a
 value = { ttl_ms = 300000, min_share_pct = 50, min_tokens = 5000 }
 
 [agent_waste.poke]
-doc = "What a woken turn is. origins: the origin kinds of a user line (its origin.kind field) the host sends on its own, not the owner (human) and not a tool result: a finished background task, an automatic continuation. A turn they open that ends with no tool call is a poke_turn; its weighted tokens are counted (cache reads at limits.cache_read_pct's share, as every waste figure). min_tokens: a poke turn under this many tokens is not counted."
-value = { origins = ["task-notification", "auto-continuation"], min_tokens = 1 }
+doc = "What a woken turn is. origins: the origin kinds of a user line (its origin.kind field) the host sends on its own, not the owner (human) and not a tool result: a finished background task, an automatic continuation. A prompt that starts with agent_tracker.wake_prefix (a native wake) is a wake too. A turn they open that ends with no tool call is a poke_turn; its weighted tokens are counted (cache reads at limits.cache_read_pct's share, as every waste figure). min_tokens: a poke turn under this many tokens is not counted. senders (GH #884): who sent the wake, counted against them (poke_turns_by_sender, poke_tokens_by_sender): the first row whose `contains` text the prompt holds names the sender; default_sender when none does (the host's own notifications: a finished background task, an auto-continuation). Bounded words only, never a session or workspace id."
+value = { origins = ["task-notification", "auto-continuation"], min_tokens = 1, default_sender = "host", senders = [{ contains = "[wake-watch] new mesh mail", sender = "mesh_mail" }, { contains = "anti-hall wake:", sender = "native_wake" }, { contains = "[agent-wake]", sender = "agent_wake" }, { contains = "[wake-watch]", sender = "wake_watch" }] }
+
+[metric.poke_turns_by_sender]
+doc = "Woken turns that ended with no tool call (poke_turn, GH #884), by who sent the wake (agent_waste.poke.senders): mesh_mail (the wake-watch line for new mesh mail, i.e. the Primary's or a peer's message), native_wake (an anti-hall native wake of an idle workspace), agent_wake (a tracker reminder or wake row), wake_watch (another wake-watch line), host (a background task or auto-continuation)."
+value = { kind = "counter", unit = "turns", labels = ["sender"] }
+
+[metric.poke_tokens_by_sender]
+doc = "Weighted tokens of the woken turns of poke_turns_by_sender, by the same sender words."
+value = { kind = "counter", unit = "tokens", labels = ["sender"] }
 
 [agent_waste.status_words]
 doc = "The words of the waste block of `ah-engine status`: key (the block's name), events and tokens (the two fields of each category), total (the sum over every category)."

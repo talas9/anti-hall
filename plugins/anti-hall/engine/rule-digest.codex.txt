@@ -37,6 +37,7 @@ claim_evidence.sw_claim	- claim_evidence.pushed: pushed this turn, then called d
 	- ctxbudget.lc: limit conservation is active (...).
 	- ctxbudget.ah_tokens: context is ~...K tokens, past your autoHandover.maxTokens ceiling...: write a handover now.
 	- ctxbudget.ah_pct: context is at ~...%...: write a handover now.
+	- ctxbudget.ah_workspace: start the next PR in a fresh session: this workspace's context is ~...K tokens, over its ...K ceiling.
 	- ctxbudget.ah_nag: context is now ~...% (handover already saved earlier this session).
 	- ctxbudget.ah_soft: context looks high (~...%, ESTIMATED).
 	- ctxbudget.ah_pause: good stopping point: context is still ~...% and a handover is already saved.

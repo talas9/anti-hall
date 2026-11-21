@@ -4895,7 +4895,6 @@ fn zero_outcome_nudge_uses_the_house_format_without_a_question() {
     assert!(!nd.last_text.contains("Do you want"), "no question: {}", nd.last_text);
 }
 
-
 // ---- spent-token waste categories (GH #884): cache expiry and poke turns -----------------------------------------------------------
 
 /// An assistant line with the full cache usage. `usage` = (new input, output, cache read, cache creation).
@@ -5012,6 +5011,42 @@ fn a_woken_turn_with_no_tool_call_is_a_poke_turn_and_other_turns_are_not() {
         0,
     );
     assert_eq!(waste_count("poke_turn"), (2, (100 + 40 + 2_000) + (50 + 10)), "two pokes, counted in weighted tokens");
+}
+
+/// GH #884: a tool-less woken turn is counted against whoever woke it, by a bounded sender word (never an id): the wake-watch line for
+/// new mesh mail is the Primary's (or a peer's) message, a native wake prompt is anti-hall's own wake, anything else is the host.
+#[test]
+fn a_poke_turn_is_counted_against_the_sender_of_its_wake() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "noted"}]);
+    let note = |ts: u64, body: &str| {
+        json!({"type": "user", "timestamp": iso(ts), "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": body}}).to_string()
+    };
+    run_waste(
+        "pokesender",
+        vec![
+            prompt(n - 40 * MIN, "/w"),
+            asst_cache(n - 39 * MIN, "a1", (10, 20, 1_000, 0), t.clone(), Some("end_turn")),
+            note(n - 30 * MIN, "<task-notification><event>[wake-watch] new mesh mail for child w1: mesh-direct direct total 4 -> 5 (+1). Drain your own inbox on your next turn.</event></task-notification>"),
+            asst_cache(n - 29 * MIN, "a2", (100, 40, 0, 0), t.clone(), Some("end_turn")),
+            // a native wake prompt carries no origin: it is still a wake
+            json!({"type": "user", "timestamp": iso(n - 20 * MIN), "message": {"role": "user", "content": "anti-hall wake: a mesh message is waiting for workspace w1."}}).to_string(),
+            asst_cache(n - 19 * MIN, "a3", (50, 10, 0, 0), t.clone(), Some("end_turn")),
+            wake(n - 10 * MIN, "task-notification"),
+            asst_cache(n - 9 * MIN, "a4", (30, 10, 0, 0), t, Some("end_turn")),
+        ],
+        0,
+    );
+    let by = |s: &str| {
+        (
+            crate::metrics::bumped_on_this_thread("poke_turns_by_sender", &[("sender", s)]),
+            crate::metrics::bumped_on_this_thread("poke_tokens_by_sender", &[("sender", s)]),
+        )
+    };
+    assert_eq!(by("mesh_mail"), (1, 140), "the wake-watch mail line");
+    assert_eq!(by("native_wake"), (1, 60), "the native wake prompt");
+    assert_eq!(by("host"), (1, 40), "a finished background task");
+    assert_eq!(waste_count("poke_turn"), (3, 240), "every one is still a poke_turn");
 }
 
 #[test]
