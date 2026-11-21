@@ -23,6 +23,8 @@ the update.
 
 Engine-only local build of current dev. Version bump only; changes since 0.3.8 are listed under Unreleased.
 
+Launcher (ah-hook) 0.3.1: capacity-hold parsing fixes from #929.
+
 ## Engine 0.3.8 (local integration build)
 
 Engine-only local build of current dev. Version bump only; changes since 0.3.7 are listed under Unreleased.
