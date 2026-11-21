@@ -24,8 +24,8 @@ fn cmd(root: &Path) -> Command {
     c
 }
 
-fn serve(root: &Path, reason: &str) -> Child {
-    cmd(root).args(["serve", "--start-reason", reason]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+fn serve(root: &Path, reason: &str) -> crate::common::Daemon {
+    crate::common::Daemon::new(cmd(root).args(["serve", "--start-reason", reason]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap())
 }
 
 /// True when the event log (a tab-separated line `ts kind code detail`) holds an event of `kind`.
@@ -110,7 +110,7 @@ fn a_supervised_start_that_keeps_failing_is_stopped_by_the_crash_loop_rule_with_
     for _ in 0..8 {
         let mut c = cmd(&r);
         c.env("AH_ENGINE_CRASH_N", "3").args(["serve", "--start-reason", "launchd"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        codes.push(wait_exit(&mut c.spawn().unwrap()));
+        codes.push(wait_exit(&mut crate::common::Daemon::new(c.spawn().unwrap())));
         if codes.last() == Some(&0) {
             break;
         }
@@ -128,7 +128,7 @@ fn an_unsupervised_start_that_fails_is_still_exit_78() {
     for _ in 0..4 {
         let mut c = cmd(&r);
         c.env("AH_ENGINE_CRASH_N", "2").args(["serve", "--start-reason", "manual"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        assert_eq!(wait_exit(&mut c.spawn().unwrap()), 78);
+        assert_eq!(wait_exit(&mut crate::common::Daemon::new(c.spawn().unwrap())), 78);
     }
     ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
 }
@@ -147,7 +147,7 @@ fn a_supervised_start_that_fails_before_the_lock_is_stopped_by_the_crash_loop_ru
     for _ in 0..8 {
         let mut c = cmd(&r);
         c.env("AH_ENGINE_CRASH_N", "3").args(["serve", "--start-reason", "launchd"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        codes.push(wait_exit(&mut c.spawn().unwrap()));
+        codes.push(wait_exit(&mut crate::common::Daemon::new(c.spawn().unwrap())));
         if codes.last() == Some(&0) {
             break;
         }
@@ -168,7 +168,7 @@ fn a_supervised_start_that_cannot_record_its_failure_exits_0_at_once_and_an_unsu
     for (reason, want) in [("launchd", 0), ("manual", 78)] {
         let mut c = cmd(&r);
         c.env("AH_ENGINE_CRASH_N", "3").args(["serve", "--start-reason", reason]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        assert_eq!(wait_exit(&mut c.spawn().unwrap()), want, "{reason}");
+        assert_eq!(wait_exit(&mut crate::common::Daemon::new(c.spawn().unwrap())), want, "{reason}");
     }
     ah_engine::discard::harmless(std::fs::remove_dir_all(&r)); // keep: cleanup of a scratch directory
 }

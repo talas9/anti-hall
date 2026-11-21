@@ -10416,7 +10416,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_watch.sw_repeat_on_change_only` | `6 entries` |  |  | Switch diskWatch.repeatOnChangeOnly (default on): the low-space warning is shown again only when a volume's level changed, its free space fell by diskWatch.repeatDropGb since the last warning, or diskWatch.repeatSeconds passed. Off restores one warning per cooldown at an unchanged level. |
 | `disk_watch.temp_default` | `/tmp` |  |  | The temp directory when the TMPDIR variable of the process is unset. |
 | `disk_watch.tmp_sweep_max_age_s` | `3600` |  |  | Start-up sweep of the temp directory: an entry named with one of disk_watch.tmp_sweep_prefixes and last changed at least this many seconds ago is removed (default 3600 = 1 h; 0 turns the sweep off). Anything else in the temp directory is never touched. |
-| `disk_watch.tmp_sweep_prefixes` | `8 items` |  |  | Name prefixes of the engine's own temp-directory entries (its test scratch directories and the status verb's scratch) that the start-up sweep may remove once older than disk_watch.tmp_sweep_max_age_s. An entry that matches none is never touched. |
+| `disk_watch.tmp_sweep_prefixes` | `9 items` |  |  | Name prefixes of the engine's own temp-directory entries (its test scratch directories and the status verb's scratch) that the start-up sweep may remove once older than disk_watch.tmp_sweep_max_age_s. An entry that matches none is never touched. |
 | `disk_watch.warn_gb` | `7 entries` |  |  | Warn when a watched volume has less than this free, in GB (diskWatch.warnGb; 0 = not used). |
 | `disk_watch.warn_pct` | `7 entries` |  |  | Warn when a watched volume has less than this percent free (diskWatch.warnPercent; 0 = not used). |
 

@@ -135,4 +135,4 @@ min = 0
 
 [disk_watch.tmp_sweep_prefixes]
 doc = "Name prefixes of the engine's own temp-directory entries (its test scratch directories and the status verb's scratch) that the start-up sweep may remove once older than disk_watch.tmp_sweep_max_age_s. An entry that matches none is never touched."
-value = ["ah-script-", "ah-reblock-", "ah-golden-", "ah-arrival-", "ah-jev-shared-", "ahd-", "ah-ingest-status-", "antihall-judge-"]
+value = ["ah-script-", "ah-reblock-", "ah-golden-", "ah-arrival-", "ah-jev-shared-", "ahd-", "ah-ingest-status-", "antihall-judge-", "ah-hostd-"]

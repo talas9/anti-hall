@@ -17,7 +17,7 @@ use ah_engine::client::{Exch, exchange};
 use ah_engine::frame::Kind;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,8 +29,8 @@ const THREADS: usize = 4;
 const PUTS: usize = 60;
 const KEYS: usize = 4;
 
-fn spawn(dir: &Path) -> Child {
-    Command::new(BIN)
+fn spawn(dir: &Path) -> crate::common::Daemon {
+    crate::common::Daemon::new(Command::new(BIN)
         .arg("serve")
         .env("HOME", dir.join("home"))
         .env("AH_ENGINE_DIR", dir.join("eng"))
@@ -42,14 +42,14 @@ fn spawn(dir: &Path) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap()
+        .unwrap())
 }
 
 /// The running daemon and its directory; dropping it (also on a failed assertion) stops and reaps the daemon and
 /// removes the directory, so a failing run leaves nothing behind.
 struct Run {
     dir: PathBuf,
-    daemon: Child,
+    daemon: crate::common::Daemon,
 }
 
 impl Drop for Run {
