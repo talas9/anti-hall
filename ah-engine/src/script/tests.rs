@@ -5059,6 +5059,43 @@ mod inline_rule_counters {
         assert!(on.contains(&want) && !on.contains(old), "on: the headline names the count and the limit: {on}");
         assert!(on.contains(defaults::text("coordinator_work.block_instead")), "on: the step that clears it stays: {on}");
     }
+
+    /// #900: a Primary reading and acking its own inbox is never a file-changing step, so a full window does not stop it. The real
+    /// form is `A=<bin>; $A mesh inbox read-primary ID | python3 -I -c '...'$A...`: python's `-I` (isolated mode) takes no value, but was
+    /// read as one, which made the inline code the script file and the `$A` in it an unresolvable script run, counted as work.
+    #[test]
+    fn a_mesh_inbox_read_piped_into_isolated_python_is_not_work_and_passes_a_full_window() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let at = defaults::raw("coordinator_work.block_setting").get("default").and_then(|v| v.as_integer()).unwrap() as usize;
+        let reads = [
+            ("A=/x/ah-engine; $A mesh inbox read-primary ws-1 2>/dev/null | python3 -I -c 'import subprocess\nsubprocess.run([\"'$A'\",\"mesh\"],capture_output=True)'", "read-primary"),
+            ("ah-engine mesh inbox peek-primary ws-1 | python3 -I -c \"import os,sys; print(os.environ.get('HOME'), '$X')\"", "peek-primary"),
+            ("ah-engine mesh inbox ack-primary ws-1 --receipt r-1", "ack-primary"),
+        ];
+        for (i, (c, verb)) in reads.iter().enumerate() {
+            let h = home(&format!("w900-{i}"));
+            let proj = project(&h);
+            seed_window(&h, "sw", at);
+            drained();
+            let v = run_forced("coordinator-work-guard", &bash(&proj, "sw", c), &env_of(&h, false));
+            assert_eq!(v, Some(Some(Verdict::Allow)), "{c}: a mesh inbox read passes a full window, got {v:?}");
+            assert_eq!(drained().counter("coordinator_work_mesh_read_pass", &[("verb", verb)]), 1, "{c}: the pass is counted");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+        // a filter that can write is still work
+        for c in [
+            "ah-engine mesh inbox read-primary ws-1 | python3 -I -c \"open('x','w').write('y')\"",
+            "ah-engine mesh inbox read-primary ws-1 | sed -i 's/a/b/' x.txt",
+        ] {
+            let h = home("w900-w");
+            let proj = project(&h);
+            seed_window(&h, "sw", at);
+            drained();
+            let v = run_forced("coordinator-work-guard", &bash(&proj, "sw", c), &env_of(&h, false));
+            assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.code == 2), "{c}: still counted as work and stopped, got {v:?}");
+            crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        }
+    }
 }
 
 // ---- task-guard R-idle (guards.idleRule): its counters ----
