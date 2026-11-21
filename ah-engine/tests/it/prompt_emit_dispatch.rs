@@ -116,6 +116,7 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", e.home())
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", e.state())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -502,6 +503,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", e.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", e.state())
             .output()
             .unwrap();

@@ -144,6 +144,7 @@ fn base_env(c: &mut Command, home: &Path) {
     c.env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("USERPROFILE", home)
         .env("ANTIHALL_TEST_ISOLATION", "1")
         .env("ANTIHALL_INGEST_DRY_RUN", "1");

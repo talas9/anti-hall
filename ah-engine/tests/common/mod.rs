@@ -7,6 +7,12 @@
 
 pub mod scale;
 
+/// This checkout's plugin (`plugins/anti-hall`): the one plugin root every test passes to the engine it spawns, explicitly, so no
+/// test resolves defaults through $HOME (the installed plugin, a snapshot cache or an install record there). #910
+pub fn plugin_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins/anti-hall")
+}
+
 /// The built thin client (`ah-launcher`, binary `ah-hook`): AH_HOOK_BIN, else its release or debug build in this checkout. The
 /// hook command of both hosts is this binary (the plugin ships no shell wrapper), so a test that drives "the hook" runs it.
 pub fn launcher_bin() -> std::path::PathBuf {

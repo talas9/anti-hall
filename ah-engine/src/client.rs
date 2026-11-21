@@ -1018,7 +1018,13 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             LAST_SLOW.set(true);
             health::log_event("client_slow", "daemon", &why);
             if slow_streak_tripped() {
-                mark_daemon_slow(&why, "slow_streak"); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
+                // #910: the same continuous-run cap as a failed exchange: a daemon that stays slow past client.load_hold_max_ms with no
+                // OK reply is treated as down, so it cannot hold risky calls forever
+                if load_hold_expired() {
+                    mark_daemon_down(&why, "hold_expired");
+                } else {
+                    mark_daemon_slow(&why, "slow_streak"); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
+                }
             }
             None
         }

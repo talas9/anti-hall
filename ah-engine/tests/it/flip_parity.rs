@@ -107,6 +107,7 @@ fn select(registry: &Value, host: &str, event: &str, payload: Option<&Value>) ->
 }
 
 fn run_shell(command: &str, input: &[u8], env: &[(String, String)], cwd: &Path, timeout_s: u64) -> Res {
+    // the caller's `env` carries HOME and CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT (this checkout's plugin), see Rig::env
     let mut c = Command::new("/bin/sh");
     c.args(["-c", command]).env_clear().envs(env.iter().map(|(k, v)| (k, v))).current_dir(cwd).process_group(0);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
