@@ -45,6 +45,25 @@ value = 2048
 min = 1
 max = 1000000
 
+[realtime.file_watches_per_dir]
+doc = "macOS (kqueue): the most per-file event descriptors one watched directory holds, on its most recently modified files. A per-file descriptor reports a write made in place (an appended transcript); the directory's own descriptor reports every create, delete and rename (a write staged and renamed into place), and each directory event re-lists the directory and compares every selected file's signature, so a file outside this set is still reported (an in-place write to it at the directory's next event, or within realtime.file_resync_ms). Keeps descriptor use flat however many files a directory holds (GH #912)."
+value = 16
+min = 0
+max = 100000
+
+[realtime.max_file_watches]
+doc = "macOS (kqueue): the most per-file event descriptors the whole events backend holds, over every watched directory (one descriptor per directory comes on top). Past it a directory is watched by its own descriptor only. Must stay well under the daemon's open-file limit (daemon.nofile)."
+value = 512
+min = 0
+max = 1000000
+
+[realtime.file_resync_ms]
+doc = "macOS (kqueue): how often every watched directory is re-listed and each selected file's signature compared even when no event arrived. An in-place write to a file without its own descriptor (outside the newest realtime.file_watches_per_dir, or past realtime.max_file_watches) fires no event, so this is the bound on how late it is reported (plus debounce_ms). Each re-listing also moves the per-file descriptors to the files written most recently. 0 = never (such a write is then only seen at the directory's next create, delete or rename). Cost: one listing and one stat per watched file per interval."
+value = 5000
+min = 0
+max = 600000
+unit = "ms"
+
 [realtime.fs_poll_types]
 doc = "Filesystem types whose watched directories are always polled because OS change events do not arrive there (WSL2 /mnt drives report 9p or drvfs; network and FUSE filesystems report no events). A trailing or leading * matches any text."
 value = ["9p", "drvfs", "nfs", "nfs4", "smbfs", "cifs", "afpfs", "webdav", "fuse*", "*fuse", "fusefs*", "ceph", "glusterfs", "lustre"]

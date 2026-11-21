@@ -113,6 +113,31 @@ impl DirState {
         &self.dir
     }
 
+    /// True when the last scan found more matching entries than the cap (the files past it are not compared).
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// The `n` most recently modified names of the last scan, newest first (the files most likely to be written again).
+    pub fn newest(&self, n: usize) -> Vec<OsString> {
+        let mut v: Vec<(&OsString, &Sig)> = self.files.iter().collect();
+        v.sort_by(|a, b| (b.1.mtime, b.1.mtime_ns).cmp(&(a.1.mtime, a.1.mtime_ns)).then_with(|| a.0.cmp(b.0)));
+        v.into_iter().take(n).map(|(k, _)| k.clone()).collect()
+    }
+
+    /// Take the current signature of one name (or forget it when it is gone), so a change already reported another way is not
+    /// reported again by the next scan.
+    pub fn touch(&mut self, name: &std::ffi::OsStr) {
+        match std::fs::symlink_metadata(self.dir.join(name)) {
+            Ok(m) => {
+                self.files.insert(name.to_os_string(), sig_of(&m));
+            }
+            Err(_) => {
+                self.files.remove(name);
+            }
+        }
+    }
+
     fn current(&self, max_entries: usize) -> (BTreeMap<OsString, Sig>, bool) {
         let mut now = BTreeMap::new();
         match &self.filter {

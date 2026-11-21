@@ -344,6 +344,37 @@ value = { type = "number", section = "devswarm", key = "reapedRetentionDays", en
 doc = "Days a per-session child-gate state file is kept before the housekeeping sweep removes it. Node: devswarm.childGateRetentionDays. A value that is not a positive number reads as the default."
 value = { type = "number", section = "devswarm", key = "childGateRetentionDays", env = "ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS", default = 14 }
 
+[devswarm_sup.hk_beat_retired_dir]
+doc = "Directory under the DevSwarm state directory that stale workspace heartbeats are moved to by the housekeeping duty (moved, never deleted), outside the heartbeats directory the realtime watcher watches (GH #912)."
+value = "heartbeats-retired"
+
+[devswarm_sup.hk_beat_retire_ms]
+doc = "A workspace heartbeat older than this (by modification time) whose workspace has no descriptor in the workspaces directory is moved out of the heartbeats directory by the housekeeping duty. A live workspace or ingest daemon rewrites its beat every few seconds; an active workspace's beat is never moved, however old."
+value = 604800000
+min = 3600000
+unit = "ms"
+
+[devswarm_sup.hk_beat_retire_max]
+doc = "The most heartbeats one housekeeping pass moves, so a large backlog is worked off over several passes."
+value = 500
+min = 1
+
+[devswarm_sup.hk_beat_result]
+doc = "The key of the heartbeat retirement rows in the housekeeping result."
+value = "heartbeatsRetired"
+
+[devswarm_sup.hk_beat_counter]
+doc = "The work counter (status --threads tally) of heartbeats the housekeeping duty moved."
+value = "hk_beats_retired"
+
+[devswarm_sup.hk_msg_retired]
+doc = "Housekeeping row: a stale heartbeat was moved. {file} {to} {days}."
+value = "moved stale heartbeat {file} to {to} ({days} days old, no active workspace)"
+
+[devswarm_sup.hk_msg_retire_failed]
+doc = "Housekeeping row: a stale heartbeat could not be moved. {file} {err}."
+value = "could not move stale heartbeat {file}: {err}"
+
 [devswarm_sup.hk_day_ms]
 doc = "Milliseconds in the retention sweep's day."
 value = 86400000

@@ -109,6 +109,12 @@ fn launchd_install_writes_an_escaped_agent_loads_it_and_a_rerun_changes_nothing(
         "launchd starts it again after any non-zero exit: {text}"
     );
     assert!(text.contains("<key>ThrottleInterval</key>\n  <integer>10</integer>") && text.contains("<string>Background</string>"), "{text}");
+    // GH #912: launchd's default open-file limit (256) is not the daemon's; the unit sets both limits to daemon.nofile
+    let nofile = defaults::num("daemon.nofile");
+    assert!(nofile > 256, "the shipped limit is above launchd's default");
+    for key in ["SoftResourceLimits", "HardResourceLimits"] {
+        assert!(text.contains(&format!("<key>{key}</key>\n  <dict>\n    <key>NumberOfFiles</key>\n    <integer>{nofile}</integer>")), "{key} missing: {text}");
+    }
     assert!(
         text.contains(&format!("<key>{}</key>\n    <string>jemalloc</string>", defaults::text("diagnostics.allocator_env"))),
         "the unit carries the allocator: {text}"
@@ -144,6 +150,7 @@ fn systemd_install_writes_a_service_and_a_timer_with_quoted_exec_and_enables_the
         assert!(service.find(&line) < service.find("ExecStart="), "{service}");
     }
     assert!(service.contains("Restart=always\nRestartSec=10\nRestartPreventExitStatus=0\nSuccessExitStatus=75\n"), "{service}");
+    assert!(service.contains(&format!("LimitNOFILE={}\n", defaults::num("daemon.nofile"))), "the service sets the open-file limit (GH #912): {service}");
     assert!(service.contains("StartLimitIntervalSec=300\nStartLimitBurst=10\n") && service.find("StartLimit") < service.find("[Service]"), "{service}");
     let timer = std::fs::read_to_string(dir.join("anti-hall-engine.timer")).unwrap();
     assert!(timer.contains("OnUnitInactiveSec=300") && timer.contains("WantedBy=timers.target"), "{timer}");

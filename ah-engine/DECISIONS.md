@@ -845,6 +845,18 @@ kept outside the tree (`~/.anti-hall/work/lanea-ab-watch-crates.patch`).
 drops `realtime.max_delay_ms` (a file that never stops changing is not reported) and bounds nothing. Its only gain is lines of code.
 Revisit if the client and the daemon become separate binaries (the thin launcher), so the daemon alone links the frameworks.
 
+**Amendment (GH #912, 2026-11-21): descriptors bounded, still kqueue.** A held one `O_EVTONLY` descriptor per watched file. On the live
+DevSwarm state directory (974 heartbeats, 480 archived, 240 summaries, 132 workspaces, 130 plans) that was ~1,900 descriptors, and a
+daemon started by launchd (default open-file limit 256, `launchctl limit maxfiles`) died with EMFILE three minutes after start. FSEvents
+was considered again and not taken: `ah-hook` still runs `ah-engine` for every hook event, so the condition above is unmet, and a
+re-measure (an empty C program, hyperfine, 300 runs) gave 1.5 ms plain against 2.8 ms (+4 MiB) when linked to CoreServices. Instead a
+directory keeps its own descriptor (creates, deletes and renames, so every staged-and-renamed write) and per-file descriptors only on
+its newest files (`realtime.file_watches_per_dir`, 16; `realtime.max_file_watches`, 512 over the backend); each directory event
+re-lists the directory and compares signatures with the poll backend's `DirState`, so a file outside that set is still reported (an
+in-place write to it at the directory's next event). Also: the daemon raises RLIMIT_NOFILE to `daemon.nofile` at start, the launchd
+unit and the systemd service set the same limit, `status` carries an `fds` gauge with soft/hard states, and housekeeping moves stale
+heartbeats of workspaces with no descriptor out of the watched directory.
+
 
 ## Memory: defaults reload, QuickJS pool, allocator tuning (lane ENG-MEM, 2026-10-16)
 
