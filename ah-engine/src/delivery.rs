@@ -501,7 +501,11 @@ mod tests {
         // a check with no Jev integration notes nothing
         note_jev("s-jev-x", "someOtherId", "hash-x".into(), &home, &jenv, None);
         let rows: Vec<_> = log_rows(&home).into_iter().filter(|r| r["type"] == "outcome").collect();
-        let got = |h: &str| rows.iter().find(|r| r["h"] == h).map(|r| (r["id"].as_str().unwrap().to_string(), r["outcome"].as_str().unwrap().to_string(), r["source"].as_str().unwrap().to_string()));
+        let got = |h: &str| {
+            rows.iter()
+                .find(|r| r["h"] == h)
+                .map(|r| (r["id"].as_str().unwrap().to_string(), r["outcome"].as_str().unwrap().to_string(), r["source"].as_str().unwrap().to_string()))
+        };
         assert_eq!(got("hash-a"), Some((id.into(), "acted".into(), "delivery".into())));
         assert_eq!(got("hash-i"), Some((id.into(), "ignored".into(), "delivery".into())));
         assert_eq!(rows.len(), 2);

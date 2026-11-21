@@ -165,7 +165,11 @@ mod tests {
     }
 
     fn with_probe(body: &str, answered: &str) -> Vec<Result<crate::jev::transport::RawResponse, crate::jev::transport::NetError>> {
-        vec![ok(200, body), ok(200, &format!(r#"{{"model":"{answered}","answers":{{"decision":{{"noul":0.9}}}}}}"#)), ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]
+        vec![
+            ok(200, body),
+            ok(200, &format!(r#"{{"model":"{answered}","answers":{{"decision":{{"noul":0.9}}}}}}"#)),
+            ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#),
+        ]
     }
 
     #[test]
@@ -180,7 +184,14 @@ mod tests {
     #[test]
     fn an_alias_that_answers_no_id_falls_back_to_the_date_warning() {
         let body = r#"{"models":[{"name":"jev-latest","release_date":"2026-10-23T02:00:00+00:00"}]}"#;
-        let (doc, _) = run(&TS, models(body).into_iter().take(1).chain([ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#), ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]).collect());
+        let (doc, _) = run(
+            &TS,
+            models(body)
+                .into_iter()
+                .take(1)
+                .chain([ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#), ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)])
+                .collect(),
+        );
         assert_eq!(doc.warn, 1);
     }
 
@@ -218,7 +229,10 @@ mod tests {
         let home = std::env::temp_dir().join(format!("ah-doctor-jev-keyfile-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".config/typesafe")).unwrap();
         std::fs::write(home.join(".config/typesafe/key"), "file-key\n").unwrap();
-        let s = JevSettings::resolve(&home, Sources::with_files(Default::default(), Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT", "typesafe")])));
+        let s = JevSettings::resolve(
+            &home,
+            Sources::with_files(Default::default(), Env::from_pairs([("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_TRANSPORT", "typesafe")])),
+        );
         let mut doc = Doc::default();
         check(&mut doc, &s, Arc::new(Fake::new(vec![])));
         let t = texts(&doc);

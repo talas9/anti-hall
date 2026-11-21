@@ -286,7 +286,9 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
             let hooks_json = read_bounded(&Path::new(&install).join(defaults::text("doctor.hooks_dir")).join(defaults::text("doctor.hooks_json")), max);
             for (event, matcher, base) in hook_entries(hooks_json.as_ref()) {
                 let shown = matcher.clone().unwrap_or_else(|| "*".into());
-                if (event == defaults::text("doctor.foreign_pre") || event == defaults::text("doctor.foreign_stop")) && defaults::list("doctor.foreign_observers").contains(&base.as_str()) {
+                if (event == defaults::text("doctor.foreign_pre") || event == defaults::text("doctor.foreign_stop"))
+                    && defaults::list("doctor.foreign_observers").contains(&base.as_str())
+                {
                     results.push((false, defaults::render("doctor_msg.foreign_observer", &[("event", &event), ("plugin", &name), ("script", &base)])));
                 } else if event == defaults::text("doctor.foreign_pre") && matches_bash(&matcher) {
                     results.push((true, defaults::render("doctor_msg.foreign_pre", &[("plugin", &name), ("script", &base), ("matcher", &shown)])));

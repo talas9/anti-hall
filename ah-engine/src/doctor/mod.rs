@@ -372,15 +372,24 @@ fn apply_fix(fix: &Fix, dry: bool, root: Option<&Path>) -> (&'static str, Result
         }
         Fix::Unquarantine(p) => {
             let msg = defaults::render("doctor_msg.fix_quarantine", &[("path", &p.display())]);
-            (defaults::raw("doctor.fix_ids").str_field("quarantine"), if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (
+                defaults::raw("doctor.fix_ids").str_field("quarantine"),
+                if dry { Ok(msg) } else { facts::clear_quarantine(p).map(|()| msg).map_err(|e| e.to_string()) },
+            )
         }
         Fix::Mkdir(p) => {
             let msg = defaults::render("doctor_msg.fix_mkdir", &[("dir", &p.display())]);
-            (defaults::raw("doctor.fix_ids").str_field("mkdir"), if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (
+                defaults::raw("doctor.fix_ids").str_field("mkdir"),
+                if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) },
+            )
         }
         Fix::Private(p) => {
             let msg = defaults::render("doctor_msg.fix_private", &[("dir", &p.display())]);
-            (defaults::raw("doctor.fix_ids").str_field("private"), if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) })
+            (
+                defaults::raw("doctor.fix_ids").str_field("private"),
+                if dry { Ok(msg) } else { crate::limits::ensure_private_dir(p).map(|()| msg).map_err(|e| e.to_string()) },
+            )
         }
         Fix::Heal => {
             let id = defaults::raw("doctor.fix_ids").str_field("heal");

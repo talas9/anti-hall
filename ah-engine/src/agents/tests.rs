@@ -4802,8 +4802,12 @@ fn a_closed_nudge_reports_its_outcome_against_the_jev_decisions_behind_it() {
     st.nudges.insert("abc".into(), nudge::Nudge { child: "abc".into(), jev, said_not_done: 1, ..nudge::Nudge::default() });
     nudge::close_finished(&e, &mut st, "abc");
     let rows: Vec<Value> = crate::jev::testkit::log_rows(&h).into_iter().filter(|r| r["type"] == "outcome").collect();
-    let got: Vec<(String, String, String, String)> =
-        rows.iter().map(|r| (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())).collect();
+    let got: Vec<(String, String, String, String)> = rows
+        .iter()
+        .map(|r| {
+            (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())
+        })
+        .collect();
     assert_eq!(
         got,
         vec![
@@ -4927,7 +4931,8 @@ fn run_waste(tag: &str, lines: Vec<String>, now_shift: u64) {
 fn a_turn_that_rebuilds_its_cache_after_an_idle_gap_is_cache_expiry_waste() {
     let n = now0();
     let text = json!([{"type": "text", "text": "ok"}]);
-    let call = |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
+    let call =
+        |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
     let dup = asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), text.clone(), Some("end_turn"));
     run_waste(
         "cacheexp",

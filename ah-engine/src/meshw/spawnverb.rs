@@ -1164,6 +1164,98 @@ fn timings_obj(fields: &[(&str, i64)]) -> OVal {
     o.done()
 }
 
+/// A configured source that does not exist here and what stood in for it.
+struct Fallback {
+    configured: String,
+    /// The default branch used; none when it is unknown and DevSwarm's own default applies.
+    used: Option<String>,
+    message: String,
+}
+
+impl Fallback {
+    /// The result's `sourceFallback` object.
+    fn obj(&self) -> OVal {
+        let mut o = Obj::default();
+        o.put("configured", s(&self.configured)).put("used", s_or_null(self.used.as_deref())).put("message", s(&self.message));
+        o.done()
+    }
+}
+
+/// Does a branch exist: locally or as a remote-tracking ref, else on origin itself. An unreachable origin proves nothing.
+enum Presence {
+    Present,
+    Absent,
+    Unknown,
+}
+
+fn source_presence(runner: &dyn Runner, cwd: &str, src: &str) -> Presence {
+    let quick = tnum("devswarm_cli.sp_git_timeout_ms");
+    let commit = t("devswarm_cli.sp_commit_suffix");
+    let remote_prefix = format!("{}{}", t("devswarm_cli.sp_remotes_prefix"), t("devswarm_cli.sp_origin_prefix"));
+    for prefix in [t("devswarm_cli.sp_heads_prefix"), remote_prefix.as_str()] {
+        let full = format!("{prefix}{src}{commit}");
+        if git_in(runner, cwd, &with(&tl("devswarm_cli.sp_git_verify"), &[&full]), quick).out().is_some() {
+            return Presence::Present;
+        }
+    }
+    // the full ref, so `dev` never matches `feature/dev`
+    let full = format!("{}{src}", t("devswarm_cli.sp_heads_prefix"));
+    let r = git_in(runner, cwd, &with(&tl("devswarm_cli.sp_git_ls_remote"), &[t("devswarm_cli.sp_origin"), &full]), tnum("devswarm_cli.sp_fetch_timeout_ms"));
+    if r.ok() {
+        Presence::Present
+    } else if r.error.is_none() && r.status == Some(tnum("devswarm_cli.sp_ls_remote_absent_status") as i32) {
+        Presence::Absent
+    } else {
+        Presence::Unknown
+    }
+}
+
+/// The source a create with no -s takes: the configured one, unless it exists neither here nor on origin (#931), when the repository's
+/// default branch stands in and the result says so. Off with `devswarm.spawnSourceFallback`.
+fn resolve_source(inv: &Inv, runner: &dyn Runner, configured: String) -> (Option<String>, Option<Fallback>) {
+    if setting(inv, "devswarm_cli.sp_set_source_fallback").as_bool() == Some(false) {
+        return (Some(configured), None);
+    }
+    if !matches!(source_presence(runner, &inv.cwd, &configured), Presence::Absent) {
+        return (Some(configured), None);
+    }
+    let origin = t("devswarm_cli.sp_origin_prefix");
+    let used = default_branch_ref(runner, &inv.cwd).map(|r| r.strip_prefix(origin).unwrap_or(&r).to_string());
+    let message = match &used {
+        Some(u) => tpl("devswarm_cli.sp_fallback_message", &[("configured", &configured), ("used", u)]),
+        None => tpl("devswarm_cli.sp_fallback_message_unknown_default", &[("configured", &configured)]),
+    };
+    crate::obs::counters::advisory(t("devswarm_cli.sp_counter_kind"), t("devswarm_cli.sp_counter_fallback"));
+    (used.clone(), Some(Fallback { configured, used, message }))
+}
+
+/// One argument of a printed retry command: as it is when it is plain, else single-quoted.
+fn shell_word(a: &str) -> String {
+    if re("devswarm_cli.sp_shell_safe_re", false).is_match(a) { a.to_string() } else { format!("'{}'", a.replace('\'', "'\\''")) }
+}
+
+/// The answer of a spawn that created nothing: `ok:false`, `created:false`, exit 2, an error that opens with the verdict and a `retry`
+/// that is the exact command to run again (the arguments the spawn ran with, so a replaced source is already in it).
+fn nothing_created(action: OVal, branch: &str, rest: &[&str], cause: &str, check: OVal, timings: OVal, fallback: Option<&Fallback>) -> Answer {
+    let mut words = vec![t("devswarm_cli.sp_retry_prefix").to_string(), shell_word(branch)];
+    words.extend(rest.iter().map(|a| shell_word(a)));
+    let retry = words.join(" ");
+    let error = tpl("devswarm_cli.sp_nothing_created", &[("error", cause), ("retry", &retry)]);
+    crate::obs::counters::advisory(t("devswarm_cli.sp_counter_kind"), t("devswarm_cli.sp_counter_nothing_created"));
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("created", OVal::Bool(false))
+        .put("action", action)
+        .put("branch", s(branch))
+        .put("error", s(&error))
+        .put("retry", s(&retry));
+    if let Some(f) = fallback {
+        o.put("sourceFallback", f.obj());
+    }
+    o.put("sourceCheck", check).put("timings", timings);
+    answer(2, o.done())
+}
+
 /// The configured source branch (`devswarm.spawnSource`) a create with no -s / --source branches from; none when the create names its
 /// source or no source is configured.
 fn default_source(inv: &Inv, rest: &[&str]) -> Option<String> {
@@ -1200,6 +1292,9 @@ mod default_source_tests {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 /// `spawn <branch> [create options]` past the option checks: the create path (see the module header).
 pub fn create(inv: &Inv, rest: &[&str], branch: &str) -> R<Answer> {
     create_with(inv, rest, branch, &System::configured())
@@ -1209,7 +1304,10 @@ pub fn create(inv: &Inv, rest: &[&str], branch: &str) -> R<Answer> {
 pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) -> R<Answer> {
     // no source named: the repository's configured source branch (devswarm.spawnSource, its integration branch) stands in for the Primary's
     // checked-out branch, which hivecontrol would otherwise branch from
-    let configured = default_source(inv, rest);
+    let (configured, fallback) = match default_source(inv, rest) {
+        Some(src) => resolve_source(inv, runner, src),
+        None => (None, None),
+    };
     let injected: Vec<&str> = match configured.as_deref() {
         Some(src) => rest.iter().copied().chain([nth(&tl("devswarm_cli.sp_flag_source"), 0), src]).collect(),
         None => rest.to_vec(),
@@ -1224,15 +1322,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
     let action = s(defaults::text("devswarm_cli.action_spawn"));
     if let Some(error) = sc.refused {
         let timings = timings_obj(&[("sourceCheckMs", source_ms), ("totalMs", clock(inv) - wall_start)]);
-        let mut o = Obj::default();
-        o.put("ok", OVal::Bool(false))
-            .put("action", action)
-            .put("branch", s(branch))
-            .put("created", OVal::Bool(false))
-            .put("error", s(&error))
-            .put("sourceCheck", sc.obj)
-            .put("timings", timings);
-        return Ok(answer(2, o.done()));
+        return Ok(nothing_created(action, branch, rest, &error, sc.obj, timings, fallback.as_ref()));
     }
     let strip = t("devswarm_cli.sp_from_local_flag");
     let mut args: Vec<&str> = defaults::list("devswarm_act.argv_create");
@@ -1256,9 +1346,16 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
         };
         let timings =
             timings_obj(&[("sourceCheckMs", source_ms), ("submodulePreflightMs", preflight_ms), ("createMs", create_ms), ("totalMs", clock(inv) - wall_start)]);
-        let mut o = Obj::default();
-        o.put("ok", OVal::Bool(false)).put("error", s(&error)).put("branch", s(branch)).put("sourceCheck", sc.obj).put("timings", timings);
-        return Ok(answer(2, o.done()));
+        if res.call.timed_out {
+            // a timed-out create may have left a partial workspace (the error says so): it is not claimed to be nothing
+            let mut o = Obj::default();
+            o.put("ok", OVal::Bool(false)).put("error", s(&error)).put("branch", s(branch)).put("sourceCheck", sc.obj).put("timings", timings);
+            if let Some(f) = &fallback {
+                o.put("sourceFallback", f.obj());
+            }
+            return Ok(answer(2, o.done()));
+        }
+        return Ok(nothing_created(action, branch, rest, &error, sc.obj, timings, fallback.as_ref()));
     }
     let raw = res.call.raw.clone();
     let parsed = parse_failures(&raw, &res.stderr, &inv.cwd);
@@ -1330,6 +1427,9 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
     let wake = wake_warning(inv, clock(inv));
 
     let mut warnings: Vec<String> = Vec::new();
+    if let Some(f) = &fallback {
+        warnings.push(f.message.clone());
+    }
     if let Some(x) = &note {
         warnings.push(x.clone());
     }
@@ -1358,7 +1458,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
             .join("; ");
         warnings.push(tpl("devswarm_cli.sp_warn_failures", &[("count", &failures.len().to_string()), ("list", &list)]));
     }
-    let any_warning = !failures.is_empty() || !repaired.is_empty() || !preflight.1.is_empty() || note.is_some();
+    let any_warning = !failures.is_empty() || !repaired.is_empty() || !preflight.1.is_empty() || note.is_some() || fallback.is_some();
     let mut warnings_out = any_warning.then_some(warnings);
     if let Some(w) = wake {
         warnings_out.get_or_insert_with(Vec::new).push(w);
@@ -1374,6 +1474,9 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
         .put("registered", OVal::Bool(registered))
         .put("titled", OVal::Bool(titled))
         .put("sourceCheck", sc.obj);
+    if let Some(f) = &fallback {
+        o.put("sourceFallback", f.obj());
+    }
     if let Some(uuid) = &registry_id {
         o.put(t("devswarm_cli.sp_field_registry_id"), s(uuid));
     }

@@ -605,7 +605,8 @@ fn ship_it_guard_script_matches_the_compiled_port() {
 #[test]
 fn cache_ttl_wait_guard_script_matches_its_corpus() {
     golden_report("cache-ttl-wait-guard", 12);
-    let kinds: std::collections::BTreeSet<String> = golden::load("cache-ttl-wait-guard").iter().filter_map(|c| c["expect"]["v"].as_str().map(str::to_string)).collect();
+    let kinds: std::collections::BTreeSet<String> =
+        golden::load("cache-ttl-wait-guard").iter().filter_map(|c| c["expect"]["v"].as_str().map(str::to_string)).collect();
     assert!(kinds.contains("advisory") && kinds.contains("allow") && !kinds.contains("block"), "an order is never a block: {kinds:?}");
 }
 
@@ -5105,7 +5106,10 @@ mod inline_rule_counters {
         let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
         let at = defaults::raw("coordinator_work.block_setting").get("default").and_then(|v| v.as_integer()).unwrap() as usize;
         let reads = [
-            ("A=/x/ah-engine; $A mesh inbox read-primary ws-1 2>/dev/null | python3 -I -c 'import subprocess\nsubprocess.run([\"'$A'\",\"mesh\"],capture_output=True)'", "read-primary"),
+            (
+                "A=/x/ah-engine; $A mesh inbox read-primary ws-1 2>/dev/null | python3 -I -c 'import subprocess\nsubprocess.run([\"'$A'\",\"mesh\"],capture_output=True)'",
+                "read-primary",
+            ),
             ("ah-engine mesh inbox peek-primary ws-1 | python3 -I -c \"import os,sys; print(os.environ.get('HOME'), '$X')\"", "peek-primary"),
             ("ah-engine mesh inbox ack-primary ws-1 --receipt r-1", "ack-primary"),
         ];
