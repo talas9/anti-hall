@@ -78,8 +78,10 @@ function decide(p) {
           }
           // GH #894: the gate is sent when its state changes (or with a backstop), not on every prompt; repeats are counted
           var gate = cb.gateDirective(result, cur, cfg, p);
-          if (dedupe.advisory(p, ah.cfg('ctxbudget.ah_gate_profile'), cb.gateFacts(result, cur, cfg), gate) || backstop) parts.push(gate);
-          jev = { result: result };
+          if (dedupe.advisory(p, ah.cfg('ctxbudget.ah_gate_profile'), cb.gateFacts(result, cur, cfg), gate) || backstop) {
+            parts.push(gate);
+            jev = { result: result }; // Jev judges a gate the model receives, not a suppressed repeat
+          }
         }
       }
       if (!backstop && cfg.nag) {

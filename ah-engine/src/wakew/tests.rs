@@ -280,26 +280,51 @@ fn mail(total2: f64, unread: Option<f64>, now_ms: f64, coalesce: Option<f64>) ->
     Snapshot { now_ms, unread, coalesce_ms: coalesce, ..child(0.0, Some(total2), None) }
 }
 
-/// One wake per state change: mail that lands while the workspace has not read the mail of its previous wake is held (the cursor
-/// moves, so it never fires later on its own); a drained inbox ends the outstanding wake; the re-wake window wakes a workspace that
-/// still has not read it. Before, every message printed a wake line and each one cost the workspace a turn.
+/// One wake per state change: mail that lands while the workspace has read nothing since its last wake is held (the cursor moves,
+/// so it never fires later as new mail); a drained inbox ends the outstanding wake. Before, every message printed a wake line and
+/// each one cost the workspace a turn.
 #[test]
-fn new_mail_while_the_last_wake_is_undrained_is_held_until_drained_or_the_rewake_window() {
+fn new_mail_while_nothing_was_read_since_the_last_wake_is_held_and_a_drain_ends_it() {
     let on = Some(600_000.0);
     let armed = State { armed: true, ..State::default() };
     let (st, lines) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, on));
     assert_eq!(lines.len(), 1, "the first message wakes: {lines:?}");
     assert_eq!((st.held, st.woke_ms), (0, Some(1_000.0)));
     let (st, lines) = tick(&st, &mail(2.0, Some(2.0), 31_000.0, on));
-    assert!(lines.is_empty(), "a second message, the first still unread: held: {lines:?}");
-    assert_eq!((st.held, st.last_total2), (1, 2.0), "counted, and the cursor moved");
+    assert!(lines.is_empty(), "a second message, nothing read since the wake: held: {lines:?}");
+    assert_eq!((st.held, st.last_total2, st.held_pending), (1, 2.0, true), "counted, and the cursor moved");
     let (st, lines) = tick(&st, &mail(2.0, Some(0.0), 40_000.0, on));
-    assert!(lines.is_empty() && st.woke_ms.is_none(), "drained: no wake outstanding");
+    assert!(lines.is_empty() && st.woke_ms.is_none() && !st.held_pending, "drained: no wake outstanding");
     let (st, lines) = tick(&st, &mail(3.0, Some(1.0), 50_000.0, on));
-    assert_eq!(lines.len(), 1, "new mail after the drain wakes again: {lines:?}");
-    let (st, lines) = tick(&st, &mail(4.0, Some(2.0), 50_000.0 + 600_000.0, on));
-    assert_eq!(lines.len(), 1, "still unread after the re-wake window: woken again: {lines:?}");
-    assert_eq!(st.held, 0);
+    assert_eq!((lines.len(), st.woke_ms), (1, Some(50_000.0)), "new mail after the drain wakes again: {lines:?}");
+}
+
+/// The advisor's case: woken for message 1, the workspace read it, but the watcher never saw an unread count of 0 (message 2 landed
+/// before the summary was rewritten). The unread count is 1 again, yet it is new mail the workspace has not been woken for: it wakes.
+#[test]
+fn a_workspace_that_read_its_mail_since_the_wake_is_woken_for_the_next_one_even_at_the_same_unread_count() {
+    let on = Some(600_000.0);
+    let armed = State { armed: true, ..State::default() };
+    let (st, _) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, on));
+    let (st, lines) = tick(&st, &mail(2.0, Some(1.0), 20_000.0, on));
+    assert_eq!((lines.len(), st.held), (1, 0), "message 1 was read (2 arrived, 1 unread): woken for message 2: {lines:?}");
+}
+
+/// Held mail that is still unread when the re-wake window passes wakes the workspace again on a tick with no new mail.
+#[test]
+fn held_mail_still_unread_after_the_rewake_window_wakes_once_without_new_mail() {
+    let on = Some(600_000.0);
+    let armed = State { armed: true, ..State::default() };
+    let (st, _) = tick(&armed, &mail(1.0, Some(1.0), 1_000.0, on));
+    let (st, held) = tick(&st, &mail(2.0, Some(2.0), 2_000.0, on));
+    assert!(held.is_empty() && st.held_pending);
+    let (st, lines) = tick(&st, &mail(2.0, Some(2.0), 300_000.0, on));
+    assert!(lines.is_empty(), "inside the window: still held: {lines:?}");
+    let (st, lines) = tick(&st, &mail(2.0, Some(2.0), 601_000.0, on));
+    assert_eq!(lines, vec!["[wake-watch] new mesh mail for child w1: mesh-direct direct total 1 -> 2 (+1). Drain your own inbox on your next turn."]);
+    assert!(!st.held_pending && st.woke_ms == Some(601_000.0));
+    let (_, lines) = tick(&st, &mail(2.0, Some(2.0), 1_300_000.0, on));
+    assert!(lines.is_empty(), "nothing held any more: no repeat: {lines:?}");
 }
 
 #[test]

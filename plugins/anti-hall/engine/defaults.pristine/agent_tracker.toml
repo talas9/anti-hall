@@ -136,10 +136,6 @@ value = { kind = "counter", unit = "ticks", labels = ["reason"] }
 doc = "Rows the merged wake-watch (agents wake-watch, one Monitor for both sources) printed, by source: agent (a wake row of the agent tracker) or devswarm (a mesh/DevSwarm wake line: arm notice, new mail, error)."
 value = { kind = "counter", unit = "rows", labels = ["source"] }
 
-[metric.native_wake_coalesced]
-doc = "Native wakes (workspace reactivate-child, after a mesh send or agents send) not made because the workspace was already woken for the same pending mail and reminders within devswarm.wakeWatchRewakeMs (GH #884, devswarm.wakeWatchCoalesce). Each is a woken turn not spent."
-value = { kind = "counter", unit = "wakes", labels = [] }
-
 [metric.merged_watch_failed]
 doc = "Halves of the merged wake-watch that panicked (the panic is caught, one stdout line names the half, the other half keeps running), by half."
 value = { kind = "counter", unit = "halves", labels = ["half"] }
@@ -341,7 +337,7 @@ doc = "The live facts of a DevSwarm workspace's work that the roster shows besid
 value = { dir = "live-plan", stale_ms = 300000 }
 
 [agent_tracker.native_wake]
-doc = "The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp (its time and the pending delivery it was for: a second wake for the same pending mail is held while devswarm.wakeWatchCoalesce is on, until devswarm.wakeWatchRewakeMs has passed). info_args: the hivecontrol arguments that read the workspace (its branch), before the workspace id. reactivate_args: the hivecontrol arguments that queue the wake prompt, before the branch and the prompt."
+doc = "The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp. info_args: the hivecontrol arguments that read the workspace (its branch), before the workspace id. reactivate_args: the hivecontrol arguments that queue the wake prompt, before the branch and the prompt."
 value = { idle_ms = 120000, cooldown_ms = 300000, timeout_ms = 15000, text_cap = 200, dir = "native-wake", info_args = ["workspace", "info"], reactivate_args = ["workspace", "reactivate-child"] }
 
 [agent_tracker.wake_prefix]
