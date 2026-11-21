@@ -111,10 +111,14 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
         std::fs::read_to_string(self.eng().join("ah-engine.log")).unwrap_or_default()
     }
     fn fresh_down_marker(&self) -> bool {
-        std::fs::read_to_string(self.eng().join("daemon.down.until"))
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .is_some_and(|until| until > ah_engine::health::now_ms())
+        self.fresh_marker("daemon.down.until")
+    }
+    /// #901: the slow-streak marker (a loaded daemon, skipped for a while; risky guard calls are held meanwhile)
+    fn fresh_slow_marker(&self) -> bool {
+        self.fresh_marker("daemon.slow.until")
+    }
+    fn fresh_marker(&self, name: &str) -> bool {
+        std::fs::read_to_string(self.eng().join(name)).ok().and_then(|s| s.trim().parse::<u64>().ok()).is_some_and(|until| until > ah_engine::health::now_ms())
     }
     /// Wait until the down marker has expired (polled, bounded), then a little more: a fixed `down_marker_ttl_ms + 200` sleep is
     /// measured from when the test starts sleeping, but the client can refresh the marker after its call returned, and on a loaded
@@ -122,8 +126,8 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
     /// at the deadline fails the test with the diagnostics instead of letting the next call fail open silently.
     fn wait_down_marker_expired(&self) {
         let deadline = Instant::now() + Duration::from_secs(15);
-        while self.fresh_down_marker() {
-            assert!(Instant::now() < deadline, "the daemon-down marker was still fresh after 15 s: {}", self.diag());
+        while self.fresh_down_marker() || self.fresh_slow_marker() {
+            assert!(Instant::now() < deadline, "the daemon-down or slow marker was still fresh after 15 s: {}", self.diag());
             std::thread::sleep(Duration::from_millis(20));
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -249,6 +253,7 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
     }
     fn clear_down_marker(&self) {
         ah_engine::discard::harmless(std::fs::remove_file(self.eng().join("daemon.down.until")));
+        ah_engine::discard::harmless(std::fs::remove_file(self.eng().join("daemon.slow.until")));
         ah_engine::discard::harmless(std::fs::remove_file(self.eng().join("daemon.spawn.lock")));
     }
     fn status(&self) -> serde_json::Value {
@@ -502,7 +507,7 @@ fn ah_hook_wrapper_failfast_no_daemon_hung_daemon_and_restart_loop() {
     // not after the late-reply bound
     assert!(dt < common::scaled(Duration::from_secs(1)), "hung-daemon wrapper took {dt:?}");
     settle_after_cold_slow(&hung);
-    assert!(hung.fresh_down_marker(), "a slow reply (slow_down_n = 1) did not leave a fresh daemon-down marker");
+    assert!(hung.fresh_slow_marker(), "a slow reply (slow_down_n = 1) did not leave a fresh slow marker (#901: load, not down)");
     assert_eq!(hung.spawn_attempt_count(), 0, "a slow daemon is alive: it is never restarted");
     assert_twenty_wrappers_exit(&hung);
     assert_eq!(hung.spawn_attempt_count(), 0, "a slow daemon is never restarted by concurrent wrappers");
@@ -630,6 +635,44 @@ fn a_force_push_is_held_when_the_daemon_is_too_loaded_to_answer_and_a_read_passe
     assert_eq!(e.hook(READ_IN, true).2, 0, "engine hook: a read passes");
 }
 
+/// #901: after `client.slow_down_n` late replies in a row the client writes the slow marker (a loaded daemon), never the down marker,
+/// and while it holds every later call skips the daemon: a force push is still held there (dispatcher and `engine hook`), a read
+/// passes. A daemon that is really down (the down marker) keeps passing every call (C9). Before the fix the streak wrote the down
+/// marker and the force push sent in its window exited 0.
+#[test]
+fn a_force_push_in_the_slow_streak_window_is_held_and_a_down_marker_still_passes() {
+    let env = [
+        ("AH_ENGINE_NOSPAWN", "1"),
+        ("AH_ENGINE_DISPATCH_IN_PROCESS", "0"),
+        ("AH_ENGINE_DEADLINE_MS", "150"),
+        ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "300"),
+        ("AH_ENGINE_SLOW_DOWN_N", "2"),
+        ("AH_ENGINE_BREAKER_N", "9"),
+    ];
+    let e = Env::new("slow-marker", &env);
+    fake_server(&e, || None); // never replies
+    for _ in 0..2 {
+        assert_eq!(e.dispatch("PreToolUse", READ_IN).2, 0, "a late read passes");
+    }
+    assert!(e.eng().join("daemon.slow.until").is_file(), "the streak writes the slow marker");
+    assert!(!e.eng().join("daemon.down.until").exists(), "a loaded daemon is not marked down");
+    let (_, err, code) = e.dispatch("PreToolUse", DENY_IN);
+    assert_eq!(code, 2, "dispatcher: a force push in the slow window is held: {err:?}");
+    assert!(err.contains("too risky") && err.contains("git-push"), "{err:?}");
+    assert_eq!(e.dispatch("PreToolUse", READ_IN).2, 0, "dispatcher: a read in the slow window passes");
+    let (_, err, code, _) = e.hook(DENY_IN, true);
+    assert_eq!(code, 2, "engine hook: a force push in the slow window is held: {err:?}");
+    assert_eq!(e.hook(READ_IN, true).2, 0, "engine hook: a read in the slow window passes");
+    let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("skipped_slow"), "the skip is told apart from a down skip: {log:?}");
+    // really down: the down marker passes every call, a force push included (C9), and is never weighed as load
+    std::fs::remove_file(e.eng().join("daemon.slow.until")).unwrap();
+    let until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() + 60_000;
+    std::fs::write(e.eng().join("daemon.down.until"), until.to_string()).unwrap();
+    assert_eq!(e.dispatch("PreToolUse", DENY_IN).2, 0, "dispatcher: a down daemon passes the call");
+    assert_eq!(e.hook(DENY_IN, true).2, 0, "engine hook: a down daemon passes the call");
+}
+
 #[test]
 fn engine_down_fails_open_quickly_with_or_without_fallback() {
     let e = Env::new("down", &[("AH_ENGINE_NOSPAWN", "1")]);
@@ -743,7 +786,7 @@ fn wrapper_fails_open_under_one_second_when_daemon_accepts_and_never_replies() {
     assert_eq!((code, out.as_str()), (0, ""), "no reply in the window fails open, no Node hook");
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
     settle_after_cold_slow(&e);
-    assert!(e.fresh_down_marker(), "hung wrapper did not write daemon-down marker");
+    assert!(e.fresh_slow_marker(), "hung wrapper did not write the slow marker");
     assert_eq!(e.spawn_attempt_count(), 0, "a slow daemon is never restarted");
 }
 
@@ -757,7 +800,7 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
     assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
     settle_after_cold_slow(&high);
-    assert!(high.fresh_down_marker(), "wrapper killed client before it wrote the daemon-down marker");
+    assert!(high.fresh_slow_marker(), "wrapper killed client before it wrote the slow marker");
     assert_eq!(high.spawn_attempt_count(), 0, "a slow daemon is never restarted");
 
     let lower = Env::new("wrapenvdeadline-low", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_DEADLINE_MS", "200"), ("AH_ENGINE_SLOW_DOWN_N", "1")]);
@@ -769,7 +812,7 @@ fn wrapper_deadline_clamps_high_env_override_and_keeps_lower_override() {
     lower.prime_defaults_cache();
     let (_, _, warm) = wrapper_once(&lower);
     assert!(warm < common::scaled(Duration::from_secs(3)), "warm wrapper took {warm:?}");
-    assert!(lower.fresh_down_marker(), "wrapper killed lower-deadline client before it wrote the daemon-down marker");
+    assert!(lower.fresh_slow_marker(), "wrapper killed lower-deadline client before it wrote the slow marker");
     assert_eq!(lower.spawn_attempt_count(), 0, "a slow daemon is never restarted");
 }
 
@@ -1234,7 +1277,7 @@ fn a_wedged_daemon_is_marked_down_only_after_a_streak_of_slow_replies() {
     });
     for i in 0..5 {
         assert_eq!(e.hook(DENY_IN, true).0, "", "slow call {i} fails open without running its Node hook");
-        assert_eq!(e.fresh_down_marker(), i == 4, "the marker appears with the 5th slow reply, not before (call {i})");
+        assert_eq!(e.fresh_slow_marker(), i == 4, "the slow marker appears with the 5th slow reply, not before (call {i})");
     }
     assert_eq!(e.hook(DENY_IN, true).0, "", "a marked-down daemon is skipped");
     assert_eq!(e.spawn_attempt_count(), 0, "a slow daemon is never restarted");
@@ -1284,7 +1327,7 @@ fn a_non_slow_reply_between_slow_ones_breaks_the_slow_streak() {
     }
     // two slow replies in a row still do (the streak itself works)
     assert_eq!(e.hook(DENY_IN, true).0, "");
-    assert!(e.fresh_down_marker(), "two consecutive slow replies mark the daemon down");
+    assert!(e.fresh_slow_marker() && !e.fresh_down_marker(), "two consecutive slow replies mark the daemon slow, never down (#901)");
 }
 
 #[test]

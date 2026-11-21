@@ -210,6 +210,10 @@ value = "cold-guard.notice"
 doc = "Short-lived client marker: when a hook client finds the daemon absent or hung, other clients skip connecting until this expires."
 value = "daemon.down.until"
 
+[files.daemon_slow_marker]
+doc = "Short-lived client marker (client.down_marker_ttl_ms), the load sibling of files.daemon_down_marker: written instead of it when client.slow_down_n consecutive replies came late (a daemon that is there but loaded, not down). Clients skip connecting until it expires, as for the down marker, but a guard call no check could decide then falls under dispatch.capacity_hold (a push, a merge, a recursive delete is held with a retry hint; a read passes), in the engine's client and in the ah-hook launcher alike. A daemon that is really down (absent, hung, a failed spawn) writes the down marker and removes this one, so it keeps passing every call (roadmap C9)."
+value = "daemon.slow.until"
+
 [files.supervisor_unhealthy_marker]
 doc = "Short-lived client marker (units.unhealthy_ttl_ms): the service manager accepted an ask to start the engine unit but no daemon answered, so clients start the daemon themselves until this expires. Doctor reports it."
 value = "supervisor.unhealthy.until"
@@ -675,7 +679,7 @@ value = 400
 unit = "ms"
 
 [client.down_marker_ttl_ms]
-doc = "How long other clients skip connecting after one client finds the daemon absent or failed, or hung (client.heartbeat_stale_ms) and not replaced, or after client.slow_down_n consecutive slow replies; this prevents hook pile-ups while a restart is attempted."
+doc = "How long other clients skip connecting after one client finds the daemon absent or failed, or hung (client.heartbeat_stale_ms) and not replaced (files.daemon_down_marker), or after client.slow_down_n consecutive slow replies (files.daemon_slow_marker); this prevents hook pile-ups while a restart is attempted."
 value = 3000
 env = "AH_ENGINE_DOWN_MARKER_TTL_MS"
 unit = "ms"
