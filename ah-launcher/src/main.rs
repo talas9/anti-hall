@@ -27,6 +27,7 @@ mod nodeback;
 mod proc;
 mod rec;
 mod selftest;
+mod shellwords;
 mod update;
 mod util;
 

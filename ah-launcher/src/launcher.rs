@@ -13,7 +13,7 @@ use crate::proc::{self, Feed, Opts, Retry, Run};
 use crate::util::{
     env_nonempty, fill, is_exec, json_str_field, json_true_field, now_ms, positive, say, uid,
 };
-use crate::{builtin, cli, nodeback, selftest};
+use crate::{builtin, cli, nodeback, selftest, shellwords};
 use std::ffi::CString;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -568,32 +568,87 @@ impl L {
         ) else {
             return false;
         };
+        // #907: the command read the way the shell reads it (in-word quotes and backslashes gone, only an unquoted separator splits,
+        // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a command it can not balance is held
+        // under `unreadable` (#918 review: the quote-blind raw text alone would let any such tail switch the reading off)
+        let ncfg = Self::capacity_norm_cfg(cfg);
+        let norm = ncfg
+            .as_ref()
+            .and_then(|c| shellwords::normalise(command, c));
         // #901/#904: a plain read that only names the words passes (read_only, minus read_only_unless), as
         // dispatch::capacity_read_only; a broken or empty exemption exempts nothing
-        if listed && self.capacity_read_only(cfg, command) {
+        if listed
+            && self.capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str()))
+        {
             return false;
         }
-        let rule = listed
-            .then(|| {
-                rules.iter().find_map(|(name, pat)| {
-                    // ASCII classes (\b, \s, case folding) on bytes: the launcher's regex is built without the Unicode tables
-                    let re = regex::bytes::RegexBuilder::new(pat.as_str()?)
-                        .unicode(false)
-                        .case_insensitive(true)
-                        .build();
-                    match re {
-                        Ok(re) => re.is_match(command.as_bytes()).then(|| name.clone()),
-                        Err(e) => {
-                            self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
-                            None
+        // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
+        let mut texts: Vec<&str> = match &norm {
+            Some(n) if n.stripped => vec![n.text.as_str()],
+            Some(n) => vec![command, n.text.as_str()],
+            None => vec![command],
+        };
+        texts.extend(norm.iter().flat_map(|n| n.extra.iter().map(String::as_str)));
+        let (mut raw_only_hit, mut via_norm) = (false, false);
+        let mut rule = None;
+        if listed {
+            for (name, pat) in rules {
+                let Some(pat) = pat.as_str() else { continue };
+                // ASCII classes (\b, \s, case folding) on bytes: the launcher's regex is built without the Unicode tables
+                match regex::bytes::RegexBuilder::new(pat)
+                    .unicode(false)
+                    .case_insensitive(true)
+                    .build()
+                {
+                    Ok(re) => {
+                        if let Some(at) = texts.iter().position(|t| re.is_match(t.as_bytes())) {
+                            via_norm = at > 0 && !re.is_match(command.as_bytes());
+                            rule = Some(name.clone());
+                            break;
                         }
+                        raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped)
+                            && re.is_match(command.as_bytes());
                     }
-                })
-            })
-            .flatten();
+                    Err(e) => {
+                        self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
+                    }
+                }
+            }
+            // a git subcommand that is no known one (an alias, an external command) is held under its own rule
+            if rule.is_none()
+                && let Some(n) = &norm
+                && n.git_unknown.is_some()
+                && let Some(r) = cfg
+                    .get("git")
+                    .and_then(|g| g.get("rule"))
+                    .and_then(|v| v.as_str())
+                    .filter(|r| !r.is_empty())
+            {
+                via_norm = true;
+                rule = Some(r.to_string());
+            }
+        }
+        if listed
+            && rule.is_none()
+            && ncfg.is_some()
+            && norm.is_none()
+            && let Some(r) = cfg
+                .get("unreadable")
+                .and_then(|v| v.as_str())
+                .filter(|r| !r.is_empty())
+        {
+            via_norm = true;
+            rule = Some(r.to_string());
+        }
+        if rule.is_none() && raw_only_hit {
+            limits::bump(Ctr::CapacityTextExempt);
+        }
         let Some(rule) = rule else {
             return false;
         };
+        if via_norm {
+            limits::bump(Ctr::CapacityHoldNormalised);
+        }
         limits::bump(Ctr::CapacityHold);
         self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
         let msg = self.s.msg(
@@ -602,6 +657,45 @@ impl L {
         );
         write_out(b"", format!("{msg}\n").as_bytes());
         true
+    }
+
+    /// #907: the word lists of the shell-word normaliser from `dispatch.capacity_hold` (`normalise` 0 switches it off: the raw text
+    /// alone is matched), as the engine's dispatch::capacity_norm_cfg.
+    fn capacity_norm_cfg(cfg: &toml::Value) -> Option<shellwords::Cfg> {
+        if cfg.get("normalise").and_then(|v| v.as_integer()) == Some(0) {
+            return None;
+        }
+        let strs = |v: Option<&toml::Value>| -> Vec<String> {
+            v.and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let one =
+            |v: Option<&toml::Value>| v.and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let count = |k: &str| {
+            cfg.get(k)
+                .and_then(|v| v.as_integer())
+                .and_then(|v| usize::try_from(v).ok())
+                .unwrap_or_default()
+        };
+        let (text, git) = (cfg.get("text"), cfg.get("git"));
+        Some(shellwords::Cfg {
+            text_verb: one(text.and_then(|t| t.get("verb"))),
+            text_subs: strs(text.and_then(|t| t.get("subs"))),
+            text_opts: strs(text.and_then(|t| t.get("opts"))),
+            git_rule: one(git.and_then(|g| g.get("rule"))),
+            git_known: strs(git.and_then(|g| g.get("known"))),
+            git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
+            git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
+            passes: count("passes"),
+            brace_cap: count("brace_cap"),
+            body_depth: count("body_depth"),
+        })
     }
 
     /// #901/#904: whether `command` is a plain read that passes dispatch.capacity_hold whatever words it names: the whole command
