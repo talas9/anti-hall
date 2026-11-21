@@ -112,11 +112,13 @@ What the automatic guards check and how to read a block.
 - `guards.upfrontNotice` = true: Switch for the switch-change notice
 - `guards.pairPostAuthoritativeTasks` = true: Use authoritative tasks for post-tool pairing
 - `guards.diskToolAdvisoryOnChangeRepeatS` = 21600: Unchanged disk reminder interval, seconds
+- `guards.handoverGateOnChangeRepeatS` = 1800: Unchanged post-handover gate reminder interval, seconds
 - `guards.orchestrationOncePerSessionRepeatS` = 0: Unchanged orchestration reminder interval, seconds
 - `guards.pairAdvisoryOnChangeRepeatS` = 7200: Unchanged pair reminder interval, seconds
 - `guards.subagentProtocolOnChangeRepeatS` = 0: Unchanged subagent reminder interval, seconds
 - `guards.usageAdvisoryOnChangeRepeatS` = 7200: Unchanged usage reminder interval, seconds
 - `guards.diskToolAdvisoryOnChange` = true: Emit disk advisories on change
+- `guards.handoverGateOnChange` = true: Send the post-handover gate on change
 - `guards.orchestrationOncePerSession` = true: Emit orchestration rules on context change
 - `guards.pairAdvisoryOnChange` = true: Emit pair advisories on change
 - `guards.subagentProtocolOnChange` = true: Emit subagent protocol on change

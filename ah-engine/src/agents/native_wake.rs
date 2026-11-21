@@ -28,8 +28,21 @@ fn stamp_file(env: &Env, id: &str) -> PathBuf {
     env.base().join(cfg.str_field("dir")).join(format!("{id}{}", super::pth("json_ext")))
 }
 
-fn last_wake(env: &Env, id: &str) -> u64 {
-    std::fs::read_to_string(stamp_file(env, id)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["ts"].as_u64()).unwrap_or(0)
+fn last_stamp(env: &Env, id: &str) -> Value {
+    std::fs::read_to_string(stamp_file(env, id)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null)
+}
+
+/// The pending delivery a wake is for: unread mesh mail (`None` when the store cannot be read) and queued reminders.
+fn pending(unread: Option<usize>, backlog: u64) -> Value {
+    json!({"unread": unread, "backlog": backlog})
+}
+
+/// GH #884, one wake per state change: the last wake was for exactly this pending delivery and `rewake_ms` has not passed since, so
+/// the workspace already has a wake prompt for it and another one would only cost a turn. `rewake_ms` `None`: coalescing is off.
+pub(crate) fn same_pending(stamp: &Value, now_ms: u64, pending: &Value, rewake_ms: Option<u64>) -> bool {
+    let Some(rewake) = rewake_ms else { return false };
+    let at = stamp["ts"].as_u64().unwrap_or(0);
+    at > 0 && stamp.get("pending") == Some(pending) && now_ms.saturating_sub(at) < rewake
 }
 
 /// The text a failed call reports: the CLI's own stderr, else its stdout, else the spawn error.
@@ -56,13 +69,23 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if a.dead || a.gone || a.finished || (signals::state_of(a) == state_name("running") && idle_ms < num("idle_ms")) {
         return None;
     }
-    if tr.now_ms.saturating_sub(last_wake(&tr, &desc.id)) < num("cooldown_ms") {
+    let stamp = last_stamp(&tr, &desc.id);
+    if tr.now_ms.saturating_sub(stamp["ts"].as_u64().unwrap_or(0)) < num("cooldown_ms") {
         return None;
     }
     // wake only for a real pending delivery: unread mesh mail (wake rows are not counted) or a reminder still queued for the session
     // (an unreadable mail store is not "none": the wake goes ahead)
-    let no_mail = crate::devswarm_rt::sources::Probe::unread(&crate::devswarm_rt::sources::FsProbe::new(home, tr.now_ms as i64), &desc.id) == Some(0);
-    if no_mail && super::sinks::Sink::backlog(&super::sinks::SessionQueue, &tr, &desc.session) == 0 {
+    let unread = crate::devswarm_rt::sources::Probe::unread(&crate::devswarm_rt::sources::FsProbe::new(home, tr.now_ms as i64), &desc.id);
+    let backlog = super::sinks::Sink::backlog(&super::sinks::SessionQueue, &tr, &desc.session);
+    if unread == Some(0) && backlog == 0 {
+        return None;
+    }
+    let now_pending = pending(unread, backlog);
+    let rewake = tr
+        .switch("wake_watch.set_coalesce")
+        .then(|| crate::checks::guardkit::settings::get_number(&tr.settings, defaults::raw("wake_watch.set_rewake_ms")).max(0.0) as u64);
+    if same_pending(&stamp, tr.now_ms, &now_pending, rewake) {
+        crate::metrics::bump_by_shared("native_wake_coalesced", &[], 1);
         return None;
     }
     let call = |argv: &[&str]| hivecontrol::call_full(argv, env, cwd, Duration::from_millis(num("timeout_ms")));
@@ -78,7 +101,7 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     let done = call(&[args("reactivate_args").as_slice(), &[branch.as_str(), prompt.as_str()]].concat());
     let woken = done.call.ok;
     if woken {
-        let stamp = json!({"ts": tr.now_ms}).to_string();
+        let stamp = json!({"ts": tr.now_ms, "pending": now_pending}).to_string();
         let path = stamp_file(&tr, &desc.id);
         if let Some(d) = path.parent() {
             crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports a missing directory
@@ -92,6 +115,32 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
         out["error"] = json!(why(&done));
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::{pending, same_pending};
+    use serde_json::json;
+
+    /// GH #884: a second native wake for the same pending mail inside the re-wake window is held; new mail, an expired window, an old
+    /// stamp without the pending field, or coalescing off all wake.
+    #[test]
+    fn a_second_wake_for_the_same_pending_mail_is_held_until_the_rewake_window_passes() {
+        let (at, win) = (1_000u64, 600_000u64);
+        let (soon, late, on) = (at + win / 10, at + win, Some(win));
+        let p = pending(Some(2), 0);
+        let stamp = json!({"ts": at, "pending": p});
+        let old = json!({"ts": at});
+        // same mail inside the window: held; the window passed, new mail, a new reminder, a stamp an older build wrote (no pending
+        // field), coalescing off, never woken: woken
+        assert!(same_pending(&stamp, soon, &p, on));
+        assert!(!same_pending(&stamp, late, &p, on));
+        assert!(!same_pending(&stamp, soon, &pending(Some(3), 0), on));
+        assert!(!same_pending(&stamp, soon, &pending(Some(2), 1), on));
+        assert!(!same_pending(&old, soon, &p, on));
+        assert!(!same_pending(&stamp, soon, &p, None));
+        assert!(!same_pending(&serde_json::Value::Null, soon, &p, on));
+    }
 }
 
 #[cfg(test)]

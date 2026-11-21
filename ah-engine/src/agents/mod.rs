@@ -397,6 +397,9 @@ pub struct Agent {
     /// That turn made a tool call: it did work, so it is no poke.
     #[serde(default)]
     pub poke_tools: bool,
+    /// Who sent the wake that opened that turn (GH #884): a word of `agent_waste.poke.senders`, else `default_sender`.
+    #[serde(default)]
+    pub poke_sender: String,
     /// The last tool calls: signature, label, is-edit, time.
     pub recent: Vec<(String, String, bool, u64)>,
     /// The last error texts: hash, label, time.

@@ -29,6 +29,11 @@ pub struct State {
     pub backoff_idx: usize,
     /// When the last error line was printed (`None`: never since the last recovery).
     pub last_error_emit_ms: Option<f64>,
+    /// When the last new-mail wake was printed whose mail the workspace has not drained yet (GH #884: wake coalescing). `None`:
+    /// no wake is outstanding, the next new mail wakes. Kept in memory only: a restarted watcher wakes on the next mail.
+    pub woke_ms: Option<f64>,
+    /// New-mail wake lines held back by the last tick (coalesced into the outstanding wake), for the caller's counter.
+    pub held: u32,
 }
 
 impl Default for State {
@@ -44,6 +49,8 @@ impl Default for State {
             consec_errors: 0.0,
             backoff_idx: 0,
             last_error_emit_ms: None,
+            woke_ms: None,
+            held: 0,
         }
     }
 }
@@ -68,6 +75,11 @@ pub struct Snapshot {
     pub total2: Option<Option<f64>>,
     /// Broadcast channel.
     pub total3: Option<Option<f64>>,
+    /// The workspace's direct mail it has not read yet (the summary's `directUnread`), `None` when unknown.
+    pub unread: Option<f64>,
+    /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
+    /// still-undrained workspace is woken again (`devswarm.wakeWatchRewakeMs`); `None` when off.
+    pub coalesce_ms: Option<f64>,
 }
 
 fn text(key: &str) -> &'static str {
@@ -152,9 +164,27 @@ fn backoff_len() -> usize {
     defaults::raw("wake_watch.error_backoff_ms").as_array().map_or(0, <[defaults::V]>::len)
 }
 
+/// Wake coalescing (GH #884): one wake per state change, not one per message. A workspace that read all its direct mail ends the
+/// outstanding wake; new mail while an earlier wake is still undrained is held (the cursor still moves, so the held mail never
+/// wakes later on its own) until `coalesce_ms` has passed, when the workspace is woken again. Unknown unread, or coalescing off:
+/// every new message wakes, as before. Returns true when this tick's wake is held.
+fn coalesced(st: &mut State, snap: &Snapshot) -> bool {
+    let Some(rewake) = snap.coalesce_ms else {
+        st.woke_ms = None;
+        return false;
+    };
+    let undrained = snap.unread.is_some_and(|u| u > 0.0);
+    if undrained && st.woke_ms.is_some_and(|at| snap.now_ms - at < rewake) {
+        return true;
+    }
+    st.woke_ms = Some(snap.now_ms);
+    false
+}
+
 /// `tick(state, snapshot)` -> the new state and the lines to print.
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
+    st.held = 0;
     let mut lines = Vec::new();
     let now = snap.now_ms;
     if !st.armed {
@@ -206,18 +236,30 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         st.backoff_idx = 0;
         st.last_error_emit_ms = None;
     }
+    // the workspace read all its direct mail: no wake is outstanding any more
+    if snap.unread.is_some_and(|u| u <= 0.0) {
+        st.woke_ms = None;
+    }
     let has_channel2 = snap.total2.is_some();
     let total = snap.total;
     let total2 = snap.total2.flatten();
     let moved1 = total.is_some_and(|t| t > st.last_total);
     let moved2 = total2.is_some_and(|t| t > st.last_total2);
     // SINGLE-EMIT RULE: both channels advancing in one tick print exactly one line.
+    let mut mail = None;
     if let (true, true, Some(t1), Some(t2)) = (moved1, moved2, total, total2) {
-        lines.push(dual_wake_line(snap, st.last_total, t1, st.last_total2, t2));
+        mail = Some(dual_wake_line(snap, st.last_total, t1, st.last_total2, t2));
     } else if let (true, Some(t1)) = (moved1, total) {
-        lines.push(wake_line(snap, st.last_total, t1, has_channel2.then(|| text("wake_watch.label_ndjson"))));
+        mail = Some(wake_line(snap, st.last_total, t1, has_channel2.then(|| text("wake_watch.label_ndjson"))));
     } else if let (true, Some(t2)) = (moved2, total2) {
-        lines.push(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        mail = Some(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+    }
+    if let Some(line) = mail {
+        if coalesced(&mut st, snap) {
+            st.held += 1;
+        } else {
+            lines.push(line);
+        }
     }
     if moved1 && let Some(t) = total {
         st.last_total = t;
