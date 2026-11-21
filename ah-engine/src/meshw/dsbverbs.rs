@@ -391,8 +391,9 @@ struct Archived {
 }
 
 #[allow(clippy::type_complexity)] // a skip-reason callback
-/// `parked`: the caller already pushed the workspace's work to a park branch (respawn), so the archive's own work check is not made.
-fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>, parked: bool) -> Archived {
+/// `parked`: the HEAD at which the caller (respawn) pushed the workspace's work to a park branch; the archive then refuses only a commit
+/// made after it.
+fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>, parked: Option<String>) -> Archived {
     let argv = vec![text("devswarm_cli.action_archive").to_string(), id.to_string()];
     let args = crate::meshw::args::parse(&argv);
     match crate::meshw::archiveverb::archive_with_guard(inv, &args, revalidate, parked) {
@@ -483,7 +484,7 @@ pub fn reap_stale(inv: &Inv, a: &Args) -> R<Answer> {
         // P1-5: the safety condition is re-checked INSIDE the workspace's lock, immediately before the archive writes, so a workspace
         // that heartbeats or commits after the candidates were collected is skipped, not archived
         let recheck = |desc: &OVal| -> Option<String> { reap_recheck(inv, &c.id, c.path(), &repo_key, desc, fresh_ms, idle_ms, &states).map(str::to_string) };
-        let r = archive_via_verb(inv, &c.id, Some(&recheck), false);
+        let r = archive_via_verb(inv, &c.id, Some(&recheck), None);
         if let Some(reason) = &r.skipped {
             skipped.push(skip(&c.id, reason));
             continue;
@@ -612,7 +613,7 @@ pub fn reconcile_active(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let mut archived = Vec::new();
     for id in &cand_ids {
-        let r = archive_via_verb(inv, id, None, false);
+        let r = archive_via_verb(inv, id, None, None);
         let mut e = Obj::default();
         e.put("id", s(id)).put("ok", OVal::Bool(r.ok)).put("error", s_or_null(r.error.as_deref()));
         archived.push((r.ok, e.done()));
@@ -888,6 +889,12 @@ pub(crate) fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
         dirty: !st.out.is_empty(),
         unpushed: up.ok.then_some(if count.is_nan() { 0.0 } else { count }),
     })
+}
+
+/// The commit HEAD names in `wt`, `None` when git cannot say.
+pub(crate) fn head_of(wt: &str) -> Option<String> {
+    let h = git(wt, &argv("devswarm_cli.rs_git_rev_head", &[]));
+    (h.ok && !h.out.is_empty()).then_some(h.out)
 }
 
 /// `needsPark(state)`: work would be lost without a park branch.
@@ -1347,7 +1354,9 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
     // (b) park whatever is still dirty or unpushed
     let wt_path = wt.as_deref().unwrap_or_default();
     let mut park: Option<Parked> = None;
+    let mut parked_head: Option<String> = None;
     if needs_park(&cur) {
+        parked_head = head_of(wt_path); // read before the park: a commit landing in between moves HEAD and is refused at the archive
         let p = park_wip(wt_path, id, &branch, &park_branch_name(&branch, now), cur.dirty);
         if !p.ok {
             abort(&p.stage);
@@ -1439,7 +1448,8 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
     });
     note(&found.key, r);
     // (e) archive the old workspace; the owner closes its app tab
-    let archived = archive_via_verb(inv, id, None, true); // the dirty or unpushed work was parked on a pushed branch in (b)
+    // the dirty or unpushed work was parked on a pushed branch in (b): the archive refuses only a commit made since; nothing parked: full check
+    let archived = archive_via_verb(inv, id, None, parked_head);
     let nag = tpl("devswarm_cli.rs_msg_nag", &[("id", id), ("branch", &branch), ("next", &next)]);
     let fields = vec![
         ("id".to_string(), s(id)),
@@ -1841,7 +1851,7 @@ mod tests {
             std::fs::write(beats.join("child-1.json"), format!(r#"{{"ts":{},"sessionId":"s"}}"#, common::now_ms())).unwrap();
             reap_recheck(&i, "child-1", cwd.to_str().unwrap(), &key, desc, fresh_ms, idle_ms, &states).map(str::to_string)
         };
-        let r = archive_via_verb(&i, "child-1", Some(&revive), false);
+        let r = archive_via_verb(&i, "child-1", Some(&revive), None);
         assert_eq!(r.skipped.as_deref(), Some("fresh-heartbeat"), "{:?}", r.error);
         assert!(dir.join("workspaces/child-1.json").exists(), "the active descriptor stays");
         assert!(!dir.join("archived/child-1.json").exists(), "and no archived marker was written");

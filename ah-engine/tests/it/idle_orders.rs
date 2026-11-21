@@ -396,3 +396,50 @@ fn the_idle_order_offers_exactly_converge_or_archive_and_names_archive_for_a_mer
     let out = turn(&m, "conv-2", &[]);
     assert!(out.contains("archive now") && out.contains(&format!("archive {CHILD}")), "a verified-merged idle child can be archived at once, got: {out}");
 }
+
+#[test]
+fn mail_to_a_stalled_child_does_not_restart_its_stall_clock_gh876() {
+    // the status check makes the Primary message the child; that unread mail silences one turn but must not reset the first-seen
+    // baseline, or the ladder re-arms to the status check every cycle and never reaches the converge-or-archive order
+    let e = stalled_child("stall-mail");
+    turn(&e, "stall-5", &[]);
+    first_seen(&e, 61);
+    assert!(turn(&e, "stall-5", &[]).contains(STALL_FIRST));
+    let st = ah_engine::meshw::store::MeshStore::open(&e.dsdir().join("store").join(&e.key).join("devswarm.db")).unwrap();
+    let m = ah_engine::meshw::store::MeshRow {
+        workspace_id: CHILD.into(),
+        ts: now_ms() as i64 - 60_000,
+        hash: Some("status1".into()),
+        body: "what is your PR status and next step?".into(),
+        sender: Some("primary".into()),
+        recipient: Some(CHILD.into()),
+        mtype: Some("direct".into()),
+        urgency: Some("normal".into()),
+        is_heartbeat: false,
+        needs_reply: false,
+        orig_hash: None,
+        instance_nonce: None,
+    };
+    st.append_mesh_row(&m).unwrap();
+    assert!(!turn(&e, "stall-5", &[]).contains(STALL_ORDER), "unread mail silences this turn");
+    st.set_cursor(CHILD, 1_000_000, now_ms() as i64).unwrap();
+    let rec = stall_record(&e, "idle-workspace_stall-");
+    let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&rec).unwrap()).unwrap();
+    v["subjects"][CHILD]["lastAt"] = serde_json::json!(now_ms() - 31 * 60_000);
+    std::fs::write(&rec, v.to_string()).unwrap();
+    let again = turn(&e, "stall-5", &[]);
+    assert!(again.contains(STALL_ORDER), "mail read, still no commit: the ladder moves on to the order, got: {again}");
+}
+
+#[test]
+fn a_worktree_git_cannot_date_is_unknown_never_stalled_gh876() {
+    let e = stalled_child("stall-unknown");
+    turn(&e, "stall-6", &[]);
+    // HEAD on a branch with no commit: `git log -1` cannot say when the worktree last delivered
+    let wt = e.dir.join("home/.devswarm/repos/3/8205fc11/child-wt");
+    let o = Command::new("git").args(["symbolic-ref", "HEAD", "refs/heads/unborn"]).current_dir(&wt).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    first_seen(&e, 61);
+    let out = turn(&e, "stall-6", &[]);
+    assert!(!out.contains(STALL_FIRST), "no commit date: unknown, not stalled, got: {out}");
+}

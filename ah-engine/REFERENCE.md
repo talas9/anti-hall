@@ -11498,6 +11498,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.act_sys_mkdir` | `mkdir` |  |  | The system call name Node puts in the message of a failed directory creation. |
 | `devswarm_cli.act_sys_open` | `open` |  |  | The system call name Node puts in the message of a failed file open (write or append). |
 | `devswarm_cli.act_sys_rename` | `rename` |  |  | The system call name Node puts in the message of a failed rename. |
+| `devswarm_cli.act_unsafe_after_park` | `a commit made after the park (no park branch holds it)` |  |  | The unsaved-work part of a respawn's archive refusal: the workspace committed after its work was parked, and no park branch holds that commit. |
 | `devswarm_cli.act_unsafe_dirty` | `uncommitted changes` |  |  | The unsaved-work part of an archive refusal: the tree has uncommitted changes. |
 | `devswarm_cli.act_unsafe_join` | ` and ` |  |  | Separator between the parts of the unsaved work in an archive refusal. |
 | `devswarm_cli.act_unsafe_unpushed` | `{n} unpushed commit(s)` |  |  | The unsaved-work part of an archive refusal: commits no origin ref has. Placeholder: {n}. |

@@ -758,10 +758,16 @@ function piRoster(ctx, summary) {
         var seenAt = prevSince[id] && piFinite(prevSince[id].at) ? prevSince[id].at : now;
         out.stallSince[id] = { at: seenAt };
         var progressTs = Math.max(piFinite(sp.commitMs) ? sp.commitMs : 0, seenAt);
-        if (sp.unsure) stallWhy = 'unknown';
+        if (sp.unsure || !piFinite(sp.commitMs)) stallWhy = 'unknown_state';
         else if (now - progressTs >= idleOrder.stallAfterMs()) out.stallCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - progressTs });
       }
-      if (stallWhy !== '') { idleOrder.skip(ah.cfg('idle_order.kind_stall'), stallWhy); out.stallKeep.push(id); }
+      if (stallWhy !== '') {
+        // still working, only silenced this turn (unread mail such as the Primary's own status check, focus...): its first-seen time is
+        // carried, so answering mail neither restarts the stall clock nor re-arms the ladder back to the status check
+        if (!Object.prototype.hasOwnProperty.call(out.stallSince, id) && prevSince[id] && piFinite(prevSince[id].at)) out.stallSince[id] = { at: prevSince[id].at };
+        idleOrder.skip(ah.cfg('idle_order.kind_stall'), stallWhy);
+        out.stallKeep.push(id);
+      }
     }
     var appMarks = '';
     if (rowWs) {

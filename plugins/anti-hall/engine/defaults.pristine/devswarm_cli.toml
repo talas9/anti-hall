@@ -4869,6 +4869,10 @@ value = "{n} unpushed commit(s)"
 doc = "The unsaved-work part of an archive refusal: git could not say whether commits are unpushed."
 value = "an unpushed-commit count git could not read"
 
+[devswarm_cli.act_unsafe_after_park]
+doc = "The unsaved-work part of a respawn's archive refusal: the workspace committed after its work was parked, and no park branch holds that commit."
+value = "a commit made after the park (no park branch holds it)"
+
 [devswarm_cli.act_unsafe_unreadable_why]
 doc = "The whole unsaved-work part when git could not read the worktree at all. Placeholder: {why} git's reason."
 value = "a worktree git could not read ({why})"
