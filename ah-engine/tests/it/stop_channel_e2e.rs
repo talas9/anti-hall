@@ -843,6 +843,7 @@ fn settings_set_rejects_a_fraction_for_a_whole_number_limit() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", r.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", r.state())
             .output()
             .unwrap();
@@ -868,6 +869,7 @@ fn a_stored_string_limit_is_ignored_by_settings_get() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", r.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", r.state())
             .envs(env.iter().copied())
             .output()

@@ -60,6 +60,7 @@ impl Env {
             .env("AH_ENGINE_VERSION", "prompt-emit-dispatch")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -116,6 +117,7 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", e.home())
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", e.state())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -502,6 +504,7 @@ fn each_suppressed_scheduled_evaluation_is_counted_once() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", e.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", e.state())
             .output()
             .unwrap();

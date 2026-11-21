@@ -461,7 +461,15 @@ impl World {
         }
         let (engine, home, state) = (self.engine.clone(), self.home.clone(), self.state.clone());
         common::reap(&state, || {
-            ah_engine::discard::harmless(Command::new(&engine).arg("stop").env_clear().env("HOME", &home).env("AH_ENGINE_DIR", &state).output());
+            ah_engine::discard::harmless(
+                Command::new(&engine)
+                    .arg("stop")
+                    .env_clear()
+                    .env("HOME", &home)
+                    .env("AH_ENGINE_PLUGIN_ROOT", common::plugin_root())
+                    .env("AH_ENGINE_DIR", &state)
+                    .output(),
+            );
         });
         self.current.replace(String::new());
         self.take_hits();
