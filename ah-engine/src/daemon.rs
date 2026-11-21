@@ -2830,8 +2830,8 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         {
             failing = Some((code, n));
         }
-        if draining && !got_any && lk(&sh.queue).is_empty() && sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) {
-            return; // queue drained, nothing in flight
+        if draining && !got_any && lk(&sh.queue).is_empty() && sh.busy_since.iter().all(|b| b.load(SeqCst) == 0) && !sh.reloading.load(SeqCst) {
+            return; // queue drained, nothing in flight (a reload thread still running keeps the loop, so the close never races it)
         }
         // every ~200 ms: SIGHUP or a rules-file change (not while a reload it asked for still runs: the signal stays pending)
         if !draining && !sh.reloading.load(SeqCst) && last_check.elapsed() >= defaults::millis("daemon.rules_check_ms") {
