@@ -14,6 +14,31 @@
 
 #[cfg(target_os = "macos")]
 pub use super::kq::Events;
+
+#[cfg(target_os = "macos")]
+impl Events {
+    /// Start the backend with the bounds of `cfg`; `sink` receives the signals on the backend's own thread.
+    pub fn start(sink: Sink, cfg: &super::Config) -> Result<Events, String> {
+        Events::new(sink, super::kq::Limits { max_entries: cfg.max_entries, per_dir: cfg.file_watches_per_dir, total: cfg.max_file_watches })
+    }
+
+    /// The descriptors this backend holds for watches.
+    pub fn watch_fds(&self) -> usize {
+        self.fds()
+    }
+}
+
+/// The descriptors the events backends of this process hold for watches (inotify needs none per watch: 0 there).
+pub fn open_fds() -> usize {
+    #[cfg(target_os = "macos")]
+    {
+        super::kq::open_fds()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -67,8 +92,9 @@ mod crate_backend {
     }
 
     impl Events {
-        /// Start the backend; `sink` receives the signals on the backend's own thread.
-        pub fn new(sink: Sink) -> Result<Events, String> {
+        /// Start the backend; `sink` receives the signals on the backend's own thread. inotify holds one descriptor whatever
+        /// the number of watches, so the per-file bounds of `_cfg` do not apply here.
+        pub fn start(sink: Sink, _cfg: &crate::watch::Config) -> Result<Events, String> {
             let dirs: Arc<Mutex<Vec<Entry>>> = Arc::new(Mutex::new(Vec::new()));
             let seen = Arc::clone(&dirs);
             let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| match res {
@@ -92,6 +118,11 @@ mod crate_backend {
             self.watcher.watch(&canonical, RecursiveMode::NonRecursive).map_err(|e| e.to_string())?;
             self.dirs.lock().unwrap_or_else(|e| e.into_inner()).push(Entry { canonical, given: dir.to_path_buf(), filter });
             Ok(())
+        }
+
+        /// The descriptors this backend holds for watches (none per watch with inotify).
+        pub fn watch_fds(&self) -> usize {
+            0
         }
 
         /// Stop watching `dir`.

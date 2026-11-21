@@ -481,6 +481,63 @@ env = "AH_ENGINE_HEALTHY_AFTER_S"
 unit = "s"
 
 
+[daemon.nofile]
+doc = "Open-file limit (RLIMIT_NOFILE soft limit) the daemon raises itself to at start; 0 = leave it. Never lowers it; clamped to the hard limit and on macOS to the per-process ceiling (daemon.nofile_sysctl). The engine's launchd unit and systemd service also set it (units.plist_template, units.service_template), because launchd's default is 256 and a launchd-started daemon died with EMFILE (GH #912). The result is logged at start (daemon.nofile_log_kind) and shown in status under fds.applied."
+value = 10240
+env = "AH_ENGINE_NOFILE"
+min = 0
+max = 1048576
+
+[daemon.nofile_sysctl]
+doc = "macOS: the sysctl naming the per-process open-file ceiling; setrlimit refuses a soft limit above it, so daemon.nofile is clamped to it."
+value = "kern.maxfilesperproc"
+
+[daemon.nofile_log_kind]
+doc = "Engine log kind of the start-up line that records raising the open-file limit; its code is the result word (ok:<n>, kept:<n>, off, err:<errno>)."
+value = "nofile"
+
+[daemon.nofile_log_detail]
+doc = "Detail of the start-up open-file limit line. {want} is daemon.nofile, {limit} the soft limit now in force."
+value = "want={want} limit={limit}"
+
+[daemon.fd_dirs]
+doc = "Directories whose entries are this process's open descriptors, tried in order (Linux /proc/self/fd, macOS /dev/fd): the fds gauge of status counts the first one that reads."
+value = ["/proc/self/fd", "/dev/fd"]
+
+[daemon.fd_soft_pct]
+doc = "Open descriptors at or past this percent of the open-file limit put the fds gauge of status in the soft state and log a warning once (daemon.fd_log_kind)."
+value = 70
+min = 1
+max = 100
+unit = "%"
+
+[daemon.fd_hard_pct]
+doc = "Open descriptors at or past this percent of the open-file limit put the fds gauge of status in the hard state and log a warning once: the daemon is close to EMFILE (accept and every file open fail)."
+value = 90
+min = 1
+max = 100
+unit = "%"
+
+[daemon.fd_state_ok]
+doc = "fds gauge state word: below daemon.fd_soft_pct."
+value = "ok"
+
+[daemon.fd_state_soft]
+doc = "fds gauge state word: at or past daemon.fd_soft_pct."
+value = "soft"
+
+[daemon.fd_state_hard]
+doc = "fds gauge state word: at or past daemon.fd_hard_pct."
+value = "hard"
+
+[daemon.fd_log_kind]
+doc = "Engine log kind of the line written each time the fds gauge changes state; its code is the state word."
+value = "fds"
+
+[daemon.fd_log_detail]
+doc = "Detail of the fds state line. {open} descriptors open, {limit} the soft limit, {watch} the descriptors the file watcher holds."
+value = "open={open} limit={limit} watch={watch}"
+
 [daemon.nice]
 doc = "`nice` increment applied to the daemon process."
 value = 5

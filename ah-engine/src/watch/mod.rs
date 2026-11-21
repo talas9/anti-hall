@@ -23,6 +23,8 @@
 //! * At most `realtime.queue_cap` distinct files are held. Past it everything held is dropped and ONE rescan signal is
 //!   produced instead ([`Batch::rescan`]): the consumer reconciles everything, so a storm of any size costs a fixed amount.
 //! * A directory with more than `realtime.max_entries` matching files reports a rescan when its listing changes.
+//! * OS descriptors do not grow with the files watched: on macOS (kqueue) a directory is one descriptor plus per-file ones on
+//!   its newest files only (`realtime.file_watches_per_dir`, `realtime.max_file_watches` in all; see [`kq`], GH #912).
 //!
 //! All numbers, names and lists are plugin settings (`engine/defaults/realtime.toml`).
 
@@ -56,6 +58,10 @@ pub struct Config {
     pub queue_cap: usize,
     /// Most matching files tracked per directory.
     pub max_entries: usize,
+    /// Most per-file event descriptors one directory gets (its newest files; macOS kqueue).
+    pub file_watches_per_dir: usize,
+    /// Most per-file event descriptors over the whole events backend (macOS kqueue).
+    pub max_file_watches: usize,
     /// Filesystem types that are always polled.
     pub fs_poll_types: Vec<String>,
     /// Side-file suffixes of a SQLite database.
@@ -78,6 +84,8 @@ impl Config {
             max_delay: defaults::millis("realtime.max_delay_ms"),
             queue_cap: defaults::num("realtime.queue_cap") as usize,
             max_entries: defaults::num("realtime.max_entries") as usize,
+            file_watches_per_dir: defaults::num("realtime.file_watches_per_dir") as usize,
+            max_file_watches: defaults::num("realtime.max_file_watches") as usize,
             fs_poll_types: defaults::list("realtime.fs_poll_types").into_iter().map(String::from).collect(),
             sqlite_suffixes: defaults::list("realtime.sqlite_suffixes").into_iter().map(String::from).collect(),
             ignore_suffixes: defaults::list("realtime.ignore_suffixes").into_iter().map(String::from).collect(),
@@ -337,7 +345,7 @@ impl Watcher {
                 notify::Signal::Changed(paths) => queue.changed(paths),
                 notify::Signal::Rescan => queue.rescan(),
             });
-            *slot = Some(notify::Events::new(sink)?);
+            *slot = Some(notify::Events::start(sink, &self.cfg)?);
         }
         match slot.as_mut() {
             Some(ev) => ev.watch(dir, filter),
@@ -393,6 +401,11 @@ impl Watcher {
             let wait = until.saturating_duration_since(now);
             q = queue.ready.wait_timeout(q, wait).unwrap_or_else(|e| e.into_inner()).0;
         }
+    }
+
+    /// The descriptors the events backend of this watcher holds for watches (0 before the first events directory).
+    pub fn event_fds(&self) -> usize {
+        lock(&self.shared.events).as_ref().map_or(0, notify::Events::watch_fds)
     }
 
     /// Ask for a full reconcile (the consumer started, or lost track of its source).

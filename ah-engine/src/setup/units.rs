@@ -250,6 +250,9 @@ pub fn engine_files_with(m: Manager, home: &Path, exe: &str, supervise: bool) ->
         .to_string(),
     );
     let interval = defaults::num("units.watch_interval_s").to_string();
+    // the daemon's open-file limit, set by the manager so a supervised daemon never starts with launchd's default of 256 (GH #912)
+    let nofile = defaults::num("daemon.nofile");
+    let limits_block = |key: &str| if nofile == 0 { String::new() } else { fill(defaults::text(key), &[("nofile", &nofile.to_string())]) };
     match m {
         Manager::Launchd => {
             let x = |s: &str| escape("units.xml_escapes", s);
@@ -272,6 +275,7 @@ pub fn engine_files_with(m: Manager, home: &Path, exe: &str, supervise: bool) ->
                     ("args", &lines.join("\n")),
                     ("env", &env),
                     ("supervise", &sup),
+                    ("limits", &limits_block("units.plist_limits")),
                     ("interval", &interval),
                     ("log", &x(&unit_log_path(home).to_string_lossy())),
                 ],
@@ -303,7 +307,13 @@ pub fn engine_files_with(m: Manager, home: &Path, exe: &str, supervise: bool) ->
                     dir.join(format!("{unit}{}", defaults::text("units.service_suffix"))),
                     fill(
                         defaults::text("units.service_template"),
-                        &[("env", &env), ("exec", &exec.join(" ")), ("supervise_unit", &sup_unit), ("supervise_service", &sup_service)],
+                        &[
+                            ("env", &env),
+                            ("exec", &exec.join(" ")),
+                            ("limits", &limits_block("units.service_limits")),
+                            ("supervise_unit", &sup_unit),
+                            ("supervise_service", &sup_service),
+                        ],
                     ),
                 ),
                 (dir.join(timer_name(unit)), fill(defaults::text("units.timer_template"), &[("interval", &interval)])),

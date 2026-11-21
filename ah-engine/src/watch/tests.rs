@@ -16,6 +16,8 @@ fn cfg(poll_ms: u64) -> Config {
         max_delay: ms(400),
         queue_cap: 64,
         max_entries: 256,
+        file_watches_per_dir: 16,
+        max_file_watches: 512,
         fs_poll_types: vec!["9p".into(), "drvfs".into(), "nfs".into(), "smbfs".into(), "fuse*".into()],
         sqlite_suffixes: vec!["-wal".into(), "-shm".into(), "-journal".into()],
         latency_target: ms(1000),
@@ -385,4 +387,77 @@ fn a_removed_directory_is_no_longer_reported() {
     w.remove(&t.0);
     fs::write(t.0.join("a"), "x").unwrap();
     assert!(w.next(ms(300)).is_none());
+}
+
+/// GH #912: the kqueue backend held one descriptor per watched file, so a DevSwarm state directory of ~1,900 heartbeats and
+/// archived workspaces put ~1,970 descriptors on the daemon and a launchd-started daemon (limit 256) died with EMFILE. Descriptor
+/// use must stay flat as the files grow (one per directory plus a bounded set of per-file ones), and nothing may be lost for it:
+/// a rename into place, a new file, an in-place write to a hot file and one to a cold file are all still reported.
+#[cfg(target_os = "macos")]
+#[test]
+fn event_descriptors_stay_bounded_as_watched_files_grow() {
+    fn proc_fds() -> usize {
+        fs::read_dir("/dev/fd").map(|r| r.count()).unwrap_or(0)
+    }
+    let t = Tmp::new("fdbound");
+    let mut c = cfg(750);
+    c.max_entries = 2048;
+    c.file_watches_per_dir = 4;
+    c.max_file_watches = 12;
+    let bound = 5 + c.max_file_watches; // one per directory plus the per-file budget
+    let dirs: Vec<PathBuf> = (0..5).map(|i| t.0.join(format!("d{i}"))).collect();
+    let old = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    let fill = |per_dir: usize| {
+        for d in &dirs {
+            fs::create_dir_all(d).unwrap();
+            for i in 0..per_dir {
+                let p = d.join(format!("f{i:04}.json"));
+                if !p.exists() {
+                    fs::write(&p, "{}").unwrap();
+                    fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
+                }
+            }
+        }
+    };
+    let base = proc_fds();
+    fill(60); // 300 files
+    let w = Watcher::start(c.clone());
+    for d in &dirs {
+        assert_eq!(w.add(d, Filter::All).backend, Backend::Events);
+    }
+    let small = w.event_fds();
+    assert!(small <= bound, "300 files: {small} watch descriptors, bound {bound}");
+    for d in &dirs {
+        w.remove(d);
+    }
+    assert_eq!(w.event_fds(), 0, "removing the directories closes every descriptor");
+    fill(600); // 3,000 files
+    fs::write(dirs[1].join("hot.json"), "{}").unwrap(); // the newest file: gets a per-file descriptor
+    for d in &dirs {
+        assert_eq!(w.add(d, Filter::All).backend, Backend::Events, "3,000 files stay on OS events");
+    }
+    let big = w.event_fds();
+    assert!(big <= bound, "3,000 files: {big} watch descriptors, bound {bound}");
+    assert_eq!(big, small, "descriptor use does not grow with the files");
+    // the whole process, with slack for other tests running beside this one: one descriptor per file would be 3,000 more
+    let grown = proc_fds().saturating_sub(base);
+    assert!(grown < 200, "process descriptors grew by {grown} for 3,000 watched files");
+    settle(&w);
+    // 1. a write staged and renamed onto an existing (cold) name
+    fs::write(dirs[0].join("f0300.json.tmp"), "{\"v\":2}").unwrap();
+    fs::rename(dirs[0].join("f0300.json.tmp"), dirs[0].join("f0300.json")).unwrap();
+    // 2. a new file
+    fs::write(dirs[2].join("new.json"), "{}").unwrap();
+    // 3. an in-place append to the hot file
+    fs::OpenOptions::new().append(true).open(dirs[1].join("hot.json")).unwrap().write_all(b" ").unwrap();
+    let got = paths(&drain(&w, ms(600)));
+    for want in [dirs[0].join("f0300.json"), dirs[2].join("new.json"), dirs[1].join("hot.json")] {
+        assert!(got.contains(&want), "{} not reported: {got:?}", want.display());
+    }
+    // 4. an in-place write to a cold file is reported at the directory's next event
+    fs::OpenOptions::new().append(true).open(dirs[3].join("f0007.json")).unwrap().write_all(b" ").unwrap();
+    fs::write(dirs[3].join("other.json"), "{}").unwrap();
+    let got = paths(&drain(&w, ms(600)));
+    assert!(got.contains(&dirs[3].join("f0007.json")), "cold in-place write not reported at the next directory event: {got:?}");
+    assert!(w.event_fds() <= bound, "still bounded after the changes: {}", w.event_fds());
 }
