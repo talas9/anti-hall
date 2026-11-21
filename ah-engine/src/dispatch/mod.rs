@@ -451,9 +451,12 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
     let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
     let command = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str)?;
     let rules = cfg.get("rules").and_then(|v| v.as_table())?;
+    if capacity_read_only(cfg, command) {
+        return None;
+    }
     for (name, pat) in rules {
         let Some(pat) = pat.as_str() else { continue };
-        match regex::RegexBuilder::new(&capacity_hold_pattern(cfg, name, pat)).case_insensitive(true).build() {
+        match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
             Ok(re) if re.is_match(command) => return Some(name.to_string()),
             Ok(_) => {}
             Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
@@ -462,13 +465,24 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
     None
 }
 
-/// The full pattern of one `dispatch.capacity_hold` rule: the shared `anchor` (the command must stand in command position, so a read
-/// that merely names the words passes) in front of it, unless the rule is listed in `unanchored` (matched anywhere). The ah-hook
-/// launcher composes the same pattern from the same config.
-pub(crate) fn capacity_hold_pattern(cfg: &defaults::V, name: &str, pat: &str) -> String {
-    let anchor = cfg.get("anchor").and_then(|v| v.as_str()).unwrap_or_default();
-    let unanchored = cfg.get("unanchored").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|n| n.as_str() == Some(name)));
-    if anchor.is_empty() || unanchored { pat.to_string() } else { format!("(?:{anchor})(?:{pat})") }
+/// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
+/// `read_only` (a read-only reader first, nothing chained, substituted or redirected) and does not match `read_only_unless` (a reader
+/// flag that runs a command). Fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`, exempts
+/// nothing, so the rules decide. The ah-hook launcher applies the same keys.
+pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
+    let compile = |key: &str| -> Option<Result<regex::Regex, ()>> {
+        let pat = cfg.get(key).and_then(|v| v.as_str()).filter(|p| !p.is_empty())?;
+        Some(regex::RegexBuilder::new(pat).case_insensitive(true).build().map_err(|e| crate::discard::note("capacity_hold_rule", &format!("{key}: {e}"))))
+    };
+    let Some(Ok(read_only)) = compile("read_only") else { return false };
+    if !read_only.is_match(command) {
+        return false;
+    }
+    match compile("read_only_unless") {
+        None => true,
+        Some(Ok(unless)) => !unless.is_match(command),
+        Some(Err(())) => false,
+    }
 }
 
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
@@ -1307,7 +1321,6 @@ mod tests {
             "echo \"git push --force\"",
             "git log --grep push",
             "git log --oneline -- push.rs",
-            "cat notes.md | grep 'gh pr merge'",
             "grep -n \"firebase deploy\" README.md",
             "rg 'npm publish' docs",
         ] {
@@ -1317,17 +1330,55 @@ mod tests {
         assert_eq!(capacity_hold(&write), None, "a tool outside dispatch.capacity_hold.tools passes");
     }
 
-    /// #901: a hold rule that does not compile is skipped, which fails open silently. Every shipped rule, with the anchor in front,
-    /// compiles both in the engine (Unicode) and in the ah-hook launcher (ASCII on bytes).
+    /// #901/#904: the shared corpus (tests/fixtures/capacity_hold_corpus.txt, also run through the ah-hook launcher): every spelling
+    /// the security review of #904 found an allowed-prefix anchor let through, and every edge of the read exemption, is held; a
+    /// plain read that only names the words passes. A held case that passes is a fail-open.
+    #[test]
+    fn capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads() {
+        let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        let (mut held, mut passed) = (0, 0);
+        for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
+            let (want, cmd) = match line.split_once(' ') {
+                Some(("H", c)) => (true, c.replace("\\n", "\n")),
+                Some(("P", c)) => (false, c.replace("\\n", "\n")),
+                _ => continue,
+            };
+            assert_eq!(class(&cmd).is_some(), want, "{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd));
+            if want { held += 1 } else { passed += 1 }
+        }
+        assert!(held >= 35 && passed >= 11, "corpus read: {held} held, {passed} pass");
+    }
+
+    /// #901/#904: the read exemption fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`,
+    /// exempts nothing, so a read that names the words is held by the rules again.
+    #[test]
+    fn a_broken_read_exemption_exempts_nothing() {
+        let shipped = defaults::raw("dispatch.capacity_hold");
+        let read = "grep -rn \"git push\" .";
+        assert!(capacity_read_only(shipped, read));
+        let ro = shipped.get("read_only").copied().unwrap();
+        let with = |pairs: Vec<(&'static str, defaults::V)>| defaults::V::Table(Box::leak(pairs.into_boxed_slice()));
+        assert!(
+            !capacity_read_only(&with(vec![("read_only", ro), ("read_only_unless", defaults::V::Str("("))]), read),
+            "an uncompilable read_only_unless exempts nothing"
+        );
+        assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str("("))]), read), "an uncompilable read_only exempts nothing");
+        assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str(""))]), read), "an empty read_only exempts nothing");
+        assert!(capacity_read_only(&with(vec![("read_only", ro)]), read), "no read_only_unless: the read passes");
+    }
+
+    /// #901: a hold rule that does not compile is skipped, which fails open silently. Every shipped rule and both read-exemption keys
+    /// compile both in the engine (Unicode) and in the ah-hook launcher (ASCII on bytes).
     #[test]
     fn every_capacity_hold_rule_compiles_in_the_engine_and_the_launcher() {
         let cfg = defaults::raw("dispatch.capacity_hold");
         let rules = cfg.get("rules").and_then(|v| v.as_table()).unwrap();
         assert!(!rules.is_empty());
-        for (name, pat) in rules {
-            let full = capacity_hold_pattern(cfg, name, pat.as_str().unwrap());
-            regex::RegexBuilder::new(&full).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name}: {e}"));
-            regex::bytes::RegexBuilder::new(&full).unicode(false).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name} (ascii): {e}"));
+        let keys = ["read_only", "read_only_unless"].map(|k| (k, *cfg.get(k).unwrap_or_else(|| panic!("{k} is shipped"))));
+        for (name, pat) in rules.iter().copied().chain(keys) {
+            let pat = pat.as_str().unwrap();
+            regex::RegexBuilder::new(pat).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name}: {e}"));
+            regex::bytes::RegexBuilder::new(pat).unicode(false).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name} (ascii): {e}"));
         }
     }
 

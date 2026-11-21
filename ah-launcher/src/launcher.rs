@@ -568,21 +568,16 @@ impl L {
         ) else {
             return false;
         };
+        // #901/#904: a plain read that only names the words passes (read_only, minus read_only_unless), as
+        // dispatch::capacity_read_only; a broken or empty exemption exempts nothing
+        if listed && self.capacity_read_only(cfg, command) {
+            return false;
+        }
         let rule = listed
             .then(|| {
                 rules.iter().find_map(|(name, pat)| {
-                    // the shared anchor (command position) in front, unless the rule is unanchored: as dispatch::capacity_hold_pattern
-                    let pat = pat.as_str()?;
-                    let unanchored = cfg
-                        .get("unanchored")
-                        .and_then(|v| v.as_array())
-                        .is_some_and(|a| a.iter().any(|n| n.as_str() == Some(name.as_str())));
-                    let full = match cfg.get("anchor").and_then(|v| v.as_str()) {
-                        Some(a) if !a.is_empty() && !unanchored => format!("(?:{a})(?:{pat})"),
-                        _ => pat.to_string(),
-                    };
                     // ASCII classes (\b, \s, case folding) on bytes: the launcher's regex is built without the Unicode tables
-                    let re = regex::bytes::RegexBuilder::new(&full)
+                    let re = regex::bytes::RegexBuilder::new(pat.as_str()?)
                         .unicode(false)
                         .case_insensitive(true)
                         .build();
@@ -607,6 +602,38 @@ impl L {
         );
         write_out(b"", format!("{msg}\n").as_bytes());
         true
+    }
+
+    /// #901/#904: whether `command` is a plain read that passes dispatch.capacity_hold whatever words it names: the whole command
+    /// matches `read_only` and does not match `read_only_unless` (as the engine's dispatch::capacity_read_only). Fails closed: an
+    /// empty or uncompilable `read_only`, or an uncompilable `read_only_unless`, exempts nothing, so the rules decide.
+    fn capacity_read_only(&self, cfg: &toml::Value, command: &str) -> bool {
+        let compile = |key: &str| -> Option<Result<regex::bytes::Regex, ()>> {
+            let pat = cfg
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|p| !p.is_empty())?;
+            Some(
+                regex::bytes::RegexBuilder::new(pat)
+                    .unicode(false)
+                    .case_insensitive(true)
+                    .build()
+                    .map_err(|e| {
+                        self.log_line(&format!("capacity_hold_rule rule={key} error={e}"))
+                    }),
+            )
+        };
+        let Some(Ok(read_only)) = compile("read_only") else {
+            return false;
+        };
+        if !read_only.is_match(command.as_bytes()) {
+            return false;
+        }
+        match compile("read_only_unless") {
+            None => true,
+            Some(Ok(unless)) => !unless.is_match(command.as_bytes()),
+            Some(Err(())) => false,
+        }
     }
 
     /// dispatch.defer_exit: the engine handed the call back. No hook command exists to run, so the call passes through

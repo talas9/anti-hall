@@ -136,6 +136,42 @@ fn a_fresh_slow_marker_holds_a_force_push_and_passes_a_read() {
     );
 }
 
+/// #901/#904: the launcher's own matcher (ASCII on bytes) runs the shared corpus the engine runs
+/// (ah-engine/tests/fixtures/capacity_hold_corpus.txt): in the slow window every risky spelling is held (exit 2), every plain read
+/// passes (exit 0). A held case that passes is a fail-open.
+#[test]
+fn the_capacity_hold_corpus_is_held_and_passed_by_the_launcher_too() {
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 600_000;
+    let env = Env::new("e-slow-corpus");
+    let p = engine(&env, "echo should-not-run");
+    std::fs::create_dir_all(&env.state).unwrap();
+    std::fs::write(env.state.join("daemon.slow.until"), until.to_string()).unwrap();
+    let (mut held, mut passed) = (0, 0);
+    for (i, line) in include_str!("../../ah-engine/tests/fixtures/capacity_hold_corpus.txt")
+        .lines()
+        .enumerate()
+    {
+        let (want, cmd) = match line.split_once(' ') {
+            Some(("H", c)) => (2, c.replace("\\n", "\n")),
+            Some(("P", c)) => (0, c.replace("\\n", "\n")),
+            _ => continue,
+        };
+        let payload = serde_json::json!({"session_id": format!("s-{i}"), "tool_name": "Bash", "tool_input": {"command": cmd}});
+        let o = env.run("PreToolUse", payload.to_string().as_bytes(), Some(&p), &[]);
+        assert_eq!(o.code, want, "{cmd:?}: {}", o.err);
+        assert!(o.out.is_empty(), "the engine is skipped: {cmd:?}");
+        if want == 2 { held += 1 } else { passed += 1 }
+    }
+    assert!(
+        held >= 35 && passed >= 11,
+        "corpus read: {held} held, {passed} pass"
+    );
+}
+
 #[test]
 fn engine_not_executable_is_treated_as_missing() {
     let env = Env::new("e-noexec");
