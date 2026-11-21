@@ -78,7 +78,7 @@ function cmdBuildTables() {
   t.inlineWriteMarkers = ah.cfg('command.inline_write_markers');
   t.gitAlwaysWork = cmdSet('command.git_always_work'); t.gitTagValue = cmdSet('command.git_tag_value_flags');
   t.scriptShells = cmdSet('command.script_shells'); t.scriptInterpreters = cmdSet('command.script_interpreters');
-  t.scriptNotRunFlag = {}; Object.keys(ah.cfg('command.script_not_a_run_flag')).forEach(function (f) { t.scriptNotRunFlag[f] = new RegExp(ah.cfg('command.script_not_a_run_flag')[f]); }); t.scriptValueFlags = cmdSet('command.script_value_flags');
+  t.scriptNotRunFlag = {}; Object.keys(ah.cfg('command.script_not_a_run_flag')).forEach(function (f) { t.scriptNotRunFlag[f] = new RegExp(ah.cfg('command.script_not_a_run_flag')[f]); }); t.scriptValueFlags = {}; Object.keys(ah.cfg('command.script_value_flags')).forEach(function (f) { t.scriptValueFlags[f] = new Set(ah.cfg('command.script_value_flags')[f]); });
   t.binaryMagics = ah.cfg('command.binary_magics'); t.homeManaged = ah.cfg('command.home_managed_dirs'); t.homePersonal = ah.cfg('command.home_personal_dirs');
   t.antiHallCli = ah.cfg('command.anti_hall_cli_patterns').map(function (s) { return cmdRe(s); });
   t.unknowable = ah.cfg('command.write_target_unknowable');

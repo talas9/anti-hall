@@ -112,6 +112,38 @@ value = "system swap in use is {used} MB (threshold {limit} MB){ram}"
 doc = "System memory pressure line; {value} the reading, {limit} the threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known)."
 value = "system memory pressure is {value} (threshold {limit}){ram}"
 
+[resource_watch.msg_pressure_psi_value]
+doc = "The reading of a Linux pressure warning; {pct} the PSI some avg10 percent. It names the signal."
+value = "PSI {pct}% (kernel stall time on memory, some avg10)"
+
+[resource_watch.msg_pressure_psi_limit]
+doc = "The threshold of a Linux pressure warning; {pct}."
+value = "{pct}%"
+
+[resource_watch.msg_pressure_mac_value]
+doc = "The reading of a macOS pressure warning; {level} the kernel level, {signal} the sysctl it comes from (resource_watch.mac_pressure_sysctl). It names the signal: this is the kernel's own level, not the free-RAM percentage printed beside it."
+value = "level {level} (the kernel's {signal})"
+
+[resource_watch.msg_pressure_mac_limit]
+doc = "The threshold of a macOS pressure warning; {level}."
+value = "level {level}"
+
+[resource_watch.msg_swap_in_use]
+doc = "The swap figure appended to a pressure warning; {used} MB of swap in use. A high kernel level beside plenty of free RAM is explained by swap in use."
+value = "; swap in use {used} MB"
+
+[resource_watch.signal_psi]
+doc = "The signal label of resource_watch_pressure_warned for the Linux PSI reading."
+value = "psi"
+
+[resource_watch.signal_mac]
+doc = "The signal label of resource_watch_pressure_warned for the macOS kernel pressure level."
+value = "mac-level"
+
+[metric.resource_watch_pressure_warned]
+doc = "System memory pressure warnings raised by the resource watch (#900), by signal (psi, mac-level)."
+value = { kind = "counter", unit = "warnings", labels = ["signal"] }
+
 [resource_watch.msg_ram]
 doc = "The free-RAM figure appended to a system line; {free_mb} MB free of {total_mb} MB, {free_pct} percent."
 value = "; free RAM {free_mb} MB of {total_mb} MB ({free_pct}%)"

@@ -402,6 +402,28 @@ fn swap_and_pressure_warn_for_both_platform_shapes() {
     assert!(run_samples(|_| session_tree(1.0, 20), 1, &st, calm)[0].1.is_empty());
 }
 
+/// #900: the pressure line must name the kernel signal and carry the swap in use, so "pressure level 2" beside 55% free RAM does not read
+/// as a contradiction; the warning is counted by signal.
+#[test]
+fn the_pressure_line_names_the_signal_and_carries_the_swap_in_use() {
+    let h = scratch("pressure-signal");
+    let st = settings_for(&h);
+    let gb = 1u64 << 30;
+    crate::metrics::reset_this_thread(); // this thread's own bumps: the process-wide table is shared by parallel tests
+    // the field report: kernel level 2 (warn) with 55% of RAM free and 9.6 GB of swap in use
+    let m = MemInfo { swap_used: 9 * gb + gb / 2, pressure: Pressure::MacLevel(2), ram_total: 64 * gb, ram_free: 35 * gb };
+    let out = run_samples(|_| session_tree(1.0, 20), 1, &st, m);
+    let w = out[0].1.iter().find(|w| w.kind == "pressure").expect("level 2 warns");
+    let line = resource::line(w);
+    assert!(line.contains("kern.memorystatus_vm_pressure_level"), "the signal is named: {line}");
+    assert!(line.contains("swap in use 9728 MB"), "the swap in use is printed: {line}");
+    assert!(line.contains("free RAM"), "{line}");
+    assert_eq!(crate::metrics::bumped_on_this_thread("resource_watch_pressure_warned", &[("signal", crate::defaults::text("resource_watch.signal_mac"))]), 1);
+    let l = MemInfo { swap_used: 1 << 30, pressure: Pressure::Psi(55.0), ram_total: 0, ram_free: 0 };
+    let out = run_samples(|_| session_tree(1.0, 20), 1, &st, l);
+    assert!(resource::line(&out[0].1[0]).contains("some avg10"), "{}", resource::line(&out[0].1[0]));
+}
+
 #[test]
 fn swap_alone_is_not_an_alarm_when_free_ram_is_healthy_and_the_figure_is_printed() {
     let h = scratch("swap-free-ram");
