@@ -61,7 +61,8 @@ function decide(p) {
         if (latch.softFired !== true) { out = cb.soft(result.pct); w.latch = Object.assign({}, latch, { softFired: true, lastNagAt: now }); }
       } else {
         var hp = cb.expectedHandoverPath(p);
-        out = cb.fire(result, over, p, cfg.maxTokens, hp);
+        out = cb.fire(result, over, p, cfg.maxTokens, hp, cfg);
+        ah.metric('auto_handover_fired', ['via', over]);
         w.latch = { fired: true, firedAt: now, firedPct: result.pct, firedVia: over, lastNagPct: result.pct, lastNagAt: now, softFired: false };
       }
     } else {
@@ -76,8 +77,12 @@ function decide(p) {
             dirty = true;
             backstop = true;
           }
-          parts.push(cb.gateDirective(result, cur, cfg, p));
-          jev = { result: result };
+          // GH #894: the gate is sent when its state changes (or with a backstop), not on every prompt; repeats are counted
+          var gate = cb.gateDirective(result, cur, cfg, p);
+          if (dedupe.advisory(p, ah.cfg('ctxbudget.ah_gate_profile'), cb.gateFacts(result, cur, cfg), gate) || backstop) {
+            parts.push(gate);
+            jev = { result: result }; // Jev judges a gate the model receives, not a suppressed repeat
+          }
         }
       }
       if (!backstop && cfg.nag) {

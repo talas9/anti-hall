@@ -29,6 +29,19 @@ pub struct State {
     pub backoff_idx: usize,
     /// When the last error line was printed (`None`: never since the last recovery).
     pub last_error_emit_ms: Option<f64>,
+    /// When the last new-mail wake was printed whose mail the workspace has not drained yet (GH #884: wake coalescing). `None`:
+    /// no wake is outstanding, the next new mail wakes. Kept in memory only: a restarted watcher wakes on the next mail.
+    pub woke_ms: Option<f64>,
+    /// The mesh-direct total and the unread count at that wake: mail the workspace read since shows as unread below
+    /// `woke_unread` plus what arrived since, and means the wake was used.
+    pub woke_total2: f64,
+    /// See `woke_total2`.
+    pub woke_unread: f64,
+    /// A wake was held and the workspace has not drained since: it is woken again once the re-wake window has passed, even
+    /// when no further mail arrives.
+    pub held_pending: bool,
+    /// New-mail wake lines held back by the last tick (coalesced into the outstanding wake), for the caller's counter.
+    pub held: u32,
 }
 
 impl Default for State {
@@ -44,6 +57,11 @@ impl Default for State {
             consec_errors: 0.0,
             backoff_idx: 0,
             last_error_emit_ms: None,
+            woke_ms: None,
+            woke_total2: 0.0,
+            woke_unread: 0.0,
+            held_pending: false,
+            held: 0,
         }
     }
 }
@@ -68,6 +86,11 @@ pub struct Snapshot {
     pub total2: Option<Option<f64>>,
     /// Broadcast channel.
     pub total3: Option<Option<f64>>,
+    /// The workspace's direct mail it has not read yet (the summary's `directUnread`), `None` when unknown.
+    pub unread: Option<f64>,
+    /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
+    /// still-undrained workspace is woken again (`devswarm.wakeWatchRewakeMs`); `None` when off.
+    pub coalesce_ms: Option<f64>,
 }
 
 fn text(key: &str) -> &'static str {
@@ -152,11 +175,35 @@ fn backoff_len() -> usize {
     defaults::raw("wake_watch.error_backoff_ms").as_array().map_or(0, <[defaults::V]>::len)
 }
 
+/// Wake coalescing (GH #884): one wake per state change, not one per message. New mesh-direct mail is held when an earlier wake is
+/// outstanding, inside `coalesce_ms`, and the workspace has read nothing since that wake (its unread count is at least the unread
+/// count of the wake plus what arrived since). A workspace that read anything used its wake, so new mail wakes it again; one that
+/// drained everything ends the outstanding wake. Unknown counts, or coalescing off: every new message wakes, as before.
+fn hold(st: &State, snap: &Snapshot) -> bool {
+    let (Some(rewake), Some(at), Some(unread), Some(Some(total2))) = (snap.coalesce_ms, st.woke_ms, snap.unread, snap.total2) else {
+        return false;
+    };
+    snap.now_ms - at < rewake && unread > 0.0 && unread >= st.woke_unread + (total2 - st.woke_total2)
+}
+
+/// A wake line was printed: it is the outstanding wake when coalescing applies and both counts are known.
+fn note_wake(st: &mut State, snap: &Snapshot) {
+    st.held_pending = false;
+    st.woke_ms = None;
+    if let (Some(_), Some(unread), Some(Some(total2))) = (snap.coalesce_ms, snap.unread, snap.total2) {
+        st.woke_ms = Some(snap.now_ms);
+        st.woke_total2 = total2;
+        st.woke_unread = unread;
+    }
+}
+
 /// `tick(state, snapshot)` -> the new state and the lines to print.
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
+    st.held = 0;
     let mut lines = Vec::new();
     let now = snap.now_ms;
+    let arming = !st.armed;
     if !st.armed {
         st.armed = true;
         lines.push(arm_line(snap));
@@ -206,18 +253,54 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         st.backoff_idx = 0;
         st.last_error_emit_ms = None;
     }
+    // the workspace read all its direct mail: no wake is outstanding any more
+    if snap.unread.is_some_and(|u| u <= 0.0) {
+        st.woke_ms = None;
+        st.held_pending = false;
+    }
     let has_channel2 = snap.total2.is_some();
     let total = snap.total;
     let total2 = snap.total2.flatten();
     let moved1 = total.is_some_and(|t| t > st.last_total);
     let moved2 = total2.is_some_and(|t| t > st.last_total2);
     // SINGLE-EMIT RULE: both channels advancing in one tick print exactly one line.
+    let mut mail = None;
     if let (true, true, Some(t1), Some(t2)) = (moved1, moved2, total, total2) {
-        lines.push(dual_wake_line(snap, st.last_total, t1, st.last_total2, t2));
+        mail = Some(dual_wake_line(snap, st.last_total, t1, st.last_total2, t2));
     } else if let (true, Some(t1)) = (moved1, total) {
-        lines.push(wake_line(snap, st.last_total, t1, has_channel2.then(|| text("wake_watch.label_ndjson"))));
+        mail = Some(wake_line(snap, st.last_total, t1, has_channel2.then(|| text("wake_watch.label_ndjson"))));
     } else if let (true, Some(t2)) = (moved2, total2) {
-        lines.push(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        mail = Some(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+    }
+    let had_mail = mail.is_some();
+    if let Some(line) = mail {
+        // only mail on the mesh-direct channel alone is coalesced: the inbox channel moving, too, always wakes
+        if moved2 && !moved1 && hold(&st, snap) {
+            st.held += 1;
+            st.held_pending = true;
+        } else {
+            lines.push(line);
+            note_wake(&mut st, snap);
+        }
+    } else if st.held_pending
+        && let (Some(rewake), Some(at), Some(Some(t2))) = (snap.coalesce_ms, st.woke_ms, snap.total2)
+        && snap.now_ms - at >= rewake
+    {
+        // held mail still unread after the re-wake window: one wake for all of it
+        lines.push(wake_line(snap, st.woke_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        note_wake(&mut st, snap);
+    }
+    // A (re)started watcher keeps no wake in memory, while the cursor a held wake moved past is saved: unread direct mail found
+    // at arm with no new mail is treated as held behind an outstanding wake, so the re-wake still comes if it stays unread.
+    if arming
+        && !had_mail
+        && let (Some(_), Some(unread), Some(Some(t2))) = (snap.coalesce_ms, snap.unread, snap.total2)
+        && unread > 0.0
+    {
+        st.woke_ms = Some(now);
+        st.woke_total2 = t2 - unread;
+        st.woke_unread = 0.0;
+        st.held_pending = true;
     }
     if moved1 && let Some(t) = total {
         st.last_total = t;

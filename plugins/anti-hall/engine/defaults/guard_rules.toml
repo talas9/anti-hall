@@ -38,6 +38,7 @@ value = [
   { id = "ctxbudget.lc", setting = "", tier = "skill", source = "ctxbudget.lc_what" },
   { id = "ctxbudget.ah_tokens", setting = "", tier = "skill", source = "ctxbudget.ah_what_tokens" },
   { id = "ctxbudget.ah_pct", setting = "", tier = "skill", source = "ctxbudget.ah_what_pct" },
+  { id = "ctxbudget.ah_workspace", setting = "", tier = "skill", source = "ctxbudget.ah_what_workspace" },
   { id = "ctxbudget.ah_nag", setting = "", tier = "skill", source = "ctxbudget.ah_nag_what" },
   { id = "ctxbudget.ah_soft", setting = "", tier = "skill", source = "ctxbudget.ah_soft_what" },
   { id = "ctxbudget.ah_pause", setting = "", tier = "skill", source = "ctxbudget.ah_pause_what" },

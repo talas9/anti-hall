@@ -3,7 +3,7 @@
 
 [tool_advisory.profiles]
 doc = "Per-source fingerprint switches and reminder settings. Each source stores its last observed state, including silent recovery; an A to B to A transition emits again. Subagent protocol is scoped to the receiving child, orchestration to the session."
-value = { usage = { setting = "tool_advisory.sw_usage", repeat = "tool_advisory.repeat_usage" }, pair = { setting = "tool_advisory.sw_pair", repeat = "tool_advisory.repeat_pair" }, disk = { setting = "tool_advisory.sw_disk", repeat = "tool_advisory.repeat_disk" }, subagent = { setting = "tool_advisory.sw_subagent", repeat = "tool_advisory.repeat_subagent", session_only = true }, orchestration = { setting = "tool_advisory.sw_orchestration", repeat = "tool_advisory.repeat_orchestration", session_only = true } }
+value = { usage = { setting = "tool_advisory.sw_usage", repeat = "tool_advisory.repeat_usage" }, pair = { setting = "tool_advisory.sw_pair", repeat = "tool_advisory.repeat_pair" }, disk = { setting = "tool_advisory.sw_disk", repeat = "tool_advisory.repeat_disk" }, subagent = { setting = "tool_advisory.sw_subagent", repeat = "tool_advisory.repeat_subagent", session_only = true }, orchestration = { setting = "tool_advisory.sw_orchestration", repeat = "tool_advisory.repeat_orchestration", session_only = true }, handover_gate = { setting = "tool_advisory.sw_handover_gate", repeat = "tool_advisory.repeat_handover_gate" } }
 
 [tool_advisory.sw_usage]
 doc = "Emit usage advisories on change. Switch guards.usageAdvisoryOnChange: suppress unchanged usage advisory text; off restores the source behavior. Changes always speak; blocks are unaffected."
@@ -44,6 +44,14 @@ value = { section = "guards", key = "orchestrationOncePerSession", env = "ANTIHA
 [tool_advisory.repeat_orchestration]
 doc = "Unchanged orchestration reminder interval, seconds. Reminder cooldown in seconds for unchanged orchestration advisory text (guards.orchestrationOncePerSessionRepeatS); zero means no periodic reminder."
 value = { section = "guards", key = "orchestrationOncePerSessionRepeatS", env = "ANTIHALL_ORCHESTRATION_ONCE_PER_SESSION_REPEAT_S", default = 0, min = 0 }
+
+[tool_advisory.sw_handover_gate]
+doc = "Send the post-handover gate on change. Switch guards.handoverGateOnChange (default on; GH #894): auto-handover's post-handover new-work gate is sent when its state changes (the handover point, or the context band of autoHandover.nagStepPct points) and again only after the repeat interval, instead of on every prompt; suppressed repeats are counted (emit-dedupe suppressed, waste repeated_advisory). The backstop, the fire directive and the milestone nag always speak. Off restores a gate on every prompt. Claude and Codex."
+value = { section = "guards", key = "handoverGateOnChange", env = "ANTIHALL_HANDOVER_GATE_ON_CHANGE", default = true }
+
+[tool_advisory.repeat_handover_gate]
+doc = "Unchanged post-handover gate reminder interval, seconds. Reminder cooldown in seconds for an unchanged post-handover gate (guards.handoverGateOnChangeRepeatS); zero means no periodic reminder."
+value = { section = "guards", key = "handoverGateOnChangeRepeatS", env = "ANTIHALL_HANDOVER_GATE_ON_CHANGE_REPEAT_S", default = 1800, min = 0 }
 
 [tool_advisory.key_prefix]
 doc = "Namespace of tool-hook fingerprints in the existing per-session emit-dedupe store."
