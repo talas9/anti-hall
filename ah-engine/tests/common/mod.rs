@@ -179,8 +179,15 @@ fn registry() -> &'static Registry {
             let me = std::thread::current().id();
             if let Ok(reg) = registry().lock() {
                 for (_, pid) in reg.iter().filter(|(t, _)| *t == me) {
-                    // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
-                    unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+                    // Only a child not yet reaped is killed: a test may have waited its daemon through the guard (Deref), and
+                    // then the pid is free for reuse by an unrelated process. WNOWAIT leaves a zombie for the guard's own wait.
+                    // SAFETY: a zeroed siginfo_t is a valid out-buffer; `waitid` and `kill` take plain integers otherwise.
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let ours = unsafe { libc::waitid(libc::P_PID, *pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } == 0;
+                    if ours {
+                        // SAFETY: see above; the pid is still this process's unreaped child, so it cannot name another process.
+                        unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+                    }
                 }
             }
             prev(info);
