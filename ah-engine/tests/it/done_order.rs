@@ -190,6 +190,28 @@ fn a_subagents_task_call_gets_no_delete_order_and_the_skip_is_counted() {
     assert!(adv.to_string().contains("subagent_skipped"), "the skip is counted: {adv}");
 }
 
+/// PR #893 review: the subagent skip covers only the done order and tip. A subagent's oversize TaskCreate is still refused with
+/// handover.taskListEnforce = block, and a subagent's delete is still counted as deleted.
+#[test]
+fn a_subagents_task_call_is_still_blocked_with_enforce_block_and_its_delete_is_still_counted() {
+    let s = Scratch::new("do-subagent-block");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.enforce_block();
+    let long = "x".repeat(200);
+    let pre = json!({"hook_event_name": "PreToolUse", "tool_name": "TaskCreate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "agent_id": "worker-1", "tool_input": {"subject": long, "description": "d"}});
+    let out = s.check("tasklist-hygiene", &pre, &[]);
+    assert!(
+        out.contains("\"decision\":\"block\"") || out.contains("\"permissionDecision\":\"deny\"") || out.contains("⛔"),
+        "a subagent's oversize subject is refused with enforce = block: {out}"
+    );
+    let del = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "agent_id": "worker-1", "tool_input": {"taskId": "1", "status": "deleted"}});
+    s.check("tasklist-hygiene", &del, &[]);
+    let adv = s.advisory_counters();
+    assert_eq!(adv["tasklist_hygiene"]["deleted"], 1, "a subagent's delete is counted: {adv}");
+}
+
 #[test]
 fn after_the_delete_there_is_no_further_order_and_it_counts_as_followed() {
     let s = Scratch::new("do-followed");

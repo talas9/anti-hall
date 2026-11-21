@@ -1528,7 +1528,7 @@ doc = "One-line description of the tasklist-hygiene check in the generated refer
 value = "Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
 [tasklist_hygiene.skip_subagent]
-doc = "true: the check says nothing on a task call of a subagent (its payload carries a coordinator_work.agent_markers field): a subagent's list is the spawner's, and its order to delete a task it may not edit was ignored by design (ignored-rules audit 2026-11-20)."
+doc = "true: a subagent's task call (its payload carries a coordinator_work.agent_markers field) marked done gets no delete order and no done tip: a subagent's list is the spawner's, and its order to delete a task it may not edit was ignored by design (ignored-rules audit 2026-11-20). Only those two are skipped: the taskListEnforce = block refusal, the budget line and the deleted count still apply."
 value = true
 
 [tasklist_hygiene.guard_name]

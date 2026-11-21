@@ -53,10 +53,6 @@ function decide(p, opts, event) {
   if (tool !== ah.cfg('tasklist_hygiene.create_tool') && tool !== ah.cfg('tasklist_hygiene.update_tool')) return 'allow';
   var guard = ah.cfg('tasklist_hygiene.guard_name');
   if (ah.settings.skipped(guard)) return 'allow';
-  if (ah.cfg('tasklist_hygiene.skip_subagent') === true && coordinator.subagentByPayload(p)) {
-    try { ah.advisory(ah.cfg('metric.tasklist_hygiene').advisory_kind, ah.cfg('tasklist_hygiene.event_subagent_skipped')); } catch (e) { /* counting never fails a hook */ }
-    return 'allow';
-  }
   var mode = ah.settings.enum('ctxbudget.set_h_task_enforce');
   var inp = jx.isObj(p.tool_input) ? p.tool_input : {};
   var sid = typeof p.session_id === 'string' ? p.session_id : '';
@@ -73,7 +69,14 @@ function decide(p, opts, event) {
     ah.advisory(mk, ah.cfg('tasklist_hygiene.event_deleted'));
     if (orderOn && taskId !== '') dord.forget(sid, taskId); // an ordered task that is deleted: the order was followed
   }
-  if (tool === ah.cfg('tasklist_hygiene.update_tool') && ah.settings.bool('ctxbudget.set_h_task_done_note') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0) {
+  var isDone = tool === ah.cfg('tasklist_hygiene.update_tool') && ah.settings.bool('ctxbudget.set_h_task_done_note') && ah.cfg('tasklist_hygiene.done_trigger').indexOf(String(inp.status)) >= 0;
+  // a subagent's list is the spawner's: its done task gets no delete order and no done tip (only those; the block, the budget line and
+  // the deleted count above still apply)
+  if (isDone && ah.cfg('tasklist_hygiene.skip_subagent') === true && coordinator.subagentByPayload(p)) {
+    ah.advisory(mk, ah.cfg('tasklist_hygiene.event_subagent_skipped'));
+    isDone = false;
+  }
+  if (isDone) {
     var id = taskId;
     ah.advisory(mk, ah.cfg('tasklist_hygiene.event_nudge'));
     // the completion line is an order (GH #762), recorded so a task left in the list is ordered again on the schedule; when the record

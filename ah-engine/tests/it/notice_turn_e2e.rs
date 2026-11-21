@@ -112,6 +112,17 @@ fn notice_turn_a_notice_drops_both_reminders_with_the_switch_on() {
     }
 }
 
+/// PR #893 review: a /loop the human types is a human turn; only the scheduled wake's sentinel is a notice.
+#[test]
+fn notice_turn_a_human_typed_loop_command_keeps_both_reminders_with_the_switch_on() {
+    for (i, typed) in ["/loop 5m /babysit-prs", "/oh-my-claudecode:loop check the deploy"].iter().enumerate() {
+        let r = Rig::new(&format!("loop-{i}"));
+        let (code, out, err) = r.prompt("claude", typed, true);
+        assert_eq!((code, err.as_str()), (0, ""), "{out}");
+        assert!(out.contains(VERIFY_FIRST) && out.contains(TASK_TRACKER), "{typed}: {out}");
+    }
+}
+
 #[test]
 fn notice_turn_a_human_sentence_that_names_a_notice_keeps_both_reminders_with_the_switch_on() {
     let r = Rig::new("mention");

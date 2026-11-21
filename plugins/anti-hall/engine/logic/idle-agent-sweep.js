@@ -22,9 +22,18 @@ function idOneLine(s, max) {
   return o;
 }
 
-// The id TaskStop takes for a teammate: its spawn result's agent_id (`name@session-xxxx`); a bare name is answered "No task found".
+// The id TaskStop takes for a teammate: its spawn result's idle_order.spawn_id_field (teammate_id, `name@session-xxxx`); a bare name
+// and the internal agent_id are answered "No task found".
 var idStopIds = {};
 function idStopId(name) { return typeof idStopIds[name] === 'string' && idStopIds[name] !== '' ? idStopIds[name] : name; }
+// The teammate a stop's (or a "No task found" answer's) id names: the name whose TaskStop id it is, else the part before the last
+// idle_sweep.stop_id_sep of a `name@session-xxxx` id (its spawn is outside the window), else the id itself (a bare name).
+function idStopName(id) {
+  var names = Object.keys(idStopIds);
+  for (var i = 0; i < names.length; i++) if (idStopIds[names[i]] === id) return names[i];
+  var at = id.lastIndexOf(ah.cfg('idle_sweep.stop_id_sep'));
+  return at > 0 ? id.slice(0, at) : id;
+}
 
 function idMessage(list, codex, now) {
   var words = ah.cfg(codex ? 'idle_sweep.words_codex' : 'idle_sweep.words_claude'), maxNamed = ah.cfgNum('idle_sweep.max_named'), labelMax = ah.cfgNum('idle_sweep.label_max');
@@ -94,11 +103,11 @@ function idWaiting(tp, now, finished) {
       }
     }
     var gone = goneRe.exec(raw);
-    if (gone && typeof gone[1] === 'string') { ended[gone[1]] = true; delete state[gone[1]]; }
+    if (gone && typeof gone[1] === 'string') { var gn = idStopName(gone[1]); ended[gn] = true; delete state[gn]; }
     if (stopRe.test(raw)) {
       // the teammate a stop names (task_id), seen or not yet idle
       var stopped = taskIdRe.exec(raw);
-      if (stopped) { ended[stopped[1]] = true; delete state[stopped[1]]; }
+      if (stopped) { var sn = idStopName(stopped[1]); ended[sn] = true; delete state[sn]; }
     }
     // a message to a stopped teammate resumes it: it may idle (and be listed) again
     if (retaskRe.test(raw) && !stopRe.test(raw)) Object.keys(ended).forEach(function (n) { if (raw.indexOf('"' + n + '"') >= 0) delete ended[n]; });
@@ -186,7 +195,7 @@ function idAdvisory(p, now) {
     if (found === null) return '';
     if (found.unsure) { ah.unable('idle-agent-sweep:teammates_scan_unsure'); return ''; }
     idStopIds = {};
-    found.teammates.forEach(function (f) { if (typeof f.agentId === 'string') idStopIds[f.name] = f.agentId; });
+    found.teammates.forEach(function (f) { if (typeof f.stopId === 'string') idStopIds[f.name] = f.stopId; });
     agents = found.teammates.map(function (f) { return { id: f.name, label: f.name, idleSinceMs: f.idleSinceMs }; });
   }
   // An agent idle past the stale bound is long gone (its stop may have failed as "No task found"), not idle: it drops out.
