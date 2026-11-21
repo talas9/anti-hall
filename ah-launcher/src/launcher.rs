@@ -658,22 +658,19 @@ impl L {
                 if n.gh_unknown.is_some() && !nc.gh_rule.is_empty() {
                     rule = Some(nc.gh_rule.clone());
                     via = Some(Ctr::CapacityGhUnknown);
-                } else if let Some((r, c)) = self.capacity_script(cfg, &p, n, nc, rules) {
-                    rule = Some(r);
-                    via = Some(c);
-                } else if let Some(u) = cfg.get("unknown")
-                    && let Some(r) = u
-                        .get("rule")
-                        .and_then(|v| v.as_str())
-                        .filter(|r| !r.is_empty())
-                {
-                    let lookup = u.get("path_lookup").and_then(|v| v.as_integer()) != Some(0);
+                } else {
+                    // #920: a command name no list knows that is no binary on PATH (a shell alias or function). #928: a tool only in a
+                    // project-local tool directory inside the repo is known, and (#929 review) its file is read as a script run by path is
+                    let u = cfg.get("unknown");
+                    let lookup = u
+                        .and_then(|u| u.get("path_lookup"))
+                        .and_then(|v| v.as_integer())
+                        != Some(0);
                     let path = std::env::var_os(
-                        u.get("path_env")
+                        u.and_then(|u| u.get("path_env"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_default(),
                     );
-                    // #928: a tool only in a project-local tool directory (.venv/bin, node_modules/.bin, target/debug) inside the repo
                     let dirs = shellwords::dirs(
                         p.get(
                             cfg.get("script")
@@ -685,18 +682,31 @@ impl L {
                         &n.cds,
                         None,
                     );
-                    if n.unknown_cmds.iter().any(|c| {
+                    let mut local: Vec<String> = Vec::new();
+                    let mut unresolved = false;
+                    for c in &n.unknown_cmds {
                         if lookup && shellwords::on_path(c, path.as_deref()) {
-                            return false;
+                            continue;
                         }
-                        if lookup
-                            && shellwords::local_tool(c, &dirs, &nc.local_dirs, &nc.repo_marker)
+                        match shellwords::local_tool(c, &dirs, &nc.local_dirs, &nc.repo_marker)
+                            .filter(|_| lookup)
                         {
-                            limits::bump(Ctr::CapacityLocalTool);
-                            return false;
+                            Some(lp) => {
+                                limits::bump(Ctr::CapacityLocalTool);
+                                local.push(lp.to_string_lossy().into_owned());
+                            }
+                            None => unresolved = true,
                         }
-                        true
-                    }) {
+                    }
+                    if let Some((r, c)) = self.capacity_script(cfg, &p, n, nc, rules, &local) {
+                        rule = Some(r);
+                        via = Some(c);
+                    } else if unresolved
+                        && let Some(r) = u
+                            .and_then(|u| u.get("rule"))
+                            .and_then(|v| v.as_str())
+                            .filter(|r| !r.is_empty())
+                    {
                         rule = Some(r.to_string());
                         via = Some(Ctr::CapacityUnknownCommand);
                         via_norm = true;
@@ -752,6 +762,7 @@ impl L {
         n: &shellwords::Normalised,
         ncfg: &shellwords::Cfg,
         rules: &toml::value::Table,
+        local: &[String],
     ) -> Option<(String, Ctr)> {
         let sc = cfg.get("script")?;
         let int = |k: &str| {
@@ -808,7 +819,7 @@ impl L {
         let mut unread = false;
         let mut seen: Vec<String> = Vec::new();
         let mut queue: std::collections::VecDeque<(String, usize)> =
-            n.scripts.iter().map(|p| (p.clone(), 0)).collect();
+            n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect();
         while let Some((path, depth)) = queue.pop_front() {
             if seen.contains(&path) {
                 continue;
@@ -947,7 +958,19 @@ impl L {
             own_bases: strs(cfg.get("own_temp").and_then(|o| o.get("bases"))),
             own_markers: strs(cfg.get("own_temp").and_then(|o| o.get("markers"))),
             own_prefixes: strs(cfg.get("own_temp").and_then(|o| o.get("prefixes"))),
-            own_readers: strs(cfg.get("own_temp").and_then(|o| o.get("readers"))),
+            own_leads: strs(cfg.get("own_temp").and_then(|o| o.get("leads"))),
+            own_string_leads: strs(cfg.get("own_temp").and_then(|o| o.get("string_leads"))),
+            own_keep: strs(cfg.get("own_temp").and_then(|o| o.get("keep"))),
+            own_blocks: cfg
+                .get("own_temp")
+                .and_then(|o| o.get("blocks"))
+                .and_then(|t| t.as_table())
+                .map(|t| t.iter().filter_map(|(k, v)| v.as_str().map(|c| (k.to_string(), c.to_string()))).collect())
+                .unwrap_or_default(),
+            own_branches: strs(cfg.get("own_temp").and_then(|o| o.get("branches"))),
+            own_guards: strs(cfg.get("own_temp").and_then(|o| o.get("guards"))),
+            own_functions: strs(cfg.get("own_temp").and_then(|o| o.get("functions"))),
+            own_cases: strs(cfg.get("own_temp").and_then(|o| o.get("cases"))),
             local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
             repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
             wrapper_opts: cfg

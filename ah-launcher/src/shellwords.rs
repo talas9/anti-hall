@@ -75,8 +75,22 @@ pub struct Cfg {
     pub own_markers: Vec<String>,
     /// The words that can stand in front of an assignment (`then`, `export`, `local`), each with its trailing space.
     pub own_prefixes: Vec<String>,
-    /// The commands that set the variables named after them (`read`, `for`, `getopts`): such a variable is no own path.
-    pub own_readers: Vec<String>,
+    /// The words that can stand before the cleanup command in command position (`sudo`, `command`).
+    pub own_leads: Vec<String>,
+    /// The commands whose quoted string argument starts a command (`trap 'rm -rf "$tmp"' EXIT`).
+    pub own_string_leads: Vec<String>,
+    /// The declarations that leave a variable's value as it is (`export HOME`): the name alone after one is no other assignment.
+    pub own_keep: Vec<String>,
+    /// The block words of the shell as opener = closer (`if` = `fi`, `{` = `}`): a variable made inside a block is own only inside it.
+    pub own_blocks: Vec<(String, String)>,
+    /// The words that start a new branch of the block they are in (`then`, `else`, `do`).
+    pub own_branches: Vec<String>,
+    /// The commands after `||` that end the run when the command before failed (`exit`): a creator so guarded made its path.
+    pub own_guards: Vec<String>,
+    /// The words that define a function (`function name`): its body's `{` is the block that follows.
+    pub own_functions: Vec<String>,
+    /// The block openers whose body holds patterns closed by a `)` (`case`).
+    pub own_cases: Vec<String>,
     /// #928: the project-local tool directories (`.venv/bin`, `node_modules/.bin`, `target/debug`) whose executables are known
     /// commands when they resolve inside the repo, and the entry (`.git`) that marks the repo root. Empty = off.
     pub local_dirs: Vec<String>,
@@ -693,80 +707,476 @@ pub fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
     })
 }
 
-/// #928: whether `word` is a path the text made itself: `$name` or `${name}` of a variable in `tmp`, alone or with a `/` suffix that
-/// climbs nowhere (no `..`, no substitution).
-fn own_ref(word: &str, tmp: &[String]) -> bool {
-    let w: String = word.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
-    let Some(r) = w.strip_prefix('$') else { return false };
-    let (name, rest) = match r.strip_prefix('{') {
-        Some(b) => match b.split_once('}') {
-            Some(x) => x,
-            None => return false,
-        },
-        None => r.split_at(r.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(r.len())),
-    };
-    tmp.iter().any(|t| t == name) && (rest.is_empty() || rest.starts_with('/')) && !rest.contains("..") && !rest.contains(['`']) && !rest.contains("$(")
+/// #928: whether the rest of a path after an own variable stays inside it: empty, or a literal path under it (no `..`, no glob that
+/// can match a dot entry (`.*`, a bracket), no variable but a positional parameter inside a component (`ss-$1`), nothing quoted).
+fn own_rest(rest: &str) -> bool {
+    if rest.is_empty() {
+        return true;
+    }
+    let b = rest.as_bytes();
+    rest.starts_with('/')
+        && !rest.contains("..")
+        && !rest.contains(".*")
+        && !rest.contains(".?")
+        && !rest.chars().any(|c| c.is_whitespace() || matches!(c, '[' | ']' | '{' | '}' | '~' | '`' | '\'' | '"' | '\\' | '(' | ')' | ';' | '&' | '|' | '<' | '>'))
+        && b.iter().enumerate().all(|(i, c)| {
+            // a `$` only as a positional parameter in the middle of a component (`ss-$1`)
+            *c != b'$' || (i > 0 && b[i - 1] != b'/' && b.get(i + 1).is_some_and(u8::is_ascii_digit) && !b.get(i + 2).is_some_and(u8::is_ascii_digit))
+        })
 }
 
-/// #928: `text` (a command or a script) with the cleanup of a path it made itself blanked (`rm` becomes `:`) and how many were:
-/// the variables whose every assignment is `mktemp`, a temp dir with a unique suffix, or a path under one of those (a fixpoint, so a
-/// variable later assigned something else, or read from input, is no longer own), and a cleanup command (`own_cleanup`) whose
-/// targets are ALL such a variable or a path under it with nothing climbing out (`rm -rf "$tmp"`, `trap 'rm -rf "$tmp"' EXIT`). A
-/// delete of anything else, a mixed target list or a path that climbs (`$tmp/..`) stays as it is for the rules.
+/// #928: `v` split into the variable it references (`$name` or `${name}`) and the rest after it.
+fn own_ref_parts(v: &str) -> Option<(&str, &str)> {
+    let r = v.strip_prefix('$')?;
+    match r.strip_prefix('{') {
+        Some(b) => b.split_once('}'),
+        None => Some(r.split_at(r.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(r.len()))),
+    }
+    .filter(|(n, _)| !n.is_empty() && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'))
+}
+
+/// #928: what an assignment's value makes the variable: `Some(true)` a path that is never empty (one word with a temp-dir base and a
+/// unique-suffix marker outside any `${..}`, no space, no glob, no `..`: `${TMPDIR:-/tmp}/x.$$`), `Some(false)` a path made by a
+/// creator (exactly one command substitution `$(mktemp -d ..)`, nothing nested in it, nothing after it: empty when it fails), `None`
+/// no own path.
+fn own_value(val: &str, cfg: &Cfg) -> Option<bool> {
+    let v = val.trim();
+    let v = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(v);
+    let sub = v.strip_prefix("$(").and_then(|x| x.strip_suffix(')')).or_else(|| v.strip_prefix('`').and_then(|x| x.strip_suffix('`')));
+    if let Some(inner) = sub {
+        let first = inner.split_whitespace().next().unwrap_or_default();
+        let ok = cfg.own_creators.iter().any(|c| c == first) && !inner.contains(['(', ')', '`', ';', '&', '|', '\n', '<', '>']);
+        return ok.then_some(false);
+    }
+    if v.is_empty()
+        || v.contains("..")
+        || v.chars().any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '[' | ']' | '`' | '"' | '\'' | ';' | '&' | '|' | '(' | ')' | '<' | '>' | '\\'))
+        || !cfg.own_bases.iter().any(|b| v.contains(b.as_str()))
+    {
+        return None;
+    }
+    let (mut outside, mut depth, mut rest) = (String::new(), 0usize, v);
+    while let Some(c) = rest.chars().next() {
+        if rest.starts_with("${") {
+            depth += 1;
+            rest = &rest[2..];
+            continue;
+        }
+        if c == '}' && depth > 0 {
+            depth -= 1;
+        } else if depth == 0 {
+            outside.push(c);
+        }
+        rest = &rest[c.len_utf8()..];
+    }
+    (depth == 0 && cfg.own_markers.iter().any(|m| outside.contains(m.as_str()))).then_some(true)
+}
+
+/// #928: one simple command of a text as [`commands`] reads it: where its first word is, where it ends, the blocks it sits in (the ids
+/// of the open `if`/`while`/`case`/`{`/`(`/function bodies, outermost first; a `then`/`else`/`do`/`;;` starts a new id) and whether it
+/// runs only maybe (after `&&` or `||`, in a pipeline or in the background), and whether a `|| exit` guards it.
+#[derive(Debug, Clone)]
+struct Cmd {
+    at: usize,
+    end: usize,
+    stack: Vec<usize>,
+    maybe: bool,
+    guarded: bool,
+}
+
+/// #928: the simple commands of `text` at its top level (not in a quote, a substitution, a comment or a heredoc body), with the blocks
+/// each sits in: the shell's own syntax (quotes, `$(..)`, `${..}`, backticks, `#`, `<<`) is read here; the block words come from
+/// `own_blocks` (opener = closer) and `own_branches`. With it whether the reading balanced: a closer that is not the innermost
+/// block's own, a `)` that closes nothing (outside a `own_cases` block), a block left open, a quote or substitution left open or a
+/// heredoc without its delimiter line make it unbalanced, and the caller then exempts nothing.
+fn commands(text: &str, cfg: &Cfg) -> (Vec<Cmd>, bool) {
+    let b = text.as_bytes();
+    let (mut cmds, mut stack, mut kinds): (Vec<Cmd>, Vec<usize>, Vec<String>) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut next_id, mut i, mut maybe_next) = (1usize, 0usize, false);
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let mut balanced = true;
+    let word_end = |from: usize| (from..b.len()).find(|&k| b[k].is_ascii_whitespace() || matches!(b[k], b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>')).unwrap_or(b.len());
+    while i < b.len() {
+        // command position: block words, then the command
+        while i < b.len() && matches!(b[i], b' ' | b'\t') {
+            i += 1;
+        }
+        if i >= b.len() {
+            break;
+        }
+        let c0 = b[i];
+        if c0 == b'\n' {
+            i += 1;
+            maybe_next = false;
+            i = skip_heredocs(text, i, &mut heredocs, &mut balanced);
+            continue;
+        }
+        if c0 == b'#' {
+            i = text[i..].find('\n').map_or(b.len(), |n| i + n);
+            continue;
+        }
+        if c0 == b'(' || c0 == b')' {
+            if c0 == b'(' {
+                stack.push(next_id);
+                kinds.push("(".into());
+                next_id += 1;
+            } else if kinds.last().is_some_and(|k| k == "(") {
+                stack.pop();
+                kinds.pop();
+            } else if !kinds.last().is_some_and(|k| cfg.own_cases.iter().any(|c| c == k)) {
+                // a ) that closes nothing but a case pattern: the reading is lost
+                balanced = false;
+            }
+            i += 1;
+            continue;
+        }
+        let we = word_end(i);
+        let w = &text[i..we];
+        if !w.is_empty() {
+            if cfg.own_blocks.iter().any(|(o, _)| o == w) {
+                stack.push(next_id);
+                kinds.push(w.to_string());
+                next_id += 1;
+                i = we;
+                continue;
+            }
+            if cfg.own_branches.iter().any(|x| x == w) {
+                if let Some(top) = stack.last_mut() {
+                    *top = next_id;
+                    next_id += 1;
+                }
+                maybe_next = false;
+                i = we;
+                continue;
+            }
+            if cfg.own_blocks.iter().any(|(_, c)| c == w) {
+                // a closer ends the innermost block only, and only when it is its opener's
+                if kinds.last().is_some_and(|k| cfg.own_blocks.iter().any(|(o, c)| o == k && c == w)) {
+                    stack.pop();
+                    kinds.pop();
+                } else {
+                    balanced = false;
+                }
+                i = we;
+                continue;
+            }
+            if w == "!" {
+                i = we;
+                continue;
+            }
+            // `function name`: its body's `{` is the block that follows
+            if cfg.own_functions.iter().any(|f| f == w) {
+                let mut k = we;
+                while k < b.len() && matches!(b[k], b' ' | b'\t') {
+                    k += 1;
+                }
+                i = word_end(k);
+                if text[i..].trim_start_matches([' ', '\t']).starts_with("()") {
+                    i = text[i..].find("()").map_or(i, |n| i + n + 2);
+                }
+                continue;
+            }
+        }
+        // a function definition (`name() {`): its body is a block of its own
+        let at = i;
+        let mut cmd = Cmd { at, end: at, stack: stack.clone(), maybe: maybe_next, guarded: false };
+        maybe_next = false;
+        let mut ctx: Vec<u8> = Vec::new();
+        let mut sep = 0u8;
+        while i < b.len() {
+            let c = b[i];
+            let top = ctx.last().copied();
+            match top {
+                Some(b'\'') => {
+                    if c == b'\'' {
+                        ctx.pop();
+                    }
+                    i += 1;
+                    continue;
+                }
+                Some(b'"') => {
+                    match c {
+                        b'\\' => i += 1,
+                        b'"' => {
+                            ctx.pop();
+                        }
+                        b'`' => ctx.push(b'`'),
+                        b'$' if b.get(i + 1) == Some(&b'(') => {
+                            ctx.push(b'S');
+                            i += 1;
+                        }
+                        b'$' if b.get(i + 1) == Some(&b'{') => {
+                            ctx.push(b'P');
+                            i += 1;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                    continue;
+                }
+                Some(b'`') if c == b'`' => {
+                    ctx.pop();
+                    i += 1;
+                    continue;
+                }
+                Some(b'P') if c == b'}' => {
+                    ctx.pop();
+                    i += 1;
+                    continue;
+                }
+                Some(b'S' | b'p') if c == b')' => {
+                    ctx.pop();
+                    i += 1;
+                    continue;
+                }
+                Some(b'S' | b'p') if c == b'(' => {
+                    ctx.push(b'p');
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            match c {
+                b'\\' => i += 1,
+                b'\'' => ctx.push(b'\''),
+                b'"' => ctx.push(b'"'),
+                b'`' => ctx.push(b'`'),
+                b'$' if b.get(i + 1) == Some(&b'(') => {
+                    ctx.push(b'S');
+                    i += 1;
+                }
+                b'$' if b.get(i + 1) == Some(&b'{') => {
+                    ctx.push(b'P');
+                    i += 1;
+                }
+                b'<' if top.is_none() && b.get(i + 1) == Some(&b'<') && b.get(i + 2) != Some(&b'<') => {
+                    // a heredoc: its body (from the next line to the delimiter line) is no command
+                    let mut k = i + 2;
+                    let dash = b.get(k) == Some(&b'-');
+                    if dash {
+                        k += 1;
+                    }
+                    while k < b.len() && matches!(b[k], b' ' | b'\t') {
+                        k += 1;
+                    }
+                    let e = word_end(k);
+                    let d: String = text[k..e].chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
+                    if !d.is_empty() {
+                        heredocs.push((d, dash));
+                    }
+                    i = e;
+                    continue;
+                }
+                b'#' if top.is_none() && i > 0 && b[i - 1].is_ascii_whitespace() => {
+                    i = text[i..].find('\n').map_or(b.len(), |n| i + n);
+                    continue;
+                }
+                b'(' if top.is_none()
+                    && b.get(i + 1) == Some(&b')')
+                    && text[at..i].trim().bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b':'))
+                    && !text[at..i].trim().is_empty() =>
+                {
+                    // `name()`: a function definition; its body's `{` is the block that follows, read at command position
+                    i += 2;
+                    sep = b'f';
+                    break;
+                }
+                b'\n' | b';' | b'&' | b'|' | b'(' | b')' if top.is_none() => {
+                    sep = c;
+                    break;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        cmd.end = i.min(b.len());
+        if !ctx.is_empty() {
+            // the text ends inside a quote or a substitution
+            balanced = false;
+        }
+        match sep {
+            b'f' => {}
+            b'\n' => {
+                i += 1;
+                i = skip_heredocs(text, i, &mut heredocs, &mut balanced);
+            }
+            b';' => {
+                i += 1;
+                // `;;` ends a case arm: the next arm is a new block
+                if b.get(i) == Some(&b';') {
+                    i += 1;
+                    while matches!(b.get(i), Some(b';' | b'&')) {
+                        i += 1;
+                    }
+                    if let Some(top) = stack.last_mut() {
+                        *top = next_id;
+                        next_id += 1;
+                    }
+                }
+            }
+            b'&' | b'|' => {
+                let double = b.get(i + 1) == Some(&sep);
+                i += if double { 2 } else { 1 };
+                if double {
+                    maybe_next = true;
+                    if sep == b'|' {
+                        // `cmd || exit`: the command before it went through when the one after does not run
+                        let mut k = i;
+                        while k < b.len() && b[k].is_ascii_whitespace() {
+                            k += 1;
+                        }
+                        let w = &text[k..word_end(k)];
+                        // and only when the guard runs in this shell (`|| exit | cat` exits a pipeline subshell only)
+                        let tail = text[k..].split(['\n', ';']).next().unwrap_or_default();
+                        cmd.guarded = cfg.own_guards.iter().any(|g| g == w) && !tail.contains(['|', '&', '(', '`']);
+                    }
+                } else {
+                    // in a pipeline or the background: a subshell, so its assignments stay there
+                    cmd.maybe = true;
+                    maybe_next = sep == b'|';
+                }
+            }
+            _ => {}
+        }
+        if cmd.end > cmd.at {
+            cmds.push(cmd);
+        }
+    }
+    (cmds, balanced && stack.is_empty() && heredocs.is_empty())
+}
+
+/// #928: past the bodies of the heredocs opened on the line before `i` (each up to its delimiter line).
+fn skip_heredocs(text: &str, mut i: usize, docs: &mut Vec<(String, bool)>, balanced: &mut bool) -> usize {
+    for (d, dash) in docs.drain(..) {
+        let mut closed = false;
+        while i < text.len() {
+            let e = text[i..].find('\n').map_or(text.len(), |n| i + n);
+            let line = &text[i..e];
+            i = (e + 1).min(text.len());
+            if (if dash { line.trim_start_matches('\t') } else { line }) == d {
+                closed = true;
+                break;
+            }
+        }
+        *balanced &= closed;
+    }
+    i
+}
+
+/// #928: `text` (a command or a script) with the cleanup of a path it made itself blanked (`rm` becomes `:`) and how many were.
+/// A variable is own at a cleanup when an assignment that surely ran before it (earlier, not after `&&`/`||`, not in a pipeline or the
+/// background, in the same block or one around it) gave it an own value: `own_value`, or a path under another own variable there; and
+/// its name appears nowhere else but as a plain reference or such an assignment (`read t`, `printf -v t`, `eval t=/`, `t+=..`, `t[0]=`,
+/// `${t:=..}`, `declare -n r=t`, a value that is no own path anywhere: no own path at all). A variable that is ever set empty, or made
+/// by a creator that can fail without a `|| exit` after it, counts only as a bare target (`rm -rf ""` deletes nothing). A cleanup
+/// command (`own_cleanup`) is blanked when it stands in command position (after `own_prefixes` / `own_leads` words only, or first in
+/// the string of an `own_string_leads` command: `trap 'rm -rf "$tmp"' EXIT`) and ALL its targets are a double-quoted reference to an
+/// own variable, alone or with a literal rest that stays inside it. Anything else stays for the rules.
 pub fn blank_own_temp(text: &str, cfg: &Cfg) -> (String, usize) {
     if cfg.own_cleanup.is_empty() || (cfg.own_creators.is_empty() && cfg.own_bases.is_empty()) {
         return (text.to_string(), 0);
     }
-    let (mut assigns, mut bad): (Vec<(String, String)>, Vec<String>) = (Vec::new(), Vec::new());
-    for seg in text.split(['\n', ';', '&', '|']) {
-        let mut s = seg.trim().trim_start_matches(['(', '{']).trim_start();
-        // a function definition in front (`newhome() { HOME=$tmp/home.$1`)
-        if let Some((_, rest)) = s.split_once("()").filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
-            s = rest.trim_start().trim_start_matches('{').trim_start();
-        }
-        // what can stand in front of an assignment
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let (cmds, balanced) = commands(text, cfg);
+    if !balanced {
+        return (text.to_string(), 0);
+    }
+    // a creator or guard the text redefines (`mktemp() { ..; }`, `alias exit=..`) is no creator or guard
+    let shadowed = cfg.own_creators.iter().chain(&cfg.own_guards).any(|w| {
+        [format!("{w}()"), format!("{w} ()"), format!("alias {w}=")].iter().any(|p| text.contains(p.as_str()))
+            || cfg.own_functions.iter().any(|f| text.contains(&format!("{f} {w}")))
+    });
+    if shadowed {
+        return (text.to_string(), 0);
+    }
+    // the assignments at the start of a command: (name, value, byte offset of the name, the command)
+    let mut assigns: Vec<(String, String, usize, &Cmd)> = Vec::new();
+    for c in &cmds {
+        let mut s = &text[c.at..c.end];
         while let Some(rest) = cfg.own_prefixes.iter().find_map(|k| s.strip_prefix(k.as_str())) {
             s = rest.trim_start();
         }
-        let first = s.split_whitespace().next().unwrap_or_default();
-        if let Some((k, v)) = s.split_once('=').filter(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit())) {
-            assigns.push((k.to_string(), v.to_string()));
-        } else if cfg.own_readers.iter().any(|r| r == first) {
-            bad.extend(s.split_whitespace().skip(1).map(|w| w.trim_matches(['"', '\'']).to_string()));
+        if let Some((k, v)) = s.split_once('=').filter(|(k, _)| !k.is_empty() && k.bytes().all(ident) && !k.starts_with(|c: char| c.is_ascii_digit())) {
+            assigns.push((k.to_string(), v.to_string(), s.as_ptr() as usize - text.as_ptr() as usize, c));
         }
-    }
-    let own_val = |val: &str, tmp: &[String]| {
-        // an empty value (a reset, `cg_dir=`) names no path
-        val.trim().is_empty()
-            || cfg.own_creators.iter().any(|c| val.contains(c.as_str()))
-            || (cfg.own_bases.iter().any(|b| val.contains(b.as_str())) && cfg.own_markers.iter().any(|m| val.contains(m.as_str())))
-            || own_ref(val.trim(), tmp)
-    };
-    let mut tmp: Vec<String> = Vec::new();
-    loop {
-        let mut grew = false;
-        for (k, v) in &assigns {
-            if !tmp.contains(k) && !bad.contains(k) && own_val(v, &tmp) {
-                tmp.push(k.clone());
-                grew = true;
-            }
-        }
-        // a variable that is ever set to something else is not own
-        for (k, v) in &assigns {
-            if tmp.contains(k) && !own_val(v, &tmp) {
-                bad.push(k.clone());
-                tmp.retain(|t| t != k);
-                grew = true;
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
-    if tmp.is_empty() {
-        return (text.to_string(), 0);
     }
     let b = text.as_bytes();
+    let sep = |c: u8| c.is_ascii_whitespace() || matches!(c, b'"' | b'\'' | b';' | b'&' | b'|' | b'(' | b')' | b'{' | b'}' | b'`' | b'=');
+    // a name that appears anywhere but as a plain reference or a recognised assignment can be set some other way: no own path
+    let mut bad: Vec<String> = Vec::new();
+    for (name, ..) in &assigns {
+        if bad.contains(name) {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(off) = text.get(from..).and_then(|t| t.find(name.as_str())) {
+            let p = from + off;
+            let e = p + name.len();
+            from = e;
+            // a comment or a heredoc body is data (the reading balanced, so what is outside every command runs nothing)
+            if !cmds.iter().any(|c| c.at <= p && p < c.end) {
+                continue;
+            }
+            if (p > 0 && ident(b[p - 1])) || b.get(e).is_some_and(|c| ident(*c)) || (p > 0 && b[p - 1] == b'$') {
+                continue;
+            }
+            let braced = (p >= 2 && &b[p - 2..p] == b"${") || (p >= 3 && matches!(b[p - 1], b'#' | b'!') && &b[p - 3..p - 1] == b"${");
+            if braced {
+                if text[e..].starts_with('=') || text[e..].starts_with(":=") {
+                    bad.push(name.clone());
+                    break;
+                }
+                continue;
+            }
+            if assigns.iter().any(|(_, _, at, _)| *at == p) {
+                continue;
+            }
+            // a declaration that leaves the value as it is (`export HOME`, `own_keep`), the name alone after it
+            let head = text[..p].rfind(['\n', ';', '&', '|', '{']).map_or(0, |s| s + 1);
+            if cfg.own_keep.iter().any(|k| k == text[head..p].trim()) && b.get(e).is_none_or(|c| matches!(c, b'\n' | b';' | b'&' | b'|' | b' ' | b'\t' | b'}')) {
+                continue;
+            }
+            let before = p == 0 || sep(b[p - 1]);
+            let after = b.get(e).is_none_or(|c| sep(*c) || matches!(c, b'+' | b'['));
+            if before && after {
+                bad.push(name.clone());
+                break;
+            }
+        }
+    }
+    // own_at: Some(never empty) when `k` is own at a command at byte `at` in blocks `stack`: EVERY assignment of it anywhere (any of them
+    // can be the last to run, in a loop or a function called later) is an own value or a path under a variable own (and never empty)
+    // there, and at least one surely ran before (earlier, not maybe, in the same block or one around it)
+    #[allow(clippy::too_many_arguments)]
+    fn own_at(k: &str, at: usize, stack: &[usize], depth: usize, assigns: &[(String, String, usize, &Cmd)], cfg: &Cfg, bad: &[String]) -> Option<bool> {
+        if depth > 8 || bad.iter().any(|x| x == k) {
+            return None;
+        }
+        let (mut ran, mut sure) = (false, true);
+        for (n, v, off, c) in assigns {
+            if n != k {
+                continue;
+            }
+            let t = v.trim();
+            if t.is_empty() {
+                sure = false;
+                continue;
+            }
+            let t = t.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(t);
+            let got = match own_value(v, cfg) {
+                Some(s) => s || c.guarded,
+                None => {
+                    let (base, rest) = own_ref_parts(t).filter(|(_, r)| own_rest(r))?;
+                    // a path under a variable that may be empty is no path under it (`"$t"/x` is `/x`)
+                    own_at(base, *off, &c.stack, depth + 1, assigns, cfg, bad).filter(|s| *s || rest.is_empty())?
+                }
+            };
+            sure &= got;
+            ran |= *off < at && !c.maybe && stack.starts_with(&c.stack);
+        }
+        ran.then_some(sure)
+    }
+    let leads = |t: &str| t.split_whitespace().all(|w| cfg.own_leads.iter().any(|l| l == w) || cfg.own_prefixes.iter().any(|p| p.trim() == w));
     let (mut out, mut last, mut n, mut i) = (String::with_capacity(text.len()), 0, 0, 0);
     while i < b.len() {
         let hit = text.get(i..).and_then(|t| cfg.own_cleanup.iter().find(|c| t.starts_with(c.as_str())));
@@ -776,7 +1186,34 @@ pub fn blank_own_temp(text: &str, cfg: &Cfg) -> (String, usize) {
         };
         let end = i + cmd.len();
         let at_word = i == 0 || matches!(b[i - 1], b' ' | b'\t' | b'\n' | b';' | b'&' | b'|' | b'(' | b'`' | b'\'' | b'"' | b'{');
+        // the simple command the cleanup is in (or the trap command whose string it starts)
+        let Some(host) = cmds.iter().rev().find(|c| c.at <= i && i < c.end) else {
+            i = end;
+            continue;
+        };
         if !at_word || !b.get(end).is_some_and(|c| matches!(c, b' ' | b'\t')) {
+            i = end;
+            continue;
+        }
+        // command position: only lead words since the start of the command, or first in the string of a string lead (`trap '`)
+        let lead = &text[host.at..i];
+        // or a later command of that string, after a ; && || in it (`trap 'kill "$p"; rm -rf "$tmp"' EXIT`)
+        let in_string = |l: &str| {
+            let w = l.split_whitespace().next().unwrap_or_default();
+            let after = l.trim_start().get(w.len()..).unwrap_or_default().trim_start();
+            cfg.own_string_leads.iter().any(|s| s == w)
+                && after.starts_with(['\'', '"'])
+                && (after.len() == 1 || l.trim_end().ends_with(';') || l.trim_end().ends_with("&&") || l.trim_end().ends_with("||"))
+                && l.ends_with(char::is_whitespace)
+        };
+        let positioned = match lead.strip_suffix(['\'', '"']) {
+            Some(l) => {
+                let mut ws: Vec<&str> = l.split_whitespace().collect();
+                l.ends_with(char::is_whitespace) && ws.pop().is_some_and(|w| cfg.own_string_leads.iter().any(|s| s == w)) && leads(&ws.join(" "))
+            }
+            None => leads(lead) || in_string(lead),
+        };
+        if !positioned {
             i = end;
             continue;
         }
@@ -798,8 +1235,23 @@ pub fn blank_own_temp(text: &str, cfg: &Cfg) -> (String, usize) {
                 continue;
             }
             targets += 1;
-            all &= own_ref(w, &tmp);
-            // a word that closes a quote it did not open ends the string the command sits in (`trap 'rm -rf "$tmp"' EXIT`)
+            // a double-quoted reference only (no word splitting, no glob of the value), no `$` outside the quotes (`"$t/a"$1`); a
+            // trailing ' closes a trap string
+            let q = w.strip_suffix('\'').unwrap_or(w);
+            let mut inq = false;
+            let quoted = q.chars().all(|c| {
+                if c == '"' {
+                    inq = !inq;
+                }
+                c != '$' || inq
+            });
+            let path = q.replace('"', "");
+            all &= q.starts_with("\"$")
+                && !q.contains('\'')
+                && quoted
+                && own_ref_parts(&path).is_some_and(|(name, rest)| {
+                    own_rest(rest) && own_at(name, host.at, &host.stack, 0, &assigns, cfg, &bad).is_some_and(|sure| sure || rest.is_empty())
+                });
             if w.matches('\'').count() % 2 == 1 || w.matches('"').count() % 2 == 1 {
                 break;
             }
@@ -819,18 +1271,18 @@ pub fn blank_own_temp(text: &str, cfg: &Cfg) -> (String, usize) {
 /// #928: whether `name` is an executable in a project-local tool directory (`local_dirs`: `.venv/bin`, `node_modules/.bin`,
 /// `target/debug`) of one of `dirs` (the cwd and each directory the command changes to) or of their parents up to the repo root (the
 /// nearest parent that holds `marker`), with the real path inside that root: a symlink that leaves the repo, or a directory outside
-/// any repo, is no known tool.
-pub fn local_tool(name: &str, dirs: &[std::path::PathBuf], local_dirs: &[String], marker: &str) -> bool {
+/// any repo, is no known tool. Its real path, so the caller reads it as a script run by path is (#929 review: a planted tool is read).
+pub fn local_tool(name: &str, dirs: &[std::path::PathBuf], local_dirs: &[String], marker: &str) -> Option<std::path::PathBuf> {
     if local_dirs.is_empty() || marker.is_empty() || !plain_name(name) {
-        return false;
+        return None;
     }
-    dirs.iter().filter_map(|d| std::fs::canonicalize(d).ok()).any(|d| {
-        let Some(root) = d.ancestors().find(|a| a.join(marker).exists()).map(std::path::Path::to_path_buf) else { return false };
-        d.ancestors().take_while(|a| a.starts_with(&root)).any(|a| {
-            local_dirs.iter().any(|l| {
-                std::fs::canonicalize(a.join(l).join(name)).is_ok_and(|p| {
+    dirs.iter().filter_map(|d| std::fs::canonicalize(d).ok()).find_map(|d| {
+        let root = d.ancestors().find(|a| a.join(marker).exists()).map(std::path::Path::to_path_buf)?;
+        d.ancestors().take_while(|a| a.starts_with(&root)).find_map(|a| {
+            local_dirs.iter().find_map(|l| {
+                std::fs::canonicalize(a.join(l).join(name)).ok().filter(|p| {
                     p.starts_with(&root)
-                        && std::fs::metadata(&p).is_ok_and(|m| {
+                        && std::fs::metadata(p).is_ok_and(|m| {
                             #[cfg(unix)]
                             let exec = std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0;
                             #[cfg(not(unix))]
@@ -1307,7 +1759,14 @@ mod tests {
             own_bases: v(&["TMPDIR", "/tmp/"]),
             own_markers: v(&["$$"]),
             own_prefixes: v(&["then ", "do ", "export ", "local "]),
-            own_readers: v(&["read", "for", "unset"]),
+            own_leads: v(&["sudo", "command"]),
+            own_string_leads: v(&["trap"]),
+            own_keep: v(&["export"]),
+            own_blocks: [("if", "fi"), ("while", "done"), ("until", "done"), ("for", "done"), ("case", "esac"), ("{", "}")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            own_branches: v(&["then", "else", "elif", "do"]),
+            own_guards: v(&["exit", "return"]),
+            own_functions: v(&["function"]),
+            own_cases: v(&["case"]),
             ..cfg()
         }
     }
@@ -1318,8 +1777,12 @@ mod tests {
         // mktemp, a unique temp dir, a path under one, a trap string, a function body, a reset to empty
         assert_eq!(b("t=$(mktemp -d); rm -rf \"$t\"").1, 1);
         assert_eq!(b("t=${TMPDIR:-/tmp}/x.$$\ntrap 'rm -rf \"$t\"' EXIT HUP").1, 1);
-        assert_eq!(b("t=$(mktemp -d)\ns=$t/seen\nrm -f \"$s\" \"$t/sub\"").1, 1);
-        assert_eq!(b("f() { d=$t/h.$1; rm -rf \"$d\"; }\nt=$(mktemp -d)").1, 1);
+        assert_eq!(b("t=${TMPDIR:-/tmp}/x.$$\ntrap '[ -n \"$p\" ] && kill \"$p\"; rm -rf \"$t\"' EXIT").1, 1);
+        assert_eq!(b("# the t dir\nt=${TMPDIR:-/tmp}/x.$$\nrm -rf \"$t\"").1, 1);
+        assert_eq!(b("t=$(mktemp -d) || exit 1\ns=$t/seen\nrm -f \"$s\" \"$t/sub\"").1, 1);
+        assert_eq!(b("t=$(mktemp -d) || exit 1\nf() { d=$t/h.$1; rm -rf \"$d\"; }").1, 1);
+        assert_eq!(b("t=${TMPDIR:-/tmp}/b.$$\nf() { HOME=\"$t/home.$1\"; export HOME; rm -rf \"$HOME\"; }").1, 1);
+        assert_eq!(b("if true; then\n  t=$(mktemp -d) || exit 1\n  rm -rf \"$t/x\"\nfi").1, 1);
         assert_eq!(b("c=$(mktemp -d)\n[ -n \"${c:-}\" ] && rm -rf \"$c\"\nc=").1, 1);
         assert!(!b("t=$(mktemp -d); rm -rf \"$t\"").0.contains("rm"));
         // anything else stays for the rules: a mixed list, a path that climbs, a variable set to something else or read from input,
@@ -1333,6 +1796,45 @@ mod tests {
             "rm -rf \"$t\"",
             "t=$(mktemp -d); xrm -rf \"$t\"",
             "t=$(mktemp -d); rm -rf \"$t$x\"",
+            // review of #929: each of these passed the first cut
+            "t=; rm -rf \"$t\"/Users/x",
+            "t=${HOME:-mktemp}; rm -rf \"$t\"",
+            "t=\"$(mktemp -d) $HOME\"; rm -rf $t",
+            "t=$(mktemp -d); rm -rf $t",
+            "t=$(mktemp -d); x=..; rm -rf \"$t/$x\"",
+            "t=$(mktemp -d); IFS= read -r t; rm -rf \"$t\"",
+            "t=$(mktemp -d); printf -v t %s \"$HOME\"; rm -rf \"$t\"",
+            "t=$(mktemp -d); eval t=/; rm -rf \"$t\"",
+            "t=$(mktemp -d); t+=/../..; rm -rf \"$t\"",
+            "t=$(mktemp -d); t[0]=/; rm -rf \"$t\"",
+            "t=$(mktemp -d); case $x in a) t=/ ;; esac; rm -rf \"$t\"",
+            "t=$(mktemp -d); : ${t:=/}; rm -rf \"$t\"",
+            "t=$(mktemp -d); declare -n r=t; r=/; rm -rf \"$t\"",
+            "t=$(mktemp -d) rm -rf \"$t\"/*",
+            "t=$(mktemp -d); echo / | xargs rm -rf \"$t\"",
+            "t=$(mktemp -d); find / -exec rm -rf \"$t\" \\;",
+            "t=$(mktemp -d); rm -rf \"$t\"/.*/x",
+            "t=${TMPDIR%$$}; rm -rf \"$t\"",
+            "rm -rf \"$t/x\"; t=$(mktemp -d)",
+            "s=$t/x; t=$(mktemp -d); rm -rf \"$s\"",
+            "f() { d=$t/h.$1; rm -rf \"$d\"; }\nt=$(mktemp -d)",
+            "t=$(mktemp -d); d=$t/$1; rm -rf \"$d\"",
+            "t=$(mktemp -d); trap \"rm -rf $t\" EXIT",
+            "t=$(mktemp -d); set -- ' /'; rm -rf \"$t/a\"$1",
+            // a creator that can fail leaves only a bare target; an assignment that may not have run is no own path
+            "t=$(mktemp -d)\ns=$t/seen\nrm -rf \"$s\"",
+            "t=$(mktemp -d); rm -rf \"$t/x\"",
+            "false && t=$(mktemp -d); rm -rf \"$t\"",
+            "if false; then t=$(mktemp -d) || exit; fi; rm -rf \"$t/x\"",
+            "f() { HOME=$(mktemp -d); }; rm -rf \"$HOME\"",
+            "if false; then t=$(mktemp -d) || exit; a=(); fi; rm -rf \"$t/x\"",
+            "mktemp() { echo \"$HOME\"; }; t=$(mktemp) || exit; rm -rf \"$t\"",
+            "t=$(mktemp -d) || exit\nfi\nrm -rf \"$t/x\"",
+            "(t=$(mktemp -d) || exit); rm -rf \"$t/x\"",
+            "t=$(mktemp -d) || exit | cat; rm -rf \"$t/x\"",
+            "t=$(mktemp -d) || exit | cat\nrm -rf \"$t/x\"",
+            "t=$(mktemp -d); trap 'echo / | xargs rm -rf \"$t\"' EXIT",
+            "t=$(mktemp -d); export -n t; rm -rf \"$t\"",
         ] {
             assert_eq!(b(t).1, 0, "{t}");
         }
@@ -1377,16 +1879,16 @@ mod tests {
         std::os::unix::fs::symlink(other.join(".venv/bin/mytool"), bin.join("escape")).unwrap();
         std::fs::write(bin.join("plain"), "x").unwrap(); // not executable
         let l = vec![".venv/bin".to_string()];
-        let t = |name: &str, d: &std::path::Path| local_tool(name, &[d.to_path_buf()], &l, ".git");
+        let t = |name: &str, d: &std::path::Path| local_tool(name, &[d.to_path_buf()], &l, ".git").is_some();
         assert!(t("mytool", &repo), "in the repo root");
         assert!(t("mytool", &sub), "from a subdirectory, up to the repo root");
         assert!(!t("mytool", &other), "outside any repo");
         assert!(!t("escape", &repo), "a symlink that leaves the repo");
         assert!(!t("plain", &repo), "not executable");
         assert!(!t("absent", &repo));
-        assert!(!local_tool("mytool", &[repo.clone()], &[], ".git"), "off without the list");
-        assert!(!local_tool("mytool", &[repo.clone()], &l, ""), "off without the marker");
-        assert!(!local_tool("../x", &[repo.clone()], &l, ".git"), "a path is no tool name");
+        assert!(local_tool("mytool", std::slice::from_ref(&repo), &[], ".git").is_none(), "off without the list");
+        assert!(local_tool("mytool", std::slice::from_ref(&repo), &l, "").is_none(), "off without the marker");
+        assert!(local_tool("../x", std::slice::from_ref(&repo), &l, ".git").is_none(), "a path is no tool name");
         std::fs::remove_dir_all(&root).unwrap(); // keep: this test's own scratch dir
     }
 }
