@@ -32,6 +32,7 @@ impl Home {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", self.dir.join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -39,6 +39,7 @@ fn exec(cmd: &mut Command, home: &Home, env: &[(&str, &str)]) -> Run {
         .env("HOME", home.path())
         .env("ANTI_HALL_ROOT", plugin())
         .env("CLAUDE_PLUGIN_ROOT", plugin())
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
         .env("AH_ENGINE_DIR", home.path().join("state"))
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .current_dir(home.path());

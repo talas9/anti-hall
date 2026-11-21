@@ -51,6 +51,7 @@ fn review_due_peak(home: &Path) -> (u64, String) {
         .env("HOME", home)
         .env("AH_ENGINE_DIR", home.join("eng"))
         .env("CLAUDE_PLUGIN_ROOT", plugin_src())
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin_src())
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
