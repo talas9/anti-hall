@@ -1545,7 +1545,7 @@ fn crash_loop_stops_respawning_records_reason_and_advises_once() {
         // retry the hook, and every retry that still finds no daemon spawns another one; on a loaded machine such a surplus
         // daemon is still starting when the round's daemon is killed, takes the free lock, and answers after the crash loop
         // tripped although no client respawned anything.
-        let mut d = e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let mut d = crate::common::Daemon::new(e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         assert!(wait_for(|| e.pid().is_some()), "no daemon on round {i}");
         assert_eq!(e.pid(), Some(d.id()), "round {i}: the daemon answering is the one this round started");
         // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
@@ -1922,7 +1922,7 @@ fn cpu_budget_trip_follows_the_failure_mode() {
     // a heavy-ish rule set so evaluation takes > 1 us of thread CPU
     let rules: Vec<String> = (0..200).map(|i| format!(r#"{{"pattern":"zzz{i}[a-z]+q","action":"warn","message":"m"}}"#)).collect();
     std::fs::write(e.dir.join("rules.json"), format!(r#"{{"version":1,"rules":[{}]}}"#, rules.join(","))).unwrap();
-    let mut daemon = e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let mut daemon = crate::common::Daemon::new(e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     assert!(wait_for(|| e.pid().is_some()));
     e.clear_down_marker();
     let (out, err, code, _) = e.hook(DENY_IN, true);
@@ -1947,7 +1947,7 @@ fn rss_over_cap_restarts_cleanly_and_next_client_respawns() {
     let rules: Vec<String> = (0..8000).map(|i| format!(r#"{{"pattern":"rss{i}[a-z]{{20}}","action":"warn","message":"m{i}"}}"#)).collect();
     let rules_text = format!(r#"{{"version":1,"rules":[{}]}}"#, rules.join(","));
     std::fs::write(probe.dir.join("rules.json"), &rules_text).unwrap();
-    let mut probe_daemon = probe.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let mut probe_daemon = crate::common::Daemon::new(probe.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     assert!(wait_for(|| probe.pid().is_some()));
     let startup_mem = probe.status()["mem_kb"].as_u64().unwrap();
     drop(probe.ctl("stop"));
@@ -1960,7 +1960,7 @@ fn rss_over_cap_restarts_cleanly_and_next_client_respawns() {
     let cap = cap_num.to_string();
     let e = Env::new_no_prime("rss", &[("AH_ENGINE_RSS_CAP_KB", cap.as_str()), ("AH_ENGINE_RSS_CHECK_MS", "200"), ("AH_ENGINE_WATCHDOG_TICK_MS", "100")]);
     std::fs::write(e.dir.join("rules.json"), rules_text).unwrap();
-    let mut daemon = e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let mut daemon = crate::common::Daemon::new(e.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     assert!(wait_for(|| e.pid().is_some()));
     let before = e.status()["mem_kb"].as_u64().unwrap();
     println!("TIMING rss cap startup_probe_kb={startup_mem} before_kb={before} cap_kb={cap_num}");

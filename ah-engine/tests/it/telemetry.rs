@@ -10,7 +10,7 @@ use crate::common;
 use ah_engine::telemetry::event::{Kind, Outcome};
 use ah_engine::telemetry::recorder::Recorder;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
@@ -66,7 +66,7 @@ fn record_holds_under_one_microsecond_median_alone_and_under_contention() {
 
 struct Run {
     dir: PathBuf,
-    daemon: Option<Child>,
+    daemon: Option<crate::common::Daemon>,
 }
 
 impl Run {
@@ -95,7 +95,7 @@ impl Run {
     }
 
     fn start(&mut self, flush_ms: &str) {
-        let child = self.cmd(flush_ms).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let child = crate::common::Daemon::new(self.cmd(flush_ms).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         self.daemon = Some(child);
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(5) {

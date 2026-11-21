@@ -83,7 +83,7 @@ fn the_prefixes_and_the_age_come_from_the_shipped_config() {
     ah_engine::defaults::init().unwrap();
     assert_eq!(ah_engine::defaults::num("disk_watch.tmp_sweep_max_age_s"), 3600);
     let p = ah_engine::defaults::list("disk_watch.tmp_sweep_prefixes");
-    for want in ["ah-script-", "ah-reblock-"] {
+    for want in ["ah-script-", "ah-reblock-", "ah-hostd-"] {
         assert!(p.contains(&want), "{want} is swept");
     }
     assert!(p.iter().all(|x| !x.is_empty()), "no empty prefix");

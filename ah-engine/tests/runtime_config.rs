@@ -104,8 +104,8 @@ fn defaults_are_read_at_run_time_hot_swapped_and_never_defaulted() {
         // SAFETY: this test crate holds a single test, so no other thread of this process reads or writes the environment.
         unsafe { std::env::set_var(k, v) };
     }
-    let daemon = Command::new(BIN).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    struct Reap(PathBuf, std::process::Child);
+    let daemon = crate::common::Daemon::new(Command::new(BIN).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    struct Reap(PathBuf, crate::common::Daemon);
     impl Drop for Reap {
         fn drop(&mut self) {
             let _ = client::ctl("stop");

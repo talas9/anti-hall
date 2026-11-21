@@ -46,7 +46,7 @@ fn status(root: &Path) -> Option<Value> {
 
 struct Daemon {
     root: PathBuf,
-    child: std::process::Child,
+    child: crate::common::Daemon,
 }
 
 impl Daemon {
@@ -55,7 +55,7 @@ impl Daemon {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&root)); // keep: a leftover of an earlier run under this name
         std::fs::create_dir_all(root.join("home").join(".anti-hall")).unwrap();
         std::fs::create_dir_all(root.join("eng")).unwrap();
-        let child = cmd(&root, extra_env).arg("serve").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let child = crate::common::Daemon::new(cmd(&root, extra_env).arg("serve").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         let d = Daemon { root, child };
         wait_for("the daemon to answer", || status(&d.root).is_some());
         d

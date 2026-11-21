@@ -858,10 +858,12 @@ fn sigkilled_launcher_takes_its_hung_engine_and_run_dir_with_it() {
 fn a_normally_finished_call_leaves_no_watcher_kill_behind() {
     let env = Env::new("nokill");
     let e = engine(&env, "exit 0");
-    let by = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap(); // a bystander in its own group
+    let by = common::Reaped::new(
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    ); // a bystander in its own group
     let o = env.run("UserPromptSubmit", PAYLOAD, Some(&e), &[]);
     assert_eq!(o.code, 0);
     std::thread::sleep(Duration::from_millis(300));

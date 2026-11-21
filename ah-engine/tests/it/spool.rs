@@ -7,7 +7,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
@@ -16,7 +16,7 @@ const WRITES: usize = 100;
 
 struct Env {
     dir: PathBuf,
-    daemon: Option<Child>,
+    daemon: Option<crate::common::Daemon>,
 }
 
 impl Env {
@@ -62,7 +62,7 @@ impl Env {
         self.start_with(&[]);
     }
     fn start_with(&mut self, env: &[(&str, &str)]) {
-        let child = self.cmd().envs(env.iter().copied()).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let child = crate::common::Daemon::new(self.cmd().envs(env.iter().copied()).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         self.daemon = Some(child);
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(5) && ah_engine::client::ping(&self.sock()).is_none() {

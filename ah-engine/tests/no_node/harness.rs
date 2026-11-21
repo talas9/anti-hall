@@ -9,7 +9,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The tag the harness gives its own daemon: a Node start the daemon makes (a scheduled duty) is attributed to it, not to
@@ -108,7 +108,7 @@ pub struct World {
     tools_dir: PathBuf,
     log: PathBuf,
     log_offset: std::cell::Cell<usize>,
-    daemon: Option<Child>,
+    daemon: Option<crate::common::Daemon>,
     /// Every Node start read so far, by the tag of the run that caused it. A run's Node work can outlive it (a detached
     /// background witness), so a start is attributed by its tag, never by when it was logged.
     by_tag: std::cell::RefCell<BTreeMap<String, Vec<Hit>>>,
@@ -285,7 +285,7 @@ impl World {
         let mut c = self.command(&self.engine, DAEMON_TAG);
         c.arg("serve").stdin(Stdio::null()).stdout(Stdio::from(self.out_file("daemon.out"))).stderr(Stdio::from(self.out_file("daemon.err")));
         c.process_group(0);
-        self.daemon = Some(c.spawn().unwrap());
+        self.daemon = Some(crate::common::Daemon::new(c.spawn().unwrap()));
         let ready = Duration::from_secs(cfg_int(&self.cfg, "timeouts", "daemon_ready_s"));
         let sock = ah_engine::paths::socket_in(&self.state);
         let t = Instant::now();

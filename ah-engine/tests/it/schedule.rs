@@ -6,7 +6,7 @@
 use crate::common;
 
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
@@ -17,7 +17,7 @@ fn plugin() -> PathBuf {
 
 struct Env {
     dir: PathBuf,
-    daemon: Option<Child>,
+    daemon: Option<crate::common::Daemon>,
     extra: Vec<(String, String)>,
 }
 
@@ -67,7 +67,7 @@ impl Env {
         if let Some(d) = dir {
             c.current_dir(d);
         }
-        let child = c.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let child = crate::common::Daemon::new(c.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         self.daemon = Some(child);
         let t = Instant::now();
         while t.elapsed() < common::READY_CEILING && ah_engine::client::ping(&self.sock()).is_none() {
