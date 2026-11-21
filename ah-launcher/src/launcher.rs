@@ -572,9 +572,22 @@ impl L {
         // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a command it can not balance is held
         // under `unreadable` (#918 review: the quote-blind raw text alone would let any such tail switch the reading off)
         let ncfg = Self::capacity_norm_cfg(cfg);
+        // #928: the cleanup of a path the command made itself (`t=$(mktemp -d); ..; rm -rf "$t"`) is no risky delete
+        let (blanked, own) = ncfg
+            .as_ref()
+            .map_or((command.to_string(), 0), |c| shellwords::blank_own_temp(command, c));
+        for _ in 0..own {
+            limits::bump(Ctr::CapacityOwnTemp);
+        }
+        let command = blanked.as_str();
         let norm = ncfg
             .as_ref()
             .and_then(|c| shellwords::normalise(command, c));
+        if let Some(n) = norm.as_ref().filter(|n| n.opt_skips > 0) {
+            for _ in 0..n.opt_skips {
+                limits::bump(Ctr::CapacityWrapperOpt);
+            }
+        }
         // #901/#904: a plain read that only names the words passes (read_only, minus read_only_unless), as
         // dispatch::capacity_read_only; a broken or empty exemption exempts nothing
         if listed
@@ -660,10 +673,30 @@ impl L {
                             .and_then(|v| v.as_str())
                             .unwrap_or_default(),
                     );
-                    if n.unknown_cmds
-                        .iter()
-                        .any(|c| !(lookup && shellwords::on_path(c, path.as_deref())))
-                    {
+                    // #928: a tool only in a project-local tool directory (.venv/bin, node_modules/.bin, target/debug) inside the repo
+                    let dirs = shellwords::dirs(
+                        p.get(
+                            cfg.get("script")
+                                .and_then(|s| s.get("cwd_field"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default(),
+                        )
+                        .and_then(|v| v.as_str()),
+                        &n.cds,
+                        None,
+                    );
+                    if n.unknown_cmds.iter().any(|c| {
+                        if lookup && shellwords::on_path(c, path.as_deref()) {
+                            return false;
+                        }
+                        if lookup
+                            && shellwords::local_tool(c, &dirs, &nc.local_dirs, &nc.repo_marker)
+                        {
+                            limits::bump(Ctr::CapacityLocalTool);
+                            return false;
+                        }
+                        true
+                    }) {
                         rule = Some(r.to_string());
                         via = Some(Ctr::CapacityUnknownCommand);
                         via_norm = true;
@@ -733,6 +766,11 @@ impl L {
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
             .unwrap_or_default();
+        let raw_rules: Vec<&str> = sc
+            .get("raw_rules")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
         let scan_rules: Vec<&str> = sc
             .get("scan_rules")
             .and_then(|v| v.as_array())
@@ -759,6 +797,14 @@ impl L {
                 Ctr::CapacityScriptRead,
             ))
         };
+        // #928: the cleanup of a path a script made itself is no risky delete (counted once per script, held or not)
+        let own_temp = |body: &str| {
+            let (b, n) = shellwords::blank_own_temp(body, ncfg);
+            for _ in 0..n {
+                limits::bump(Ctr::CapacityOwnTemp);
+            }
+            b
+        };
         let mut unread = false;
         let mut seen: Vec<String> = Vec::new();
         let mut queue: std::collections::VecDeque<(String, usize)> =
@@ -779,6 +825,7 @@ impl L {
                 int("scan_bytes"),
             ) {
                 shellwords::Script::Text(body) => {
+                    let body = own_temp(&body);
                     let norm = shellwords::normalise(&body, ncfg);
                     let texts: Vec<&str> = match &norm {
                         Some(nb) => std::iter::once(nb.text.as_str())
@@ -799,6 +846,19 @@ impl L {
                             return held(name);
                         }
                     }
+                    // #928: a rule that reads quotes is matched on the script as written too
+                    for (name, pat) in rules
+                        .iter()
+                        .filter(|(name, _)| raw_rules.contains(&name.as_str()))
+                    {
+                        if pat
+                            .as_str()
+                            .and_then(compile)
+                            .is_some_and(|re| re.is_match(body.as_bytes()))
+                        {
+                            return held(name);
+                        }
+                    }
                     // the scripts this one runs (`source ./lib.sh`, `sh other.sh`)
                     if depth < int("depth") {
                         queue.extend(
@@ -809,6 +869,7 @@ impl L {
                     }
                 }
                 shellwords::Script::Large(body) => {
+                    let body = own_temp(&body);
                     for (name, pat) in rules
                         .iter()
                         .filter(|(name, _)| scan_rules.contains(&name.as_str()))
@@ -881,6 +942,24 @@ impl L {
             cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
             cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
             cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
+            own_cleanup: strs(cfg.get("own_temp").and_then(|o| o.get("cleanup"))),
+            own_creators: strs(cfg.get("own_temp").and_then(|o| o.get("creators"))),
+            own_bases: strs(cfg.get("own_temp").and_then(|o| o.get("bases"))),
+            own_markers: strs(cfg.get("own_temp").and_then(|o| o.get("markers"))),
+            own_prefixes: strs(cfg.get("own_temp").and_then(|o| o.get("prefixes"))),
+            own_readers: strs(cfg.get("own_temp").and_then(|o| o.get("readers"))),
+            local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
+            repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
+            wrapper_opts: cfg
+                .get("script")
+                .and_then(|s| s.get("wrapper_opts"))
+                .and_then(|t| t.as_table())
+                .map(|t| {
+                    t.iter()
+                        .map(|(k, v)| (k.to_string(), strs(Some(v))))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 

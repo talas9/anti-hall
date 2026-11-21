@@ -447,6 +447,9 @@ pub(crate) struct Decision {
     /// #920: the class the hold falls in beyond its rule (counted): `inline_code`, `script_read`, `script_unread`, `gh_unknown`,
     /// `unknown_command`.
     pub via: Option<&'static str>,
+    /// #928: the exemptions that kept a false hold away (counted): `own_temp` (the cleanup of a path the command or script made
+    /// itself), `local_tool` (a tool in a project-local tool directory), `wrapper_opt` (a wrapper option's value skipped).
+    pub exempt: Vec<&'static str>,
 }
 
 /// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
@@ -485,6 +488,20 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
         cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
         cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
+        own_cleanup: strs(cfg.get("own_temp").and_then(|o| o.get("cleanup"))),
+        own_creators: strs(cfg.get("own_temp").and_then(|o| o.get("creators"))),
+        own_bases: strs(cfg.get("own_temp").and_then(|o| o.get("bases"))),
+        own_markers: strs(cfg.get("own_temp").and_then(|o| o.get("markers"))),
+        own_prefixes: strs(cfg.get("own_temp").and_then(|o| o.get("prefixes"))),
+        own_readers: strs(cfg.get("own_temp").and_then(|o| o.get("readers"))),
+        local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
+        repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
+        wrapper_opts: cfg
+            .get("script")
+            .and_then(|s| s.get("wrapper_opts"))
+            .and_then(|t| t.as_table())
+            .map(|t| t.iter().map(|(k, v)| (k.to_string(), strs(Some(v)))).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -500,7 +517,7 @@ pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
 /// (#907: in-word quotes and backslashes gone, only an unquoted separator splits, the free text of a gh pr/issue/release command
 /// blanked); a git subcommand that is no known one (an alias, an external command) is held under its own rule.
 pub(crate) fn capacity_decide(payload: &Value) -> Decision {
-    let none = Decision { rule: None, normalised: false, text_exempt: false, via: None };
+    let none = Decision { rule: None, normalised: false, text_exempt: false, via: None, exempt: Vec::new() };
     let cfg = defaults::raw("dispatch.capacity_hold");
     let Some(tool) = payload.get("tool_name").and_then(Value::as_str) else { return none };
     let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
@@ -511,16 +528,23 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     let Some(command) = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str) else { return none };
     let Some(rules) = cfg.get("rules").and_then(|v| v.as_table()) else { return none };
     let ncfg = capacity_norm_cfg(cfg);
+    // #928: the cleanup of a path the command made itself (`t=$(mktemp -d); ..; rm -rf "$t"`) is no risky delete
+    let (blanked, own) = ncfg.as_ref().map_or((command.to_string(), 0), |c| shellwords::blank_own_temp(command, c));
+    let command = blanked.as_str();
+    let mut exempt: Vec<&'static str> = if own > 0 { vec!["own_temp"] } else { Vec::new() };
     let norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
+    if norm.as_ref().is_some_and(|n| n.opt_skips > 0) {
+        exempt.push("wrapper_opt");
+    }
     if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) {
-        return none;
+        return Decision { exempt, ..none };
     }
     // #918 review: a command the reading can not balance (a quote or a substitution left open) is matched quote-blind otherwise,
     // so any such tail would switch the reading off: it is held under `unreadable` (empty = off)
     if ncfg.is_some() && norm.is_none() {
         let rule = cfg.get("unreadable").and_then(|v| v.as_str()).unwrap_or_default();
         if !rule.is_empty() {
-            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None };
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None, exempt };
         }
     }
     // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
@@ -543,6 +567,7 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
                         normalised: at > 0 && !re.is_match(command),
                         text_exempt: false,
                         via: inline.then_some("inline_code"),
+                        exempt,
                     };
                 }
                 raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
@@ -554,14 +579,16 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         if n.git_unknown.is_some() {
             let rule = cfg.get("git").and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
             if !rule.is_empty() {
-                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None };
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None, exempt };
             }
         }
         // #920: a gh subcommand no list knows is a gh alias (or an extension); held as an unknown git subcommand is
         if n.gh_unknown.is_some() && !ncfg.gh_rule.is_empty() {
-            return Decision { rule: Some(ncfg.gh_rule.clone()), normalised: true, text_exempt: false, via: Some("gh_unknown") };
+            return Decision { rule: Some(ncfg.gh_rule.clone()), normalised: true, text_exempt: false, via: Some("gh_unknown"), exempt };
         }
-        if let Some(d) = capacity_script(cfg, payload, n, ncfg, rules) {
+        if let Some(mut d) = capacity_script(cfg, payload, n, ncfg, rules, &mut exempt) {
+            exempt.append(&mut d.exempt);
+            d.exempt = exempt;
             return d;
         }
         // #920: a command name no list knows that is no binary on PATH: a shell alias or function defined earlier in the session
@@ -570,12 +597,29 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         if !rule.is_empty() {
             let lookup = unknown.and_then(|u| u.get("path_lookup")).and_then(|v| v.as_integer()) != Some(0);
             let path = std::env::var_os(unknown.and_then(|u| u.get("path_env")).and_then(|v| v.as_str()).unwrap_or_default());
-            if n.unknown_cmds.iter().any(|c| !(lookup && shellwords::on_path(c, path.as_deref()))) {
-                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command") };
+            // #928: a tool only in a project-local tool directory (.venv/bin, node_modules/.bin, target/debug) inside the repo is known
+            let home: Option<&std::ffi::OsStr> = None;
+            let dirs = shellwords::dirs(payload.get(cfg.get("script").and_then(|s| s.get("cwd_field")).and_then(|v| v.as_str()).unwrap_or_default()).and_then(Value::as_str), &n.cds, home);
+            let mut local = false;
+            let unresolved = n.unknown_cmds.iter().any(|c| {
+                if lookup && shellwords::on_path(c, path.as_deref()) {
+                    return false;
+                }
+                if lookup && shellwords::local_tool(c, &dirs, &ncfg.local_dirs, &ncfg.repo_marker) {
+                    local = true;
+                    return false;
+                }
+                true
+            });
+            if local {
+                exempt.push("local_tool");
+            }
+            if unresolved {
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command"), exempt };
             }
         }
     }
-    Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None }
+    Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None, exempt }
 }
 
 /// #920: the scripts a command runs by path (`./x.sh`, `bash x.sh`, `node x.js`; at most `script.max_refs` read in all), read when at
@@ -585,17 +629,33 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
 /// `max_bytes` but within `script.scan_bytes` is matched as written by the `script.scan_rules`. A script that is still bigger, binary or
 /// unreadable is held under `script.rule_unread` only when the command is otherwise risky-looking (it matches `script.risky`); a
 /// path that is no file, or reading off (`max_bytes` 0), holds nothing.
-fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalised, ncfg: &shellwords::Cfg, rules: &[(&str, defaults::V)]) -> Option<Decision> {
+fn capacity_script(
+    cfg: &defaults::V,
+    payload: &Value,
+    n: &shellwords::Normalised,
+    ncfg: &shellwords::Cfg,
+    rules: &[(&str, defaults::V)],
+    exempt: &mut Vec<&'static str>,
+) -> Option<Decision> {
     let sc = cfg.get("script")?;
     let int = |k: &str| sc.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
     let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
     let skip: Vec<&str> = sc.get("body_skip").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let raw_rules: Vec<&str> = sc.get("raw_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let scan_rules: Vec<&str> = sc.get("scan_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let home = Some(text("home_env")).filter(|k| !k.is_empty()).and_then(std::env::var_os);
     let dirs = shellwords::dirs(payload.get(text("cwd_field")).and_then(Value::as_str), &n.cds, home.as_deref());
     let compile = |pat: &str| regex::RegexBuilder::new(pat).case_insensitive(true).build().ok();
-    let held =
-        |name: &str| Some(Decision { rule: Some(format!("{}{name}", text("rule_prefix"))), normalised: true, text_exempt: false, via: Some("script_read") });
+    let own = std::cell::Cell::new(0usize);
+    let held = |name: &str| {
+        Some(Decision {
+            rule: Some(format!("{}{name}", text("rule_prefix"))),
+            normalised: true,
+            text_exempt: false,
+            via: Some("script_read"),
+            exempt: if own.get() > 0 { vec!["own_temp"] } else { Vec::new() },
+        })
+    };
     let (mut unread, mut seen, mut queue) = (false, Vec::new(), n.scripts.iter().map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
     while let Some((path, depth)) = queue.pop_front() {
         if seen.contains(&path) {
@@ -607,6 +667,9 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
         seen.push(path.clone());
         match shellwords::read_script(&path, &dirs, home.as_deref(), int("max_bytes"), int("scan_bytes")) {
             shellwords::Script::Text(body) => {
+                // #928: the cleanup of a path the script made itself (mktemp, a unique temp dir) is no risky delete
+                let (body, blanked) = shellwords::blank_own_temp(&body, ncfg);
+                own.set(own.get() + blanked);
                 let norm = shellwords::normalise(&body, ncfg);
                 let texts: Vec<&str> = match &norm {
                     Some(nb) => std::iter::once(nb.text.as_str()).chain(nb.extra.iter().map(String::as_str)).collect(),
@@ -618,12 +681,21 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
                         return held(name);
                     }
                 }
+                // #928: a rule that reads quotes (an argv list: `['git', op]` against `['git', 'status']`) is matched on the script as written
+                // too, since the shell reading drops the quotes that tell a name from a variable
+                for (name, pat) in rules.iter().filter(|(name, _)| raw_rules.contains(name)) {
+                    if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
+                        return held(name);
+                    }
+                }
                 // the scripts this one runs (`source ./lib.sh`, `sh other.sh`), read from the same directories the shell reads them from
                 if depth < int("depth") {
                     queue.extend(norm.iter().flat_map(|nb| nb.scripts.iter().map(|p| (p.clone(), depth + 1))));
                 }
             }
             shellwords::Script::Large(body) => {
+                let (body, blanked) = shellwords::blank_own_temp(&body, ncfg);
+                own.set(own.get() + blanked);
                 for (name, pat) in rules.iter().filter(|(name, _)| scan_rules.contains(name)) {
                     if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
                         return held(name);
@@ -634,6 +706,9 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
             shellwords::Script::Skip => {}
         }
     }
+    if own.get() > 0 {
+        exempt.push("own_temp");
+    }
     let risky = compile(text("risky")).filter(|_| !text("risky").is_empty());
     let rule = text("rule_unread");
     (unread && !rule.is_empty() && risky.is_some_and(|re| re.is_match(&n.text))).then(|| Decision {
@@ -641,6 +716,7 @@ fn capacity_script(cfg: &defaults::V, payload: &Value, n: &shellwords::Normalise
         normalised: true,
         text_exempt: false,
         via: Some("script_unread"),
+        exempt: Vec::new(),
     })
 }
 
@@ -668,6 +744,9 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 /// retry hint) when [`capacity_hold`] puts it in a hold class, else `None` (it passes).
 pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
     let d = capacity_decide(payload);
+    for e in &d.exempt {
+        crate::obs::counters::advisory("capacity_hold", e);
+    }
     if d.text_exempt {
         crate::obs::counters::advisory("capacity_hold", "text_exempt");
     }
@@ -1525,7 +1604,7 @@ mod tests {
     #[test]
     fn capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads() {
         let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
-        let (mut held, mut passed) = (0, 0);
+        let (mut held, mut passed, mut wrong) = (0, 0, Vec::<String>::new());
         let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
         for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
             let (want, cmd) = match line.split_once(' ') {
@@ -1533,10 +1612,37 @@ mod tests {
                 Some(("P", c)) => (false, c.replace("\\n", "\n").replace("{fix}", fix)),
                 _ => continue,
             };
-            assert_eq!(class(&cmd).is_some(), want, "{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd));
+            if class(&cmd).is_some() != want {
+                wrong.push(format!("{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd)));
+            }
             if want { held += 1 } else { passed += 1 }
         }
-        assert!(held >= 185 && passed >= 87, "corpus read: {held} held, {passed} pass");
+        assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
+        assert!(held >= 208 && passed >= 102, "corpus read: {held} held, {passed} pass");
+    }
+
+    /// #928: the exemptions that kept a false hold away are counted (own_temp, wrapper_opt, local_tool) and the commands pass.
+    #[test]
+    fn capacity_hold_counts_the_false_hold_exemptions() {
+        let d = |c: &str, cwd: Option<&str>| {
+            let mut p = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}});
+            if let Some(w) = cwd {
+                p["cwd"] = w.into();
+            }
+            capacity_decide(&p)
+        };
+        let own = d(r#"t=$(mktemp -d); rm -rf "$t""#, None);
+        assert_eq!((own.rule, own.exempt), (None, vec!["own_temp"]));
+        let sudo = d("sudo -u deploy ls /var/log", None);
+        assert_eq!((sudo.rule, sudo.exempt), (None, vec!["wrapper_opt"]));
+        let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
+        let local = d("tool --ci", Some(fix));
+        assert_eq!((local.rule, local.exempt), (None, vec!["local_tool"]));
+        // outside the repo's tool directories the same name is an unknown command
+        assert_eq!(d("tool --ci", Some("/")).rule.as_deref(), Some("unknown-command"));
+        // a hold keeps its exemptions too
+        let both = d(r#"t=$(mktemp -d); rm -rf "$t"; git push"#, None);
+        assert_eq!((both.rule.as_deref(), both.exempt), (Some("git-push"), vec!["own_temp"]));
     }
 
     /// #920: the gaps #918 left: a script run by path is read (and held only for what it does), an interpreter one-liner's code is matched,

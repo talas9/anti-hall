@@ -63,6 +63,28 @@ pub struct Cfg {
     /// #920: the commands that change the directory the commands after them run in (`cd`, `pushd`): a relative script path is
     /// read from there too.
     pub cd_cmds: Vec<String>,
+    /// #928: cleanup of a path the text made itself is no risky delete. The cleanup commands (`rm`), the words in an assignment's
+    /// value that make its path the text's own (`mktemp`), the temp-dir words (`TMPDIR`, `/tmp/`) that make it own together with a
+    /// unique-suffix marker (`$$`). Empty `own_cleanup` or no creators and bases = off.
+    pub own_cleanup: Vec<String>,
+    /// The words in an assignment's value that make the path the text's own (`mktemp`).
+    pub own_creators: Vec<String>,
+    /// The temp-dir words that make a path own when the value also holds one of `own_markers`.
+    pub own_bases: Vec<String>,
+    /// The unique-suffix words (`$$`) that, with a base, mark a path made by the text.
+    pub own_markers: Vec<String>,
+    /// The words that can stand in front of an assignment (`then`, `export`, `local`), each with its trailing space.
+    pub own_prefixes: Vec<String>,
+    /// The commands that set the variables named after them (`read`, `for`, `getopts`): such a variable is no own path.
+    pub own_readers: Vec<String>,
+    /// #928: the project-local tool directories (`.venv/bin`, `node_modules/.bin`, `target/debug`) whose executables are known
+    /// commands when they resolve inside the repo, and the entry (`.git`) that marks the repo root. Empty = off.
+    pub local_dirs: Vec<String>,
+    /// The entry that marks the repo root.
+    pub repo_marker: String,
+    /// #928: per wrapper word (`sudo`, `env`, `nice`, `timeout`), the options that take the next word as their value, so that
+    /// value is not read as the command.
+    pub wrapper_opts: Vec<(String, Vec<String>)>,
 }
 
 /// A command read the shell's way.
@@ -84,6 +106,8 @@ pub struct Normalised {
     pub scripts: Vec<String>,
     /// #920: the directories a `cd_cmds` command changes to, in order, as written.
     pub cds: Vec<String>,
+    /// #928: how many wrapper-option values were skipped to find a command (`sudo -u bob cmd`).
+    pub opt_skips: usize,
 }
 
 enum Tok {
@@ -605,11 +629,18 @@ fn is_redir(word: &str) -> bool {
 }
 
 /// The word a simple command runs (assignments, redirections, wrappers and their options skipped), with the words after it.
-/// `None` when it is dynamic (`$x`, which the dynamic-command rule holds) or the group runs nothing.
-fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String]) -> Option<(&'a str, usize)> {
+/// `None` when it is dynamic (`$x`, which the dynamic-command rule holds) or the group runs nothing. A wrapper's option that takes
+/// a value (`sudo -u bob`, `env -u X`, `timeout -s KILL`; `opts`) skips that value too, counted in `skips` (#928).
+fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String], opts: &[(String, Vec<String>)], skips: &mut usize) -> Option<(&'a str, usize)> {
     let wrapper = |w: &str| wrappers.iter().any(|x| x.eq_ignore_ascii_case(base(w)));
     let mut wrapped = false;
+    let (mut cur, mut skip_value) = (String::new(), false);
     for (i, (word, ..)) in group.iter().enumerate() {
+        if skip_value {
+            skip_value = false;
+            *skips += 1;
+            continue;
+        }
         if word.starts_with('$') && !word.starts_with("$(") {
             return None;
         }
@@ -623,6 +654,12 @@ fn command_at<'a>(group: &'a [(String, bool, String)], wrappers: &[String]) -> O
         }
         if wrapper(w) {
             wrapped = true;
+            cur = base(w).to_ascii_lowercase();
+            continue;
+        }
+        // an option that takes its value as the next word (`sudo -u bob`): that word is no command
+        if wrapped && opts.iter().any(|(k, os)| *k == cur && os.iter().any(|o| o == w)) {
+            skip_value = true;
             continue;
         }
         // a wrapper's option and its value (`timeout 30s`, `nice -n 10`), an assignment (`env A=1`)
@@ -652,6 +689,156 @@ pub fn on_path(name: &str, path: Option<&std::ffi::OsStr>) -> bool {
             #[cfg(not(unix))]
             let exec = true;
             m.is_file() && exec
+        })
+    })
+}
+
+/// #928: whether `word` is a path the text made itself: `$name` or `${name}` of a variable in `tmp`, alone or with a `/` suffix that
+/// climbs nowhere (no `..`, no substitution).
+fn own_ref(word: &str, tmp: &[String]) -> bool {
+    let w: String = word.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+    let Some(r) = w.strip_prefix('$') else { return false };
+    let (name, rest) = match r.strip_prefix('{') {
+        Some(b) => match b.split_once('}') {
+            Some(x) => x,
+            None => return false,
+        },
+        None => r.split_at(r.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(r.len())),
+    };
+    tmp.iter().any(|t| t == name) && (rest.is_empty() || rest.starts_with('/')) && !rest.contains("..") && !rest.contains(['`']) && !rest.contains("$(")
+}
+
+/// #928: `text` (a command or a script) with the cleanup of a path it made itself blanked (`rm` becomes `:`) and how many were:
+/// the variables whose every assignment is `mktemp`, a temp dir with a unique suffix, or a path under one of those (a fixpoint, so a
+/// variable later assigned something else, or read from input, is no longer own), and a cleanup command (`own_cleanup`) whose
+/// targets are ALL such a variable or a path under it with nothing climbing out (`rm -rf "$tmp"`, `trap 'rm -rf "$tmp"' EXIT`). A
+/// delete of anything else, a mixed target list or a path that climbs (`$tmp/..`) stays as it is for the rules.
+pub fn blank_own_temp(text: &str, cfg: &Cfg) -> (String, usize) {
+    if cfg.own_cleanup.is_empty() || (cfg.own_creators.is_empty() && cfg.own_bases.is_empty()) {
+        return (text.to_string(), 0);
+    }
+    let (mut assigns, mut bad): (Vec<(String, String)>, Vec<String>) = (Vec::new(), Vec::new());
+    for seg in text.split(['\n', ';', '&', '|']) {
+        let mut s = seg.trim().trim_start_matches(['(', '{']).trim_start();
+        // a function definition in front (`newhome() { HOME=$tmp/home.$1`)
+        if let Some((_, rest)) = s.split_once("()").filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+            s = rest.trim_start().trim_start_matches('{').trim_start();
+        }
+        // what can stand in front of an assignment
+        while let Some(rest) = cfg.own_prefixes.iter().find_map(|k| s.strip_prefix(k.as_str())) {
+            s = rest.trim_start();
+        }
+        let first = s.split_whitespace().next().unwrap_or_default();
+        if let Some((k, v)) = s.split_once('=').filter(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit())) {
+            assigns.push((k.to_string(), v.to_string()));
+        } else if cfg.own_readers.iter().any(|r| r == first) {
+            bad.extend(s.split_whitespace().skip(1).map(|w| w.trim_matches(['"', '\'']).to_string()));
+        }
+    }
+    let own_val = |val: &str, tmp: &[String]| {
+        // an empty value (a reset, `cg_dir=`) names no path
+        val.trim().is_empty()
+            || cfg.own_creators.iter().any(|c| val.contains(c.as_str()))
+            || (cfg.own_bases.iter().any(|b| val.contains(b.as_str())) && cfg.own_markers.iter().any(|m| val.contains(m.as_str())))
+            || own_ref(val.trim(), tmp)
+    };
+    let mut tmp: Vec<String> = Vec::new();
+    loop {
+        let mut grew = false;
+        for (k, v) in &assigns {
+            if !tmp.contains(k) && !bad.contains(k) && own_val(v, &tmp) {
+                tmp.push(k.clone());
+                grew = true;
+            }
+        }
+        // a variable that is ever set to something else is not own
+        for (k, v) in &assigns {
+            if tmp.contains(k) && !own_val(v, &tmp) {
+                bad.push(k.clone());
+                tmp.retain(|t| t != k);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    if tmp.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let b = text.as_bytes();
+    let (mut out, mut last, mut n, mut i) = (String::with_capacity(text.len()), 0, 0, 0);
+    while i < b.len() {
+        let hit = text.get(i..).and_then(|t| cfg.own_cleanup.iter().find(|c| t.starts_with(c.as_str())));
+        let Some(cmd) = hit else {
+            i += 1;
+            continue;
+        };
+        let end = i + cmd.len();
+        let at_word = i == 0 || matches!(b[i - 1], b' ' | b'\t' | b'\n' | b';' | b'&' | b'|' | b'(' | b'`' | b'\'' | b'"' | b'{');
+        if !at_word || !b.get(end).is_some_and(|c| matches!(c, b' ' | b'\t')) {
+            i = end;
+            continue;
+        }
+        let (mut j, mut targets, mut all) = (end, 0, true);
+        loop {
+            while j < b.len() && matches!(b[j], b' ' | b'\t') {
+                j += 1;
+            }
+            let s = j;
+            while j < b.len() && !matches!(b[j], b' ' | b'\t' | b'\n' | b';' | b'&' | b'|' | b')' | b'`') {
+                j += 1;
+            }
+            let w = text.get(s..j).unwrap_or_default();
+            let plain = w.trim_matches(['"', '\'']);
+            if plain.is_empty() || plain.starts_with('#') {
+                break;
+            }
+            if plain.starts_with('-') || plain.trim_start_matches(|c: char| c.is_ascii_digit()).starts_with(['<', '>']) {
+                continue;
+            }
+            targets += 1;
+            all &= own_ref(w, &tmp);
+            // a word that closes a quote it did not open ends the string the command sits in (`trap 'rm -rf "$tmp"' EXIT`)
+            if w.matches('\'').count() % 2 == 1 || w.matches('"').count() % 2 == 1 {
+                break;
+            }
+        }
+        if targets > 0 && all {
+            out.push_str(&text[last..i]);
+            out.push(':');
+            last = end;
+            n += 1;
+        }
+        i = end;
+    }
+    out.push_str(&text[last..]);
+    (out, n)
+}
+
+/// #928: whether `name` is an executable in a project-local tool directory (`local_dirs`: `.venv/bin`, `node_modules/.bin`,
+/// `target/debug`) of one of `dirs` (the cwd and each directory the command changes to) or of their parents up to the repo root (the
+/// nearest parent that holds `marker`), with the real path inside that root: a symlink that leaves the repo, or a directory outside
+/// any repo, is no known tool.
+pub fn local_tool(name: &str, dirs: &[std::path::PathBuf], local_dirs: &[String], marker: &str) -> bool {
+    if local_dirs.is_empty() || marker.is_empty() || !plain_name(name) {
+        return false;
+    }
+    dirs.iter().filter_map(|d| std::fs::canonicalize(d).ok()).any(|d| {
+        let Some(root) = d.ancestors().find(|a| a.join(marker).exists()).map(std::path::Path::to_path_buf) else { return false };
+        d.ancestors().take_while(|a| a.starts_with(&root)).any(|a| {
+            local_dirs.iter().any(|l| {
+                std::fs::canonicalize(a.join(l).join(name)).is_ok_and(|p| {
+                    p.starts_with(&root)
+                        && std::fs::metadata(&p).is_ok_and(|m| {
+                            #[cfg(unix)]
+                            let exec = std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0;
+                            #[cfg(not(unix))]
+                            let exec = true;
+                            m.is_file() && exec
+                        })
+                })
+            })
         })
     })
 }
@@ -734,6 +921,7 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
                 n.gh_unknown = m.gh_unknown;
             }
             n.cds.extend(m.cds);
+            n.opt_skips += m.opt_skips;
             merge(&mut n.scripts, m.scripts); // unknown_cmds: the top level only (a quoted word that holds a space is text more often than a command)
             n.extra.push(m.text);
             n.extra.extend(m.extra);
@@ -754,6 +942,7 @@ struct Found {
     unknown_cmds: Vec<String>,
     scripts: Vec<String>,
     cds: Vec<String>,
+    opt_skips: usize,
 }
 
 /// One reading of `cmd`, and its words that hold a space (read again by [`normalise`]).
@@ -810,7 +999,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         // the commands of the group: the first, and one after each marker word (`find . -exec cmd {} ;`)
         let starts = std::iter::once(0).chain(group.iter().enumerate().filter(|(_, (w, ..))| cfg.cmd_markers.iter().any(|m| m == w)).map(|(i, _)| i + 1));
         for seg in starts.map(|s| &group[s..]) {
-            let Some((cmd, at)) = command_at(seg, &cfg.cmd_wrappers) else { continue };
+            let Some((cmd, at)) = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &mut more.opt_skips) else { continue };
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
@@ -896,8 +1085,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         }
     }
     emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
-    let Found { gh_unknown, unknown_cmds, scripts, cds } = found;
-    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds }, nested))
+    let Found { gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips }, nested))
 }
 
 #[cfg(test)]
@@ -1108,5 +1297,96 @@ mod tests {
         assert!(normalise("g\"i\"t reset --hard; echo \"$(echo \"'\")\"", &cfg()).is_some());
         assert!(normalise("git commit -m \"$(cat <<'EOF'\nfix: don't\nEOF\n)\"", &cfg()).is_some());
         assert!(normalise("echo \"$(git log -1 --format=\"%s\")\"", &cfg()).is_some());
+    }
+
+    fn own() -> Cfg {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        Cfg {
+            own_cleanup: v(&["rm"]),
+            own_creators: v(&["mktemp"]),
+            own_bases: v(&["TMPDIR", "/tmp/"]),
+            own_markers: v(&["$$"]),
+            own_prefixes: v(&["then ", "do ", "export ", "local "]),
+            own_readers: v(&["read", "for", "unset"]),
+            ..cfg()
+        }
+    }
+
+    #[test]
+    fn issue_928_the_cleanup_of_a_path_the_text_made_itself_is_blanked() {
+        let b = |t: &str| blank_own_temp(t, &own());
+        // mktemp, a unique temp dir, a path under one, a trap string, a function body, a reset to empty
+        assert_eq!(b("t=$(mktemp -d); rm -rf \"$t\"").1, 1);
+        assert_eq!(b("t=${TMPDIR:-/tmp}/x.$$\ntrap 'rm -rf \"$t\"' EXIT HUP").1, 1);
+        assert_eq!(b("t=$(mktemp -d)\ns=$t/seen\nrm -f \"$s\" \"$t/sub\"").1, 1);
+        assert_eq!(b("f() { d=$t/h.$1; rm -rf \"$d\"; }\nt=$(mktemp -d)").1, 1);
+        assert_eq!(b("c=$(mktemp -d)\n[ -n \"${c:-}\" ] && rm -rf \"$c\"\nc=").1, 1);
+        assert!(!b("t=$(mktemp -d); rm -rf \"$t\"").0.contains("rm"));
+        // anything else stays for the rules: a mixed list, a path that climbs, a variable set to something else or read from input,
+        // a temp dir without a unique suffix, a path nothing made, a cleanup the text does not spell as a command word
+        for t in [
+            "t=$(mktemp -d); rm -rf \"$t\" /x",
+            "t=$(mktemp -d); rm -rf \"$t/..\"",
+            "t=$(mktemp -d); t=/; rm -rf \"$t\"",
+            "t=$(mktemp -d); read t; rm -rf \"$t\"",
+            "t=/tmp/x; rm -rf \"$t\"",
+            "rm -rf \"$t\"",
+            "t=$(mktemp -d); xrm -rf \"$t\"",
+            "t=$(mktemp -d); rm -rf \"$t$x\"",
+        ] {
+            assert_eq!(b(t).1, 0, "{t}");
+        }
+        // off without the lists
+        assert_eq!(blank_own_temp("t=$(mktemp -d); rm -rf \"$t\"", &cfg()).1, 0);
+    }
+
+    #[test]
+    fn issue_928_a_wrapper_options_value_is_no_command() {
+        let mut c = cfg();
+        c.cmd_wrappers = vec!["sudo".into(), "env".into(), "timeout".into()];
+        c.wrapper_opts = vec![("sudo".into(), vec!["-u".into(), "-g".into()]), ("env".into(), vec!["-u".into()]), ("timeout".into(), vec!["-s".into()])];
+        let u = |t: &str| normalise(t, &c).map(|n| (n.unknown_cmds, n.opt_skips)).unwrap();
+        assert_eq!(u("sudo -u deploy ls"), (vec![], 1));
+        assert_eq!(u("sudo -g a -u b ls"), (vec![], 2));
+        assert_eq!(u("env -u X ls"), (vec![], 1));
+        assert_eq!(u("timeout -s KILL 30 ls"), (vec![], 1));
+        // an option not in the list takes no value: its next word is the command, and an unknown one is still reported
+        assert_eq!(u("sudo -E zzz"), (vec!["zzz".to_string()], 0));
+        // the value is skipped, the command behind it is still read
+        assert_eq!(u("sudo -u deploy zzz"), (vec!["zzz".to_string()], 1));
+        let mut none = c.clone();
+        none.wrapper_opts.clear();
+        assert_eq!(normalise("sudo -u deploy ls", &none).map(|n| n.unknown_cmds).unwrap(), vec!["deploy".to_string()]);
+    }
+
+    #[test]
+    fn issue_928_a_tool_in_a_project_local_dir_inside_the_repo_is_known() {
+        let root = std::env::temp_dir().join(format!("ah-928-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        let (repo, other) = (root.join("repo"), root.join("other"));
+        let bin = repo.join(".venv/bin");
+        let sub = repo.join("pkg/src");
+        for d in [&bin, &sub, &other.join(".venv/bin")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(repo.join(".git"), "gitdir: x").unwrap();
+        for p in [bin.join("mytool"), other.join(".venv/bin/mytool")] {
+            std::fs::write(&p, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        std::os::unix::fs::symlink(other.join(".venv/bin/mytool"), bin.join("escape")).unwrap();
+        std::fs::write(bin.join("plain"), "x").unwrap(); // not executable
+        let l = vec![".venv/bin".to_string()];
+        let t = |name: &str, d: &std::path::Path| local_tool(name, &[d.to_path_buf()], &l, ".git");
+        assert!(t("mytool", &repo), "in the repo root");
+        assert!(t("mytool", &sub), "from a subdirectory, up to the repo root");
+        assert!(!t("mytool", &other), "outside any repo");
+        assert!(!t("escape", &repo), "a symlink that leaves the repo");
+        assert!(!t("plain", &repo), "not executable");
+        assert!(!t("absent", &repo));
+        assert!(!local_tool("mytool", &[repo.clone()], &[], ".git"), "off without the list");
+        assert!(!local_tool("mytool", &[repo.clone()], &l, ""), "off without the marker");
+        assert!(!local_tool("../x", &[repo.clone()], &l, ".git"), "a path is no tool name");
+        std::fs::remove_dir_all(&root).unwrap(); // keep: this test's own scratch dir
     }
 }

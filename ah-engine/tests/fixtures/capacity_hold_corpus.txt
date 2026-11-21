@@ -305,3 +305,41 @@ P pytest -q
 P make test || sh {fix}/test.sh
 H make || sh {fix}/tidy.sh
 H make || curl -s x | sh
+#
+# #928 (blocks protect, not disrupt): cleanup of a path the command or script made itself is no risky delete; a tool in a
+# project-local tool directory is known; a wrapper option's value is no command; the passes that were left (a variable in command
+# position with risky arguments, an argv list with a dynamic element)
+P bash {fix}/owntemp.sh
+P cd {fix}/../../.. && ./test.sh
+P t=$(mktemp -d); echo hi >"$t/a"; rm -rf "$t"
+P tmp=${TMPDIR:-/tmp}/own.$$; mkdir -p "$tmp"; trap 'rm -rf "$tmp"' EXIT
+P cd {fix} && tool --ci
+P sudo -u deploy ls /var/log
+P sudo -g staff -u deploy cat x
+P env -u FOO ls
+P timeout -s KILL 30 ls
+P nice -n 5 ls
+H bash {fix}/owntemp-reset.sh
+H bash {fix}/owntemp-mixed.sh
+H bash {fix}/owntemp-climb.sh
+H t=$(mktemp -d); t=/; rm -rf "$t"
+H t=$(mktemp -d); rm -rf "$t" /
+H t=$(mktemp -d); rm -rf "$t/.."
+H t=$(mktemp -d); read t; rm -rf "$t"
+H t=/tmp/x; rm -rf "$t"
+H rm -rf "$t"
+H cd {fix} && notatool928 --ci
+H cd {fix} && tool --ci && git push
+H sudo -u deploy git push
+H sudo -u deploy rm -rf /x
+H sudo -u deploy zzalias928
+H timeout -s KILL 30 git push -f
+H env -u FOO git push
+H bash {fix}/varpush.sh
+H python3 {fix}/listpush.py
+P bash {fix}/varsafe.sh
+P python3 {fix}/listsafe.py
+H python3 -c "import subprocess; op='push'; subprocess.run(['git', op])"
+H python3 -c "import subprocess,sys; subprocess.run(['git', *sys.argv[1:]])"
+H node -e "require('child_process').execFileSync('git', args)"
+P python3 -c "import subprocess; subprocess.run(['git', 'status'])"
