@@ -3946,7 +3946,7 @@ function scriptRunToken(segment) {
       if (t === '-') return null;
       if (RX128.test(t) && t.length > 1) {
         if (T.scriptNotRunFlag[fam].test(t)) return null;
-        if (T.scriptValueFlags.has(t)) i++;
+        if (T.scriptValueFlags[fam].has(t)) i++;
         continue;
       }
       return { token: t, direct: false };
