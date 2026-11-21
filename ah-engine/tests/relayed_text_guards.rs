@@ -57,6 +57,7 @@ fn claim_evidence_ignores_instructions_to_make_sure() {
         "Rebase, then make sure that the tests pass.",
         "Please ensure CI is green before you hand it back.",
         "Check that the build is green and report.",
+        "Then verify that CI is green and report back.",
     ];
     for (i, t) in cases.iter().enumerate() {
         assert!(!blocked("claim-evidence-guard", t, 20 + i), "{t}");
@@ -65,7 +66,13 @@ fn claim_evidence_ignores_instructions_to_make_sure() {
 
 #[test]
 fn claim_evidence_still_fires_on_real_claims() {
-    let cases = ["CI passes.", "Pushed, and CI passes now.", "I made sure CI passes.", "All tests pass."];
+    let cases = ["CI passes.", "Pushed, and CI passes now.", "I made sure CI passes.", "All tests pass.",
+        "I can confirm that CI passes.",
+        "I see that the build is green.",
+        "I can verify that the tests pass.",
+        "We checked and CI is green.",
+        "This ensures CI passes.",
+    ];
     for (i, t) in cases.iter().enumerate() {
         assert!(blocked("claim-evidence-guard", t, 30 + i), "{t}");
     }
