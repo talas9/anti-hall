@@ -222,6 +222,10 @@ value = "supervisor.unhealthy.until"
 doc = "Client marker holding the count of consecutive slow (late) daemon replies and when the streak began; a normal reply removes it."
 value = "daemon.slow.streak"
 
+[files.load_hold_since]
+doc = "Client marker (#905): when the client first held risky calls for a daemon that is there but unusable (a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there). An OK reply or a new daemon removes it; once it is older than client.load_hold_max_ms the daemon is treated as down."
+value = "daemon.loadhold.since"
+
 [files.heartbeat]
 doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, or the idle marker (ten `i` characters, not a number) when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not. A call fails open on an idle marker only when a beat NEWER than the first idle one it saw is still idle (an idle beat can predate the worker picking the request up); with no newer beat the stale-heartbeat bound applies."
 value = "daemon.heartbeat"
@@ -700,6 +704,12 @@ value = 1
 env = "AH_ENGINE_DOWN_REQUIRES_GONE"
 min = 0
 max = 1
+
+[client.load_hold_max_ms]
+doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
+value = 300000
+env = "AH_ENGINE_LOAD_HOLD_MAX_MS"
+unit = "ms"
 
 [client.slow_window_ms]
 doc = "Window in which consecutive slow daemon replies are counted toward client.slow_down_n; a streak older than this starts over."

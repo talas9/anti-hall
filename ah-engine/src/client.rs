@@ -601,6 +601,22 @@ fn breaker_daemon_there() -> bool {
         && health::crashloop_remaining().is_none()
         && !daemon_down_marked()
         && daemon_gone(&paths::socket()).is_none()
+        && !load_hold_expired()
+}
+
+/// #905 review: how long the client has been holding risky calls for a daemon that is there but unusable, with no OK reply since
+/// (`files.load_hold_since`, written by the first such hold, removed by an OK reply or a new daemon). Past
+/// `client.load_hold_max_ms` (0 = no cap) the daemon is treated as down, so a live but broken daemon (one that fails every exchange
+/// or is never replaced) cannot hold pushes forever: protective, not disruptive.
+fn load_hold_expired() -> bool {
+    let max = defaults::num("client.load_hold_max_ms");
+    let p = state_file("load_hold_since");
+    let Some(since) = std::fs::read_to_string(&p).ok().and_then(|t| t.trim().parse::<u64>().ok()) else {
+        crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
+        crate::discard::logged("load_hold_since_write", crate::atomic::write(&p, health::now_ms().to_string()));
+        return false;
+    };
+    max != 0 && health::now_ms().saturating_sub(since) > max
 }
 
 /// #905: the daemon could not be used (a failed exchange, a hung daemon; `alive` names which for the counter). It is marked down only
@@ -612,6 +628,7 @@ fn mark_unusable(sock: &Path, why: &str, alive: &str, gone: Option<&str>) -> boo
     match daemon_gone(sock).or(gone) {
         Some(gone) => mark_daemon_down(why, gone),
         None if defaults::num("client.down_requires_gone") == 0 => mark_daemon_down(why, "unchecked"),
+        None if load_hold_expired() => mark_daemon_down(why, "hold_expired"),
         None => {
             LAST_SLOW.set(true);
             mark_daemon_slow(why, alive);
@@ -674,6 +691,7 @@ fn clear_slow_streak() {
 fn clear_daemon_down_marker() {
     crate::discard::harmless(std::fs::remove_file(state_file("daemon_down_marker"))); // keep: absent marker is the desired state
     clear_daemon_slow_marker();
+    crate::discard::harmless(std::fs::remove_file(state_file("load_hold_since"))); // keep: a daemon that answers ends the hold run
 }
 
 struct SpawnLock {
@@ -893,7 +911,9 @@ pub struct Outcome {
 
 /// Ask the engine. `None` = no daemon verdict within the deadline.
 fn engine_attempt(raw: &str, cfg: &ClientConfig) -> Option<String> {
-    if raw.len() as u64 > crate::defaults::num("daemon.max_request") || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() {
+    // the breaker, the crash loop and the markers are weighed by attempt_with, so an open breaker with the daemon there holds a
+    // risky call on this path too (#905)
+    if raw.len() as u64 > crate::defaults::num("daemon.max_request") {
         return None;
     }
     let payload = format!("V {}\n{}\n{}", crate::version(), crate::reqenv::RequestEnv::capture().to_line(), raw);
