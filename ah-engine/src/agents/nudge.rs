@@ -859,11 +859,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             snoozes: st.nudge_snooze.get(&snooze_key(&a.id, trig)).filter(|_| hold_snooze).map_or(0, |s| s.snoozes),
             tokens_at_sent: super::signals::total_spent(&a),
             out_mark: a.last_output_ms,
-            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() {
-                vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())]
-            } else {
-                Vec::new()
-            },
+            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() { vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())] } else { Vec::new() },
             ..Nudge::default()
         };
         let note = if walked {
