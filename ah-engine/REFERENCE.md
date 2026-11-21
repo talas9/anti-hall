@@ -4137,7 +4137,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `speculation_guard.ack_ci` | `13 items` |  |  | Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. |
+| `speculation_guard.ack_ci` | `15 items` |  |  | Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. The last two rows cover a hedge word that only describes someone else's content (GH #933): a hypothesis the reply rules out ('rules out X as the likely cause') and what another agent will report ('will report ... the likely code'). Each needs the whole shape in one line, so a bare 'the likely cause is X' is still a guess. |
 | `speculation_guard.ack_cs` | `\b\w+\.\w+:\d+\b` |  |  | Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42. |
 | `speculation_guard.ack_local_ci` | `^(?:[ \t]+[\w\x27/]+){0,3}[ \t]*[,(\[—–-][ \t]*[*_]*(?:(?:and\\|but\\|though)[ ...` |  |  | Regex sources (case-insensitive) matched against the text AFTER a hedge word (GH #486): a label attached to the hedged phrase. After the hedge word come at most 3 plain words (the hedged phrase), then a comma, dash or opening bracket (spaces and tabs only, never a line break), then the label, and the label must END the clause (full stop, closing bracket, ! or ?, or the end of the text). 'probably DNS (unverified)', 'probably DNS - not yet proven.', 'likely the cache, my inference.' A label later in the sentence, after other words ('probably DNS, but the ticket is unconfirmed'), before the hedge, or in another sentence covers nothing. Unlike ack_ci, which covers the whole reply. |
 | `speculation_guard.ack_scope_re` | `[.!?]+(?:\s\|[*_)\]]*[A-Z(])\|\n+` |  |  | Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space or by the next sentence's first letter, bracket or emphasis mark, or a line break. |
@@ -4232,6 +4232,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.gap_skip_re` | `^(?:the\|a\|an\|this\|that\|these\|those\|it\|its\|their\|our\|my\|your\|his\|her\|all\|every...` |  |  | Words that never count against a reach: articles, determiners, possessives, quantifiers, 'of'/'and'/'or', 'it'/'this'/'that', '#refs' and numbers (they belong to the claim's subject). Every other word counts, so a word the list does not know uses up the reach instead of extending it. Rust regular expression, case-insensitive, matched against one whole word. |
 | `claim_evidence.gap_word_re` | `[\w#@][\w#@\x27\x{2019}/-]*` |  |  | One word of the text between a suppressor and the claim (punctuation is not a word: a lone dash in 'Unverified - files are deployed' counts nothing). Rust regular expression. |
 | `claim_evidence.guard_name` | `claim-evidence-guard` |  |  | The guard id this check answers to in skip.json and in its messages. |
+| `claim_evidence.instruction_res` | `\bmake\s+sure(?:\s+(?:that\\|if\\|whether))?\b\\|\bensure(?:\s+(?:that\\|if\\|whet...` |  |  | An instruction or check request that opens the claim's own clause (rule 1, GH #933): 'and make sure CI passes', 'please ensure the tests pass', 'then verify that CI is green' ask for a result, they do not report one. Only the bare imperative or infinitive forms count: 'make sure' and 'ensure' (not 'made sure', 'ensures', 'ensuring', 'making sure'), and 'verify\|check that\|if\|whether' only right after a clause start, comma, semicolon, colon, 'then', 'please' or 'to'. 'I can verify that CI passes', 'I can confirm that ...', 'I see that ...', 'We checked and CI is green' stay claims. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.log_kind` | `claim_evidence` |  |  | Engine log kind written for a hit (block or log mode). |
 | `claim_evidence.log_read_counts` | `6 entries` |  |  | Accept supporting log reads as evidence. Switch guards.claimEvidenceLogRead (default on): a read of a log or output file this turn (claim_evidence.log_read_res: cat, grep, tail, head, sed -n) backs a claim that carries a figure when every figure of the claim (claim_evidence.figure_re) appears in the transcript's tool output (GH #376). Off restores the earlier reading: only a command of the row's `needs` list backs a claim. A claim without a figure is never backed by a read alone. |
 | `claim_evidence.log_read_res` | `\b(?:cat\\|grep\\|egrep\\|rg\\|tail\\|head\\|sed\s+-n)\s+[^\\|;&\n]*\S` |  |  | Commands (Rust syntax, matched case-sensitively so git's HEAD is not head) that read a log or output file: a read verb (cat, grep, egrep, rg, tail, head, sed -n) followed by an argument. One run this turn, with the claimed figure in the transcript's tool output, backs a claim (claim_evidence.log_read_counts). |
@@ -4244,7 +4245,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.msg_pushed_instead` | `check the run (gh run list, gh pr checks), or report it as pushed, not done.` |  |  | Rule 2 advice. |
 | `claim_evidence.msg_pushed_what` | `pushed this turn, then called done, but CI and merge state were never checked.` |  |  | Rule 2 headline. |
 | `claim_evidence.msg_satisfy` | `show a check that counts ({check}), or say it was not verified.` |  |  | Rule 1 advice when the claim row names a check: says what would satisfy it. Placeholders: {check} (the row's `check` text). The whole advice must stay within 115 characters or the block text moves to a details file. |
-| `claim_evidence.msg_suppressed` | `suppressed ({reason}): "{quote}" ({claim})` |  |  | Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, condition, reported, criterion, purpose, planned, labelled, quoted), {claim} the claim kind, {quote} the words found. |
+| `claim_evidence.msg_suppressed` | `suppressed ({reason}): "{quote}" ({claim})` |  |  | Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted), {claim} the claim kind, {quote} the words found. |
 | `claim_evidence.neg_res` | `\b(?:is\\|are\\|was\\|were\\|am\\|be\\|been\\|has\\|have\\|had\\|do\\|does\\|did\\|can\\|co...` |  |  | Negation on the claim's own verb or a negative pronoun as its subject (rule 1): 'is not confirmed green', 'not yet verified', 'never verified', 'nothing is merged', 'none of this is verified'. A bare 'not' counts only on a verb ('is not', 'have not', 'not yet'), never before the claim's subject ('Whether acknowledged or not CI is green' stays a claim). Reach claim_evidence.reach_verb: only skip words (gap_skip_re) may stand between it and the claim, so 'Without any further delay the suite is passing' stays a claim. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.neg_subject_res` | `\bno\b` |  |  | 'no' before the claim's subject (rule 1): 'no PR is merged'. Reach claim_evidence.reach_subject (the subject's own noun); a certainty idiom after it (claim_evidence.no_idiom_re: 'no doubt', 'no wonder') never suppresses. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.no_idiom_re` | `^no\s+(?:doubt\|doubts\|wonder\|question\|questions\|kidding\|way\|problem\|problems\|...` |  |  | The words after a 'no' (neg_subject_res) that make it a certainty idiom, not a negated subject: 'No doubt it is merged', 'No wonder it is live' stay claims. Rust regular expression, case-insensitive, matched against the 'no' and the text after it up to the claim. |
@@ -4273,7 +4274,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.state_prefix` | `claim-evidence-state-` |  |  | Prefix of the per-session state file name under the replykit state directory (the sanitised session id and the JSON extension follow). |
 | `claim_evidence.state_res` | `\bgh\s+run\s+(?:view\\|watch\\|list)\b, \bgh\s+pr\s+(?:checks\\|view\\|merge\\|sta...` |  |  | Commands that look at CI or the merge state: matched against the commands run AFTER the last push of the turn. Any hit satisfies rule 2. |
 | `claim_evidence.summary` | `Stop (Claude): holds once a reply that claims a result (tests pass, verified,...` |  |  | One-line description of the claim-evidence-guard check in the generated reference. |
-| `claim_evidence.suppress` | `8 items` |  |  | Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason. |
+| `claim_evidence.suppress` | `9 items` |  |  | Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason. |
 | `claim_evidence.suppress_after` | `3 entries` |  |  | Why a claim hit is not a claim, judged from the words AFTER it (checked after claim_evidence.suppress): reason = the label written to the log, list = the config key of the pattern list matched against the rest of the claim's sentence, anchored at the end of the claim; before = the config key of a pattern list one of which must match the sentence text BEFORE the claim (so a plain status line 'All tests pass, then merge.' stays a claim). A claim followed by a next step is an item of a plan, not a statement. |
 | `claim_evidence.sw_claim` | `6 entries` |  |  | Require evidence for factual claims. Switch guards.claimEvidence (default on): off lets a reply assert a check or outcome with no matching tool call this turn. |
 | `claim_evidence.sw_mask_table_header` | `4 entries` |  |  | Mask genuine table-header labels. Switch guards.claimEvidenceMaskTableHeader (default on): the header row of a markdown table is not scanned for claims, because it only labels the columns (a column named Verified or Merged is not a statement). The body rows are still scanned. Off scans the header like any other line. |
@@ -6747,7 +6748,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `467 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `468 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9224,7 +9225,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `480 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `481 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -12316,6 +12317,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_commit_suffix` | `^{commit}` |  |  | The suffix that makes git resolve a name to a commit. |
 | `devswarm_cli.sp_commit_words` | `commit, commits` |  |  | The singular and plural of `commit` in the stale-branch line. |
 | `devswarm_cli.sp_conflict_note` | `the checked-out copy at {in_place} is in place; the differing copy was kept a...` |  |  | The note of a pre-copied file that differs from the checked-out one. {in_place} {kept}. |
+| `devswarm_cli.sp_counter_fallback` | `fallback` |  |  | The counter metric: a configured source that does not exist was replaced by the default branch. |
+| `devswarm_cli.sp_counter_kind` | `spawn_source` |  |  | The advisory counter kind of the spawn source decisions (reported under advisory by the telemetry verb). |
+| `devswarm_cli.sp_counter_nothing_created` | `nothing_created` |  |  | The counter metric: a spawn ended with nothing created. |
 | `devswarm_cli.sp_create_failed` | `hivecontrol workspace create failed` |  |  | The error of a create that failed with no text. |
 | `devswarm_cli.sp_default_ref_re` | `^refs/remotes/(origin/.+)$` |  |  | The remote default branch in the answer of that query (group 1: origin/<branch>). |
 | `devswarm_cli.sp_echo_add_re` | `git worktree add -b (\S+) {path} ([0-9a-f]{40})(?:[^0-9a-f]\|$)` |  |  | The echoed add of one submodule path ({path} is the escaped path): group 1 the branch, group 2 the pinned commit. |
@@ -12326,6 +12330,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_err_add_failed` | `worktree add failed` |  |  | The repair error when git gave no text. |
 | `devswarm_cli.sp_err_branch_elsewhere` | `branch {branch} is checked out in another worktree` |  |  | The repair error when the branch is checked out in another worktree. {branch}. |
 | `devswarm_cli.sp_err_pinned_missing` | `pinned commit {sha} is missing from the local submodule clone and could not b...` |  |  | The repair error when the pinned commit cannot be fetched. {sha} {error}. |
+| `devswarm_cli.sp_error_no_default` | `configured source "{configured}" does not exist here and the default branch i...` |  |  | The cause of a spawn that created nothing because the configured source does not exist and the repository default branch is unknown (origin/HEAD unset), so no safe base exists. {configured}. |
 | `devswarm_cli.sp_evidence` | `heartbeat, registry-session, registry-inbox, descriptor` |  |  | The launch evidence names: a fresh heartbeat, the child's session in the registry, its inbox in the registry, its descriptor file. |
 | `devswarm_cli.sp_fail_already_exists` | `already exists` |  |  | The error of a submodule worktree whose path was not empty. |
 | `devswarm_cli.sp_fail_echo_path_re` | `git worktree add\s+(?:-b\s+\S+\s+)?(\S+)` |  |  | The path of an echoed `git worktree add` (group 1). |
@@ -12336,6 +12341,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_fail_key_prefixes` | `exists:, generic:` |  |  | The de-duplication key prefixes of the two kinds of submodule failure. |
 | `devswarm_cli.sp_fail_lookback` | `600` |  |  | How many characters before a fatal line are searched for the command it belongs to. |
 | `devswarm_cli.sp_fail_worktree_word_re` | `\bworktree\b` |  |  | A mention of a worktree in the create output. |
+| `devswarm_cli.sp_fallback_message` | `configured source "{configured}" does not exist here, used {used}` |  |  | The result's line when the configured source does not exist and the default branch stands in. {configured} {used}. |
 | `devswarm_cli.sp_fallback_source` | `main` |  |  | The source branch hivecontrol uses when nothing else names one. |
 | `devswarm_cli.sp_fetch_failed_texts` | `fetch failed, fetch of commit failed, commit not found on origin` |  |  | The errors of a submodule fetch that gave no text: the plain fetch, the fetch of the commit, nothing found. |
 | `devswarm_cli.sp_fetch_ran` | `ran` |  |  | The fetch decision when the fetch ran. |
@@ -12363,6 +12369,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_git_ff` | `merge, --ff-only, --quiet` |  |  | The fast-forward of a checked-out default branch (the remote ref follows). |
 | `devswarm_cli.sp_git_have_commit` | `cat-file, -e, {sha}^{commit}` |  |  | The git query of whether a commit is present ({sha} is filled in). |
 | `devswarm_cli.sp_git_head` | `rev-parse, HEAD` |  |  | The git query of a worktree's current commit. |
+| `devswarm_cli.sp_git_ls_remote` | `ls-remote, --exit-code, --heads` |  |  | The git query that asks origin whether a branch exists (`origin <refs/heads/branch>` follows): exit 0 found, the absent status below when it is not there, anything else (unreachable remote, no origin) proves nothing. |
 | `devswarm_cli.sp_git_new_branch` | `-b` |  |  | The git option that creates the branch of a new worktree. |
 | `devswarm_cli.sp_git_out_cap_bytes` | `16777216` |  |  | Most bytes of a git command's output the create path keeps. |
 | `devswarm_cli.sp_git_status` | `status, --porcelain, --untracked-files=no` |  |  | The git query of a worktree's tracked changes. |
@@ -12388,11 +12395,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_launch_wait_ms` | `750` |  |  | How long a spawn waits for launch evidence when the variable is unset or invalid (ms). |
 | `devswarm_cli.sp_log_msg` | `spawn timings` |  |  | The central-log message of a spawn's timings. |
 | `devswarm_cli.sp_log_op` | `spawn` |  |  | The central-log operation of a spawn's timings. |
+| `devswarm_cli.sp_ls_remote_absent_status` | `2` |  |  | The exit status of `git ls-remote --exit-code` when no ref matched. |
 | `devswarm_cli.sp_missing_object_re` | `invalid reference\|not a valid object name\|unable to read tree\|bad object` |  |  | A submodule worktree add that failed because the pinned commit is missing locally (case-insensitive). |
 | `devswarm_cli.sp_moddir_re` | `[\\/]\.git[\\/]modules[\\/](.+)$` |  |  | A worktree path inside a submodule's git directory (group 1: what follows `.git/modules/`). |
 | `devswarm_cli.sp_modules_dir` | `modules` |  |  | The directory (under the git common dir) that holds the submodules' own git directories. |
 | `devswarm_cli.sp_modules_split_re` | `[\\/]modules[\\/]` |  |  | The separator between nested submodule names in such a path. |
 | `devswarm_cli.sp_no_worktree_list` | ` (could not list worktrees to update it safely)` |  |  | The stale-branch line's tail when the worktrees could not be listed. |
+| `devswarm_cli.sp_nothing_created` | `NOTHING CREATED: no branch and no workspace were made. Cause: {error} Retry (...` |  |  | The first words of the error of a spawn that created nothing. {error} (the cause) {retry} (the exact command to run again once the cause is fixed). |
 | `devswarm_cli.sp_origin` | `origin` |  |  | The remote the create path fetches from. |
 | `devswarm_cli.sp_origin_prefix` | `origin/` |  |  | The prefix of a remote-tracking short name. |
 | `devswarm_cli.sp_plan_busy` | `the plan file is locked by another writer` |  |  | The plan error when the plan file stayed locked. |
@@ -12406,6 +12415,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_remotes_prefix` | `refs/remotes/` |  |  | The prefix of a remote-tracking ref. |
 | `devswarm_cli.sp_repair_timeout_ms` | `60000` |  |  | Timeout of one git command of the submodule worktree repair. |
 | `devswarm_cli.sp_result_paths` | `workspace, path, worktreePath` |  |  | The fields of the create answer that may hold the new worktree path, at the top level or under the nested object named first. |
+| `devswarm_cli.sp_retry_prefix` | `ah-engine mesh spawn` |  |  | The command a retry starts with (the branch and the arguments the spawn ran with follow). |
+| `devswarm_cli.sp_retry_source_placeholder` | `<branch>` |  |  | The placeholder a retry command shows where the person must name the source branch. |
 | `devswarm_cli.sp_scope_re` | `^\s*scope\s*:\s*(.+)$` |  |  | The `scope:` line of a brief (multi-line, case-insensitive; group 1: the globs). |
 | `devswarm_cli.sp_secret_like_re` | `^\.env\|\.pem$\|^credentials` |  |  | File names that look like secrets in a leftover aside directory (case-insensitive). |
 | `devswarm_cli.sp_secret_warning` | `A leftover directory {leftover} holds secret-like file(s) ({names}) in the wo...` |  |  | The warning about secret-like files left in an aside directory. {leftover} {names}. |
@@ -12414,7 +12425,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.sp_set_from_origin` | `6 entries` |  |  | Setting devswarm.spawnFromOrigin: before a create from the default branch, fetch origin and fast-forward the local default branch (refuse when it is behind and cannot be updated, unless --from-local). |
 | `devswarm_cli.sp_set_plan_required` | `6 entries` |  |  | Setting devswarm.planRequired: a spawn without a numbered step list says the plan is required (it never refuses the spawn). |
 | `devswarm_cli.sp_set_plan_tracking` | `6 entries` |  |  | Setting devswarm.planTracking: a numbered step list in the spawn brief becomes the child's plan file (off: no plan is written). |
+| `devswarm_cli.sp_set_source_fallback` | `6 entries` |  |  | Setting devswarm.spawnSourceFallback: when the CONFIGURED devswarm.spawnSource (not an explicit -s / --source) names a branch that exists neither locally nor on origin, branch from the repository's default branch instead and say so in the result. An explicit -s <missing> is never replaced. Off: the configured source is always passed. |
 | `devswarm_cli.sp_sha_re` | `^[0-9a-f]{40}$` |  |  | A full commit id. |
+| `devswarm_cli.sp_shell_safe_re` | `^[A-Za-z0-9_@%+=:,./-]+$` |  |  | An argument made only of these characters is printed in a retry command as it is; any other is single-quoted. |
 | `devswarm_cli.sp_short_sha` | `12` |  |  | How many characters of a commit id a warning shows. |
 | `devswarm_cli.sp_source_note` | `note: --source {source} already has a workspace; the DevSwarm app may show th...` |  |  | The note when the named source branch already has a workspace in the app. {source}. |
 | `devswarm_cli.sp_stale_line` | `local {def} is {behind} {commits} behind {remote}; spawning from it would giv...` |  |  | The stale-branch line. {def} {behind} {commits} {remote}. |
@@ -15962,7 +15975,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `notice_turn_skipped` | counter | prompts | kind, check | Dispatch entries dropped from the plan of a notice turn while notice_turn.sw_main is on, by notice kind and by the base id of the check (notice_turn.skip_checks). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_log_read_ok` | counter | claims | claim | Claims the claim-evidence guard let pass because a read of a log or output file this turn showed the claimed figure (claim_evidence.log_read_counts; GH #376), by claim kind. |
-| `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, planned, labelled, quoted). |
+| `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
 | `claim_evidence_tool_ok` | counter | claims | claim | Claims the claim-evidence guard let pass because a tool of this turn (claim_evidence.tool_evidence: an Artifact publish, an MCP deploy or publish tool) returned its own success result, by claim kind. |
 | `reply_style_fired` | counter | replies | form, again | Replies the R-style guard held or noted (guards.styleRule on), by form (block, note) and again (true: an earlier hit of this owner turn is in the transcript; false: the first). Acted-on = 1 - again=true / again=false. |

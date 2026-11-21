@@ -152,7 +152,7 @@ doc = "Lower-cased hedge matches that may state a requirement instead of a guess
 value = ["must be", "should be"]
 
 [speculation_guard.ack_ci]
-doc = "Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block."
+doc = "Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. The last two rows cover a hedge word that only describes someone else's content (GH #933): a hypothesis the reply rules out ('rules out X as the likely cause') and what another agent will report ('will report ... the likely code'). Each needs the whole shape in one line, so a bare 'the likely cause is X' is still a guess."
 value = [
   '\bverified\b',
   '''i don'?t know\b''',
@@ -167,6 +167,8 @@ value = [
   '\brunning\b',
   '\bper the data\b',
   '\bthe data shows\b',
+  '\b(?:rules?|ruled|ruling)\s+out\b[^\n]{0,160}?\bas\s+(?:the|a|an)\s+(?:(?:most|more)\s+)?likely\b',
+  '\b(?:will|would|to)\s+report\b[^\n]{0,200}?\b(?:the|a)\s+(?:most\s+)?likely\s+(?:code|cause|culprit|source|file|line|reason|suspect)\b',
 ]
 
 [speculation_guard.ack_local_ci]

@@ -413,6 +413,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"appSync\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_APP_SYNC\",\"pluginOption\":\"devswarm_app_sync\"}",
   "{\"section\":\"devswarm\",\"key\":\"screenshotSync\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"devswarm_screenshot_sync\"}",
   "{\"section\":\"devswarm\",\"key\":\"spawnSource\",\"type\":\"string\",\"default\":\"\",\"pluginOption\":\"devswarm_spawn_source\"}",
+  "{\"section\":\"devswarm\",\"key\":\"spawnSourceFallback\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_SPAWN_SOURCE_FALLBACK\",\"pluginOption\":\"devswarm_spawn_source_fallback\"}",
   "{\"section\":\"devswarm\",\"key\":\"spawnFromOrigin\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"devswarm_spawn_from_origin\"}",
   "{\"section\":\"devswarm\",\"key\":\"spawnStrictFlagValues\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_SPAWN_STRICT_FLAG_VALUES\",\"pluginOption\":\"devswarm_spawn_strict_flag_values\"}",
   "{\"section\":\"devswarm\",\"key\":\"sendMultiRecipient\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_SEND_MULTI_RECIPIENT\",\"pluginOption\":\"devswarm_send_multi_recipient\"}",
