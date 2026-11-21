@@ -5088,6 +5088,9 @@ fn n923_a_fresh_child_gets_no_health_nudge_but_an_old_one_and_a_loop_do() {
     assert_eq!(supp("young"), 1, "the young suppression is counted once");
     nudge::tick(&nudge_env(&h, n + 3 * MIN, &[]), &mut st);
     assert_eq!(supp("young"), 1, "and not again per tick");
+    st.agents.remove("abc");
+    nudge::tick(&nudge_env(&h, n + 4 * MIN, &[]), &mut st);
+    assert!(st.nudge_supp_seen.is_empty(), "a counted suppression is forgotten with its child: {:?}", st.nudge_supp_seen);
     // a loop is a true positive at any age
     let (h2, n2, _c2) = nudge_home("n923-young-loop");
     let mut st2 = State::default();
@@ -5163,4 +5166,30 @@ fn n923_a_child_with_a_pending_stop_gets_no_nudge() {
     raise_and_nudge(&h, &mut st, "idle_open_task", n + 30 * MIN, n + 31 * MIN);
     assert!(!st.nudges.contains_key("abc"), "a child with a TaskStop in flight was nudged");
     assert_eq!(supp("stop_pending"), 1);
+    // bounded: a stop that never gets an answer holds the child once only, then it is nudged as before
+    let stop_hold = defaults::raw("agent_nudge.grace").get("stop_hold_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+    let e = nudge_env(&h, n + 31 * MIN + stop_hold + MIN, &[]);
+    arm_wake(&e, "parent");
+    nudge::tick(&e, &mut st);
+    assert!(st.nudges.contains_key("abc"), "an unanswered stop silenced the child past stop_hold_ms");
+    assert_eq!(supp("stop_pending"), 1, "held once only");
+}
+
+/// #923 review: the stop hold is its own map, so a busy verdict of the health judge (nudge_hold) never holds a runtime step; and the
+/// runtime text labels its token figure as weighted (cache reads count agent_tracker.limits.cache_read_pct percent), not raw.
+#[test]
+fn n923_a_busy_health_hold_does_not_hold_a_runtime_step_and_the_tokens_are_labelled() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("n923-busy-rt");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    st.nudge_hold.insert("abc".into(), n + 46 * MIN + 30_000); // a busy hold (within health_recheck_ms, so not read as a legacy done hold)
+    rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    assert_eq!(rt_fired("advise"), 1, "a busy health hold must not hold the runtime step");
+    let pct = crate::agents::lim("cache_read_pct");
+    let texts = rt_texts(&h);
+    assert!(texts.iter().any(|t| t.contains(&format!("tokens (cache reads count {pct}%)"))), "the token figure is not labelled: {texts:?}");
 }

@@ -415,7 +415,7 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     if super::signals::building(a, now) {
         parts.push(ef.str_field("building").to_string());
     } else if spent > 0 && a.progress == f.base_progress {
-        parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent))]));
+        parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent)), ("cache_pct", &super::lim("cache_read_pct"))]));
     }
     if super::signals::waiting_on_ci(a) {
         parts.push(ef.str_field("ci_wait").to_string());
@@ -481,7 +481,7 @@ fn hold_stop_pending(env: &Env, st: &mut State, a: &Agent, trig: &str) -> bool {
     if st.nudge_supp_seen.contains(&format!("{}|{}", a.id, grace_cfg().str_field("reason_stopped"))) || !super::sources::stop_unanswered(a) {
         return false;
     }
-    st.nudge_hold.insert(a.id.clone(), env.now_ms + grace_num("stop_hold_ms"));
+    st.nudge_stop_hold.insert(a.id.clone(), env.now_ms + grace_num("stop_hold_ms"));
     suppressed(env, st, a, "reason_stopped", trig);
     true
 }
@@ -569,6 +569,7 @@ fn rt_text(n: &Nudge, a: &Agent, step: &Step, now: u64) -> String {
             ("name", &n.child_name),
             ("dur", &age(now.saturating_sub(super::started_ms(a)))),
             ("tokens", &tokens(super::signals::total_spent(a))),
+            ("cache_pct", &super::lim("cache_read_pct")),
             ("outcome_age", &age(now.saturating_sub(last_outcome_ms(a)))),
             ("child", &n.child),
             ("cmd", &defaults::text("agent_nudge.cmd")),
@@ -638,7 +639,7 @@ fn open_runtime(env: &Env, st: &mut State) {
         .collect();
     for id in ids {
         let Some(a) = st.agents.get(&id).cloned() else { continue };
-        if st.nudge_hold.get(&id).is_some_and(|t| *t > now) || hold_stop_pending(env, st, &a, rt_trigger()) {
+        if st.nudge_stop_hold.get(&id).is_some_and(|t| *t > now) || hold_stop_pending(env, st, &a, rt_trigger()) {
             continue;
         }
         let level = rt_reached(&a, now, &steps);
@@ -725,6 +726,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             || a.dead
             || st.nudges.contains_key(&a.id)
             || st.nudge_hold.get(&a.id).is_some_and(|t| *t > now)
+            || st.nudge_stop_hold.get(&a.id).is_some_and(|t| *t > now)
             || done_held(env, st, a, now)
             || super::signals::owner_active(env, a, now)
             || own_parent(env, a)
@@ -1575,7 +1577,10 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     watch_parents(st);
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
+    st.nudge_stop_hold.retain(|_, t| *t > now);
     let agents = &st.agents;
+    // a counted suppression is forgotten with its child (the set must not grow for ever)
+    st.nudge_supp_seen.retain(|k| k.split_once('|').is_some_and(|(c, _)| agents.contains_key(c)));
     st.nudge_done_hold.retain(|c, h| {
         let live = h.until > now;
         let seen = agents.get(c).map(|a| a.last_output_ms);

@@ -603,6 +603,10 @@ pub struct State {
     /// Suppressions already counted (`<child>|<reason>`), so a held child is counted once per reason, not once per tick (GH #923).
     #[serde(default)]
     pub nudge_supp_seen: std::collections::BTreeSet<String>,
+    /// Children whose launching session just stopped them (the stop not answered yet): no health or runtime nudge until the time given
+    /// (GH #923). Kept apart from nudge_hold so a busy verdict of the health judge never holds a runtime step.
+    #[serde(default)]
+    pub nudge_stop_hold: BTreeMap<String, u64>,
 }
 
 impl State {
