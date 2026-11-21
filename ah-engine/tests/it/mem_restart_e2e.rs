@@ -52,7 +52,7 @@ fn a_daemon_over_the_global_hard_limit_for_too_long_restarts_cleanly_and_says_wh
     lower(&plugin, "defaults.pristine");
     let (home, state) = (root.join("home"), root.join("state"));
     std::fs::create_dir_all(&home).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+    let mut child = crate::common::Daemon::new(Command::new(env!("CARGO_BIN_EXE_ah-engine"))
         .arg("serve")
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -69,7 +69,7 @@ fn a_daemon_over_the_global_hard_limit_for_too_long_restarts_cleanly_and_says_wh
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap();
+        .unwrap());
     let start = Instant::now();
     let exited = loop {
         if let Some(s) = child.try_wait().unwrap() {

@@ -385,6 +385,21 @@ pub struct Agent {
     pub pending: BTreeMap<String, Pending>,
     /// Message ids already counted (the transcript repeats a message's usage on every line).
     pub ids: Vec<String>,
+    /// When the newest assistant line of the transcript was written (GH #884): the gap to the next message is how long the prompt cache sat idle.
+    #[serde(default)]
+    pub last_asst_ms: u64,
+    /// A turn opened by a wake (a user line whose origin is one of `agent_waste.poke.origins`) is running and has not ended (GH #884).
+    #[serde(default)]
+    pub poke_open: bool,
+    /// Weighted tokens of that turn's assistant messages (counted the way the burn and waste figures count).
+    #[serde(default)]
+    pub poke_tokens: u64,
+    /// That turn made a tool call: it did work, so it is no poke.
+    #[serde(default)]
+    pub poke_tools: bool,
+    /// Who sent the wake that opened that turn (GH #884): a word of `agent_waste.poke.senders`, else `default_sender`.
+    #[serde(default)]
+    pub poke_sender: String,
     /// The last tool calls: signature, label, is-edit, time.
     pub recent: Vec<(String, String, bool, u64)>,
     /// The last error texts: hash, label, time.

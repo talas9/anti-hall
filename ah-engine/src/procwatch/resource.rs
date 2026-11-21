@@ -182,14 +182,26 @@ impl State {
                 ts_s: now,
             });
         }
+        // The pressure line names the signal it reads (the kernel's own level or stall time, not the free-RAM percentage printed beside it)
+        // and carries the swap in use, so a high level beside plenty of free RAM does not read as a contradiction (#900).
         let pressure = match mem.pressure {
-            Pressure::Psi(p) if lim.psi_pct > 0.0 && p >= lim.psi_pct => Some((format!("PSI {p:.0}%"), format!("{:.0}%", lim.psi_pct))),
-            Pressure::MacLevel(l) if lim.mac_level > 0 && l >= lim.mac_level => Some((format!("level {l}"), format!("level {}", lim.mac_level))),
+            Pressure::Psi(p) if lim.psi_pct > 0.0 && p >= lim.psi_pct => Some((
+                "resource_watch.signal_psi",
+                render("resource_watch.msg_pressure_psi_value", &[("pct", &format!("{p:.0}"))]),
+                render("resource_watch.msg_pressure_psi_limit", &[("pct", &format!("{:.0}", lim.psi_pct))]),
+            )),
+            Pressure::MacLevel(l) if lim.mac_level > 0 && l >= lim.mac_level => Some((
+                "resource_watch.signal_mac",
+                render("resource_watch.msg_pressure_mac_value", &[("level", &l.to_string()), ("signal", defaults::text("resource_watch.mac_pressure_sysctl"))]),
+                render("resource_watch.msg_pressure_mac_limit", &[("level", &lim.mac_level.to_string())]),
+            )),
             _ => None,
         };
-        if let Some((value, limit)) = pressure
+        if let Some((signal, value, limit)) = pressure
             && self.due("pressure".into(), now, lim.cooldown_s)
         {
+            crate::metrics::bump("resource_watch_pressure_warned", &[("signal", defaults::text(signal))]);
+            let ram = format!("{ram}{}", render("resource_watch.msg_swap_in_use", &[("used", &swap_mb.to_string())]));
             out.push(Warn { kind: "pressure", pid: 0, session_pid: 0, name: String::new(), usage: value, limit, ram, ts_s: now });
         }
         out

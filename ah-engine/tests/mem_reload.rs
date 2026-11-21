@@ -132,14 +132,16 @@ fn fifty_defaults_reloads_do_not_keep_a_copy_of_the_defaults_each() {
     let conf = shipped["daemon"]["malloc_conf"]["value"].as_str().unwrap().to_string();
     // a debug build on a loaded machine must not be killed by the stall and stuck watchdogs while it reloads
     std::fs::write(state.join("config.toml"), "[daemon]\nstall_ms = 600000\nstuck_ms = 600000\n").unwrap();
-    let mut child = cmd(&root, &state, &plugin)
-        .env("_RJEM_MALLOC_CONF", conf)
-        .arg("serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = crate::common::Daemon::new(
+        cmd(&root, &state, &plugin)
+            .env("_RJEM_MALLOC_CONF", conf)
+            .arg("serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     struct Stop<'a>(&'a Path, &'a mut std::process::Child);
     impl Drop for Stop<'_> {
         fn drop(&mut self) {

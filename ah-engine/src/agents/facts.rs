@@ -144,10 +144,16 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
     if ty == tr("assistant") {
         a.last_output_ms = a.last_output_ms.max(ts);
         a.running = true;
+        let mut ended = false;
         if let Some(m) = msg {
-            usage(a, m);
+            let fresh = usage(a, m);
+            cache_expiry(a, fresh, ts, now);
+            if a.poke_open {
+                a.poke_tokens += fresh.map_or(0, |u| u.0);
+            }
             if str_of(m, tr("stop_reason")) == tr("end_turn") {
                 a.running = false;
+                ended = true;
             }
         }
         // Rescue wrappers can return a background Codex task id without making local tool calls.
@@ -164,15 +170,31 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             }
             if str_of(b, tr("type_key")) == tr("tool_use") {
                 a.running = true;
+                a.poke_tools = true;
                 tool_use(a, b, ts, str_of(v, tr("cwd")));
             }
         }
+        if ended {
+            poke_close(a, ts, now);
+        }
+        a.last_asst_ms = a.last_asst_ms.max(ts);
     } else if ty == tr("user") {
         a.last_output_ms = a.last_output_ms.max(ts);
         a.running = true;
         let content = msg.and_then(|m| m.get(tr("content")));
         if !super::is_child(a) && a.kind != super::kind_name("codex") && owner_turn(v, content) {
             a.owner_ms = a.owner_ms.max(ts);
+        }
+        // a wake opens a turn that counts as a poke unless it calls a tool; any other prompt (not a tool result) closes the open one
+        if !blocks.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) {
+            if let Some(sender) = wake_sender(v, content) {
+                a.poke_open = true;
+                a.poke_sender = sender;
+            } else {
+                a.poke_open = false;
+                a.poke_tools = false;
+                a.poke_tokens = 0;
+            }
         }
         task_results(a, content);
         if !a.bg_ids.is_empty() {
@@ -378,20 +400,89 @@ fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
     }
 }
 
-fn usage(a: &mut Agent, m: &Value) {
+/// Count one assistant message's usage once by its id. A message seen for the first time answers (weighted tokens, cache-creation
+/// tokens, input-side tokens: new input + cache read + cache creation); a repeat of its usage, or a message with none, answers None.
+fn usage(a: &mut Agent, m: &Value) -> Option<(u64, u64, u64)> {
     let id = str_of(m, tr("id"));
     if !id.is_empty() {
         if a.ids.iter().any(|x| x == id) {
-            return;
+            return None;
         }
         push_ring(&mut a.ids, id.to_string(), lim("loop_window"));
     }
-    let Some(u) = m.get(tr("usage")) else { return };
+    let u = m.get(tr("usage"))?;
     let n = |k: &str| u.get(tr(k)).and_then(Value::as_u64).unwrap_or(0);
-    a.tin += n("in_tok");
-    a.tout += n("out_tok");
-    a.tcr += n("cr_tok");
-    a.tcw += n("cw_tok");
+    let (i, o, cr, cw) = (n("in_tok"), n("out_tok"), n("cr_tok"), n("cw_tok"));
+    a.tin += i;
+    a.tout += o;
+    a.tcr += cr;
+    a.tcw += cw;
+    Some((i + o + cw + cr * lim("cache_read_pct") / fmtn("pct"), cw, i + cr + cw))
+}
+
+/// A waste-category limit: the field `k` of the table setting `key` (GH #884).
+fn wlim(key: &str, k: &str) -> u64 {
+    defaults::raw(key).get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+/// Count one waste event of `category` (its `agent_waste.categories` word) with `tokens` spent, on the waste series every other waste
+/// counter feeds (`waste_events_total`, `waste_tokens_total`). A line written longer ago than `agent_waste.limits.count_max_age_ms` is a
+/// replay of history (a transcript read for the first time), not news: it is not counted.
+fn waste_event(category: &str, tokens: u64, ts: u64, now: u64) {
+    if now.saturating_sub(ts) > wlim("agent_waste.limits", "count_max_age_ms") {
+        return;
+    }
+    let words = defaults::raw("agent_waste.categories");
+    let labels = [("category", words.str_field(category)), ("source", words.str_field("source"))];
+    crate::metrics::bump_by("waste_events_total", &labels, 1);
+    crate::metrics::bump_by("waste_tokens_total", &labels, tokens);
+}
+
+/// Cache expiry (GH #884): an assistant message that rebuilt most of its context (cache-creation tokens at or above
+/// `agent_waste.cache_expiry.min_share_pct` of its input side, and at least `min_tokens`) after the cache sat idle longer than the TTL
+/// (the gap since the previous assistant line). The tokens counted are the cache-creation tokens: the price of the rebuild.
+fn cache_expiry(a: &Agent, fresh: Option<(u64, u64, u64)>, ts: u64, now: u64) {
+    let Some((_, cw, input)) = fresh else { return };
+    let gap = ts.saturating_sub(a.last_asst_ms);
+    if a.last_asst_ms == 0 || gap <= wlim("agent_waste.cache_expiry", "ttl_ms") || cw < wlim("agent_waste.cache_expiry", "min_tokens") || input == 0 {
+        return;
+    }
+    if cw * fmtn("pct") >= input * wlim("agent_waste.cache_expiry", "min_share_pct") {
+        waste_event("cache_expiry", cw, ts, now);
+    }
+}
+
+/// Who sent a wake, `None` when the user line is no wake. A wake is a prompt the host sent on its own (a finished background task, an
+/// automatic continuation: `agent_waste.poke.origins`) or the prompt of a native wake (it starts with `agent_tracker.wake_prefix`),
+/// instead of the owner or a tool result. The sender (GH #884: a tool-less woken turn is counted against whoever woke it) is the first
+/// row of `agent_waste.poke.senders` whose text the prompt contains, else `default_sender` (the host itself).
+fn wake_sender(v: &Value, content: Option<&Value>) -> Option<String> {
+    let cfg = defaults::raw("agent_waste.poke");
+    let text = content.map(result_text).unwrap_or_default();
+    let native = text.trim_start().starts_with(defaults::text("agent_tracker.wake_prefix"));
+    let kind = v.get(tr("origin")).and_then(|o| o.get(tr("origin_kind"))).and_then(Value::as_str);
+    if !native && !kind.is_some_and(|k| cfg.get("origins").map(V::strings).unwrap_or_default().contains(&k)) {
+        return None;
+    }
+    let rows = cfg.get("senders").and_then(V::as_array).unwrap_or_default();
+    let hit = rows.iter().find(|r| r.get("contains").and_then(V::as_str).is_some_and(|m| !m.is_empty() && text.contains(m)));
+    Some(hit.and_then(|r| r.get("sender").and_then(V::as_str)).unwrap_or(cfg.str_field("default_sender")).to_string())
+}
+
+/// A woken turn that ended with no tool call (GH #884): the wake cost a whole turn and no work came of it.
+fn poke_close(a: &mut Agent, ts: u64, now: u64) {
+    if a.poke_open && !a.poke_tools && a.poke_tokens >= wlim("agent_waste.poke", "min_tokens") {
+        waste_event("poke_turn", a.poke_tokens, ts, now);
+        if now.saturating_sub(ts) <= wlim("agent_waste.limits", "count_max_age_ms") {
+            let sender =
+                if a.poke_sender.is_empty() { defaults::raw("agent_waste.poke").str_field("default_sender").to_string() } else { a.poke_sender.clone() };
+            crate::metrics::bump_by("poke_turns_by_sender", &[("sender", sender.as_str())], 1);
+            crate::metrics::bump_by("poke_tokens_by_sender", &[("sender", sender.as_str())], a.poke_tokens);
+        }
+    }
+    a.poke_open = false;
+    a.poke_tools = false;
+    a.poke_tokens = 0;
 }
 
 fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {

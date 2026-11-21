@@ -232,6 +232,10 @@ value = { section = "autoHandover", key = "pct", kind = "num", env = "ANTIHALL_A
 doc = "The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)."
 value = { section = "autoHandover", key = "maxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", aliases = [], option = "auto_handover_max_tokens", manifest_default = "500000", default = 500000, min = 0 }
 
+[ctxbudget.set_ah_ws_max_tokens]
+doc = "The autoHandover.workspaceMaxTokens setting (GH #884): the context ceiling of a DevSwarm workspace (child) session, in tokens (0 means none). A workspace that crosses it gets the auto-handover fire as an order to finish and push its current PR, write a handover and continue the next PR in a fresh session, once per session. A main session is not affected (autoHandover.pct and maxTokens apply there and here)."
+value = { section = "autoHandover", key = "workspaceMaxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_WORKSPACE_MAX_TOKENS", aliases = [], option = "", manifest_default = "150000", default = 150000, min = 0 }
+
 [ctxbudget.set_ah_nag]
 doc = "The autoHandover.nag setting: remind when a handover is due."
 value = { section = "autoHandover", key = "nag", kind = "bool", env = "", aliases = [], option = "auto_handover_nag", manifest_default = "true", default = true }
@@ -562,6 +566,30 @@ value = 16
 [ctxbudget.ah_via_pct]
 doc = "The firedVia word of a percent crossing."
 value = "pct"
+
+[ctxbudget.ah_via_workspace]
+doc = "The firedVia word of a workspace context-ceiling crossing (autoHandover.workspaceMaxTokens)."
+value = "workspace"
+
+[ctxbudget.ah_what_workspace]
+doc = "The first line of the workspace ceiling order; {usedK} is the context in thousands of tokens, {k} the ceiling in thousands."
+value = "start the next PR in a fresh session: this workspace's context is ~{usedK}K tokens, over its {k}K ceiling."
+
+[ctxbudget.ah_why_workspace]
+doc = "The Why line of the workspace ceiling order."
+value = "A workspace that carries one PR's context into the next pays for the old context on every turn; a fresh session per PR starts small."
+
+[ctxbudget.ah_instead_workspace]
+doc = "The instructions of the workspace ceiling order; {skill} names the handover skill, {file} the expected handover file clause (ctxbudget.ah_fire_main_file or empty)."
+value = "(1) finish and push the current PR (or its current step) first; (2) write an anti-hall session handover YOURSELF following {skill}{file}; (3) tell the Primary over the mesh that this workspace reached its context ceiling and that the next PR should start in a fresh session (a new workspace, or this one cleared with the handover), not in this context. This fires once per session."
+
+[metric.auto_handover_fired]
+doc = "Auto-handover fires (the once-per-arm handover order), by via: pct (the percent line), tokens (autoHandover.maxTokens), workspace (a DevSwarm workspace past autoHandover.workspaceMaxTokens, GH #884: ordered to a fresh session), and the same words with the Stop-side prefix (ctxbudget.ah_via_stop_prefix) when the Stop check fired it."
+value = { kind = "counter", unit = "fires", labels = ["via"] }
+
+[ctxbudget.ah_gate_profile]
+doc = "The on-change profile (tool_advisory.profiles) of the post-handover new-work gate (GH #894)."
+value = "handover_gate"
 
 [ctxbudget.ah_via_tokens]
 doc = "The firedVia word of a token-ceiling crossing."

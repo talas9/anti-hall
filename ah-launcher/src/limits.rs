@@ -35,9 +35,11 @@ pub enum Ctr {
     NoticeEvicted,
     ColdWaitHashed,
     ColdWaitHashedExpired,
+    CapacityHold,
+    SlowMarkerPass,
 }
 
-const NCTR: usize = 19;
+const NCTR: usize = 21;
 static COUNTERS: [AtomicU64; NCTR] = [const { AtomicU64::new(0) }; NCTR];
 
 impl Ctr {
@@ -63,6 +65,8 @@ impl Ctr {
             Ctr::NoticeEvicted => "notice_evicted",
             Ctr::ColdWaitHashed => "cold_wait_hashed",
             Ctr::ColdWaitHashedExpired => "cold_wait_hashed_expired",
+            Ctr::CapacityHold => "capacity_hold",
+            Ctr::SlowMarkerPass => "slow_marker_pass",
         }
     }
     const ALL: [Ctr; NCTR] = [
@@ -85,6 +89,8 @@ impl Ctr {
         Ctr::NoticeEvicted,
         Ctr::ColdWaitHashed,
         Ctr::ColdWaitHashedExpired,
+        Ctr::CapacityHold,
+        Ctr::SlowMarkerPass,
     ];
 }
 

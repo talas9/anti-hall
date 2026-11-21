@@ -465,10 +465,10 @@ impl Lab {
         let o = self.cmd().args(["status", "--json"]).output().unwrap();
         serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("status is not JSON ({e}): {}", String::from_utf8_lossy(&o.stdout)))
     }
-    fn serve(&self) -> Child {
+    fn serve(&self) -> crate::common::Daemon {
         // stderr goes to a file (appended: a bar may start several daemons) so a crash message or backtrace survives the daemon
         let err = std::fs::OpenOptions::new().create(true).append(true).open(self.stderr_path()).unwrap();
-        self.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(err).spawn().unwrap()
+        crate::common::Daemon::new(self.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(err).spawn().unwrap())
     }
     fn stderr_path(&self) -> PathBuf {
         self.dir.join("daemon.stderr")

@@ -183,7 +183,7 @@ fn ten_concurrent_serve_starts_leave_one_daemon_and_clear_losers() {
     let e = Env::new("singleton", &[("AH_ENGINE_IDLE_EXIT_S", "30"), ("AH_ENGINE_LOCK_WAIT_MS", "2000"), ("AH_ENGINE_LOCK_POLL_MS", "10")]);
     let mut children = Vec::new();
     for _ in 0..10 {
-        children.push(e.cmd().arg("serve").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap());
+        children.push(crate::common::Daemon::new(e.cmd().arg("serve").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()));
     }
     let t = Instant::now();
     loop {
@@ -204,7 +204,7 @@ fn ten_concurrent_serve_starts_leave_one_daemon_and_clear_losers() {
         if child.id() == live_pid {
             holder = Some(child);
         } else {
-            let out = child.wait_with_output().unwrap();
+            let out = child.into_child().wait_with_output().unwrap();
             assert!(out.status.success(), "loser exited non-zero: {out:?}");
             loser_msgs.push(String::from_utf8_lossy(&out.stderr).to_string());
         }

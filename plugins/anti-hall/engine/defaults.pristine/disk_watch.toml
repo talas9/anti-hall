@@ -127,3 +127,12 @@ value = 1048576
 [disk_watch.percent_base]
 doc = "The whole in a percentage."
 value = 100
+
+[disk_watch.tmp_sweep_max_age_s]
+doc = "Start-up sweep of the temp directory: an entry named with one of disk_watch.tmp_sweep_prefixes and last changed at least this many seconds ago is removed (default 3600 = 1 h; 0 turns the sweep off). Anything else in the temp directory is never touched."
+value = 3600
+min = 0
+
+[disk_watch.tmp_sweep_prefixes]
+doc = "Name prefixes of the engine's own temp-directory entries (its test scratch directories and the status verb's scratch) that the start-up sweep may remove once older than disk_watch.tmp_sweep_max_age_s. An entry that matches none is never touched."
+value = ["ah-script-", "ah-reblock-", "ah-golden-", "ah-arrival-", "ah-jev-shared-", "ahd-", "ah-ingest-status-", "antihall-judge-", "ah-hostd-"]

@@ -334,6 +334,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         restamp_err_logged: false,
         recheck: archived_recheck(p),
         bin: (defaults::num("wake_watch.rebin_enabled") != 0).then(rebin::watched_path).flatten().and_then(|path| rebin::ident(&path).map(|i| (path, i))),
+        coalesce: p.coalesce_ms(a.id.role()),
     };
     let code = run.run_loop(&watcher);
     cleanup(&cell, false);
@@ -381,6 +382,8 @@ struct Run<'a> {
     recheck: Duration,
     /// The engine binary this process was started from: its path and identity at start (see [`rebin`]).
     bin: Option<(PathBuf, rebin::Ident)>,
+    /// Wake coalescing for this watcher (GH #884), read once at arm: see [`Proc::coalesce_ms`].
+    coalesce: Option<f64>,
 }
 
 /// What one tick decided.
@@ -475,6 +478,7 @@ impl Run<'_> {
         snap.role = a.id.role().to_string();
         snap.id = a.id.id.clone();
         snap.now_ms = now_ms();
+        snap.coalesce_ms = self.coalesce;
         let snap = read::attach_broadcast(snap, &p.home, a.hashes.as_ref(), &a.id.id);
         let (state, lines) = {
             let s = locked(self.cell);
@@ -483,6 +487,9 @@ impl Run<'_> {
         for l in &lines {
             emit(l);
             count_row();
+        }
+        if state.held > 0 {
+            crate::metrics::bump_by_shared("wake_watch_coalesced", &[("role", a.id.role())], u64::from(state.held));
         }
         let changed = (state.last_total, state.last_total2, state.last_broadcast) != self.saved;
         locked(self.cell).state = state.clone();

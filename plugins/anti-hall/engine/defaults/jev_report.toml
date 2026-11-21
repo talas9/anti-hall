@@ -46,13 +46,21 @@ value = "0.80"
 doc = "A changed-decision rate below this fraction is noted as low yield, never a REMOVE reason (a decimal number in a string)."
 value = "0.01"
 
+[jevrep.thr_low_yield_rate_digits]
+doc = "Decimals of the changed rate printed in the low-yield note (2 so 0.995% does not print as 1.0% next to a 1% threshold). Only the display: the comparison uses the exact rate."
+value = 2
+
+[jevrep.thr_cost_per_call_default]
+doc = "Fallback USD per fresh call for the cost column when no row carries a real cost and jev.json has no \"costPerCall\" (a decimal number in a string; jev.json wins). Measured mean costUsd of 46085 live jev-assist.ndjson rows (2026-10-01 to 2026-11-21) = 0.0000191 USD per call (median 0.0000208, p90 0.0000363), rounded to 0.000019; an estimate only, real row costs always win."
+value = "0.000019"
+
 [jevrep.thr_low_yield_pct]
 doc = "The same threshold as a whole percent, for the texts."
 value = 1
 
 [jevrep.thr_bad_outcome_re]
 doc = "Case-insensitive pattern of the outcome names that count as evidence a changed decision was wrong; every other outcome is good."
-value = "^(user-override|false-positive|wrong|bad|reverted|repeat-speculation)"
+value = "^(user-override|false-positive|wrong|bad|reverted|repeat-speculation|ignored|said_not_done|child_died|escalated)"
 
 [jevrep.thr_http_failure_prefix]
 doc = "A baseline-only row whose reason starts with this counts as a failure."
@@ -141,7 +149,7 @@ doc = "Heading of the real-cost section."
 value = "\nreal cost (gateway/price-table-reported, not the manual costPerCall estimate):"
 
 [jevrep.t_cost_unset]
-doc = "Said under the table when no costPerCall estimate is set."
+doc = "Said under the table when neither a real row cost, a jev.json costPerCall nor the shipped default is available."
 value = "\ncost: n/a — set jev.json \"costPerCall\" (owner-supplied $/call estimate) to enable."
 
 [jevrep.t_credit_balance]

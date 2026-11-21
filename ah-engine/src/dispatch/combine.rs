@@ -277,6 +277,14 @@ pub(crate) fn blocks(r: &HookResult) -> bool {
     r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out))
 }
 
+/// Whether a finished hook or check said anything the host passes on: a block, a non-empty `additionalContext` or `systemMessage`,
+/// stderr, or plain stdout. A JSON reply whose context is empty is silence: it is not an advisory, not decided and not delivered
+/// (GH #894: limit-conserve-inject and auto-handover print the empty context line on every quiet turn, which the funnel had counted as
+/// a delivery each time).
+pub(crate) fn says_something(event: &str, r: &HookResult) -> bool {
+    r.code == Some(2) || !channel_keys(event, r).is_empty()
+}
+
 /// The output channels one answer of a check uses, as the keys of `delivery.channel_label` (B1 funnel): `block` (exit 2 or a JSON
 /// block), `soft_block` (a non-blocking answer of a `dispatch.stop_events` event that carries `additionalContext`: it continues
 /// the turn), `advisory` (`additionalContext` on any other event), `system_message` (a non-empty `systemMessage`), `stderr` (stderr
@@ -639,6 +647,22 @@ mod tests {
     fn r(id: &str, code: i32, out: &str, err: &str) -> HookResult {
         HookResult { id: id.into(), code: Some(code), out: out.into(), err: err.into() }
     }
+
+    /// GH #894: the empty context line a quiet UserPromptSubmit check prints is silence. Before, every such line was counted as an
+    /// advisory decided and delivered (about 12k a window for limit-conserve-inject and auto-handover), and then as ignored.
+    #[test]
+    fn an_empty_additional_context_says_nothing_and_any_real_channel_does() {
+        let ups = "UserPromptSubmit";
+        let empty = r("e", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n", "");
+        assert!(!says_something(ups, &empty), "an empty context is not an advisory");
+        assert!(!says_something(ups, &r("q", 0, "", "")), "no output");
+        let ctx = r("c", 0, r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"write a handover"}}"#, "");
+        assert!(says_something(ups, &ctx));
+        assert!(says_something(ups, &r("s", 0, r#"{"systemMessage":"note"}"#, "")));
+        assert!(says_something(ups, &r("b", 2, "", "blocked")), "a block always says something");
+        assert!(says_something(ups, &r("p", 0, "plain advice", "")), "plain stdout is an advisory");
+    }
+
     #[test]
     fn an_answer_is_classified_into_the_channels_it_uses() {
         let ctx = |ev: &str| format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{ev}\",\"additionalContext\":\"x\"}}}}\n");

@@ -57,10 +57,11 @@ var text = {
       second = '\n' + labels.instead + action;
       room = 250 - prefix.length - second.length;
     }
-    // a must-keep tail of the claim (the named heavy segment, GH #417): the generic head is cut first so the tail stays readable
+    // a must-keep tail of the claim (the rule that fired, the named heavy segment: GH #417, #857) outranks the generic head: the head
+    // shows only when it fits whole beside the tail (a cut head reads as a stub, "this heavy…"), else the tail stands alone
     var tail = typeof p.whatTail === 'string' ? text.plain(p.whatTail) : '', lim = Math.min(115, room);
-    if (tail && tail.length + 1 < lim) return prefix + (what ? text.short(what, lim - tail.length - 1) + ' ' : '') + tail + second;
-    return prefix + text.short(tail ? what + ' ' + tail : what, lim) + second;
+    if (tail) return prefix + (what && what.length + 1 + tail.length <= lim ? what + ' ' + tail : text.short(tail, lim)) + second;
+    return prefix + text.short(what, lim) + second;
   },
   detailsMessage: function (kind, guard, p, session) {
     var what = ah.cfg('guardkit.brief_what')[guard];

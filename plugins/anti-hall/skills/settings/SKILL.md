@@ -206,7 +206,7 @@ sessions stop rediscovering it independently, default on;
 `guards.coordinatorWorkNudgeAt` (default 4, 0 = no nudge), `guards.coordinatorWorkBlockAt` (default 7, 0 = no block; recovery commands and loosely matched inline code are never blocked),
 `guards.coordinatorWorkMaxEntries` (default 50, min 1), `guards.bashEditParity` (default on — command-guard applies edit-guard's verdict to Bash writes into repo files in the main thread), `guards.shellWriteChecks` (default on — api-guard and ship-it-guard also check Bash file writes) and `guards.gitGuardHeredocData` (default on — git-guard does not scan a heredoc body that only feeds a prose file, a commit message or a PR body; off = scan every body as shell)),
 and `devswarm.*` (parentGate, childGate, parentInbox, childTurn, childRole, childDrain,
-parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin;
+parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin, spawnSource;
 `dispatchTierText` turns the Primary dispatch-tier text off everywhere, `inlineWorkNudge` (independent of it) the once-per-session
 nudge to spin a child workspace after `inlineWorkNudgeThreshold` inline edits; `tickRosterEvery` N>0 appends the
 roster to every Nth `inbox tick --quiet`, default 0 = off). The new question/dispatch/nudge/roster keys have no

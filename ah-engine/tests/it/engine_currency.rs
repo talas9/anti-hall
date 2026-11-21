@@ -6,7 +6,7 @@
 use crate::common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
@@ -19,7 +19,7 @@ fn plugin() -> PathBuf {
 
 struct Env {
     dir: PathBuf,
-    daemon: Option<Child>,
+    daemon: Option<crate::common::Daemon>,
 }
 
 impl Env {
@@ -54,7 +54,7 @@ impl Env {
         std::fs::write(self.dir.join("home/.anti-hall/settings.json"), body.to_string()).unwrap();
     }
     fn start(&mut self) {
-        let child = self.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let child = crate::common::Daemon::new(self.cmd().arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
         self.daemon = Some(child);
         let t = Instant::now();
         while t.elapsed() < common::READY_CEILING && ah_engine::client::ping(&self.sock()).is_none() {

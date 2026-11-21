@@ -451,6 +451,31 @@ fn a_shadowed_answer_is_decided_and_suppressed_never_delivered() {
     }
 }
 
+/// GH #894: a quiet UserPromptSubmit check whose reply is an empty `additionalContext` (auto-handover and limit-conserve-inject print
+/// that line on every quiet prompt) says nothing: it is never decided or delivered in the funnel, so it can never be counted as ignored.
+#[test]
+fn an_empty_additional_context_is_never_decided_or_delivered() {
+    let e = Env::new("funnel-empty-ctx");
+    e.warm_daemon();
+    let p = serde_json::json!({"session_id": "empty-ctx", "cwd": e.dir, "hook_event_name": "UserPromptSubmit", "prompt": "hello", "model": "claude-opus-4-8"})
+        .to_string();
+    let (code, _, err) = e.run(&["hook", "--event", "UserPromptSubmit"], false, &p, true);
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut f = e.funnel();
+    while stage_sum(&f, "verify-first", "delivered") == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+        f = e.funnel();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let f = e.funnel();
+    e.stop();
+    assert_eq!(code, 0, "{err}");
+    assert!(stage_sum(&f, "verify-first", "delivered") >= 1, "a check that says something is delivered: {f}");
+    for check in ["auto-handover", "limit-conserve-inject"] {
+        assert_eq!((stage_sum(&f, check, "decided"), stage_sum(&f, check, "delivered")), (0, 0), "{check} said nothing: {f}");
+    }
+}
+
 /// Review finding 4 of PR 553: one block is exactly one decided and one delivered answer, on the block channel, in the funnel and in
 /// the unsplit `status` ledger. (The reviewer's "twice" was two force pushes: two calls, two counts.)
 #[test]
@@ -1577,11 +1602,12 @@ fn a_reply_that_never_comes_fails_open_without_node_and_counts_in_the_slow_strea
     assert!(t.elapsed() < common::scaled(Duration::from_millis(7000)), "bounded by the window, not the daemon: {:?} {}", t.elapsed(), engine_log(&e));
     assert!(!marker.exists(), "the Node hook must not run for a call the daemon may have processed");
     assert!(engine_log(&e).contains("\tclient_slow\t"), "{}", engine_log(&e));
-    assert!(!e.state().join("daemon.down.until").exists(), "one slow call must not mark the daemon down");
+    assert!(!e.state().join("daemon.slow.until").exists(), "one slow call must not mark the daemon slow");
     let (code, _, err) = slow_call(&e, &map, &[WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")]);
     assert_eq!((code, err.as_str()), (0, ""), "the same session is not told twice");
     assert!(!marker.exists());
-    assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
+    assert!(e.state().join("daemon.slow.until").exists(), "two slow calls in a row mark the daemon slow (#901): {}", engine_log(&e));
+    assert!(!e.state().join("daemon.down.until").exists(), "a loaded daemon is never marked down (#901)");
     assert_eq!(d.seen(), 2);
 }
 
@@ -1727,12 +1753,12 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
     for _ in 0..3 {
         slow_call(&e, &map, &n);
     }
-    assert!(!e.state().join("daemon.down.until").exists(), "{}", engine_log(&e));
+    assert!(!e.state().join("daemon.slow.until").exists(), "{}", engine_log(&e));
     // the second slow in a row trips it
     let (code, _, err) = slow_call(&e, &map, &n);
     assert_eq!((code, err.as_str()), (0, ""), "a slow call fails open");
-    assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
-    // marked down: the next call does not reach the daemon
+    assert!(e.state().join("daemon.slow.until").exists(), "two slow calls in a row mark the daemon slow (#901): {}", engine_log(&e));
+    // marked slow: the next call does not reach the daemon
     let before = d.seen();
     slow_call(&e, &map, &n);
     assert_eq!(d.seen(), before);

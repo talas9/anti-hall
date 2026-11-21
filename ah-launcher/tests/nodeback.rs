@@ -60,6 +60,8 @@ impl Fb {
 }
 
 const PUSH: &str = r#"{"session_id":"s","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
+/// A read: with no engine answer it passes (a force push would be held, dispatch.capacity_hold, #882).
+const READ: &str = r#"{"session_id":"s","tool_name":"Bash","tool_input":{"command":"git status"}}"#;
 
 #[test]
 fn a_force_push_through_the_node_guard_blocks_and_writes_a_ledger_row() {
@@ -91,7 +93,7 @@ fn a_force_push_through_the_node_guard_blocks_and_writes_a_ledger_row() {
 fn a_missing_node_directory_is_one_notice_and_the_switch_does_nothing() {
     let fb = Fb::new("nb-nodir", "@PreToolUse\t10\nBash\t10\tnode \"x\"\n");
     std::fs::rename(&fb.node_dir, fb.env.dir.join("moved-away")).unwrap();
-    let o = fb.run("PreToolUse", PUSH);
+    let o = fb.run("PreToolUse", READ);
     assert_eq!(o.code, 0, "{}", o.err);
     // the Node notice comes first; the call then takes the normal path (no engine here, so its own single notice follows)
     assert!(

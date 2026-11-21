@@ -3946,7 +3946,7 @@ function scriptRunToken(segment) {
       if (t === '-') return null;
       if (RX128.test(t) && t.length > 1) {
         if (T.scriptNotRunFlag[fam].test(t)) return null;
-        if (T.scriptValueFlags.has(t)) i++;
+        if (T.scriptValueFlags[fam].has(t)) i++;
         continue;
       }
       return { token: t, direct: false };
@@ -4727,6 +4727,9 @@ function mainFlow(payload) {
   const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
   const segNote = guarded(() => heavySegmentNote(command)) || '';
+  // the visible block names the rule that fired (the generic brief headline names none): the verb or category label, or the shared remote
+  const ruleLabel = cls && cls.label ? cls.label : ah.cfg('command.heavy_default_label');
+  const ruleNote = text.render(ah.cfg(remote ? 'command.msg_brief_rule_remote' : 'command.msg_brief_rule'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), label: ruleLabel });
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
   // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
   const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));
@@ -4761,7 +4764,7 @@ function mainFlow(payload) {
     briefInsteadExtra: ownerRun.text,
     details: ownerRun.long,
     allowed: allowedShapes,
-    briefExtra: ownerRedact(segNote),
+    briefExtra: ownerRedact(segNote) ? ruleNote + ' ' + ownerRedact(segNote) : ruleNote,
   }, payload && payload.session_id);
   if (ah.settings.bool('inline_rule.sw')) irBlocked(remote ? 'inline_rule.kind_remote' : cls && cls.kind === 'verb' ? 'inline_rule.kind_verb' : 'inline_rule.kind_category');
   return blockExact(reason);

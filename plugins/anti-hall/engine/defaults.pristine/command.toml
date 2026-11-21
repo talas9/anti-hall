@@ -110,6 +110,7 @@ value = [
   '(?i)\bgo\s+version\b',
   '(?i)\bcargo\s+(?:--version|version)\b',
   '(?i)\bcargo\s+clean\b',
+  '(?i)\bflutter\s+clean\b',
   '(?i)\bgit\s+(?:push|pull)\b[^\n]*\s--dry-run\b',
   '(?i)\bdocker\s+(?:ps|images|inspect|logs|stats)\b',
   '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b',
@@ -397,6 +398,14 @@ value = " ({label})"
 [command.msg_heavy_detail_category]
 doc = "Detail of a block caused by a heavy pattern or category."
 value = " ({label})"
+
+[command.msg_brief_rule]
+doc = "The rule the visible heavy-command block names ({kind} is msg_heavy_remote or msg_heavy_plain, {label} the verb or category that matched, e.g. flutter or gh pr merge)."
+value = "Rule: {kind} ({label})."
+
+[command.msg_brief_rule_remote]
+doc = "The rule the visible block names for a state-changing remote command (git push/pull/fetch, a gh write): {kind} is msg_heavy_remote."
+value = "Rule: {kind}."
 
 [command.msg_heavy_why]
 doc = "Why a heavy command is blocked."
@@ -981,8 +990,8 @@ doc = "Per interpreter family, the flag pattern that means the command is not a 
 value = { shell = '^-[A-Za-z]*[cns]', python = '^-[A-Za-z]*[cm]', node = '^(?:-[A-Za-z]*[epc]|--(?:eval|print|check|interactive)(?:=|$))', rubyperl = '^-[A-Za-z]*[eEc]' }
 
 [command.script_value_flags]
-doc = "Interpreter options whose next word is their value, not the script."
-value = ["-o", "+o", "-O", "+O", "-W", "-X", "-r", "--require", "--import", "--loader", "--experimental-loader", "-I"]
+doc = "Per interpreter family, the options whose next word is their value, not the script. python's -I (isolated mode) takes no value: read as one it made the inline code of 'python3 -I -c ...' the script file, and a $VAR in that code an unresolvable script run, counted as work (#900). -I is a value option only of perl and ruby."
+value = { shell = ["-o", "+o", "-O", "+O"], python = ["-W", "-X"], node = ["-r", "--require", "--import", "--loader", "--experimental-loader"], rubyperl = ["-I", "-r"] }
 
 [command.binary_magics]
 doc = "The first four bytes (hex) of a file that is a compiled binary, not a text script."

@@ -31,6 +31,26 @@ value = { section = "devswarm", key = "archivedChildStop", type = "boolean", env
 doc = "The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat, parent check, stale-build check, reads). A change of a watched file wakes the tick early."
 value = { section = "devswarm", key = "wakeWatchPollMs", type = "number", min = 250, max = 60000, default = 2000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS" }
 
+[wake_watch.set_coalesce]
+doc = "The setting devswarm.wakeWatchCoalesce (default on; GH #884): one wake per state change, not one per message. While a child workspace has read none of its direct mail since its last wake (its summary row's unread count is at least the count at that wake plus what arrived since), new mesh-direct mail does not print another wake line; the cursor still moves and the held wake is counted (wake_watch_coalesced). Reading anything ends the hold; mail still unread when devswarm.wakeWatchRewakeMs has passed wakes the workspace once more. Off: every new message wakes. Claude and Codex (the watcher is host-neutral)."
+value = { section = "devswarm", key = "wakeWatchCoalesce", type = "boolean", env = "ANTIHALL_DEVSWARM_WAKE_WATCH_COALESCE", default = true }
+
+[wake_watch.set_rewake_ms]
+doc = "The setting devswarm.wakeWatchRewakeMs: how long after a wake held mail waits before a child that still has not drained is woken again, with or without further mail (milliseconds; 0 wakes on every message)."
+value = { section = "devswarm", key = "wakeWatchRewakeMs", type = "number", min = 0, default = 600000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_REWAKE_MS" }
+
+[wake_watch.coalesce_roles]
+doc = "The watcher roles wake coalescing applies to (wake_watch.role_primary, wake_watch.role_child). The Primary's own mail is not coalesced: it is the coordinator."
+value = ["child"]
+
+[wake_watch.field_direct_unread]
+doc = "The member of a workspace's summary row that counts its unread direct mail (wake coalescing: 0 means the workspace drained what it was woken for)."
+value = "directUnread"
+
+[metric.wake_watch_coalesced]
+doc = "New-mail wake lines the wake-watch held back because the workspace had not read the mail of its previous wake yet (GH #884, devswarm.wakeWatchCoalesce), by watcher role. Each is a woken turn not spent."
+value = { kind = "counter", unit = "wakes", labels = ["role"] }
+
 [wake_watch.poll_min_ms]
 doc = "Floor of the tick in milliseconds."
 value = 250

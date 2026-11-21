@@ -280,6 +280,7 @@ pub const STRS: &[(&str, &str)] = &[
     ("paths.private_dir_prefix", "anti-hall-"),
     ("paths.short_socket_ext", ".sock"),
     ("files.daemon_down_marker", "daemon.down.until"),
+    ("files.daemon_slow_marker", "daemon.slow.until"),
     ("files.breaker_until", "breaker.until"),
     ("files.crashloop_until", "crashloop.until"),
     ("files.cold_guard_notice", "cold-guard.notice"),
@@ -306,6 +307,10 @@ pub const STRS: &[(&str, &str)] = &[
     (
         "msg.launcher_unreachable_why_down",
         "the engine is marked down",
+    ),
+    (
+        "msg.launcher_unreachable_why_slow",
+        "the engine is too busy right now (several late replies in a row)",
     ),
     (
         "msg.launcher_unreachable_why_handed_back",

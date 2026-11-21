@@ -495,6 +495,9 @@ impl L {
                         "cold_guard_gave_up event={} cap_ms={cap} kick_cut=1",
                         self.event
                     ));
+                    if self.capacity_held() {
+                        return Some(2);
+                    }
                     self.cold_notice();
                     return Some(0);
                 }
@@ -519,8 +522,118 @@ impl L {
         if hashed {
             limits::bump(Ctr::ColdWaitHashedExpired);
         }
+        if self.capacity_held() {
+            return Some(2);
+        }
         self.cold_notice();
         Some(0)
+    }
+
+    /// #882: no engine answer for lack of capacity (a cold start not up in time, the wall-clock backstop of a late engine): a guard
+    /// call in a hold class of `dispatch.capacity_hold` (a push, a merge, a recursive delete, a deploy) is held with the engine's own
+    /// reason and retry hint (`dispatch.msg_capacity_hold`), as the engine's client holds it (`dispatch::capacity_held`), never let
+    /// through unchecked. Anything else, an unreadable payload or config, or `dispatch.failure_mode` `capacity` not open passes.
+    fn capacity_held(&self) -> bool {
+        let open = self
+            .s
+            .shipped("dispatch.failure_mode")
+            .and_then(|v| v.get("capacity"))
+            .and_then(|v| v.as_str())
+            == Some("open");
+        if !self.guard || !open {
+            return false;
+        }
+        let Some(cfg) = self.s.shipped("dispatch.capacity_hold") else {
+            return false;
+        };
+        let Ok(p) = serde_json::from_slice::<serde_json::Value>(&self.payload) else {
+            return false;
+        };
+        let Some(tool) = p.get("tool_name").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let listed = cfg
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| a.iter().any(|t| t.as_str() == Some(tool)));
+        let field = cfg
+            .get("field")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let (Some(command), Some(rules)) = (
+            p.get("tool_input")
+                .and_then(|i| i.get(field))
+                .and_then(|v| v.as_str()),
+            cfg.get("rules").and_then(|v| v.as_table()),
+        ) else {
+            return false;
+        };
+        // #901/#904: a plain read that only names the words passes (read_only, minus read_only_unless), as
+        // dispatch::capacity_read_only; a broken or empty exemption exempts nothing
+        if listed && self.capacity_read_only(cfg, command) {
+            return false;
+        }
+        let rule = listed
+            .then(|| {
+                rules.iter().find_map(|(name, pat)| {
+                    // ASCII classes (\b, \s, case folding) on bytes: the launcher's regex is built without the Unicode tables
+                    let re = regex::bytes::RegexBuilder::new(pat.as_str()?)
+                        .unicode(false)
+                        .case_insensitive(true)
+                        .build();
+                    match re {
+                        Ok(re) => re.is_match(command.as_bytes()).then(|| name.clone()),
+                        Err(e) => {
+                            self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
+                            None
+                        }
+                    }
+                })
+            })
+            .flatten();
+        let Some(rule) = rule else {
+            return false;
+        };
+        limits::bump(Ctr::CapacityHold);
+        self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
+        let msg = self.s.msg(
+            "dispatch.msg_capacity_hold",
+            &[("tool", tool), ("rule", &rule)],
+        );
+        write_out(b"", format!("{msg}\n").as_bytes());
+        true
+    }
+
+    /// #901/#904: whether `command` is a plain read that passes dispatch.capacity_hold whatever words it names: the whole command
+    /// matches `read_only` and does not match `read_only_unless` (as the engine's dispatch::capacity_read_only). Fails closed: an
+    /// empty or uncompilable `read_only`, or an uncompilable `read_only_unless`, exempts nothing, so the rules decide.
+    fn capacity_read_only(&self, cfg: &toml::Value, command: &str) -> bool {
+        let compile = |key: &str| -> Option<Result<regex::bytes::Regex, ()>> {
+            let pat = cfg
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|p| !p.is_empty())?;
+            Some(
+                regex::bytes::RegexBuilder::new(pat)
+                    .unicode(false)
+                    .case_insensitive(true)
+                    .build()
+                    .map_err(|e| {
+                        self.log_line(&format!("capacity_hold_rule rule={key} error={e}"))
+                    }),
+            )
+        };
+        let Some(Ok(read_only)) = compile("read_only") else {
+            return false;
+        };
+        if !read_only.is_match(command.as_bytes()) {
+            return false;
+        }
+        match compile("read_only_unless") {
+            None => true,
+            Some(Ok(unless)) => !unless.is_match(command.as_bytes()),
+            Some(Err(())) => false,
+        }
     }
 
     /// dispatch.defer_exit: the engine handed the call back. No hook command exists to run, so the call passes through
@@ -697,6 +810,9 @@ impl L {
                     u8::from(done_marked)
                 ));
                 self.integrity("fail");
+                if self.capacity_held() {
+                    return 2;
+                }
                 self.unreachable_notice_for("msg.launcher_unreachable_why_timed_out");
                 0
             }
@@ -707,6 +823,10 @@ impl L {
                 ));
                 self.log_line(&format!("engine_group_alive event={}", self.event));
                 self.integrity("fail");
+                // the engine did not finish in time either: no answer for lack of capacity, so a risky guard call is held (#901)
+                if self.capacity_held() {
+                    return 2;
+                }
                 self.unreachable_notice_for("msg.launcher_unreachable_why_unfinished");
                 0
             }
@@ -1266,6 +1386,19 @@ pub fn run() -> i32 {
         && l.fresh_marker("daemon_down_marker")
     {
         l.unreachable_notice_for("msg.launcher_unreachable_why_down");
+        return 0;
+    }
+    // #901: the slow-streak marker (a loaded daemon, not a down one): the engine is skipped as for the down marker, but a guard call
+    // in a hold class of dispatch.capacity_hold is held with its reason and retry hint; anything else passes with the notice
+    if env_nonempty(&l.key("launcher.in_process_env")).is_none_or(|v| v != "1")
+        && l.fresh_marker("daemon_slow_marker")
+    {
+        if l.capacity_held() {
+            return 2;
+        }
+        limits::bump(Ctr::SlowMarkerPass);
+        l.log_line(&format!("slow_marker_pass event={}", l.event));
+        l.unreachable_notice_for("msg.launcher_unreachable_why_slow");
         return 0;
     }
     let eng_ms = match l.event_timeout_s() {

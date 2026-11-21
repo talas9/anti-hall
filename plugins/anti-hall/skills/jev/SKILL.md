@@ -136,7 +136,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
 - `ah-engine jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.14.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
-- Model pin: the direct API is sent `jev-1.14.0` (setting `jev.modelPin`; `jev-latest` is a moving alias and the doctor warns). The gateway id is not pinned (no documented versioned form, UNVERIFIED). State text is cut to `jev.stateMaxTokens` (default 30000 estimated tokens; the provider caps a question at 32k). Rate limits are per organization (see the provider console); output tokens are free; `status`/doctor show the model sent. Rows that never reached Jev carry `skip` (why) and answered rows carry `model`. Last verified 2026-10-31 against docs.typesafe.ai.
+- Model pin: the direct API is sent `jev-1.14.0` (setting `jev.modelPin`; `jev-latest` is a moving alias and the doctor warns; the doctor also reads the provider model list and warns "newer model available" when a non-preview model is newer than `jev.model_pin_released`, warns when a Jev key file exists but `jev.allowLegacyKeyRead` is off, and shows which source the key came from). The gateway id is not pinned (no documented versioned form, UNVERIFIED). State text is cut to `jev.stateMaxTokens` (default 30000 estimated tokens; the provider caps a question at 32k). Rate limits are per organization (see the provider console); output tokens are free; `status`/doctor show the model sent. Rows that never reached Jev carry `skip` (why) and answered rows carry `model`. Last verified 2026-10-31 against docs.typesafe.ai.
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
@@ -155,7 +155,8 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
 
 - **Estimated** (manual): if the owner knows their per-call cost, they can set
   `costPerCall` in `~/.anti-hall/jev.json` so `jev report` (below) can estimate
-  spend; otherwise it reports cost as `n/a`.
+  spend; otherwise the report uses the shipped default (`jevrep.thr_cost_per_call_default`) and
+  shows a real cost in the cost column whenever the calls reported one.
 - **Real** (automatic, when available): every Jev call already parses its own
   response for a gateway-reported cost or token usage (see
   `jev-client`'s `extractCostAndUsage` — verified against Vercel AI
@@ -294,6 +295,7 @@ an optional `turnRef` (the transcript's last-line ISO timestamp, or a
 line-count fallback) pointing at which turn the decision was about. A row
 from BEFORE this feature existed, or from an integration that genuinely has
 no session, groups under `unknown` — not an error, not dropped.
+Outcome writers also include the agent nudges (a closed nudge reports `acted_*`, `finished`, `ignored`, `said_not_done`, `child_died` ... against `agentWaste` / `nudgeReason` / `nudgeReply`, source `nudge`) and the delivery ledger (`outputVerifyGuard`: `acted` or `ignored`, source `delivery`); the bad names are `jevrep.thr_bad_outcome_re`.
 `recordOutcome()`'s `type:'outcome'` rows (e.g. `triage`'s answer-latency
 join, `speculation`'s evidence-added/user-override outcomes) now carry
 `project` the same way (v0.108.3 fix — they used to have none at all); an

@@ -24,6 +24,7 @@ What the automatic guards check and how to read a block.
 - `inbox-read-guard`: Require bounded DevSwarm inbox reads
 - `verify-first`: Deliver deduplicated verify-first reminders
 - `api-guard`: Check APIs against verified declarations
+- `cache-ttl-wait-guard`: Order long single waits to be split
 - `switch-notice`: Report guard switch changes
 
 ## Switches
@@ -83,6 +84,7 @@ What the automatic guards check and how to read a block.
 - `guards.inlineRule` = false: R-inline
 - `guards.ownerApprovalPass` = false: Owner-approval pass-through
 - `guards.transcriptProtect` = true: Transcript protection
+- `guards.cacheWaitGuard` = true: Order a long single wait to be split
 - `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
 - `guards.advisorRank` = false: Skips plan/retry blocks for an equal/higher main
 - `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once

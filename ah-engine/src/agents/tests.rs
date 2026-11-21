@@ -4595,6 +4595,31 @@ fn rt_fired(step: &str) -> u64 {
     crate::metrics::bumped_on_this_thread("agent_runtime_step_fired", &[("step", step)])
 }
 
+/// Dogfood 2026-11-20: a Primary's own session row (a workspace-kind row the owner is talking to) got "your next Stop is blocked"
+/// about its own runtime. A session whose owner is active is steered by that owner and is never a runtime-nudge target, at any
+/// step.
+#[test]
+fn rt_never_targets_a_session_row_whose_owner_is_active() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("rt-owner-active");
+    let n = now0();
+    devswarm(&h, n, None);
+    let sess_w = h.join(".claude/projects/p/sessW.jsonl");
+    for (k, t) in [(1u64, n + 100 * MIN), (2, n + 125 * MIN)] {
+        append(&sess_w, &[prompt(t - 2 * MIN, "/wt/x"), asst(t - MIN, &format!("o{k}"), 100, 10, json!([{"type": "text", "text": "on it"}]), None)]);
+        let e = nudge_env(&h, t, &[("ANTIHALL_AGENT_NUDGE_RUNTIME", "true")]);
+        arm_wake(&e, "sessW");
+        drained();
+        let mut st = State::default();
+        tick(&e, &mut st);
+        tick(&e, &mut st);
+        let a = agent(&st, "sessW");
+        assert!(a.owner_ms >= t - 2 * MIN, "premise: the owner talked to the session lately: {}", a.owner_ms);
+        assert_eq!(rt_fired("advise") + rt_fired("order") + rt_fired("block"), 0, "no runtime step for an owner-active session at t={t}");
+        assert!(!st.nudges.contains_key("sessW"), "no nudge opened about the session's own row");
+    }
+}
+
 /// A child WITH outcomes (a commit) and tiny spend: nothing before the first step's minutes, then step 1 (advise) at 45 minutes, in the
 /// house format (fact line, then `Do now:`), with no question. The old loop only ever nudged on tokens with no outcome.
 #[test]
@@ -4765,6 +4790,29 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     assert!(st.nudges.get("abc").is_some_and(|nd| nd.ref_id != first), "a new nudge once the snooze is over");
 }
 
+/// A nudge that carries Jev decisions reports its final outcome against each when it closes (the Jev report joins on the hash).
+#[test]
+fn a_closed_nudge_reports_its_outcome_against_the_jev_decisions_behind_it() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("nudge-jev-outcome");
+    let _lane = crate::jev::testkit::install_scripted(&h, &[("ANTIHALL_JEV", "1")], vec![]);
+    let e = env(&h, now0());
+    let mut st = State::default();
+    let jev = vec![("agentWaste".to_string(), "hw".to_string()), ("nudgeReply".to_string(), "hr".to_string())];
+    st.nudges.insert("abc".into(), nudge::Nudge { child: "abc".into(), jev, said_not_done: 1, ..nudge::Nudge::default() });
+    nudge::close_finished(&e, &mut st, "abc");
+    let rows: Vec<Value> = crate::jev::testkit::log_rows(&h).into_iter().filter(|r| r["type"] == "outcome").collect();
+    let got: Vec<(String, String, String, String)> =
+        rows.iter().map(|r| (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("agentWaste".into(), "hw".into(), "said_not_done".into(), "nudge".into()),
+            ("nudgeReply".into(), "hr".into(), "said_not_done".into(), "nudge".into())
+        ]
+    );
+}
+
 /// #828: a snooze given to a health nudge holds across that nudge closing as finished (the child not running for a tick, as a workspace
 /// or a main session between two turns) and the flag re-raising on the next turn: no new nudge (and no new ref) inside the snooze.
 #[test]
@@ -4845,4 +4893,166 @@ fn zero_outcome_nudge_uses_the_house_format_without_a_question() {
         nd.last_text
     );
     assert!(!nd.last_text.contains("Do you want"), "no question: {}", nd.last_text);
+}
+
+// ---- spent-token waste categories (GH #884): cache expiry and poke turns -----------------------------------------------------------
+
+/// An assistant line with the full cache usage. `usage` = (new input, output, cache read, cache creation).
+fn asst_cache(ts: u64, mid: &str, usage: (u64, u64, u64, u64), blocks: Value, stop: Option<&str>) -> String {
+    json!({"type": "assistant", "timestamp": iso(ts), "message": {"id": mid, "role": "assistant", "stop_reason": stop, "content": blocks,
+        "usage": {"input_tokens": usage.0, "output_tokens": usage.1, "cache_read_input_tokens": usage.2, "cache_creation_input_tokens": usage.3}}})
+    .to_string()
+}
+
+/// A user line the host sent on its own (a finished background task).
+fn wake(ts: u64, kind: &str) -> String {
+    json!({"type": "user", "timestamp": iso(ts), "origin": {"kind": kind}, "message": {"role": "user", "content": "<task-notification>done</task-notification>"}}).to_string()
+}
+
+fn waste_count(category: &str) -> (u64, u64) {
+    let l = [("category", category), ("source", "transcript")];
+    (crate::metrics::bumped_on_this_thread("waste_events_total", &l), crate::metrics::bumped_on_this_thread("waste_tokens_total", &l))
+}
+
+fn run_waste(tag: &str, lines: Vec<String>, now_shift: u64) {
+    let h = home(tag);
+    let n = now0();
+    write(&sess(&h, "s1"), &lines);
+    crate::metrics::reset_this_thread();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n + now_shift, n + now_shift + MIN]);
+}
+
+#[test]
+fn a_turn_that_rebuilds_its_cache_after_an_idle_gap_is_cache_expiry_waste() {
+    let n = now0();
+    let text = json!([{"type": "text", "text": "ok"}]);
+    let call = |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
+    let dup = asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), text.clone(), Some("end_turn"));
+    run_waste(
+        "cacheexp",
+        vec![
+            prompt(n - 30 * MIN, "/w"),
+            call(n - 20 * MIN, "m1", (10, 30, 60_000, 500)),
+            result(n - 13 * MIN, "u1", "ok", false),
+            // 10 minutes after the previous line: the cache expired and the whole context was written again
+            dup.clone(),
+            dup, // the transcript repeats a message's usage on every line: counted once
+            // 1 minute later, big cache creation but no gap: no expiry
+            asst_cache(n - 9 * MIN, "m3", (10, 50, 2_000, 60_000), text.clone(), None),
+            // a 6 minute gap but the context was read from the cache, not rebuilt: no expiry
+            asst_cache(n - 3 * MIN, "m4", (10, 50, 60_000, 900), text, Some("end_turn")),
+        ],
+        0,
+    );
+    assert_eq!(waste_count("cache_expiry"), (1, 60_000), "one expiry, counted in cache-creation tokens, the repeated line once");
+    assert_eq!(waste_count("poke_turn"), (0, 0));
+}
+
+#[test]
+fn a_gap_inside_the_ttl_and_the_first_turn_of_a_transcript_are_not_cache_expiry() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "ok"}]);
+    run_waste(
+        "cachefresh",
+        vec![
+            prompt(n - 30 * MIN, "/w"),
+            // the first message has nothing before it: its cache creation is the session start, not an expiry
+            asst_cache(n - 20 * MIN, "m1", (10, 30, 0, 90_000), t.clone(), None),
+            asst_cache(n - 17 * MIN, "m2", (10, 30, 0, 90_000), t, Some("end_turn")),
+        ],
+        0,
+    );
+    assert_eq!(waste_count("cache_expiry"), (0, 0));
+}
+
+#[test]
+fn a_transcript_read_long_after_it_was_written_is_not_counted() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "ok"}]);
+    // the engine reads it 3 hours later (agent_waste.limits.count_max_age_ms is 1 hour): history is not news
+    run_waste(
+        "cacheold",
+        vec![
+            prompt(n - 30 * MIN, "/w"),
+            asst_cache(n - 20 * MIN, "m1", (10, 30, 60_000, 500), t.clone(), None),
+            asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), t, Some("end_turn")),
+        ],
+        180 * MIN,
+    );
+    assert_eq!(waste_count("cache_expiry"), (0, 0));
+}
+
+#[test]
+fn a_woken_turn_with_no_tool_call_is_a_poke_turn_and_other_turns_are_not() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "noted"}]);
+    let tool_call = json!([{"type": "tool_use", "id": "u9", "name": "Bash", "input": {"command": "ls"}}]);
+    run_waste(
+        "poke",
+        vec![
+            prompt(n - 40 * MIN, "/w"),
+            asst_cache(n - 39 * MIN, "a1", (10, 20, 1_000, 0), t.clone(), Some("end_turn")),
+            // a wake, answered with text only: a poke (weighted tokens: 100 in + 40 out + 0 created + 10% of 20000 read)
+            wake(n - 30 * MIN, "task-notification"),
+            asst_cache(n - 29 * MIN, "a2", (100, 40, 20_000, 0), t.clone(), Some("end_turn")),
+            // a wake answered with a tool call: it did work, no poke
+            wake(n - 20 * MIN, "task-notification"),
+            asst_cache(n - 19 * MIN, "a3", (100, 40, 20_000, 0), tool_call, None),
+            result(n - 18 * MIN, "u9", "ok", false),
+            asst_cache(n - 17 * MIN, "a4", (100, 40, 20_000, 0), t.clone(), Some("end_turn")),
+            // the owner's own prompt answered with text only: not a wake
+            json!({"type": "user", "timestamp": iso(n - 10 * MIN), "origin": {"kind": "human"}, "message": {"role": "user", "content": "status?"}}).to_string(),
+            asst_cache(n - 9 * MIN, "a5", (100, 40, 20_000, 0), t.clone(), Some("end_turn")),
+            // an automatic continuation answered with text only: a second poke
+            wake(n - 5 * MIN, "auto-continuation"),
+            asst_cache(n - 4 * MIN, "a6", (50, 10, 0, 0), t, Some("end_turn")),
+        ],
+        0,
+    );
+    assert_eq!(waste_count("poke_turn"), (2, (100 + 40 + 2_000) + (50 + 10)), "two pokes, counted in weighted tokens");
+}
+
+/// GH #884: a tool-less woken turn is counted against whoever woke it, by a bounded sender word (never an id): the wake-watch line for
+/// new mesh mail is the Primary's (or a peer's) message, a native wake prompt is anti-hall's own wake, anything else is the host.
+#[test]
+fn a_poke_turn_is_counted_against_the_sender_of_its_wake() {
+    let n = now0();
+    let t = json!([{"type": "text", "text": "noted"}]);
+    let note = |ts: u64, body: &str| {
+        json!({"type": "user", "timestamp": iso(ts), "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": body}}).to_string()
+    };
+    run_waste(
+        "pokesender",
+        vec![
+            prompt(n - 40 * MIN, "/w"),
+            asst_cache(n - 39 * MIN, "a1", (10, 20, 1_000, 0), t.clone(), Some("end_turn")),
+            note(n - 30 * MIN, "<task-notification><event>[wake-watch] new mesh mail for child w1: mesh-direct direct total 4 -> 5 (+1). Drain your own inbox on your next turn.</event></task-notification>"),
+            asst_cache(n - 29 * MIN, "a2", (100, 40, 0, 0), t.clone(), Some("end_turn")),
+            // a native wake prompt carries no origin: it is still a wake
+            json!({"type": "user", "timestamp": iso(n - 20 * MIN), "message": {"role": "user", "content": "anti-hall wake: a mesh message is waiting for workspace w1."}}).to_string(),
+            asst_cache(n - 19 * MIN, "a3", (50, 10, 0, 0), t.clone(), Some("end_turn")),
+            wake(n - 10 * MIN, "task-notification"),
+            asst_cache(n - 9 * MIN, "a4", (30, 10, 0, 0), t, Some("end_turn")),
+        ],
+        0,
+    );
+    let by = |s: &str| {
+        (
+            crate::metrics::bumped_on_this_thread("poke_turns_by_sender", &[("sender", s)]),
+            crate::metrics::bumped_on_this_thread("poke_tokens_by_sender", &[("sender", s)]),
+        )
+    };
+    assert_eq!(by("mesh_mail"), (1, 140), "the wake-watch mail line");
+    assert_eq!(by("native_wake"), (1, 60), "the native wake prompt");
+    assert_eq!(by("host"), (1, 40), "a finished background task");
+    assert_eq!(waste_count("poke_turn"), (3, 240), "every one is still a poke_turn");
+}
+
+#[test]
+fn the_waste_categories_are_registered_and_listed_in_the_status_words() {
+    assert!(crate::metrics::is_registered("waste_events_total") && crate::metrics::is_registered("waste_tokens_total"));
+    let words = defaults::raw("agent_waste.categories");
+    assert_eq!((words.str_field("cache_expiry"), words.str_field("poke_turn")), ("cache_expiry", "poke_turn"));
+    assert_eq!(defaults::raw("agent_waste.status_words").str_field("key"), "waste");
 }

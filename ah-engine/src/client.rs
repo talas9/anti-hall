@@ -23,6 +23,11 @@ use std::time::{Duration, Instant};
 
 thread_local! {
     static LAST_NON_OK_REPLY: Cell<bool> = const { Cell::new(false) };
+    /// The last non-OK reply was BUSY (load shedding: a full queue or a rate limit), not ERR: the daemon had no capacity for the
+    /// request, which says nothing about the call, so it follows the capacity failure mode, not the failure policy of each check.
+    static LAST_BUSY_REPLY: Cell<bool> = const { Cell::new(false) };
+    /// The last call's daemon was there but gave no reply within the whole wait window (`Exch::Slow`): late under load, not down.
+    static LAST_SLOW: Cell<bool> = const { Cell::new(false) };
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
@@ -49,6 +54,22 @@ pub(crate) fn take_non_ok_reply() -> bool {
     LAST_NON_OK_REPLY.replace(false)
 }
 
+/// Whether the last non-OK reply was BUSY (load shedding), once. Read it before [`take_non_ok_reply`], which it does not clear.
+pub(crate) fn take_busy_reply() -> bool {
+    LAST_BUSY_REPLY.replace(false)
+}
+
+/// A complete, valid reply that is not OK: BUSY (load shedding) or ERR.
+fn note_non_ok(kind: Kind) {
+    LAST_NON_OK_REPLY.set(true);
+    LAST_BUSY_REPLY.set(kind == Kind::Busy);
+}
+
+/// Whether the last call's daemon answered nothing within the wait window although it was there (load, not down), once.
+pub(crate) fn take_slow() -> bool {
+    LAST_SLOW.replace(false)
+}
+
 pub(crate) fn take_unavailable() -> bool {
     LAST_UNAVAILABLE.replace(false)
 }
@@ -72,7 +93,8 @@ pub enum Exch {
     /// failure follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
     Slow(String),
     /// Past the deadline, and the daemon's heartbeat (`files.heartbeat`) is older than `client.heartbeat_stale_ms`: the process is
-    /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). `true` = confirmed (the same heartbeat
+    /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). #905: a process that is still there is
+    /// marked slow (risky calls held), only one that is provably gone is marked down. `true` = confirmed (the same heartbeat
     /// stayed unchanged for `client.heartbeat_confirm_ms` since an earlier call suspected it), and only then is it recovered.
     Hung(String, bool),
 }
@@ -459,6 +481,11 @@ fn exchange_for(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
 /// file as the launcher's, so a call that went through both is told once. The call itself passes through. Empty when this session
 /// already heard it, or when the notice cannot be written (never a second notice for a failed write).
 pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
+    unreachable_notice_why(raw, event, "msg.engine_unreachable_why_daemon")
+}
+
+/// [`unreachable_notice`] with the {why} of the defaults key `why_key` (the same once-per-session state file).
+pub(crate) fn unreachable_notice_why(raw: &str, event: Option<&str>, why_key: &str) -> String {
     let sid = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
@@ -469,13 +496,18 @@ pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
     }
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
     crate::discard::logged("unreachable_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
-    unreachable_text(event)
+    unreachable_text_why(event, why_key)
 }
 
 /// The text of the engine-unreachable notice (`msg.engine_unreachable_notice`) for `event`, without any once-per-session stamp:
 /// the dispatcher stamps it per session and event family itself.
 pub(crate) fn unreachable_text(event: Option<&str>) -> String {
-    defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text("msg.engine_unreachable_why_daemon"))])
+    unreachable_text_why(event, "msg.engine_unreachable_why_daemon")
+}
+
+/// [`unreachable_text`] with the {why} of the defaults key `why_key`.
+pub(crate) fn unreachable_text_why(event: Option<&str>, why_key: &str) -> String {
+    defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text(why_key))])
 }
 
 fn state_file(key: &str) -> PathBuf {
@@ -493,6 +525,13 @@ fn fresh_until(p: &Path) -> bool {
 
 pub(crate) fn daemon_down_marked() -> bool {
     fresh_until(&state_file("daemon_down_marker"))
+}
+
+/// The slow-streak marker (`files.daemon_slow_marker`): the daemon is there but loaded, so clients skip it for a while, and a guard
+/// call no check could decide then falls under `dispatch.capacity_hold` instead of passing (#901). A really-down daemon writes the down
+/// marker instead and removes this one.
+pub(crate) fn daemon_slow_marked() -> bool {
+    fresh_until(&state_file("daemon_slow_marker"))
 }
 
 pub(crate) fn fail_open_unavailable() -> bool {
@@ -521,11 +560,95 @@ fn clear_supervisor_unhealthy() {
     crate::discard::harmless(std::fs::remove_file(state_file("supervisor_unhealthy_marker"))); // keep: absent marker is the desired state
 }
 
-fn mark_daemon_down(reason: &str) {
+/// Mark the daemon really down (`cause`: why it is provably gone, the counter's reason). Only for a daemon that is gone: no socket,
+/// no process, a failed spawn ([`mark_unusable`] decides for a failed exchange or a hung daemon).
+fn mark_daemon_down(reason: &str, cause: &str) {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    // really down: the load marker goes, so a call in the window passes (C9) instead of being weighed as load
+    clear_daemon_slow_marker();
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
     crate::discard::logged("daemon_down_marker_write", crate::atomic::write(state_file("daemon_down_marker"), until.to_string()));
-    health::log_event("client_down", "daemon", reason);
+    crate::obs::counters::marker("down", cause);
+    health::log_event("client_down", cause, reason);
+}
+
+/// #901: the slow streak tripped. The daemon is there but loaded, not down: later clients skip it as they would a down one, but on
+/// the slow marker, never the down marker, so a guard call in a hold class of `dispatch.capacity_hold` is held, never let through.
+/// #905: also a failed exchange or a hung daemon whose process is still there (`cause` names which, the counter's reason).
+fn mark_daemon_slow(reason: &str, cause: &str) {
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
+    crate::discard::logged("daemon_slow_marker_write", crate::atomic::write(state_file("daemon_slow_marker"), until.to_string()));
+    crate::obs::counters::marker("slow", cause);
+    health::log_event("client_slow_marked", cause, reason);
+}
+
+/// #905: why the daemon is provably gone, or `None` while a daemon process may still be there. Gone = no socket file, or the
+/// singleton lock names a pid that no longer exists. A lock that names no pid proves nothing (a process that is starting), and a
+/// reused pid reads as alive: both err toward "there", where risky calls are held rather than let through.
+fn daemon_gone(sock: &Path) -> Option<&'static str> {
+    if std::fs::symlink_metadata(sock).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Some("no_socket");
+    }
+    let holder = std::fs::read_to_string(paths::lock_for(sock)).ok().and_then(|t| t.trim().parse::<u32>().ok()).filter(|p| *p != 0)?;
+    (!health::pid_alive(holder)).then_some("no_process")
+}
+
+/// #905: while the breaker is open, is a daemon process still there? The same proof as [`mark_unusable`] (`client.down_requires_gone`
+/// 0 = never: the open breaker passes everything, as before). A crash loop or the down marker still passes everything.
+fn breaker_daemon_there() -> bool {
+    defaults::num("client.down_requires_gone") != 0
+        && health::crashloop_remaining().is_none()
+        && !daemon_down_marked()
+        && daemon_gone(&paths::socket()).is_none()
+        && !load_hold_expired()
+}
+
+/// #905 review: how long the client has been holding risky calls for a daemon that is there but unusable, with no OK reply since
+/// (`files.load_hold_since`, written by the first such hold, removed by an OK reply or a new daemon). Past
+/// `client.load_hold_max_ms` (0 = no cap) the daemon is treated as down, so a live but broken daemon (one that fails every exchange
+/// or is never replaced) cannot hold pushes forever: protective, not disruptive.
+/// The run is continuous: the file holds `<start> <last hold>`, every hold refreshes the last one, and a gap longer than
+/// `client.load_hold_gap_ms` since the last hold (an idle session, an old run nothing answered after) starts a new run, so a stale
+/// run never lets the next risky call through.
+fn load_hold_expired() -> bool {
+    let p = state_file("load_hold_since");
+    let now = health::now_ms();
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut nums = text.split_whitespace().map(|n| n.parse::<u64>().ok());
+    let since = nums.next().flatten();
+    let last = nums.next().flatten().or(since);
+    let since = match (since, last) {
+        (Some(s), Some(l)) if now.saturating_sub(l) <= defaults::num("client.load_hold_gap_ms") => s,
+        _ => now, // no run yet, an unreadable stamp, or the last hold too long ago: a new run
+    };
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
+    crate::discard::logged("load_hold_since_write", crate::atomic::write(&p, format!("{since} {now}")));
+    let max = defaults::num("client.load_hold_max_ms");
+    max != 0 && now.saturating_sub(since) > max
+}
+
+/// #905: the daemon could not be used (a failed exchange, a hung daemon; `alive` names which for the counter). It is marked down only
+/// when it is provably gone ([`daemon_gone`], or `gone`: the caller's own proof); a daemon whose process is still there (loaded,
+/// stopped) is load: the slow marker, and this call counts as a late one (`LAST_SLOW`), so a guard call in a hold class of
+/// `dispatch.capacity_hold` is held, now and while the marker lasts. `client.down_requires_gone` 0 restores marking it down every
+/// time. True when it was marked down.
+fn mark_unusable(sock: &Path, why: &str, alive: &str, gone: Option<&str>) -> bool {
+    match daemon_gone(sock).or(gone) {
+        Some(gone) => mark_daemon_down(why, gone),
+        None if defaults::num("client.down_requires_gone") == 0 => mark_daemon_down(why, "unchecked"),
+        None if load_hold_expired() => mark_daemon_down(why, "hold_expired"),
+        None => {
+            LAST_SLOW.set(true);
+            mark_daemon_slow(why, alive);
+            return false;
+        }
+    }
+    true
+}
+
+fn clear_daemon_slow_marker() {
+    crate::discard::harmless(std::fs::remove_file(state_file("daemon_slow_marker"))); // keep: absent marker is the desired state
 }
 
 /// Count this slow reply into the streak file (`count first_ts_ms`); true once `client.slow_down_n` slow replies came in a
@@ -576,6 +699,8 @@ fn clear_slow_streak() {
 
 fn clear_daemon_down_marker() {
     crate::discard::harmless(std::fs::remove_file(state_file("daemon_down_marker"))); // keep: absent marker is the desired state
+    clear_daemon_slow_marker();
+    crate::discard::harmless(std::fs::remove_file(state_file("load_hold_since"))); // keep: a daemon that answers ends the hold run
 }
 
 struct SpawnLock {
@@ -795,7 +920,9 @@ pub struct Outcome {
 
 /// Ask the engine. `None` = no daemon verdict within the deadline.
 fn engine_attempt(raw: &str, cfg: &ClientConfig) -> Option<String> {
-    if raw.len() as u64 > crate::defaults::num("daemon.max_request") || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() {
+    // the breaker, the crash loop and the markers are weighed by attempt_with, so an open breaker with the daemon there holds a
+    // risky call on this path too (#905)
+    if raw.len() as u64 > crate::defaults::num("daemon.max_request") {
         return None;
     }
     let payload = format!("V {}\n{}\n{}", crate::version(), crate::reqenv::RequestEnv::capture().to_line(), raw);
@@ -822,10 +949,31 @@ pub(crate) fn release_wait_marker() {
 
 fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_on_ok: bool) -> Option<String> {
     LAST_NON_OK_REPLY.set(false);
+    LAST_BUSY_REPLY.set(false);
+    LAST_SLOW.set(false);
     LAST_UNAVAILABLE.set(false);
-    if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
+    // #905: an open breaker with a daemon process still there (loaded, stopped) is load, as the slow marker is: risky calls are
+    // held below; it passes everything only once the daemon is provably gone (a broken install must not block every push)
+    let breaker_load = health::breaker_remaining().is_some() && breaker_daemon_there();
+    if !breaker_load && (health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked()) {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
+        return None;
+    }
+    if breaker_load {
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_breaker_load"));
+        crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "client:breaker_load", defaults::text("msg.client_skip_breaker_load"));
+        return None;
+    }
+    if daemon_slow_marked() {
+        // #901: a loaded daemon, skipped for a while: this call is load, as a late reply is (LAST_SLOW), so a guard call in a hold
+        // class (dispatch.capacity_hold) is held and anything else passes; never the down marker's unconditional pass
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_slow"));
+        crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "client:slow_marker", defaults::text("msg.client_skip_slow"));
         return None;
     }
     let sock = paths::socket();
@@ -841,20 +989,23 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             clear_slow_streak();
             Some(body)
         }
-        Exch::Reply(_, _) => {
+        Exch::Reply(kind, _) => {
             // a completed valid reply (BUSY / ERR) is not a slow one: the streak counts consecutive slow replies only
             clear_slow_streak();
-            LAST_NON_OK_REPLY.set(true);
+            note_non_ok(kind);
             None
         }
         Exch::Failed(why) => {
             wait_marker(false);
             note_unavailable();
-            mark_daemon_down(&why);
-            if !health::crashloop_tripped(cfg)
-                && let Some(_spawn_lock) = spawn_lock_if_absent(&sock)
+            // the spawn lock is taken only when no daemon holds the singleton lock: no daemon process is there, provably gone
+            let spawn = if health::crashloop_tripped(cfg) { None } else { spawn_lock_if_absent(&sock) };
+            let down = mark_unusable(&sock, &why, "failed", spawn.is_some().then_some("no_lock_holder"));
+            if let Some(_spawn_lock) = spawn
+                && start_daemon(false, &why).is_none()
+                && !down
             {
-                let _ = start_daemon(false, &why);
+                mark_daemon_down(&why, "spawn"); // no daemon is coming: really down
             }
             health::breaker_failure(cfg, &why);
             None
@@ -864,22 +1015,24 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             // hooks too would count the call twice, so this call fails open (the unavailable path), never to Node
             wait_marker(false);
             note_unavailable();
+            LAST_SLOW.set(true);
             health::log_event("client_slow", "daemon", &why);
             if slow_streak_tripped() {
-                mark_daemon_down(&why); // wedged: later clients skip it
+                mark_daemon_slow(&why, "slow_streak"); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
             }
             None
         }
         Exch::Hung(why, confirmed) => {
-            // stopped or wedged, not slow: this call fails open and the daemon is skipped until the marker expires. A first
+            // stopped or wedged, not slow: this call gets no verdict and the daemon is skipped until the marker expires (#905: the
+            // slow marker while its process is there, so risky calls are held; the down marker only once it is gone). A first
             // stale sample only raises a suspicion; the first call after the marker that finds the same heartbeat still
-            // unchanged confirms it, and the daemon is replaced (the new one clears the down marker). The marker comes first,
+            // unchanged confirms it, and the daemon is replaced (the new one clears the marker). The marker comes first,
             // so a client cut off mid-way still leaves it; the wait marker stays until the replacement is done, so the
             // wrapper's watchdog does not cut it off (single-flight: one call pays it).
             note_unavailable();
             clear_slow_streak();
             health::log_event("client_hung", "daemon", &why);
-            mark_daemon_down(&why);
+            mark_unusable(&sock, &why, "hung", None);
             if confirmed && replace_hung_daemon(cfg, &why) {
                 clear_daemon_down_marker();
             }
@@ -921,7 +1074,7 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
             let Some(child) = start_daemon_with(true, "absent", starter) else {
                 wait_marker(false);
                 note_unavailable();
-                mark_daemon_down("spawn");
+                mark_daemon_down("spawn", "spawn");
                 return None;
             };
             // `Some(None)`: the service manager accepted the ask, so the supervised daemon is on its way; this call waits for it
@@ -962,9 +1115,9 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                     clear_daemon_down_marker();
                     Some(body)
                 }
-                Exch::Reply(_, _) => {
+                Exch::Reply(kind, _) => {
                     wait_marker(false);
-                    LAST_NON_OK_REPLY.set(true);
+                    note_non_ok(kind);
                     None
                 }
                 _ => {
@@ -998,6 +1151,9 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
     }
     wait_marker(false);
     note_unavailable();
+    // a daemon that is starting but not up within the wait is load (a loaded machine starts it slowly), not a broken install (a
+    // failed spawn returned above): a guard call in a hold class (dispatch.capacity_hold) is held, as for a late reply
+    LAST_SLOW.set(true);
     health::log_event("client_down", "daemon", "cold_start");
     None
 }
@@ -1009,7 +1165,7 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     note_unavailable();
     let _spawn_lock = spawn_lock_if_absent(sock)?;
     let Some(mut child) = start_daemon(false, "absent") else {
-        mark_daemon_down("spawn");
+        mark_daemon_down("spawn", "spawn");
         return None;
     };
     if answer_now {
@@ -1222,8 +1378,31 @@ fn run_bytes(raw: Vec<u8>, unaskable: bool, fail_closed_unavailable: bool) -> Ou
         {
             return o;
         }
+        // read before take_non_ok_reply, which does not clear it
+        let busy = take_busy_reply();
         let non_ok_reply = take_non_ok_reply();
         let unavailable = take_unavailable() || fail_open_unavailable();
+        // a BUSY reply (the daemon shed the request: a full queue or a rate limit) is no capacity, not a failed check: a guard event
+        // follows the capacity failure mode, as a daemon that did not answer in time does, never each check's failure policy
+        if busy
+            && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
+            && crate::dispatch::capacity_open()
+        {
+            if let Some(held) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| crate::dispatch::capacity_held(ev, &p)) {
+                return held;
+            }
+            let why_key = crate::dispatch::capacity_why_key();
+            crate::dispatch::capacity_pass(ev, defaults::text(why_key));
+            return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice_why(raw, Some(ev), why_key) };
+        }
+        // a daemon that was there but late (load) passes a guard call like a BUSY one: a call in a hold class is held, never let through
+        if take_slow()
+            && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
+            && crate::dispatch::capacity_open()
+            && let Some(held) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| crate::dispatch::capacity_held(ev, &p))
+        {
+            return held;
+        }
         if !non_ok_reply && unavailable && raw.len() as u64 <= defaults::num("daemon.max_request") {
             return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice(raw, event_name.as_deref()) };
         }

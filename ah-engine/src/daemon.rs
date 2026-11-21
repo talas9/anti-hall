@@ -645,6 +645,8 @@ impl Shared {
                 })
             }),
             "fail_open": crate::failopen::status(&self.telemetry),
+            // token waste by category (GH #884): events and tokens of every waste_* category this daemon has counted
+            defaults::raw("agent_waste.status_words").str_field("key"): crate::agents::waste::status_block(&self.telemetry),
             // answers a request's checks did not give (a guard's is the one to watch): THIS daemon, apart from the lifetime counts
             "answers_dropped": serde_json::json!({
                 "this_daemon": crate::budget::dropped_this_daemon(),
@@ -1195,7 +1197,10 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             Answer::Decided(r, routes) if r.code == Some(2) || (r.code == Some(0) && crate::dispatch::combine::json_blocks(&r.out)) => {
                 Verdict::Routed(Box::new(Verdict::Block(block_text_of(r))), routes.clone())
             }
-            Answer::Decided(r, routes) if !r.out.is_empty() => Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone()),
+            // an empty additionalContext says nothing: an allow, not an advisory (GH #894)
+            Answer::Decided(r, routes) if crate::dispatch::combine::says_something(&meta.event, r) => {
+                Verdict::Routed(Box::new(Verdict::Advisory(r.out.trim_end().to_string())), routes.clone())
+            }
             Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
         };
         if let Verdict::Routed(_, routes) = &v {
@@ -1209,7 +1214,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         let cut = matches!(a, Answer::Decided(..)) && crate::budget::take_drop_reason().is_some();
         if let Answer::Decided(r, _) = a
             && !cut
-            && (!r.out.is_empty() || r.code == Some(2))
+            && crate::dispatch::combine::says_something(&meta.event, r)
         {
             // #312: it said something (a message or a block): delivery is counted at the end of the request. B1: with the session's model and project
             let who = crate::funnel::ctx(session, &p, &phash);
@@ -1218,7 +1223,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             if shadowed {
                 crate::delivery::suppressed(&sh.telemetry, check, &who);
             } else {
-                crate::delivery::decided(&sh.telemetry, session, check, &who);
+                crate::delivery::decided_with(&sh.telemetry, session, check, &who, &block_text_of(r));
                 crate::funnel::channels(&sh.telemetry, check, &meta.event, r, &who);
             }
         }
@@ -1249,7 +1254,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         over
     };
     // #312: the agent's reaction to what was delivered; B1: any event can advance an armed window (a turn end, a prompt)
-    crate::delivery::observe(&sh.telemetry, session, &meta.event, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or(""));
+    let (tool, command) = crate::delivery::call_fields(&p);
+    let reply = p.get("last_assistant_message").and_then(|v| v.as_str()).unwrap_or("");
+    crate::delivery::observe_full(&sh.telemetry, session, &meta.event, tool, command, reply);
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
     if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
@@ -2314,6 +2321,10 @@ pub fn serve(start_reason: &str) -> i32 {
         health::log_event("supervised_start", start_reason, defaults::text("msg.log_supervised_start"));
     }
     crate::memdiag::apply_decay_if_untuned();
+    // our own stale temp entries (named prefixes, older than the configured age) go; a directory of thousands is scanned off the start path
+    std::thread::spawn(|| {
+        crate::tmpsweep::sweep_configured();
+    });
     crate::jev::shared::set_resident();
     health::reap_marker();
     crate::discard::harmless(lock.set_len(0)); // keep: best effort, fail-open
