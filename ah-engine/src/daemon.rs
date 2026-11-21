@@ -161,6 +161,12 @@ pub struct Shared {
     /// A rules/config reload the accept loop asked for is running on its own thread ([`reload_off_loop`]); the loop asks for no other
     /// until it ends.
     reloading: Arc<AtomicBool>,
+    /// Held by every rules/config reload (the reload thread and `ctl reload` on a worker): one at a time, so two reloads never
+    /// build from the same previous snapshot and an older read never overwrites a newer one.
+    reload_gate: Mutex<()>,
+    /// Tests: runs inside [`Shared::reload`] after the files were read, to land an edit mid-load.
+    #[cfg(test)]
+    mid_reload: Mutex<Option<Box<dyn Fn() + Send>>>,
     stall_ms: AtomicU64,
     test_thread_panics: AtomicU64,
     /// CPU and memory against their budgets (`diagnostics.budget_*`), updated by the watchdog.
@@ -245,6 +251,9 @@ impl Shared {
             loop_ended: AtomicBool::new(false),
             busy_since: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             reloading: Arc::new(AtomicBool::new(false)),
+            reload_gate: Mutex::new(()),
+            #[cfg(test)]
+            mid_reload: Mutex::new(None),
             stall_ms: AtomicU64::new(0),
             test_thread_panics: AtomicU64::new(0),
             budget: Mutex::new(crate::budget::State::default()),
@@ -410,11 +419,18 @@ impl Shared {
     fn reload(&self) {
         let path = lk(&self.rules_path).clone();
         let explicit = defaults::env_var("rules").is_some();
+        // stamped BEFORE the read: an edit that lands while the files are read differs from it, so the next check reloads again
+        let before = crate::layers::host_fingerprint(&path, explicit);
         // the shipped file and the user's layers over it (layers.rs); a bad user file is ignored with a notice, the shipped rules stay
-        if let Ok((r, _)) = crate::layers::load_host_rules(&path, explicit) {
+        let loaded = crate::layers::load_host_rules(&path, explicit);
+        #[cfg(test)]
+        if let Some(f) = lk(&self.mid_reload).as_ref() {
+            f();
+        }
+        if let Ok((r, _)) = loaded {
             *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(r);
         }
-        *lk(&self.seen) = crate::layers::host_fingerprint(&path, explicit);
+        *lk(&self.seen) = before;
     }
 
     /// The memory breakdown: the live heap against RSS, and the size of every long-lived in-memory structure, so a growing
@@ -837,6 +853,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("diag") => (Reply::Ok(sh.diag_json(args.trim()).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
+            let _one = lk(&sh.reload_gate); // never beside the reload thread
             sh.reload();
             sh.reload_config();
             (Reply::Ok("ok".into()), After::Continue)
@@ -1848,7 +1865,8 @@ fn worker(sh: Arc<Shared>, idx: usize) {
 /// 0.75 s unoptimised, more on a loaded machine), and while the loop ran it no connection was accepted or acknowledged and no worker
 /// was busy, so a client read the idle heartbeat as a daemon not working on its request and held a risky call as load. `rules`: the
 /// rules file changed (or SIGHUP): the rules and the config, as `ctl reload` does; otherwise only the config files changed (D18): the
-/// config, then the rate limits. A thread that cannot be started reloads here, as before.
+/// config, then the rate limits. A thread that cannot be started reloads nothing (the loop never does): the signal is re-armed and
+/// the unchanged `seen` stamps find the change again at a later check.
 fn reload_off_loop(sh: &Arc<Shared>, rules: bool) {
     struct Done(Arc<AtomicBool>);
     impl Drop for Done {
@@ -1859,22 +1877,23 @@ fn reload_off_loop(sh: &Arc<Shared>, rules: bool) {
     sh.reloading.store(true, SeqCst);
     let job = Arc::clone(sh);
     let run = move |sh: &Shared| {
+        let _one = lk(&sh.reload_gate); // never beside `ctl reload`
         if rules {
             sh.reload();
-            sh.reload_config();
-        } else {
-            sh.config.reload();
-            sh.sync_limits();
         }
+        sh.reload_config();
     };
     // named and counted, so its CPU shows in `status --threads` after it ends
     let spawned = crate::threads::spawn_named("ah-reload".into(), move || {
         let _done = Done(Arc::clone(&job.reloading));
         run(&job);
     });
-    if spawned.is_err() {
-        let _done = Done(Arc::clone(&sh.reloading));
-        run(sh);
+    if let Err(e) = spawned {
+        sh.reloading.store(false, SeqCst);
+        if rules {
+            HUP.store(true, SeqCst);
+        }
+        health::log_event("reload_deferred", "spawn", &e.to_string());
     }
 }
 
@@ -2945,6 +2964,31 @@ mod tests {
     fn shared() -> Shared {
         let rs = RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"BAD","action":"deny","message":"no"}]}"#).unwrap();
         Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into())
+    }
+    /// A rules edit that lands while `Shared::reload` reads the files is not stamped as seen: the next check differs and reloads it.
+    /// (The stamp used to be taken after the read, so such an edit was marked seen and never loaded.)
+    #[test]
+    fn a_rules_edit_during_the_load_is_not_marked_seen() {
+        let d = std::env::temp_dir().join(format!("ah-seen-race-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("rules.json");
+        std::fs::write(&p, r#"{"version":1,"rules":[]}"#).unwrap();
+        let sh = Shared::new(Config::from_env(), "0.1.0", RuleSet::parse(r#"{"version":1,"rules":[]}"#).unwrap(), p.clone());
+        let empty = sh.rules.read().unwrap().fingerprint();
+        let target = p.clone();
+        *sh.mid_reload.lock().unwrap() = Some(Box::new(move || {
+            // a longer file: the stat fingerprint differs even within the same mtime second
+            std::fs::write(&target, r#"{"version":1,"rules":[{"pattern":"BAD","action":"deny","message":"no"}]}"#).unwrap();
+        }));
+        sh.reload();
+        let explicit = defaults::env_var("rules").is_some();
+        assert_ne!(crate::layers::host_fingerprint(&p, explicit), *lk(&sh.seen), "an edit landing mid-load must not be stamped as seen");
+        assert_eq!(sh.rules.read().unwrap().fingerprint(), empty, "the load read the file before the edit");
+        *sh.mid_reload.lock().unwrap() = None;
+        sh.reload(); // what the next check triggers
+        assert_ne!(sh.rules.read().unwrap().fingerprint(), empty, "the mid-load edit is loaded by the next reload");
+        assert_eq!(crate::layers::host_fingerprint(&p, explicit), *lk(&sh.seen));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent directory is the goal state
     }
     /// #908: a settled config-file change is reloaded on the reload thread, never on the accept loop (the reload re-reads every
     /// defaults file: 0.13-0.75 s with no connection accepted meanwhile), and the loop starts no second reload while it runs.
