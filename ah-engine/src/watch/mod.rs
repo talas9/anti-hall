@@ -24,7 +24,8 @@
 //!   produced instead ([`Batch::rescan`]): the consumer reconciles everything, so a storm of any size costs a fixed amount.
 //! * A directory with more than `realtime.max_entries` matching files reports a rescan when its listing changes.
 //! * OS descriptors do not grow with the files watched: on macOS (kqueue) a directory is one descriptor plus per-file ones on
-//!   its newest files only (`realtime.file_watches_per_dir`, `realtime.max_file_watches` in all; see [`kq`], GH #912).
+//!   its newest files only (`realtime.file_watches_per_dir`, `realtime.max_file_watches` in all; see [`kq`], GH #912); every
+//!   directory is re-listed each `realtime.file_resync_ms`, the bound on reporting an in-place write to any other file.
 //!
 //! All numbers, names and lists are plugin settings (`engine/defaults/realtime.toml`).
 
@@ -62,6 +63,9 @@ pub struct Config {
     pub file_watches_per_dir: usize,
     /// Most per-file event descriptors over the whole events backend (macOS kqueue).
     pub max_file_watches: usize,
+    /// How often every events directory is re-listed without an event (macOS kqueue; zero = never): the bound on reporting an
+    /// in-place write to a file outside the per-file descriptor set.
+    pub file_resync: Duration,
     /// Filesystem types that are always polled.
     pub fs_poll_types: Vec<String>,
     /// Side-file suffixes of a SQLite database.
@@ -86,6 +90,7 @@ impl Config {
             max_entries: defaults::num("realtime.max_entries") as usize,
             file_watches_per_dir: defaults::num("realtime.file_watches_per_dir") as usize,
             max_file_watches: defaults::num("realtime.max_file_watches") as usize,
+            file_resync: defaults::millis("realtime.file_resync_ms"),
             fs_poll_types: defaults::list("realtime.fs_poll_types").into_iter().map(String::from).collect(),
             sqlite_suffixes: defaults::list("realtime.sqlite_suffixes").into_iter().map(String::from).collect(),
             ignore_suffixes: defaults::list("realtime.ignore_suffixes").into_iter().map(String::from).collect(),

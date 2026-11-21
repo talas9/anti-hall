@@ -18,6 +18,7 @@ fn cfg(poll_ms: u64) -> Config {
         max_entries: 256,
         file_watches_per_dir: 16,
         max_file_watches: 512,
+        file_resync: ms(5000),
         fs_poll_types: vec!["9p".into(), "drvfs".into(), "nfs".into(), "smbfs".into(), "fuse*".into()],
         sqlite_suffixes: vec!["-wal".into(), "-shm".into(), "-journal".into()],
         latency_target: ms(1000),
@@ -460,4 +461,43 @@ fn event_descriptors_stay_bounded_as_watched_files_grow() {
     let got = paths(&drain(&w, ms(600)));
     assert!(got.contains(&dirs[3].join("f0007.json")), "cold in-place write not reported at the next directory event: {got:?}");
     assert!(w.event_fds() <= bound, "still bounded after the changes: {}", w.event_fds());
+}
+
+/// GH #912 review: a directory event is not the only way an in-place write to a file without its own descriptor is seen. With
+/// the defaults (16 per-file descriptors per directory), a write in place to the 17th-newest file, with no create, delete or
+/// rename in the directory afterwards, is still reported, within `realtime.file_resync_ms`.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_in_place_write_to_a_cold_file_is_reported_within_the_resync_bound() {
+    let t = Tmp::new("coldwrite");
+    let mut c = cfg(750);
+    c.file_resync = ms(300);
+    let base = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    // 20 files with distinct ages: f00 the oldest, f19 the newest; f03 is the 17th-newest, outside the per-file set
+    for i in 0..20u64 {
+        let p = t.0.join(format!("f{i:02}.json"));
+        fs::write(&p, "{}").unwrap();
+        fs::File::options().write(true).open(&p).unwrap().set_modified(base + Duration::from_secs(i)).unwrap();
+    }
+    let w = Watcher::start(c.clone());
+    assert_eq!(w.add(&t.0, Filter::All).backend, Backend::Events);
+    assert_eq!(w.event_fds(), 1 + c.file_watches_per_dir, "one directory descriptor plus the 16 newest files");
+    settle(&w);
+    let cold = t.0.join("f03.json");
+    fs::OpenOptions::new().append(true).open(&cold).unwrap().write_all(b" ").unwrap();
+    let got = paths(&drain(&w, c.file_resync * 3));
+    assert!(got.contains(&cold), "an in-place write to the 17th-newest file must be reported without a directory event: {got:?}");
+    // and with the periodic re-listing off it is not (so the test above measures the re-listing, not some other path)
+    let t2 = Tmp::new("coldwrite-off");
+    for i in 0..20u64 {
+        let p = t2.0.join(format!("f{i:02}.json"));
+        fs::write(&p, "{}").unwrap();
+        fs::File::options().write(true).open(&p).unwrap().set_modified(base + Duration::from_secs(i)).unwrap();
+    }
+    c.file_resync = Duration::ZERO;
+    let w2 = Watcher::start(c);
+    assert_eq!(w2.add(&t2.0, Filter::All).backend, Backend::Events);
+    settle(&w2);
+    fs::OpenOptions::new().append(true).open(t2.0.join("f03.json")).unwrap().write_all(b" ").unwrap();
+    assert!(paths(&drain(&w2, ms(900))).is_empty(), "control: without the re-listing the cold write has no event");
 }

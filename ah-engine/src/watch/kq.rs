@@ -60,6 +60,9 @@ pub struct Limits {
     pub per_dir: usize,
     /// Most per-file descriptors over the whole backend.
     pub total: usize,
+    /// How often every watched directory is re-listed even without an event (`realtime.file_resync_ms`; zero = never): the
+    /// bound on how late an in-place write to a file without its own descriptor is reported.
+    pub resync: std::time::Duration,
 }
 
 struct Dir {
@@ -182,9 +185,14 @@ pub struct Events {
 
 fn run(kq: RawFd, wake_r: RawFd, state: &Mutex<State>, sink: &Sink, lim: Limits) {
     let mut out = [kev(0, 0, 0, 0); 32];
+    let mut last_sweep = std::time::Instant::now();
     loop {
-        // SAFETY: no change list; `out` is 32 writable kevent records; no timeout (block).
-        let n = unsafe { libc::kevent(kq, std::ptr::null(), 0, out.as_mut_ptr(), out.len() as libc::c_int, std::ptr::null()) };
+        // wait for an event, or until the next periodic re-listing is due (no timeout when it is off)
+        let left = lim.resync.saturating_sub(last_sweep.elapsed());
+        let ts = libc::timespec { tv_sec: left.as_secs() as libc::time_t, tv_nsec: left.subsec_nanos() as libc::c_long };
+        let tsp: *const libc::timespec = if lim.resync.is_zero() { std::ptr::null() } else { &ts };
+        // SAFETY: no change list; `out` is 32 writable kevent records; `tsp` is null or points at `ts`, alive for the call.
+        let n = unsafe { libc::kevent(kq, std::ptr::null(), 0, out.as_mut_ptr(), out.len() as libc::c_int, tsp) };
         if n < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
@@ -228,6 +236,13 @@ fn run(kq: RawFd, wake_r: RawFd, state: &Mutex<State>, sink: &Sink, lim: Limits)
                         }
                     }
                 }
+            }
+            // the periodic re-listing: an in-place write to a file outside the newest set fires no event of its own, so every
+            // directory is compared at least once per `lim.resync`
+            if !lim.resync.is_zero() && last_sweep.elapsed() >= lim.resync {
+                last_sweep = std::time::Instant::now();
+                let all: Vec<PathBuf> = st.dirs.keys().filter(|k| !dirty.contains(*k)).cloned().collect();
+                dirty.extend(all);
             }
             for key in dirty {
                 match st.resync(kq, &key, lim) {

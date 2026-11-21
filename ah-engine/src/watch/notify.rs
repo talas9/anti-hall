@@ -19,7 +19,10 @@ pub use super::kq::Events;
 impl Events {
     /// Start the backend with the bounds of `cfg`; `sink` receives the signals on the backend's own thread.
     pub fn start(sink: Sink, cfg: &super::Config) -> Result<Events, String> {
-        Events::new(sink, super::kq::Limits { max_entries: cfg.max_entries, per_dir: cfg.file_watches_per_dir, total: cfg.max_file_watches })
+        Events::new(
+            sink,
+            super::kq::Limits { max_entries: cfg.max_entries, per_dir: cfg.file_watches_per_dir, total: cfg.max_file_watches, resync: cfg.file_resync },
+        )
     }
 
     /// The descriptors this backend holds for watches.
