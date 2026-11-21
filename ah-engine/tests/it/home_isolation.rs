@@ -32,7 +32,12 @@ fn tests() -> Vec<(PathBuf, Vec<String>)> {
         .collect()
 }
 
-const NAMES_ROOT: [&str; 3] = ["PLUGIN_ROOT", "plugin_root", "plugin-root"];
+/// The names that pass a root the engine always takes: its own variable, `common::plugin_root()` (or a variable of that name) and the
+/// flag. Not `CLAUDE_PLUGIN_ROOT` / `PLUGIN_ROOT`: the engine takes those only when they hold a defaults index, and tests point them at
+/// scratch dirs, so a child that names only them still falls through to the lookup this guard exists to rule out.
+/// The one exception, `CLAUDE_PLUGIN_ROOT` set to the no-node harness's `self.plugin`: a copy of this checkout's plugin (with its index),
+/// set the way the host sets it because that harness is the no-Node install contract.
+const NAMES_ROOT: [&str; 4] = ["AH_ENGINE_PLUGIN_ROOT", "plugin_root", "plugin-root", "\"CLAUDE_PLUGIN_ROOT\", &self.plugin)"];
 
 /// The spawn statement that holds line `at`: its lines from a few above (the `let mut c = Command::new` line) down to the first line
 /// that runs it. A rooted child names its plugin root anywhere in that span.

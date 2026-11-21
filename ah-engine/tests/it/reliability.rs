@@ -2526,6 +2526,38 @@ fn a_daemon_that_stays_slow_holds_risky_calls_only_for_load_hold_max_ms() {
     assert!(journal.contains("client_marker\tdown\thold_expired\t"), "the capped hold is counted with its reason: {journal}");
 }
 
+/// #910 review: the cap covers the hold of every slow reply, not only a tripped streak. With the default timing a single session
+/// never trips the streak (client.slow_down_n slow replies take longer than client.slow_window_ms), yet each late reply holds a
+/// force push (LAST_SLOW); past client.load_hold_max_ms with no OK reply the late reply marks the daemon down and the call passes.
+#[test]
+fn a_slow_daemon_that_never_trips_the_streak_holds_risky_calls_only_for_load_hold_max_ms() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new(
+        "slowcap1",
+        &[
+            ("AH_ENGINE_NOSPAWN", "1"),
+            ("AH_ENGINE_DISPATCH_IN_PROCESS", "0"),
+            ("AH_ENGINE_DEADLINE_MS", "150"),
+            ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "300"),
+            ("AH_ENGINE_SLOW_DOWN_N", "50"),
+            ("AH_ENGINE_BREAKER_N", "50"),
+            ("AH_ENGINE_LOAD_HOLD_MAX_MS", "600"),
+            ("AH_ENGINE_DOWN_MARKER_TTL_MS", "200"),
+        ],
+    );
+    fake_server(&e, || None); // never replies: every call is a late one, and the streak never trips
+    let (_, young, held) = e.dispatch("PreToolUse", DENY_IN);
+    assert_eq!(held, 2, "a force push answered late in a young run is held: {young:?}");
+    assert!(!e.fresh_slow_marker() && !e.fresh_down_marker(), "one late reply marks nothing: {}", e.health_log());
+    std::thread::sleep(Duration::from_millis(700)); // the run is now older than client.load_hold_max_ms, with no OK reply in it
+    let (_, _, capped) = e.dispatch("PreToolUse", DENY_IN);
+    let log = e.health_log();
+    let journal = std::fs::read_to_string(e.eng().join(ah_engine::defaults::text("diagnostics.counters_file"))).unwrap_or_default();
+    assert_eq!(capped, 0, "past client.load_hold_max_ms a late reply no longer holds a force push: {log}");
+    assert!(e.fresh_down_marker(), "the capped late reply marks the daemon down: {log}");
+    assert!(journal.contains("client_marker\tdown\thold_expired\t"), "the capped hold is counted with its reason: {journal}");
+}
+
 /// Codex P1 on the merge: in ack mode a daemon that acknowledged the request and then stopped beating must reach the hung path
 /// (fail fast, replacement), not wait out the slow window.
 #[test]
