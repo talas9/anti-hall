@@ -20,6 +20,10 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.12 (local integration build)
+
+Engine-only local build of current dev: one incremental transcript view (#953). The idle-teammate scan, `ah.fs.tailLines` with needles, `ah.transcript.grep` and the emit-dedupe tail read only the bytes appended since the last call instead of re-reading and re-parsing their whole window on every prompt.
+
 ## Engine 0.3.10 (local integration build)
 
 Engine-only local build of current dev: archive passes gitlink-only submodule drift (#943).
