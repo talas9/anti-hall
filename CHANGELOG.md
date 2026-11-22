@@ -24,6 +24,10 @@ the update.
 
 Engine-only local build of current dev: one incremental transcript view (#953). The idle-teammate scan, `ah.fs.tailLines` with needles, `ah.transcript.grep` and the emit-dedupe tail read only the bytes appended since the last call instead of re-reading and re-parsing their whole window on every prompt.
 
+## Engine 0.3.11 (local integration build)
+
+Engine-only local build of current dev: a dropped advisory check on a non-guard event no longer shows the guard-down notice (counted as `notice_suppressed`), and the notice tells a failure in one short line instead of a script stack (#953).
+
 ## Engine 0.3.10 (local integration build)
 
 Engine-only local build of current dev: archive passes gitlink-only submodule drift (#943).

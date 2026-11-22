@@ -629,14 +629,14 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
 pub fn failed(name: &str, event: &str, why: &str) -> Verdict {
     crate::discard::note("script_error", &format!("{name}: {why}"));
     crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
-    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+    with_notice(name, event, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
 /// The decision for a check that gave no answer at all (a deferral of any origin: a cut call, a verdict that says nothing, a daemon
 /// that could not run it): the same failure policy as [`failed`], so a deferral never reaches a Node hook that is not launched.
 pub fn unanswered(name: &str, event: &str) -> Verdict {
     let why = defaults::text("script.msg_unanswered");
-    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+    with_notice(name, event, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
 /// The decision for a call ended by its wall-clock backstop (`script.wall_limit_factor`) before its CPU limit: the interpreter thread
@@ -652,7 +652,7 @@ fn starved_verdict(name: &str, event: &str, payload: &Value, why: &str) -> Verdi
     }
     crate::discard::note("script_error", &format!("{name}: {why}"));
     crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
-    with_notice(name, why, Verdict::Allow)
+    with_notice(name, event, why, Verdict::Allow)
 }
 
 /// [`failed`]'s decision for a check with failure mode `mode`.
@@ -691,8 +691,16 @@ fn noticed() -> &'static std::sync::Mutex<std::collections::HashSet<(String, Str
 
 /// A fail-open `Allow` of a check that could not run says so, once per session and check: a guard that is not guarding must not be
 /// silent. Any other verdict (a block) already tells the user.
-fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
+///
+/// Only a guard check on a guard event (`dispatch.guard_events`) tells the user (`script.notice_guard_events_only`, default on): an
+/// advisory check on any other event has nothing that went through unchecked, so its drop is only logged and counted
+/// (`script.notice_suppressed_counter`).
+fn with_notice(name: &str, event: &str, why: &str, v: Verdict) -> Verdict {
     if v != Verdict::Allow {
+        return v;
+    }
+    if defaults::num("script.notice_guard_events_only") == 1 && !defaults::list("dispatch.guard_events").contains(&event) {
+        crate::obs::counters::advisory(defaults::text("script.notice_suppressed_counter"), name);
         return v;
     }
     let session = session();
@@ -709,8 +717,26 @@ fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
     if !first {
         return v;
     }
-    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &why)]);
+    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &short_why(why))]);
     Verdict::Advisory(serde_json::json!({ defaults::text("script.notice_key"): msg }).to_string())
+}
+
+/// The one short line the user is told for a failure `why` (`script.notice_why_rules`: the first rule whose `contains` is in `why`, else
+/// `script.notice_why_default`). The full text (a script stack, the limits) goes to the log only.
+fn short_why(why: &str) -> String {
+    let rules = defaults::raw("script.notice_why_rules").as_array();
+    for r in rules.into_iter().flatten() {
+        if let (Some(c), Some(t)) = (r.get("contains").and_then(defaults::V::as_str), r.get("text").and_then(defaults::V::as_str))
+            && why.contains(c)
+        {
+            return t.to_string();
+        }
+    }
+    let first = why.lines().next().unwrap_or_default();
+    if !first.is_empty() && first.len() <= defaults::num("script.notice_why_max_chars") as usize && !why.contains('\n') {
+        return first.to_string();
+    }
+    defaults::text("script.notice_why_default").to_string()
 }
 
 /// The failure mode of check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
