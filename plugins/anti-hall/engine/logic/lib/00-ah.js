@@ -262,6 +262,8 @@ var ah = {
     // (found through the `keys` of nested objects; a non-string name is ''). Blank and invalid lines are left out.
     toolUseScan: function (p, windowBytes, needles, keys) { var r = ahHost.toolUseScan(p, windowBytes || 0, needles, keys); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-stopped named teammates of a Claude transcript tail: null, {unsure: true} or {teammates: [{name, idleSinceMs}]}.
+    // Teammates idle and waiting on their own work, in the tail: null, {unsure: true} or {idle: [{name, ms, reason}], stopIds: [[name, id]]}.
+    waiting: function (p, windowBytes, stopIds) { var r = ahHost.transcriptWaiting(p, windowBytes, JSON.stringify(stopIds || [])); return r === null || r === undefined ? null : JSON.parse(r); },
     teammates: function (p, tailBytes) { var r = ahHost.transcriptTeammates(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-closed agents of a Codex rollout tail: null, {unsure: true} or {agents: [{id, label, idleSinceMs}]}.
     codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },

@@ -256,3 +256,81 @@ fn the_digest_and_apply_scan_equals_the_scan_as_it_was() {
         assert_eq!(scan::finished_teammates(&all), scan::finished_teammates_reference(&all), "the real transcript tail");
     }
 }
+
+/// #953: the waiting-teammate scan moved from the script into the engine. The script's own answer (the new `idWaiting`) is compared with
+/// the old JavaScript function (`tests/fixtures/idle-waiting-before-953.js`, run in the same script) on transcripts that spawn, idle,
+/// re-task, stop and report "No task found" for teammates, across windows and appended turns.
+#[test]
+fn the_waiting_scan_in_the_engine_equals_the_script_it_replaced() {
+    use crate::reqenv::RequestEnv;
+    use serde_json::Value;
+    use std::io::Write;
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let shipped = std::fs::read_to_string(manifest.join("../plugins/anti-hall/engine/logic/idle-agent-sweep.js")).unwrap();
+    let old = std::fs::read_to_string(manifest.join("tests/fixtures/idle-waiting-before-953.js")).unwrap();
+    // the shipped script with the old function beside the new one, and a `decide` that answers both as text
+    let harness = format!(
+        "{shipped}\n{old}\nfunction decide(p) {{\n  var fin = ['done-one'], now = {now};\n  idStopIds = {{ preset: 'preset@t' }};\n  var a = JSON.stringify([idWaiting(p.transcript_path, now, fin), idStopIds]);\n  idStopIds = {{ preset: 'preset@t' }};\n  var b = JSON.stringify([idWaitingOld(p.transcript_path, now, fin), idStopIds]);\n  return {{ advisory: text.advisoryJson(ah.cfg('idle_sweep.event'), a + '\\u0001' + b) }};\n}}\n",
+        now = T0 as u64
+    );
+    let d = crate::tmpsweep::scratch("ah-waiting-", "parity");
+    std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
+    std::fs::write(d.join(".anti-hall/logic/idle-agent-sweep.js"), harness).unwrap();
+    let home = d.to_string_lossy().to_string();
+    let p = d.join("t.jsonl").to_string_lossy().to_string();
+    let env = RequestEnv::from_pairs([("HOME", home.as_str())]);
+    let idle = |name: &str, ts: f64, reason: Option<&str>| {
+        let mut body = json!({"type":"idle_notification","from":name,"timestamp":iso(ts)});
+        if let Some(r) = reason {
+            body["idleReason"] = json!(r);
+        }
+        json!({"type":"user","timestamp":iso(ts + 100.0),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"{name}\">\n{body}\n</teammate-message>")}}).to_string()
+    };
+    let tool_call = |name: &str, input: Value| json!({"type":"assistant","timestamp":iso(T0),"message":{"content":[{"type":"tool_use","id":"x1","name":name,"input":input}]}}).to_string();
+    let spawn_line = |name: &str| {
+        json!({"type":"user","timestamp":iso(T0 - 5_000_000.0),"toolUseResult":{"status":"teammate_spawned","name":name,"teammate_id":format!("{name}@sess-1")},"message":{"content":"x"}}).to_string()
+    };
+    let noise = |n: usize| (0..n).map(|i| json!({"type":"user","timestamp":iso(T0 + i as f64),"message":{"content":format!("noise {i} {}", "z".repeat(60))}}).to_string()).collect::<Vec<_>>();
+    let add = |ls: &[String]| {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+        for l in ls {
+            writeln!(f, "{l}").unwrap();
+        }
+    };
+    let compare = |tag: &str| {
+        for w in [400.0, 3_000.0, 20_000.0, 1e8] {
+            let _ = w; // the window is the script's own idle_sweep.scan_bytes: the cut windows are covered by the view's parity tests
+        }
+        let got = crate::script::run_forced("idle-agent-sweep", &json!({"session_id":"s","transcript_path":p,"cwd":"/x","prompt":"hi"}), &Value::Null, "UserPromptSubmit", &env);
+        let Some(Some(crate::checks::Verdict::Advisory(j))) = got else { panic!("{tag}: the harness answered {got:?}") };
+        let v: Value = serde_json::from_str(&j).unwrap();
+        let ctx = v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).unwrap_or_default().to_string();
+        let (a, b) = ctx.split_once('\u{1}').unwrap_or_else(|| panic!("{tag}: {ctx}"));
+        assert!(!a.is_empty() && a == b, "{tag}:\nengine {a}\nscript {b}");
+        a.to_string()
+    };
+    let old_enough = T0 - 3_000_000.0;
+    add(&noise(20));
+    for n in ["amy", "bob", "cy", "dee"] {
+        add(&[spawn_line(n)]);
+    }
+    add(&[idle("amy", old_enough, None), idle("bob", old_enough + 10.0, None), idle("cy", old_enough + 20.0, Some("available")), idle("dee", old_enough + 30.0, None)]);
+    let first = compare("four idle");
+    assert!(first.contains("amy") && first.contains("bob"), "the fixture holds waiting teammates, so the parity is not vacuous: {first}");
+    add(&noise(15));
+    add(&[tool_call("SendMessage", json!({"to":"amy","message":"go on"}))]);
+    compare("amy re-tasked");
+    add(&[tool_call("TaskStop", json!({"task_id":"bob@sess-1"}))]);
+    compare("bob stopped by id");
+    add(&[idle("bob", old_enough + 500.0, None)]);
+    compare("a late idle report of a stopped teammate");
+    add(&[json!({"type":"user","timestamp":iso(T0),"message":{"content":[{"type":"tool_result","tool_use_id":"x9","is_error":true,"content":"No task found with ID: dee@sess-1"}]}}).to_string()]);
+    compare("dee gone");
+    add(&[spawn_line("bob"), idle("bob", old_enough + 900.0, None)]);
+    compare("bob spawned again and idle");
+    add(&noise(300));
+    compare("more noise");
+    std::fs::write(&p, "").unwrap();
+    add(&[spawn_line("zed"), idle("zed", old_enough, None)]);
+    compare("rewritten");
+}

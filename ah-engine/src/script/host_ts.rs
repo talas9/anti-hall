@@ -252,6 +252,40 @@ pub fn teammates(path: &str, tail: f64) -> String {
     }
 }
 
+/// `waiting(path, window, stopIds)`: JSON text. The teammates the last `window` bytes of a Claude transcript show idle (an idle report
+/// with no later end or re-task of them) as `{"idle":[{"name","ms","reason"}],"stopIds":[[name,id]]}`; `stopIds` starts from the ids
+/// given (a JSON array of `[name, id]`) and takes the ones the window's spawns record. `null` when the file is missing or unreadable;
+/// `{"unsure":true}` for a relative path or a timestamp only JavaScript reads exactly. The lines come from the shared incremental view.
+pub fn waiting(path: &str, window: f64, stop_ids: &str) -> String {
+    use crate::checks::idle_agent_sweep::waiting as w;
+    if !path.starts_with('/') {
+        return unsure();
+    }
+    let initial: Vec<(String, String)> = serde_json::from_str::<Vec<(String, String)>>(stop_ids).unwrap_or_default();
+    let mut needles: Vec<String> = defaults::list("idle_order.scan_needles").iter().map(|s| s.to_string()).collect();
+    needles.push(defaults::text("idle_order.idle_marker").to_string());
+    let key = format!("waiting\u{1f}{}", needles.join("\u{1f}"));
+    let digest = |line: &str| -> Option<Option<(crate::transcript::view::Item, usize)>> {
+        if !needles.iter().any(|n| line.contains(n.as_str())) {
+            return Some(None);
+        }
+        Some(w::digest_line(line).map(|f| {
+            let weight = f.weight();
+            (std::sync::Arc::new(f) as crate::transcript::view::Item, weight)
+        }))
+    };
+    let n = if window.is_finite() && window > 0.0 { window as u64 } else { defaults::num("script.tail_max_bytes") };
+    let q = crate::transcript::view::DigestQuery { key: &key, window: n, crlf: false, line_max: 0, digest: &digest };
+    let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return "null".into() };
+    let lines: Vec<&w::WLine> = found.items.iter().filter_map(|i| i.downcast_ref::<w::WLine>()).collect();
+    let Some(st) = w::state_of(lines, initial) else { return unsure() };
+    json!({
+        "idle": st.idle.iter().map(|(n, ms, r)| json!({"name": n, "ms": ms, "reason": r})).collect::<Vec<_>>(),
+        "stopIds": st.stop_ids.iter().map(|(n, i)| json!([n, i])).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
 /// `codex_agents(path, tail)`: JSON text. The agents a Codex rollout tail shows finished but never closed, in the order the
 /// rollout first spawned them: `{"agents":[{"id","label","idleSinceMs"}]}`; `null` and `{"unsure":true}` as [`teammates`].
 pub fn codex_agents(path: &str, tail: f64) -> String {
@@ -298,6 +332,7 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     super::evidence_walk::install(c, h)?;
     super::tool_use_scan::install(c, h)?;
     h.set("transcriptTeammates", Function::new(c.clone(), |p: String, t: f64| teammates(&p, t))?)?;
+    h.set("transcriptWaiting", Function::new(c.clone(), |p: String, w: f64, ids: String| waiting(&p, w, &ids))?)?;
     h.set("transcriptCodexAgents", Function::new(c.clone(), |p: String, t: f64| codex_agents(&p, t))?)?;
     Ok(())
 }
