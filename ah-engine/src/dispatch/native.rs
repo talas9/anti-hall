@@ -436,8 +436,9 @@ mod tests {
         crate::deadline::end();
         let a = got.iter().find(|(id, _)| id == "switch-notice").map(|(_, a)| a.clone());
         assert!(matches!(a, Some(Answer::Decided(..))), "past the deadline the check still answers by its policy: {a:?}");
-        // an open check that could not run tells the user once in THIS request's session (Codex P2: the pre-start cut skipped it)
-        assert!(format!("{a:?}").contains(crate::defaults::text("script.notice_key")), "the guard-down notice is told: {a:?}");
+        // #953: switch-notice is advisory on UserPromptSubmit (not a guard event): its dropped answer is a missing hint, so the user is told
+        // nothing (the guard-event case, where the notice is still told once per session, is script::tests)
+        assert!(!format!("{a:?}").contains(crate::defaults::text("script.notice_key")), "no guard-down notice for an advisory check: {a:?}");
         assert_eq!(crate::script::session(), "s-463-pre-start-notice");
     }
 

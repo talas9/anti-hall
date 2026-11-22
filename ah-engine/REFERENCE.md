@@ -3223,6 +3223,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.thin_timeout_s` | `10` |  | s | The timeout of the thin trigger of an event the table has no entry for (an event with entries takes the longest timeout among them). |
 | `dispatch.tool_aliases` | `2 entries` |  |  | Per host, extra names a tool also answers to when matching (Codex: matcher values Edit and Write also match apply_patch). |
 
+### dispatch.toml / script
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `script.notice_guard_events_only` | `1` |  |  | 1 = the guard-down notice (script.msg_guard_down) is shown only for a check that failed open on a guard event (dispatch.guard_events: PreToolUse, PermissionRequest, Stop, SubagentStop), where a call went through unchecked. A check that failed open on any other event (UserPromptSubmit, SessionStart, PostToolUse ...) is advisory: its dropped answer is only a missing hint, so the drop is logged and counted (script.notice_suppressed_counter) and the user is told nothing. 0 = every failed-open check tells the user, as before. |
+| `script.notice_suppressed_counter` | `notice_suppressed` |  |  | The status counter group (status.advisory.<group>.<check>) that counts a failed-open check whose guard-down notice was not shown because the event is not a guard event (script.notice_guard_events_only). |
+
 ### nudges.toml / nudges
 
 | Key | Default | Env override | Unit | What it is |

@@ -297,7 +297,7 @@ fn a_call_past_its_request_deadline_is_cut_and_answers_by_its_policy_without_cou
     crate::deadline::end();
     let v = v.flatten().expect("an answer");
     assert_ne!(v, Verdict::Defer, "a cut never defers: no Node hook runs");
-    assert_eq!(without_notice(v.clone()), Verdict::Allow, "switch-notice is `open`: a cut allows (and tells the user once)");
+    assert_eq!(v, Verdict::Allow, "switch-notice is `open` and advisory on UserPromptSubmit: a cut allows and tells the user nothing (#953)");
     assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
     assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
     // the cut is counted per check under the outcome it answered with
@@ -306,6 +306,13 @@ fn a_call_past_its_request_deadline_is_cut_and_answers_by_its_policy_without_cou
     assert_eq!(super::cut_outcome(&Verdict::Advisory("{}".into())), defaults::text("diagnostics.deadline_cut_outcome_notice"));
     // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
     assert_eq!(go().flatten().map(without_notice), Some(Verdict::Allow));
+    // #953: the same cut on a guard event still tells the user once (a call went through unchecked there)
+    super::set_session("cut-guard-event-953");
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(0);
+    let g = super::run_forced("switch-notice", &json!({}), &Value::Null, "Stop", &e);
+    crate::deadline::end();
+    assert!(matches!(g.flatten(), Some(Verdict::Advisory(j)) if j.contains("systemMessage")), "a cut check on a guard event keeps its notice");
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
@@ -370,6 +377,20 @@ fn a_failed_open_check_tells_the_user_once_per_session_and_check() {
     assert!(matches!(failed("handover-hygiene", "SubagentStop", "boom"), Verdict::Advisory(_)), "another check in the session is told");
     super::set_session("notice-session-b");
     assert!(matches!(failed("sibling-sweep", "SubagentStop", "boom"), Verdict::Advisory(_)), "another session is told");
+}
+
+/// #953: an advisory check that gave no answer on a non-guard event (a dropped hint) tells the user nothing (logged and counted);
+/// a check that failed open on a guard event still does.
+#[test]
+fn a_dropped_advisory_on_a_non_guard_event_is_silent_but_a_guard_event_still_tells() {
+    super::set_session("notice-session-953");
+    for event in ["UserPromptSubmit", "SessionStart", "PostToolUse"] {
+        assert!(!defaults::list("dispatch.guard_events").contains(&event));
+        assert_eq!(super::unanswered("idle-agent-sweep", event), Verdict::Allow, "{event}: no notice for a dropped advisory");
+        assert_eq!(failed("devswarm-parent-inbox", event, "boom"), Verdict::Allow, "{event}: a failed advisory is silent too");
+    }
+    assert!(matches!(super::unanswered("sibling-sweep", "Stop"), Verdict::Advisory(j) if j.contains("systemMessage")), "a guard event still tells");
+    assert!(matches!(super::unanswered("handover-hygiene", "PreToolUse"), Verdict::Advisory(_)), "a guard event still tells");
 }
 
 #[test]
