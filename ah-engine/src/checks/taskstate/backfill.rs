@@ -48,18 +48,18 @@ struct Found {
 }
 
 #[derive(Clone)]
-struct Rec {
+pub(super) struct Rec {
     need_status: bool,
     f: Found,
-    st: Option<String>,
-    own: String,
-    bo: Option<Value>,
-    bb: Vec<String>,
-    adds: Vec<String>,
-    subject: String,
-    cr: bool,
-    ab: bool,
-    done: bool,
+    pub(super) st: Option<String>,
+    pub(super) own: String,
+    pub(super) bo: Option<Value>,
+    pub(super) bb: Vec<String>,
+    pub(super) adds: Vec<String>,
+    pub(super) subject: String,
+    pub(super) cr: bool,
+    pub(super) ab: bool,
+    pub(super) done: bool,
 }
 
 impl Rec {
@@ -80,12 +80,12 @@ impl Rec {
     }
 }
 
-struct Need {
-    subject: bool,
-    status: bool,
-    owner: bool,
-    blocked_by: bool,
-    blocked_on: bool,
+pub(super) struct Need {
+    pub(super) subject: bool,
+    pub(super) status: bool,
+    pub(super) owner: bool,
+    pub(super) blocked_by: bool,
+    pub(super) blocked_on: bool,
 }
 
 fn blocked_on_of(inp: &Value) -> Option<Value> {
@@ -380,7 +380,7 @@ fn digest_back(text: &str) -> Option<Option<(crate::transcript::view::Item, usiz
 /// same chunks of `taskstate.backfill_chunk_bytes` as ever (a chunk decides when the scan has found everything, when it has gone
 /// `taskstate.backfill_exact_bytes` back, and which unreadable line it reaches); the classified lines come from the view, so a call
 /// classifies only the lines that entered the window's neighbourhood since the last one.
-fn scan_back(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
+pub(super) fn scan_back(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
     let start = size - window;
     let mut recs: HashMap<u64, Rec> = HashMap::new();
     let key = |id: &str| number_of_digits(id) as u64;
@@ -571,7 +571,7 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
 /// compares the replay to. The backward scan from the window start for the records of the `wanted` tasks: what each of them is found to be before the
 /// window. A function of the file's bytes, the window and the wanted set alone, so every reconstruction that wants the same tasks
 /// of the same file state shares one scan ([`super::memo`]).
-fn scan_back_reference(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
+pub(super) fn scan_back_reference(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
     let start = size - window;
     let mut recs: HashMap<u64, Rec> = HashMap::new();
     let key = |id: &str| number_of_digits(id) as u64;
@@ -713,90 +713,3 @@ fn scan_back_reference(path: &str, size: u64, window: u64, wanted: &[(String, Ne
 }
 
 
-#[cfg(test)]
-mod parity {
-    use super::*;
-    use serde_json::json;
-    use std::io::Write;
-
-    fn show(r: &R<HashMap<u64, Rec>>) -> String {
-        match r {
-            Err(_) => "unsure".to_string(),
-            Ok(m) => {
-                let mut v: Vec<_> = m.iter().collect();
-                v.sort_by_key(|(k, _)| **k);
-                v.iter()
-                    .map(|(k, r)| format!("{k}:{}{}{}|{:?}|{}|{:?}|{:?}|{:?}|{}", r.done as u8, r.ab as u8, r.cr as u8, r.st, r.own, r.bo, r.bb, r.adds, r.subject))
-                    .collect::<Vec<_>>()
-                    .join(";")
-            }
-        }
-    }
-
-    fn call(id: &str, name: &str, input: Value, msg: &str) -> String {
-        json!({"type":"assistant","message":{"id":msg,"role":"assistant","content":[{"type":"tool_use","id":id,"name":name,"input":input}]}}).to_string()
-    }
-    fn result(id: &str, text: &str) -> String {
-        json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":id,"content":text}]}}).to_string()
-    }
-
-    /// #953: the backward scan now replays classified lines the view keeps. Its records are the ones the chunked file scan found,
-    /// across windows (so the straddling line and the chunk grid move), appended turns, a stop at a TodoWrite or TaskList, an
-    /// unreadable line, and a rewritten file.
-    #[test]
-    fn the_backward_scan_over_the_view_equals_the_chunked_file_scan() {
-        let d = crate::tmpsweep::scratch("ah-backfill-", "parity");
-        let p = d.join("t.jsonl").to_string_lossy().to_string();
-        let mut f = std::fs::File::create(&p).unwrap();
-        let filler = |n: usize| json!({"type":"assistant","message":{"id":format!("f{n}"),"role":"assistant","content":[{"type":"text","text":"x".repeat(2000)}]}}).to_string();
-        let mut n = 0usize;
-        let add = |f: &mut std::fs::File, lines: Vec<String>| {
-            for l in lines {
-                writeln!(f, "{l}").unwrap();
-            }
-        };
-        // old tasks 1..=6 created and updated far before the end, with filler between
-        for t in 1..=6u32 {
-            add(&mut f, vec![call(&format!("c{t}"), "TaskCreate", json!({"subject": format!("subject {t}"), "status": "pending"}), &format!("m{t}")), result(&format!("c{t}"), &format!("Task #{t} created successfully: subject {t}"))]);
-            for _ in 0..400 {
-                n += 1;
-                add(&mut f, vec![filler(n)]);
-            }
-            add(&mut f, vec![call(&format!("u{t}"), "TaskUpdate", json!({"taskId": t.to_string(), "status": "in_progress", "owner": "me"}), &format!("mu{t}"))]);
-        }
-        let want = |ids: &[&str]| -> Vec<(String, Need)> {
-            ids.iter().map(|i| (i.to_string(), Need { subject: true, status: true, owner: true, blocked_by: true, blocked_on: true })).collect()
-        };
-        let check = |tag: &str, size_window: &[u64]| {
-            let size = std::fs::metadata(&p).unwrap().len();
-            for w in size_window {
-                if *w >= size {
-                    continue;
-                }
-                for ids in [vec!["1", "2"], vec!["3", "6", "5"], vec!["1", "2", "3", "4", "5", "6"], vec!["7"]] {
-                    let wanted = want(&ids);
-                    let (a, b) = (scan_back(&p, size, *w, &wanted, 99.0), scan_back_reference(&p, size, *w, &wanted, 99.0));
-                    assert_eq!(show(&a), show(&b), "{tag}: window {w}, wanted {ids:?}");
-                }
-            }
-        };
-        let size0 = std::fs::metadata(&p).unwrap().len();
-        let windows: Vec<u64> = (1..8).map(|i| size0 * i / 8).chain([300, 5_000]).collect();
-        check("first", &windows);
-        for round in 0..4 {
-            add(&mut f, vec![filler(1000 + round), call(&format!("z{round}"), "TaskUpdate", json!({"taskId": "2", "status": "completed"}), &format!("mz{round}"))]);
-            check(&format!("appended {round}"), &windows);
-        }
-        add(&mut f, vec![call("td", "TodoWrite", json!({"todos": [{"id": "a", "content": "x"}]}), "mtd")]);
-        check("a TodoWrite stops it", &windows);
-        add(&mut f, vec!["{\"type\":\"assistant\" Task not json".to_string()]);
-        check("an unreadable line", &windows);
-        drop(f);
-        std::fs::write(&p, "").unwrap();
-        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        add(&mut f, vec![call("c9", "TaskCreate", json!({"subject": "s9"}), "m9"), result("c9", "Task #9 created successfully: s9"), filler(1), filler(2), filler(3)]);
-        let size = std::fs::metadata(&p).unwrap().len();
-        let wanted = want(&["9"]);
-        assert_eq!(show(&scan_back(&p, size, 3000, &wanted, 99.0)), show(&scan_back_reference(&p, size, 3000, &wanted, 99.0)), "rewritten");
-    }
-}
