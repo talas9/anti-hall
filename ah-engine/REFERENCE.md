@@ -6770,7 +6770,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `468 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `469 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9248,7 +9248,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `481 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `482 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -11660,6 +11660,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.app_why_still_open` | `the app DB still lists the workspace open (isActive=1)` |  |  | Why an app archive is not verified: the database still lists the workspace open. |
 | `devswarm_cli.app_why_unconfirmed` | `the app DB could not confirm the workspace and hivecontrol did not report arc...` |  |  | Why an app archive is not verified: nothing confirms it. |
 | `devswarm_cli.app_why_unverified` | `the archive could not be verified` |  |  | The reason when no reason is known. |
+| `devswarm_cli.ar_drift_item` | `{path}@{head}` |  |  | One drifted submodule in the archive note. Placeholders: {path}, {head} the leading characters of the submodule HEAD. |
+| `devswarm_cli.ar_git_ls_gitlinks` | `ls-files, --stage, -z` |  |  | git, run inside a submodule: every index entry, NUL-separated (`<mode> <sha> <stage>\t<path>`). The archive guard reads the gitlink entries (mode 160000) to check every nested submodule, not just the ones `git status` lists. |
+| `devswarm_cli.ar_git_status_v2` | `status, --porcelain=v2, --untracked-files=all, --ignore-submodules=none` |  |  | git: the worktree status in the machine format that names a submodule's state (the `S<c><m><u>` field), used by the archive guard to tell pure submodule checkout drift (#943) from real edits. Submodule changes are reported, not ignored. |
+| `devswarm_cli.ar_git_sub_contains` | `branch, -r, --contains, HEAD` |  |  | git, run inside a submodule: the remote-tracking branches that contain its HEAD. Empty (or a failure) means the submodule's commit is on no remote, so the archive refuses. |
+| `devswarm_cli.ar_git_toplevel` | `rev-parse, --show-toplevel` |  |  | git, run inside a submodule: its own work-tree root. A directory whose root is another path is not a readable submodule (git fell back to the superproject), so the archive refuses. |
+| `devswarm_cli.ar_gitlink_mode` | `160000` |  |  | The index mode git gives a submodule (gitlink) entry. |
+| `devswarm_cli.ar_head_chars` | `12` |  |  | How many leading characters of a submodule commit the archive note shows. |
+| `devswarm_cli.ar_msg_submodule_drift` | `submodule checkout drift ignored (each submodule is clean and its commit is o...` |  |  | The note an archive answer carries when it passed submodule checkout drift. Placeholder: {list} the drifted submodules as `path@commit`. |
+| `devswarm_cli.ar_set_ignore_submodule_drift` | `6 entries` |  |  | Setting devswarm.archiveIgnoreSubmoduleDrift: an archive does not count a submodule whose only change is its checkout (the gitlink differs from the superproject's index) as uncommitted work when the submodule worktree is clean and its HEAD commit is on a remote branch; the answer lists it as submoduleDrift. Off: any submodule entry in `git status` refuses the archive. |
+| `devswarm_cli.ar_sub_max_depth` | `4` |  |  | How many levels of nested submodules the archive guard follows when it checks submodule drift. A deeper nesting is treated as unsaved work (fail safe). |
 | `devswarm_cli.archive_marker` | `[[ANTIHALL_ARCHIVE_REQUEST]]` |  |  | The machine-readable marker that starts an archive request message. |
 | `devswarm_cli.archive_reminder` | `Ensure you have verified merged + tested + deployed per your repo policy befo...` |  |  | The reminder an archive-request result carries for the Primary. |
 | `devswarm_cli.archive_request_needs` | `NOT archived yet: the child must confirm with its user and run `archive {id}`...` |  |  | What an archive-request answer says it still needs: the request only posts a message, it archives nothing. Placeholder: {id} the workspace. |
@@ -16020,6 +16030,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `rule_digest_calls` | counter | calls | state, outcome | Check calls by the session's digest state (on, off) and outcome (allow, block, advise, ...): blocks per 100 matching calls with the digest on versus off (#462). A session whose digest state the daemon did not see (started before a restart) is not counted. |
 | `rule_retry_compliant` | counter | retries | check, result | The next call of a check in a session after that check blocked there: result compliant (allowed or advised: the cause was fixed) or repeat (blocked again), by check (#462 rule.retry_compliant). |
 | `archive_refused_unsafe` | counter | archives | verb | Archives refused because the workspace's worktree held uncommitted changes, unpushed commits or a state git could not read (#876, devswarm_cli.archive_work_guard), by verb. |
+| `archive_submodule_drift_passed` | counter | archives | verb | Archives that passed because the only uncommitted entries were submodule checkout drift (clean submodule, HEAD on a remote branch; #943, devswarm.archiveIgnoreSubmoduleDrift), by verb. |
 | `idle_order` | counter | orders | kind, outcome, reason | Idle orders (GH #744) by kind (workspace, workspace_stall, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running). |
 | `misfire_suppressed` | counter | suppressions | guard, reason | Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason. |
 | `auto_handover_fired` | counter | fires | via | Auto-handover fires (the once-per-arm handover order), by via: pct (the percent line), tokens (autoHandover.maxTokens), workspace (a DevSwarm workspace past autoHandover.workspaceMaxTokens, GH #884: ordered to a fresh session), and the same words with the Stop-side prefix (ctxbudget.ah_via_stop_prefix) when the Stop check fired it. |

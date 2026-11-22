@@ -4905,6 +4905,46 @@ value = "The workspace has no local descriptor (it never registered); the app wa
 doc = "Whether `archive` (and the direct archive of `archive-request`) first checks the workspace's worktree and refuses when it holds uncommitted changes, commits no origin ref has, or a state git cannot read. Off lets an archive discard such work. A worktree that no longer exists is archived (nothing is lost). Respawn parks the work on a pushed branch first; its archive then refuses only a commit made after the park."
 value = true
 
+[devswarm_cli.ar_git_status_v2]
+doc = "git: the worktree status in the machine format that names a submodule's state (the `S<c><m><u>` field), used by the archive guard to tell pure submodule checkout drift (#943) from real edits. Submodule changes are reported, not ignored."
+value = ["status", "--porcelain=v2", "--untracked-files=all", "--ignore-submodules=none"]
+
+[devswarm_cli.ar_git_toplevel]
+doc = "git, run inside a submodule: its own work-tree root. A directory whose root is another path is not a readable submodule (git fell back to the superproject), so the archive refuses."
+value = ["rev-parse", "--show-toplevel"]
+
+[devswarm_cli.ar_git_ls_gitlinks]
+doc = "git, run inside a submodule: every index entry, NUL-separated (`<mode> <sha> <stage>\\t<path>`). The archive guard reads the gitlink entries (mode 160000) to check every nested submodule, not just the ones `git status` lists."
+value = ["ls-files", "--stage", "-z"]
+
+[devswarm_cli.ar_gitlink_mode]
+doc = "The index mode git gives a submodule (gitlink) entry."
+value = "160000"
+
+[devswarm_cli.ar_git_sub_contains]
+doc = "git, run inside a submodule: the remote-tracking branches that contain its HEAD. Empty (or a failure) means the submodule's commit is on no remote, so the archive refuses."
+value = ["branch", "-r", "--contains", "HEAD"]
+
+[devswarm_cli.ar_sub_max_depth]
+doc = "How many levels of nested submodules the archive guard follows when it checks submodule drift. A deeper nesting is treated as unsaved work (fail safe)."
+value = 4
+
+[devswarm_cli.ar_set_ignore_submodule_drift]
+doc = "Setting devswarm.archiveIgnoreSubmoduleDrift: an archive does not count a submodule whose only change is its checkout (the gitlink differs from the superproject's index) as uncommitted work when the submodule worktree is clean and its HEAD commit is on a remote branch; the answer lists it as submoduleDrift. Off: any submodule entry in `git status` refuses the archive."
+value = { type = "bool", section = "devswarm", key = "archiveIgnoreSubmoduleDrift", env = "ANTIHALL_DEVSWARM_ARCHIVE_IGNORE_SUBMODULE_DRIFT", option = "devswarm_archive_ignore_submodule_drift", default = true }
+
+[devswarm_cli.ar_head_chars]
+doc = "How many leading characters of a submodule commit the archive note shows."
+value = 12
+
+[devswarm_cli.ar_msg_submodule_drift]
+doc = "The note an archive answer carries when it passed submodule checkout drift. Placeholder: {list} the drifted submodules as `path@commit`."
+value = "submodule checkout drift ignored (each submodule is clean and its commit is on a remote branch; nothing is lost): {list}"
+
+[devswarm_cli.ar_drift_item]
+doc = "One drifted submodule in the archive note. Placeholders: {path}, {head} the leading characters of the submodule HEAD."
+value = "{path}@{head}"
+
 [devswarm_cli.act_unsafe_dirty]
 doc = "The unsaved-work part of an archive refusal: the tree has uncommitted changes."
 value = "uncommitted changes"

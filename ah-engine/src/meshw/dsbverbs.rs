@@ -897,6 +897,94 @@ pub(crate) fn head_of(wt: &str) -> Option<String> {
     (h.ok && !h.out.is_empty()).then_some(h.out)
 }
 
+/// #943: the submodules `wt` is "dirty" for ONLY because their checkout differs from the superproject's index. `Some(list)` of
+/// `(path, head)` when every `git status` entry is such a submodule, each one clean (recursively) with its HEAD on a remote branch;
+/// `None` when anything else is unsaved, or git cannot say (fail safe). Reads the `S<c><m><u>` field of `status --porcelain=v2`.
+pub(crate) fn submodule_drift(wt: &str) -> Option<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    drift_in(wt, "", defaults::num("devswarm_cli.ar_sub_max_depth"), &mut out).then_some(out)
+}
+
+/// True when `dir` holds nothing unsaved but pushed submodule drift; the drifted submodules (path relative to the top) are appended.
+fn drift_in(dir: &str, prefix: &str, depth: u64, out: &mut Vec<(String, String)>) -> bool {
+    let st = git(dir, &argv("devswarm_cli.ar_git_status_v2", &[]));
+    if !st.ok {
+        return false;
+    }
+    for line in st.out.lines().filter(|l| !l.is_empty()) {
+        // `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`: an ordinary entry; only it can be a submodule's checkout drift
+        let f: Vec<&str> = line.splitn(9, ' ').collect();
+        let (Some(&"1"), Some(xy), Some(sub), Some(path)) = (f.first(), f.get(1), f.get(2), f.get(8)) else {
+            return false;
+        };
+        let (mut xy, mut sub) = (xy.chars(), sub.chars());
+        // not staged (a staged bump is a change the child made on purpose and left uncommitted); a submodule whose commit changed and
+        // whose own tracked files and untracked files are untouched
+        if xy.next() != Some('.') || sub.next() != Some('S') || sub.next() != Some('C') || sub.next() != Some('.') || sub.next() != Some('.') {
+            return false;
+        }
+        let abs = std::path::Path::new(dir).join(path).to_string_lossy().to_string();
+        if depth == 0 || !std::path::Path::new(&abs).is_dir() {
+            return false;
+        }
+        // git run in a directory that is not a repository of its own falls back to the superproject: the submodule must be its own root
+        let top = git(&abs, &argv("devswarm_cli.ar_git_toplevel", &[]));
+        if !top.ok || std::fs::canonicalize(&top.out).ok() != std::fs::canonicalize(&abs).ok() {
+            return false;
+        }
+        let Some(head) = head_of(&abs) else { return false };
+        let on_remote = git(&abs, &argv("devswarm_cli.ar_git_sub_contains", &[]));
+        if !on_remote.ok || on_remote.out.is_empty() {
+            return false;
+        }
+        // every nested submodule, whether or not `git status` lists it: a nested gitlink at a commit nobody pushed is invisible to status
+        if !nested_pushed(&abs, depth - 1) {
+            return false;
+        }
+        let rel = format!("{prefix}{path}");
+        // the submodule itself may hold drifted submodules of its own; anything else it holds is unsaved
+        if !drift_in(&abs, &format!("{rel}/"), depth - 1, out) {
+            return false;
+        }
+        out.push((rel, head));
+    }
+    true
+}
+
+/// True when every initialized submodule recorded in `dir`'s index (recursively) is its own repo root, is clean and has its HEAD on a
+/// remote branch. An uninitialized one holds nothing here. Any git error, or nesting past `depth`, is false (fail safe).
+fn nested_pushed(dir: &str, depth: u64) -> bool {
+    let ls = git(dir, &argv("devswarm_cli.ar_git_ls_gitlinks", &[]));
+    if !ls.ok {
+        return false;
+    }
+    let mode = text("devswarm_cli.ar_gitlink_mode");
+    for ent in ls.out.split('\0').filter(|e| !e.is_empty()) {
+        let Some((meta, path)) = ent.split_once('\t') else { return false };
+        if meta.split(' ').next() != Some(mode) {
+            continue;
+        }
+        let abs = std::path::Path::new(dir).join(path);
+        if !abs.join(".git").exists() {
+            continue;
+        }
+        let abs = abs.to_string_lossy().to_string();
+        if depth == 0 {
+            return false;
+        }
+        let top = git(&abs, &argv("devswarm_cli.ar_git_toplevel", &[]));
+        if !top.ok || std::fs::canonicalize(&top.out).ok() != std::fs::canonicalize(&abs).ok() {
+            return false;
+        }
+        let st = git(&abs, &argv("devswarm_cli.rs_git_status", &[]));
+        let on_remote = git(&abs, &argv("devswarm_cli.ar_git_sub_contains", &[]));
+        if !st.ok || !st.out.is_empty() || !on_remote.ok || on_remote.out.is_empty() || !nested_pushed(&abs, depth - 1) {
+            return false;
+        }
+    }
+    true
+}
+
 /// `needsPark(state)`: work would be lost without a park branch.
 pub(crate) fn needs_park(st: &WtState) -> bool {
     st.dirty || st.unpushed.is_none_or(|u| u > 0.0)
