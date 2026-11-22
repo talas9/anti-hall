@@ -210,9 +210,9 @@ min = 1
 unit = "bytes"
 
 [transcript.view_verify_bytes]
-doc = "The most consumed transcript bytes the shared incremental view re-hashes on one call to prove they were not rewritten (the record nearest the read position every call, then the others in rotation). A consumed part within this size is proved whole on every call; a larger one is covered over successive calls."
-value = 4194304
-min = 4096
+doc = "The most consumed transcript bytes the shared incremental view re-hashes on one call to prove they were not rewritten. Each call hashes the sealed record nearest the read position (it counts within this budget; its size is at most transcript.read_block_bytes), then the other records in rotation until the budget is spent, and always at least one of them, so the rotation advances on every call whatever this value is (a value below two blocks therefore reads about two blocks). Cost: every warm call reads about this many bytes besides the appended ones. Staleness: the session transcript is append-only and a replacement (new inode), a shrink, a changed first or last fingerprint (transcript.evidence_fingerprint_bytes at each end of the consumed part) and a change in the record nearest the read position are all met on the first call; only a same-length rewrite deep inside the consumed part, that leaves those untouched, can be served stale, for at most ceil(consumed bytes / max(one block, this value minus one block)) calls, then it is met and the view is rebuilt. With the default (1 MiB, 256 KiB blocks) and a 16 MiB window that is at most 22 calls; at 4 MiB it would be 5, at the minimum 64. A consumed part within this size is proved whole on every call."
+value = 1048576
+min = 262144
 unit = "bytes"
 
 [transcript.evidence_read_chunk_bytes]

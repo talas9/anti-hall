@@ -73,8 +73,22 @@ fn cache() -> &'static BoundedCache<String, Kept> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Bytes this thread's [`digest_at`] read since [`take_digest_read`] (tests measure the verification reads with it).
+    static DIGEST_READ: std::cell::Cell<u64> = std::cell::Cell::default();
+}
+
+/// The bytes [`digest_at`] read on this thread since the last call, and reset.
+#[cfg(test)]
+pub(crate) fn take_digest_read() -> u64 {
+    DIGEST_READ.with(std::cell::Cell::take)
+}
+
 pub(crate) fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
     use std::hash::Hasher;
+    #[cfg(test)]
+    DIGEST_READ.with(|c| c.set(c.get() + len));
     let mut b = vec![0u8; len as usize];
     f.read_exact_at(&mut b, at).ok()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();

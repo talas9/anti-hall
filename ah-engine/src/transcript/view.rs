@@ -140,8 +140,20 @@ pub fn usage() -> (usize, u64) {
     (cache().len(), cache().bytes() as u64)
 }
 
+/// What a kept entry costs the cache: every line (its item, the `Arc` that shares it, the slot), every sealed record and every
+/// start offset, counted by the capacity the queues hold and not only by what they use.
 fn weight(k: &Kept) -> usize {
-    k.lines.iter().map(|l| l.weight + std::mem::size_of::<Line>()).sum::<usize>() + k.over.len() * 8 + k.recs.len() * std::mem::size_of::<Rec>() + std::mem::size_of::<Kept>()
+    let per_line = std::mem::size_of::<Line>() + 2 * std::mem::size_of::<usize>();
+    k.lines.iter().map(|l| l.weight + per_line).sum::<usize>()
+        + (k.lines.capacity() - k.lines.len()) * std::mem::size_of::<Line>()
+        + k.over.capacity() * 8
+        + k.recs.capacity() * std::mem::size_of::<Rec>()
+        + std::mem::size_of::<Kept>()
+}
+
+/// The most the records `seal` would add for `bytes` new bytes, in blocks of `seg`.
+fn sealing_cost(bytes: u64, seg: u64) -> usize {
+    usize::try_from(bytes.div_ceil(seg.max(1))).unwrap_or(usize::MAX).saturating_mul(std::mem::size_of::<Rec>())
 }
 
 /// Why a kept entry cannot serve a window whose first line starts at `fls`, or `None` when it can.
@@ -161,9 +173,10 @@ fn miss_reason(k: &mut Kept, f: &std::fs::File, m: &std::fs::Metadata, fls: u64)
     if d(f, k.base, n) != Some(k.head) || d(f, k.parsed_to - n, n) != Some(k.back) {
         return Some("digest");
     }
-    // the consumed bytes: the record nearest the boundary every call, then the next ones round the ring until `view_verify_bytes` have
-    // been hashed, so that a rewrite anywhere before the boundary (a same-length edit, a truncate and regrowth that kept both ends) is
-    // met within a few calls, and at once when the consumed part fits in the budget
+    // the consumed bytes: the record nearest the boundary every call (it counts within the budget), then the next ones round the ring
+    // until `view_verify_bytes` have been hashed, and always at least one of them, so the rotation advances whatever the budget: a
+    // rewrite anywhere before the boundary (a same-length edit, a truncate and regrowth that kept both ends) is met within
+    // `ceil(ring bytes / (budget - last block))` calls at the most, and at once when the consumed part fits in the budget
     let budget = defaults::num("transcript.view_verify_bytes").max(1);
     let count = k.recs.len();
     let mut spent = 0u64;
@@ -178,7 +191,7 @@ fn miss_reason(k: &mut Kept, f: &std::fs::File, m: &std::fs::Metadata, fls: u64)
     let mut walked = 0usize;
     while walked < ring {
         let Some(r) = k.recs.get((k.cursor + walked) % ring) else { break };
-        if spent + r.len > budget {
+        if walked > 0 && spent + r.len > budget {
             break;
         }
         if !check(r) {
@@ -223,9 +236,7 @@ fn text_of(bytes: &[u8], crlf: bool) -> String {
 /// The lines of the last `q.window` bytes of `path` that `q.wants`, from the kept lines plus what was appended. `Ok(None)`: the
 /// file cannot be opened or read. `Err`: `q.wants` gave `None`.
 pub fn matching(path: &str, q: &Query) -> Result<Option<Found>, ()> {
-    let digest = |line: &str| -> Option<Option<(Item, usize)>> {
-        Some((q.wants)(line)?.then(|| (std::sync::Arc::new(line.to_string()) as Item, line.len())))
-    };
+    let digest = |line: &str| -> Option<Option<(Item, usize)>> { Some((q.wants)(line)?.then(|| (std::sync::Arc::new(line.to_string()) as Item, line.len()))) };
     let dq = DigestQuery { key: q.key, window: q.window, crlf: q.crlf, line_max: q.line_max, digest: &digest };
     Ok(digests(path, &dq)?.map(|d| Found {
         lines: d.items.iter().filter_map(|i| i.downcast_ref::<String>().cloned()).collect(),
@@ -365,13 +376,14 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
     // keep it for the next call, with a digest of both ends
     let fp = defaults::num("transcript.evidence_fingerprint_bytes").max(1);
     let n = fp.min(k.parsed_to - k.base);
-    let sealed = k.parsed_to <= sealed_from || seal(&mut k.recs, &f, sealed_from, k.parsed_to, block as u64);
-        let w = weight(&k);
+    // the entry is counted against the cache before its records are made: one that cannot be kept is neither hashed nor grown
+    let (max_paths, entry_max) = (defaults::num("transcript.view_max_paths"), defaults::num("transcript.view_entry_max_bytes"));
+    let fits = max_paths > 0 && (weight(&k) + sealing_cost(k.parsed_to.saturating_sub(sealed_from), block as u64)) as u64 <= entry_max;
+    let sealed = fits && (k.parsed_to <= sealed_from || seal(&mut k.recs, &f, sealed_from, k.parsed_to, block as u64));
+    let w = weight(&k);
     if sealed
-        && defaults::num("transcript.view_max_paths") > 0
-        && w as u64 <= defaults::num("transcript.view_entry_max_bytes")
-        && let (Some(head), Some(back)) =
-            (crate::script::tasks_cache::digest_at(&f, k.base, n), crate::script::tasks_cache::digest_at(&f, k.parsed_to - n, n))
+        && w as u64 <= entry_max
+        && let (Some(head), Some(back)) = (crate::script::tasks_cache::digest_at(&f, k.base, n), crate::script::tasks_cache::digest_at(&f, k.parsed_to - n, n))
     {
         k.head = head;
         k.back = back;
@@ -502,7 +514,8 @@ mod tests {
     fn a_call_after_one_appended_turn_reads_the_appended_bytes_and_not_the_window() {
         let d = dir("bounded");
         let p = d.join("b.jsonl").to_string_lossy().to_string();
-        let big: String = (0..40_000).map(|i| format!("{{\"i\":{i},\"pad\":\"{}\",\"k\":\"{}\"}}\n", "p".repeat(60), if i % 500 == 0 { "needle" } else { "x" })).collect();
+        let big: String =
+            (0..40_000).map(|i| format!("{{\"i\":{i},\"pad\":\"{}\",\"k\":\"{}\"}}\n", "p".repeat(60), if i % 500 == 0 { "needle" } else { "x" })).collect();
         std::fs::write(&p, &big).unwrap();
         let window = 1 << 40;
         crate::load::take_check_scan();
@@ -519,6 +532,55 @@ mod tests {
         let slack = 2 * defaults::num("transcript.evidence_fingerprint_bytes");
         assert!(same <= slack, "an unchanged file reads only the digests: {same}");
         assert!(appended <= turn.len() as u64 + slack + 4096, "one appended turn read {appended} bytes of a {} byte window", big.len());
+    }
+
+    /// Measurement (#953): the bytes one warm append-one-turn call reads (parse reads plus verification hashes) and its CPU on a
+    /// synthetic 16 MiB window. Prints; `cargo test -- --nocapture` shows it.
+    #[test]
+    fn measure_a_warm_append_on_a_16_mib_window() {
+        let d = dir("measure");
+        let p = d.join("w.jsonl").to_string_lossy().to_string();
+        let big: String = (0..(16 << 20) / 89 + 1)
+            .map(|i| format!("{{\"i\":{i},\"pad\":\"{}\",\"k\":\"{}\"}}\n", "p".repeat(60), if i % 500 == 0 { "needle" } else { "x" }))
+            .collect();
+        std::fs::write(&p, &big).unwrap();
+        let window = 1u64 << 40;
+        // 4 MiB is the budget before #953 item 2 (the old default); 1 MiB is the new default
+        for budget in [4_194_304u64, 1_048_576] {
+            let _budget = Setting::set("transcript.view_verify_bytes", budget);
+            let cpu = || {
+                let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+                unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+                u.ru_utime.tv_sec as u64 * 1_000_000 + u.ru_utime.tv_usec as u64 + u.ru_stime.tv_sec as u64 * 1_000_000 + u.ru_stime.tv_usec as u64
+            };
+            let (mut cold, mut warm_same) = ((0, 0, 0), (0, 0, 0));
+            let run = |out: &mut (u64, u64, u64)| {
+                crate::load::take_check_scan();
+                crate::script::tasks_cache::take_digest_read();
+                let c0 = cpu();
+                ask(&p, window, false, 0);
+                *out = (crate::load::take_check_scan(), crate::script::tasks_cache::take_digest_read(), cpu() - c0);
+            };
+            run(&mut cold);
+            run(&mut warm_same);
+            let mut rows = Vec::new();
+            for i in 0..6 {
+                append(&p, &format!("{{\"i\":-{i},\"k\":\"needle\"}}\n{{\"i\":-{i},\"k\":\"x\"}}\n"));
+                let mut r = (0, 0, 0);
+                run(&mut r);
+                rows.push(r);
+            }
+            eprintln!(
+                "MEASURE window={} verify_bytes={} block={}",
+                big.len(),
+                defaults::num("transcript.view_verify_bytes"),
+                crate::transcript::scan::block_bytes()
+            );
+            eprintln!("MEASURE cold(parse,digest,cpu_us)={cold:?} warm_same={warm_same:?}");
+            for (i, r) in rows.iter().enumerate() {
+                eprintln!("MEASURE append#{i} parse_bytes={} digest_bytes={} total={} cpu_us={}", r.0, r.1, r.0 + r.1, r.2);
+            }
+        }
     }
 
     #[test]
@@ -604,6 +666,120 @@ mod tests {
         let got = ask(&p, 10_000_000, false, 0);
         crate::transcript::scan::set_test_block(0);
         assert_eq!(got, want);
+    }
+
+    /// Installs one owner setting for a test and removes it on drop (the overlay is process-wide).
+    struct Setting;
+
+    impl Setting {
+        fn set(key: &str, v: u64) -> Setting {
+            defaults::set_overlay(&[(key, serde_json::json!(v))]);
+            Setting
+        }
+    }
+
+    impl Drop for Setting {
+        fn drop(&mut self) {
+            defaults::set_overlay(&[]);
+        }
+    }
+
+    fn cursor_of(key_part: &str) -> usize {
+        cache().values().iter().map(|k| k.cursor).max().unwrap_or_else(|| panic!("no view kept for {key_part}"))
+    }
+
+    /// A budget below two blocks used to leave the rotation where it was for ever; it must advance a record a call, and a deep
+    /// same-length rewrite must be met within the documented number of calls: `ceil(consumed / max(block, budget - block))`.
+    #[test]
+    fn a_small_budget_still_advances_the_rotation_and_meets_a_deep_rewrite_within_the_documented_calls() {
+        let d = dir("small-budget");
+        let p = d.join("s.jsonl").to_string_lossy().to_string();
+        // about 4 MiB (sixteen records of the configured 256 KiB block), one line in 500 matching so that the view is small enough to keep
+        let big: String = (0..60_000).map(|i| format!("line {i:05} {} {}\n", if i % 500 == 0 { "needle" } else { "plain" }, "y".repeat(50))).collect();
+        std::fs::write(&p, &big).unwrap();
+        let block = crate::transcript::scan::block_bytes() as u64;
+        // the key's minimum is one block, so the last record alone spends the whole budget (the stuck case of a 4096 budget, clamped)
+        let _budget = Setting::set("transcript.view_verify_bytes", 4096);
+        let budget = defaults::num("transcript.view_verify_bytes");
+        assert_eq!(budget, block, "the setting cannot go below one block");
+        parity(&p, 10_000_000, false, 0);
+        parity(&p, 10_000_000, false, 0);
+        let first = cursor_of("a");
+        parity(&p, 10_000_000, false, 0);
+        assert_ne!(cursor_of("a"), first, "the rotation advanced although the budget holds only the mandatory last record");
+        let at = big.find("line 01000").unwrap() + 11; // far from the read boundary
+        assert!(cache().values().iter().any(|k| k.recs.len() > 8), "sealed in many records");
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().write_all_at(b"NEEDLE", at as u64).unwrap();
+        let want = reference(&p, 10_000_000, false, 0, &|l| l.contains("needle"));
+        let bound = (big.len() as u64).div_ceil(block.max(budget.saturating_sub(block))) + 1;
+        let mut calls = 0u64;
+        while ask(&p, 10_000_000, false, 0) != want {
+            calls += 1;
+            assert!(calls <= bound, "still stale after {calls} calls (bound {bound})");
+        }
+    }
+
+    /// A transcript truncated and regrown in place (same inode) with new content is met on the first call, with the consumed part
+    /// sealed in many records: the digest of the bytes just before the read position and the one at the start see it.
+    #[test]
+    fn a_truncate_and_regrowth_with_new_content_is_met_on_the_first_call_with_many_records() {
+        for (name, extra) in [("same", 0usize), ("past", 9)] {
+            let d = dir(&format!("regrow-many-{name}"));
+            let p = d.join("g.jsonl").to_string_lossy().to_string();
+            crate::transcript::scan::set_test_block(4096);
+            std::fs::write(&p, lines_file(3000, "a")).unwrap();
+            parity(&p, 10_000_000, false, 0);
+            parity(&p, 10_000_000, false, 0);
+            assert!(cache().values().iter().any(|k| k.recs.len() > 8));
+            let mut grown = lines_file(3000, "b").replace("needle", "noodle");
+            grown.push_str(&lines_file(extra, "c"));
+            std::fs::write(&p, grown).unwrap(); // truncates the same inode, then regrows it
+            let got = ask(&p, 10_000_000, false, 0);
+            crate::transcript::scan::set_test_block(0);
+            assert_eq!(got, reference(&p, 10_000_000, false, 0, &|l| l.contains("needle")), "{name}");
+        }
+    }
+
+    /// The view's records and lines are counted against the cache before it is admitted: an entry that cannot be kept is not even
+    /// sealed (no record is hashed), and one that can is charged for its records.
+    #[test]
+    fn digest_memory_is_counted_before_admission() {
+        let d = dir("admission");
+        let window = 1u64 << 40;
+        // every line matches: the kept lines alone exceed the entry limit
+        let all: String = (0..60_000).map(|i| format!("needle line {i:06} {}\n", "z".repeat(60))).collect();
+        assert!(all.len() as u64 > defaults::num("transcript.view_entry_max_bytes"));
+        let big = d.join("big.jsonl").to_string_lossy().to_string();
+        std::fs::write(&big, &all).unwrap();
+        crate::script::tasks_cache::take_digest_read();
+        let got = ask(&big, window, false, 0).unwrap();
+        assert_eq!(got.lines.len(), 60_000, "the answer is whole whether or not the entry is kept");
+        assert_eq!(crate::script::tasks_cache::take_digest_read(), 0, "nothing was hashed for an entry that cannot be kept");
+        assert!(cache().values().iter().all(|k| k.lines.len() != 60_000), "and it was not kept");
+        // a small one is kept, charged for its lines, its slack and its records
+        let small = d.join("small.jsonl").to_string_lossy().to_string();
+        std::fs::write(&small, lines_file(300, "a")).unwrap();
+        ask(&small, window, false, 0);
+        assert!(crate::script::tasks_cache::take_digest_read() > 0, "a keepable entry is sealed");
+        let k = cache().values().into_iter().find(|k| k.lines.len() == 300).expect("the small view is kept");
+        let floor: usize = k.lines.iter().map(|l| l.weight).sum::<usize>() + k.recs.len() * std::mem::size_of::<Rec>();
+        assert!(
+            weight(&k) > floor + 300 * std::mem::size_of::<Line>(),
+            "the charge covers the shared items and the records, not only the text: {} vs {floor}",
+            weight(&k)
+        );
+    }
+
+    #[test]
+    fn the_verify_budget_cannot_be_set_below_one_block() {
+        let toml: toml::Table =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults/transcript.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
+        let get = |k: &str, f: &str| toml["transcript"][k][f].as_integer().unwrap();
+        assert!(get("view_verify_bytes", "min") >= get("read_block_bytes", "value"));
+        assert!(get("view_verify_bytes", "value") >= get("view_verify_bytes", "min"));
     }
 
     /// An expired view is dropped and rebuilt, never reused (the read after it covers the whole window again).

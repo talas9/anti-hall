@@ -261,6 +261,12 @@ fn digest_tail_line(line: &str) -> Option<TailLine> {
     Some(out)
 }
 
+/// The view's cache key of the tail scan: length-prefixed, so that no pair of configured values (a separator inside one of them
+/// included) gives the key of another pair.
+fn tail_key(attachment_type: &str, hook_event: &str) -> String {
+    crate::transcript::view::key_of(&["scan_tail", attachment_type, hook_event])
+}
+
 /// `scanTail`: `Ok(None)` is "unusable" (missing, unreadable, empty, or no timestamp anywhere in the window). The lines come from the
 /// shared incremental view, so a call reads and parses only what was appended since the last one (#953).
 pub fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
@@ -273,7 +279,7 @@ pub fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
             (std::sync::Arc::new(t) as crate::transcript::view::Item, weight)
         }))
     };
-    let key = format!("scan_tail\u{1f}{}\u{1f}{}", defaults::text("emit_dedupe.attachment_type"), defaults::text("emit_dedupe.hook_event"));
+    let key = tail_key(defaults::text("emit_dedupe.attachment_type"), defaults::text("emit_dedupe.hook_event"));
     let q = crate::transcript::view::DigestQuery { key: &key, window: bytes, crlf: false, line_max: 0, digest: &digest };
     let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return Ok(None) };
     let (mut atts, mut any_ts) = (Vec::new(), false);

@@ -294,3 +294,11 @@ fn the_tail_scan_through_the_view_equals_the_whole_window_read() {
     std::fs::write(&p, format!("{}\n", filler(now))).unwrap(); // a compaction: the file is replaced by a short one
     same("rewritten");
 }
+
+#[test]
+fn the_tail_scan_key_is_length_prefixed_so_two_pairs_of_settings_never_share_one() {
+    // the old key joined the two settings with a separator: a separator inside one of them made two pairs the same key
+    assert_ne!(tail_key("a\u{1f}b", "c"), tail_key("a", "b\u{1f}c"));
+    assert_ne!(tail_key("a", ""), tail_key("", "a"));
+    assert_eq!(tail_key("hook_success", "Stop"), tail_key("hook_success", "Stop"));
+}
