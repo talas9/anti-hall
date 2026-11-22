@@ -4913,6 +4913,14 @@ value = ["status", "--porcelain=v2", "--untracked-files=all", "--ignore-submodul
 doc = "git, run inside a submodule: its own work-tree root. A directory whose root is another path is not a readable submodule (git fell back to the superproject), so the archive refuses."
 value = ["rev-parse", "--show-toplevel"]
 
+[devswarm_cli.ar_git_ls_gitlinks]
+doc = "git, run inside a submodule: every index entry, NUL-separated (`<mode> <sha> <stage>\\t<path>`). The archive guard reads the gitlink entries (mode 160000) to check every nested submodule, not just the ones `git status` lists."
+value = ["ls-files", "--stage", "-z"]
+
+[devswarm_cli.ar_gitlink_mode]
+doc = "The index mode git gives a submodule (gitlink) entry."
+value = "160000"
+
 [devswarm_cli.ar_git_sub_contains]
 doc = "git, run inside a submodule: the remote-tracking branches that contain its HEAD. Empty (or a failure) means the submodule's commit is on no remote, so the archive refuses."
 value = ["branch", "-r", "--contains", "HEAD"]

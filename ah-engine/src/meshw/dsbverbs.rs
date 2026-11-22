@@ -937,12 +937,50 @@ fn drift_in(dir: &str, prefix: &str, depth: u64, out: &mut Vec<(String, String)>
         if !on_remote.ok || on_remote.out.is_empty() {
             return false;
         }
+        // every nested submodule, whether or not `git status` lists it: a nested gitlink at a commit nobody pushed is invisible to status
+        if !nested_pushed(&abs, depth - 1) {
+            return false;
+        }
         let rel = format!("{prefix}{path}");
         // the submodule itself may hold drifted submodules of its own; anything else it holds is unsaved
         if !drift_in(&abs, &format!("{rel}/"), depth - 1, out) {
             return false;
         }
         out.push((rel, head));
+    }
+    true
+}
+
+/// True when every initialized submodule recorded in `dir`'s index (recursively) is its own repo root, is clean and has its HEAD on a
+/// remote branch. An uninitialized one holds nothing here. Any git error, or nesting past `depth`, is false (fail safe).
+fn nested_pushed(dir: &str, depth: u64) -> bool {
+    let ls = git(dir, &argv("devswarm_cli.ar_git_ls_gitlinks", &[]));
+    if !ls.ok {
+        return false;
+    }
+    let mode = text("devswarm_cli.ar_gitlink_mode");
+    for ent in ls.out.split('\0').filter(|e| !e.is_empty()) {
+        let Some((meta, path)) = ent.split_once('\t') else { return false };
+        if meta.split(' ').next() != Some(mode) {
+            continue;
+        }
+        let abs = std::path::Path::new(dir).join(path);
+        if !abs.join(".git").exists() {
+            continue;
+        }
+        let abs = abs.to_string_lossy().to_string();
+        if depth == 0 {
+            return false;
+        }
+        let top = git(&abs, &argv("devswarm_cli.ar_git_toplevel", &[]));
+        if !top.ok || std::fs::canonicalize(&top.out).ok() != std::fs::canonicalize(&abs).ok() {
+            return false;
+        }
+        let st = git(&abs, &argv("devswarm_cli.rs_git_status", &[]));
+        let on_remote = git(&abs, &argv("devswarm_cli.ar_git_sub_contains", &[]));
+        if !st.ok || !st.out.is_empty() || !on_remote.ok || on_remote.out.is_empty() || !nested_pushed(&abs, depth - 1) {
+            return false;
+        }
     }
     true
 }

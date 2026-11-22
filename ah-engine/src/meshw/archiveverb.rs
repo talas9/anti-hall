@@ -1449,4 +1449,57 @@ mod tests {
         assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_some(), "an unreadable submodule fails safe");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
     }
+
+    /// GH #943 (review): drifted, pushed submodule `sub` records a nested submodule `b` at the commit b's own HEAD is at. `git status` in
+    /// `sub` does not list `b`, so only an enumeration of its gitlinks can see whether that commit was pushed.
+    fn nested(tag: &str, pushed: bool) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (dir, wt, sub, _a) = drifted(tag);
+        let (subsrc, bremote, bsrc) = (dir.join("subsrc"), dir.join("b.git"), dir.join("bsrc"));
+        for d in [&bremote, &bsrc] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        git_in(&bremote, &["init", "-q", "--bare"]);
+        git_in(&bsrc, &["init", "-q"]);
+        git_in(&bsrc, &["remote", "add", "origin", bremote.to_str().unwrap()]);
+        git_in(&bsrc, &["commit", "-q", "--allow-empty", "-m", "B1"]);
+        git_in(&bsrc, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_in(&subsrc, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", "-b", "main", bremote.to_str().unwrap(), "b"]);
+        let b = subsrc.join("b");
+        git_in(&b, &["commit", "-q", "--allow-empty", "-m", "B2"]);
+        let b2 = git_out(&b, &["rev-parse", "HEAD"]);
+        if pushed {
+            git_in(&b, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        }
+        git_in(&subsrc, &["add", "b"]);
+        git_in(&subsrc, &["commit", "-q", "-m", "C"]);
+        let c = git_out(&subsrc, &["rev-parse", "HEAD"]);
+        git_in(&subsrc, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_in(&sub, &["fetch", "-q", "origin"]);
+        git_in(&sub, &["checkout", "-q", &c]);
+        let nb = sub.join("b");
+        std::fs::create_dir_all(&nb).unwrap();
+        git_in(&nb, &["init", "-q"]);
+        if pushed {
+            git_in(&nb, &["remote", "add", "origin", bremote.to_str().unwrap()]);
+            git_in(&nb, &["fetch", "-q", "origin"]);
+        } else {
+            git_in(&nb, &["fetch", "-q", b.to_str().unwrap(), &b2]); // by path: no remote-tracking ref records it
+        }
+        git_in(&nb, &["checkout", "-q", &b2]);
+        assert_eq!(git_out(&wt, &["status", "--porcelain"]), "M sub", "still pure drift of sub");
+        assert_eq!(git_out(&sub, &["status", "--porcelain"]), "", "status inside sub does not list b");
+        (dir, wt)
+    }
+
+    #[test]
+    fn archive_checks_nested_submodules_that_status_does_not_list_gh943() {
+        let (dir, wt) = nested("archive-nested-unpushed", false);
+        assert!(unsafe_work(true, "ws-1", Some(&desc_of(&wt)), None).0.is_some(), "a nested submodule at an unpushed commit refuses");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+        let (dir, wt) = nested("archive-nested-pushed", true);
+        let (refusal, drift) = unsafe_work(true, "ws-1", Some(&desc_of(&wt)), None);
+        assert!(refusal.is_none(), "a pushed nested submodule passes: {:?}", refusal.map(|r| r.stdout));
+        assert_eq!(drift.len(), 1);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
 }
