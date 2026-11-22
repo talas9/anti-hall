@@ -393,6 +393,22 @@ fn a_dropped_advisory_on_a_non_guard_event_is_silent_but_a_guard_event_still_tel
     assert!(matches!(super::unanswered("handover-hygiene", "PreToolUse"), Verdict::Advisory(_)), "a guard event still tells");
 }
 
+/// #953: the guard-down notice names a failure in one short line; the script stack and limits stay out of it.
+#[test]
+fn the_guard_down_notice_tells_one_short_line_never_a_script_stack() {
+    super::set_session("notice-session-why-953");
+    let stack = "Error: interrupted\n    at pgSafeId (eval_script:2222:80)\n    at decide (eval_script:3462:34)\n (interrupted by the cpu limit; cpu limit 500 ms, wall backstop 2000 ms)";
+    let Verdict::Advisory(j) = failed("sibling-sweep", "Stop", stack) else { panic!("a guard event tells") };
+    assert!(j.contains("it ran past its CPU limit"), "{j}");
+    assert!(!j.contains("eval_script") && !j.contains("\\n"), "no stack in the notice: {j}");
+    super::set_session("notice-session-why-953b");
+    let Verdict::Advisory(j) = failed("sibling-sweep", "Stop", "TypeError: x is not a function\n    at a (b)") else { panic!() };
+    assert!(j.contains("it hit an internal error") && !j.contains("TypeError"), "{j}");
+    super::set_session("notice-session-why-953c");
+    let Verdict::Advisory(j) = failed("sibling-sweep", "Stop", "the script is missing") else { panic!() };
+    assert!(j.contains("the script is missing"), "a short single line is told as it is: {j}");
+}
+
 #[test]
 fn an_advisory_engine_only_check_never_blocks_when_its_script_fails() {
     let engine_only = defaults::list("script.engine_only_checks");

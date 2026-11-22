@@ -717,8 +717,26 @@ fn with_notice(name: &str, event: &str, why: &str, v: Verdict) -> Verdict {
     if !first {
         return v;
     }
-    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &why)]);
+    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &short_why(why))]);
     Verdict::Advisory(serde_json::json!({ defaults::text("script.notice_key"): msg }).to_string())
+}
+
+/// The one short line the user is told for a failure `why` (`script.notice_why_rules`: the first rule whose `contains` is in `why`, else
+/// `script.notice_why_default`). The full text (a script stack, the limits) goes to the log only.
+fn short_why(why: &str) -> String {
+    let rules = defaults::raw("script.notice_why_rules").as_array();
+    for r in rules.into_iter().flatten() {
+        if let (Some(c), Some(t)) = (r.get("contains").and_then(defaults::V::as_str), r.get("text").and_then(defaults::V::as_str))
+            && why.contains(c)
+        {
+            return t.to_string();
+        }
+    }
+    let first = why.lines().next().unwrap_or_default();
+    if !first.is_empty() && first.len() <= defaults::num("script.notice_why_max_chars") as usize && !why.contains('\n') {
+        return first.to_string();
+    }
+    defaults::text("script.notice_why_default").to_string()
 }
 
 /// The failure mode of check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
