@@ -82,45 +82,35 @@ pub fn grep(path: &str, bytes: f64, needles: &str, re: &str, flags: &str) -> rqu
     let Ok(needles) = serde_json::from_str::<Vec<String>>(needles) else { return Ok(r#"{"unsure":true}"#.into()) };
     let cap = crate::defaults::num("script.tail_max_bytes");
     let n = if bytes.is_finite() && bytes > 0.0 { (bytes as u64).min(cap) } else { cap };
-    let Some(mut w) = crate::transcript::scan::Window::open(path, n) else { return Ok("null".into()) };
     let max = crate::defaults::num("script.grep_max_bytes") as usize;
-    let mut total = 0usize;
-    let mut out: Vec<String> = Vec::new();
-    let mut failed: Option<rquickjs::Error> = None;
-    let mut over = false;
-    let read = w.lines(|piece| {
-        let line = String::from_utf8_lossy(piece);
+    // the lines come from the shared incremental view (#953): a call reads only the bytes appended since the last one
+    let failed: std::cell::RefCell<Option<rquickjs::Error>> = std::cell::RefCell::new(None);
+    let wants = |line: &str| -> Option<bool> {
         if !needles.iter().all(|nd| line.contains(nd.as_str())) {
-            return crate::transcript::scan::Flow::Next;
+            return Some(false);
         }
-        if !re.is_empty() {
-            match super::host::with_re(re, flags, |r| r.is_match(&line)) {
-                Ok(true) => {}
-                Ok(false) => return crate::transcript::scan::Flow::Next,
-                Err(e) => {
-                    failed = Some(e);
-                    return crate::transcript::scan::Flow::Stop;
-                }
+        if re.is_empty() {
+            return Some(true);
+        }
+        match super::host::with_re(re, flags, |r| r.is_match(line)) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                *failed.borrow_mut() = Some(e);
+                None
             }
         }
-        total += line.len();
-        if total > max {
-            over = true;
-            return crate::transcript::scan::Flow::Stop;
-        }
-        out.push(line.into_owned());
-        crate::transcript::scan::Flow::Next
-    });
-    if let Some(e) = failed {
+    };
+    let key = format!("grep\u{1f}{re}\u{1f}{flags}\u{1f}{}", needles.join("\u{1f}"));
+    let q = crate::transcript::view::Query { key: &key, window: n, crlf: false, line_max: 0, wants: &wants };
+    let found = crate::transcript::view::matching(path, &q);
+    if let Some(e) = failed.into_inner() {
         return Err(e);
     }
-    if read.is_err() {
-        return Ok("null".into());
-    }
-    if over {
+    let Ok(Some(found)) = found else { return Ok("null".into()) };
+    if found.lines.iter().map(String::len).sum::<usize>() > max {
         return Ok(r#"{"unsure":true}"#.into());
     }
-    Ok(json!({"lines": out}).to_string())
+    Ok(json!({"lines": found.lines}).to_string())
 }
 
 /// `count_proof(path)`: JSON text. `{"unsure":true}` for a relative path or a line JavaScript might read differently; else

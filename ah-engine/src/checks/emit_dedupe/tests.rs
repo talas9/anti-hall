@@ -254,3 +254,43 @@ fn the_feature_is_off_only_for_a_zero_window_or_the_switch_off() {
     assert!(disabled(&st(&h, &[("ANTIHALL_EMIT_DEDUPE", "false")])), "the switch off turns it off");
     assert!(!disabled(&st(&h, &[("ANTIHALL_EMIT_DEDUPE", "true")])));
 }
+
+/// #953: `scan_tail` now reads its lines through the shared incremental view. Its answer (attachments, size, the unusable and
+/// deferred cases) is the one the whole-window read gave, across windows, appended turns, a rewrite and a line only JavaScript reads.
+#[test]
+fn the_tail_scan_through_the_view_equals_the_whole_window_read() {
+    use std::io::Write;
+    let h = home("view-parity");
+    let p = format!("{h}/t.jsonl");
+    let same = |tag: &str| {
+        for w in [200u64, 1_500, 6_000, 40_000, 100_000_000] {
+            let (a, b) = (scan_tail(&p, w), scan_tail_reference(&p, w));
+            let show = |r: &Result<Option<Tail>, Defer>| match r {
+                Ok(Some(t)) => format!("ok size={} atts={:?}", t.size, t.atts.iter().map(|a| (a.ts.to_bits(), a.els.clone())).collect::<Vec<_>>()),
+                Ok(None) => "none".to_string(),
+                Err(_) => "defer".to_string(),
+            };
+            assert_eq!(show(&a), show(&b), "{tag}: window {w}");
+        }
+    };
+    let add = |lines: &[String]| {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+    };
+    let now = now_ms();
+    std::fs::write(&p, "").unwrap();
+    same("empty");
+    for i in 0..30 {
+        add(&[filler(now - 100_000.0 + i as f64), delivered(now - 90_000.0 + i as f64, &format!("ctx {i}"))]);
+        if i % 7 == 0 {
+            add(&["not json at all".to_string(), String::new(), "{\"no\":\"timestamp\"}".to_string()]);
+        }
+        same(&format!("round {i}"));
+    }
+    add(&["{\"attachment\":{\"type\":\"hook_additional_context\"},\"n\":1e999}".to_string()]);
+    same("a line only JavaScript reads");
+    std::fs::write(&p, format!("{}\n", filler(now))).unwrap(); // a compaction: the file is replaced by a short one
+    same("rewritten");
+}

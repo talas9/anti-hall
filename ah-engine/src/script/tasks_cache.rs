@@ -73,7 +73,7 @@ fn cache() -> &'static BoundedCache<String, Kept> {
     })
 }
 
-fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
+pub(crate) fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
     use std::hash::Hasher;
     let mut b = vec![0u8; len as usize];
     f.read_exact_at(&mut b, at).ok()?;
@@ -84,7 +84,7 @@ fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
 
 /// Where the first line of a window starts: the byte after the first newline at or after `from` (`Ok(None)`: no newline follows,
 /// so the window holds no whole line).
-fn first_line_start(f: &std::fs::File, from: u64, size: u64) -> Option<Option<u64>> {
+pub(crate) fn first_line_start(f: &std::fs::File, from: u64, size: u64) -> Option<Option<u64>> {
     // a line is usually short: look in small steps first, then in larger ones up to the configured chunk
     let chunk = defaults::num("transcript.evidence_read_chunk_bytes").max(1);
     let mut step = chunk.min(defaults::num("transcript.tasks_cache_probe_bytes").max(1));

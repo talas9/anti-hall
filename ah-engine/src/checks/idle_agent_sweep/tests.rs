@@ -137,3 +137,122 @@ fn codex_agents_are_finished_until_closed_or_retasked() {
     again.push(call(T0 - 1000.0, "send_input", json!({"target": uuid}), "c3"));
     assert_eq!(codex::finished(&again).unwrap(), vec![]);
 }
+
+/// #953: the teammate scan now reads its lines through the shared incremental view. Its answer is the one the whole-window read gave
+/// (`tail_lines_bounded` + `finished_teammates`), across appended turns, window sizes (cut and whole) and a rewritten file.
+#[test]
+fn the_teammate_scan_through_the_view_equals_the_whole_window_read() {
+    use std::io::Write;
+    let d = crate::tmpsweep::scratch("ah-tm-view-", "parity");
+    let p = d.join("t.jsonl").to_string_lossy().to_string();
+    let old = |w: u64| -> String {
+        let Some((mut it, _)) = crate::checks::guardkit::tail::tail_lines_bounded(&p, w, crate::defaults::num("agent_scan.max_line_bytes")) else {
+            return "null".into();
+        };
+        let found = scan::finished_teammates_reference(it.by_ref());
+        if it.skipped() > 0 {
+            return r#"{"unsure":true}"#.into();
+        }
+        match found {
+            Ok(v) => json!({"teammates": v.iter().map(|f| json!({"name": f.name, "idleSinceMs": f.idle_since_ms, "stopId": f.stop_id})).collect::<Vec<_>>()}).to_string(),
+            Err(_) => r#"{"unsure":true}"#.into(),
+        }
+    };
+    let add = |ls: &[String]| {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+        for l in ls {
+            writeln!(f, "{l}").unwrap();
+        }
+    };
+    let stop = |id: &str, ts: f64| {
+        json!({"type":"assistant","timestamp":iso(ts),"message":{"content":[{"type":"tool_use","id":"ts7","name":"TaskStop","input":{"task_id":id}}]}}).to_string()
+    };
+    let noise = |n: usize| (0..n).map(|i| json!({"type":"user","timestamp":iso(T0 + i as f64),"message":{"content":format!("noise {i} {}", "z".repeat(90))}}).to_string()).collect::<Vec<_>>();
+    let check = |tag: &str| {
+        for w in [300u64, 2_000, 9_000, 40_000, 100_000_000] {
+            assert_eq!(crate::script::host_ts::teammates(&p, w as f64), old(w), "{tag}: window {w}");
+        }
+    };
+    add(&noise(30));
+    add(&spawn("amy", T0 - 3_000_000.0));
+    add(&spawn("bob", T0 - 2_900_000.0));
+    check("spawned");
+    add(&noise(20));
+    add(&[report("amy", T0 - 2_000_000.0, "available")]);
+    check("amy idle");
+    add(&noise(10));
+    add(&[report("bob", T0 - 1_500_000.0, "failed"), stop("amy@t", T0 - 1_000_000.0)]);
+    check("amy stopped");
+    add(&noise(200));
+    check("more noise");
+    // a compaction: the file is replaced by a shorter one
+    std::fs::write(&p, "").unwrap();
+    add(&spawn("cy", T0 - 500_000.0));
+    add(&[report("cy", T0 - 400_000.0, "available")]);
+    check("rewritten");
+    assert!(crate::script::host_ts::teammates(&p, 1e8).contains("\"cy\""), "the fixture holds a finished teammate, so the parity is not vacuous");
+}
+
+/// #953: the digest-and-apply scan equals the scan as it was, line for line, on every shape the replay tests build, and on the
+/// real transcript named by `AH_TEST_TRANSCRIPT` when one is set (its tail, whole).
+#[test]
+fn the_digest_and_apply_scan_equals_the_scan_as_it_was() {
+    let stop = |id: &str, ts: f64, tuid: &str| {
+        json!({"type":"assistant","timestamp":iso(ts),"message":{"content":[{"type":"tool_use","id":tuid,"name":"TaskStop","input":{"task_id":id}}]}}).to_string()
+    };
+    let result = |tuid: &str, text: &str, err: bool, ts: f64| {
+        json!({"type":"user","timestamp":iso(ts),"message":{"content":[{"type":"tool_result","tool_use_id":tuid,"is_error":err,"content":text}]}}).to_string()
+    };
+    let launch = |tuid: &str, ts: f64| {
+        let call = json!({"type":"assistant","timestamp":iso(ts - 5.0),"message":{"content":[{"type":"tool_use","id":tuid,"name":"Agent","input":{}}]}}).to_string();
+        let res = json!({"type":"user","timestamp":iso(ts),"toolUseResult":{"agentId":"a0123456789abcdef"},"message":{"content":[{"type":"tool_result","tool_use_id":tuid,"content":"Async agent launched successfully. agentId: a0123456789abcdef"}]}}).to_string();
+        vec![call, res]
+    };
+    let send = |tuid: &str, name: &str, ts: f64| {
+        vec![
+            json!({"type":"assistant","timestamp":iso(ts - 1.0),"message":{"content":[{"type":"tool_use","id":tuid,"name":"SendMessage","input":{}}]}}).to_string(),
+            result(tuid, &json!({"success":true,"message":format!("Message sent to {name}'s inbox")}).to_string(), false, ts),
+        ]
+    };
+    let mut scenarios: Vec<Vec<String>> = Vec::new();
+    let base = || {
+        let mut l = spawn("amy", T0 - 3_000_000.0);
+        l.extend(spawn("bob", T0 - 2_900_000.0));
+        l
+    };
+    let mut a = base();
+    a.push(report("amy", T0 - 2_000_000.0, "available"));
+    a.push(report("bob", T0 - 1_900_000.0, "failed"));
+    scenarios.push(a.clone());
+    a.extend(send("s1", "amy", T0 - 1_800_000.0));
+    scenarios.push(a.clone());
+    a.push(report("amy", T0 - 1_700_000.0, "available"));
+    scenarios.push(a.clone());
+    a.push(stop("bob@t", T0 - 1_600_000.0, "k1"));
+    a.push(result("k1", "No task found with ID: amy", true, T0 - 1_590_000.0));
+    scenarios.push(a.clone());
+    a.push(stop("amy", T0 - 1_500_000.0, "k2"));
+    scenarios.push(a.clone());
+    let mut b = base();
+    b.extend(launch("l1", T0 - 2_500_000.0));
+    b.push(report("amy", T0 - 2_000_000.0, "available"));
+    b.push(result("r1", "{\"success\":true,\"message\":\"Resuming amy\"}", false, T0 - 1_900_000.0));
+    scenarios.push(b.clone());
+    b.push(report("zed", T0 - 1_000_000.0, "available")); // an unspawned name
+    scenarios.push(b);
+    scenarios.push(vec!["{\"type\":\"user\" idle_notification not json".into()]); // a marked line neither parser reads: defer
+    scenarios.push(vec![]);
+    for (i, l) in scenarios.iter().enumerate() {
+        assert_eq!(scan::finished_teammates(l), scan::finished_teammates_reference(l), "scenario {i}");
+        for cut in [1usize, 3, 5] {
+            let t: Vec<String> = l.iter().skip(cut.min(l.len())).cloned().collect();
+            assert_eq!(scan::finished_teammates(&t), scan::finished_teammates_reference(&t), "scenario {i} without its first {cut} lines");
+        }
+    }
+    if let Ok(p) = std::env::var("AH_TEST_TRANSCRIPT")
+        && let Some((it, _)) = crate::checks::guardkit::tail::tail_lines(&p, 16 << 20)
+    {
+        let all: Vec<String> = it.collect();
+        assert_eq!(scan::finished_teammates(&all), scan::finished_teammates_reference(&all), "the real transcript tail");
+    }
+}

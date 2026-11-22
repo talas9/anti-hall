@@ -161,6 +161,24 @@ value = "No evidence walk is kept for this check run."
 doc = "Thrown by `ah.transcript.walkHas` / `walkNumbers` for a text other than `evidence` or `withLast`; {which} is the name given."
 value = "Unknown evidence walk text {which}; expected evidence or withLast."
 
+[transcript.view_max_paths]
+doc = "How many (transcript, window, predicate) views the shared incremental transcript view keeps between calls, so a reader of a window's matching lines (`ah.fs.tailLines` with needles, `ah.transcript.grep`, the idle-teammate scan) reads only the bytes appended since the last call (0 turns the keeping off: every call reads its whole window afresh through the same code). The least recently used is dropped first."
+value = 32
+min = 0
+unit = "count"
+
+[transcript.view_idle_ms]
+doc = "How long a kept transcript view may sit unused before it is dropped."
+value = 600000
+min = 0
+unit = "ms"
+
+[transcript.view_entry_max_bytes]
+doc = "Largest estimated size of the kept matching lines of one view; a larger one is not kept (the next call reads its window afresh)."
+value = 4194304
+min = 65536
+unit = "bytes"
+
 [transcript.tasks_cache_max_paths]
 doc = "How many transcript windows' task lines `ah.transcript.tasks` keeps between calls, so a Stop reads only the bytes appended since the last one (0 turns the cache off and every call reads and parses its whole window). Each window size of a transcript is one entry. The least recently used is dropped first."
 value = 24

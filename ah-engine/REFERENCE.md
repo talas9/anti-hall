@@ -1937,6 +1937,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `transcript.unsure_io` | `io` |  |  | Short word for a question left unsure because the transcript could not be read. |
 | `transcript.unsure_missing` | `missing` |  |  | Short word for a question left unsure because the transcript is missing or empty. |
 | `transcript.unsure_partial` | `partial` |  |  | Short word for a question left unsure because the window starts before what the store still holds or covers a skipped line. |
+| `transcript.view_entry_max_bytes` | `4194304` |  | bytes | Largest estimated size of the kept matching lines of one view; a larger one is not kept (the next call reads its window afresh). |
+| `transcript.view_idle_ms` | `600000` |  | ms | How long a kept transcript view may sit unused before it is dropped. |
+| `transcript.view_max_paths` | `32` |  | count | How many (transcript, window, predicate) views the shared incremental transcript view keeps between calls, so a reader of a window's matching lines (`ah.fs.tailLines` with needles, `ah.transcript.grep`, the idle-teammate scan) reads only the bytes appended since the last call (0 turns the keeping off: every call reads its whole window afresh through the same code). The least recently used is dropped first. |
 | `transcript.wait_ms` | `2000` |  | ms | How long a request waits for another request's refresh of the same session, or for a cold-build permit, before it answers unsure instead of reading the file itself. |
 
 ### gitcache.toml / gitcache
@@ -14613,6 +14616,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mem.transcript_tail_low_water_pct` | `80` |  |  | Percent of mem.transcript_tail_soft_bytes the transcript-tail cache is evicted down to when the soft limit is reached. |
 | `mem.transcript_tail_max_entries` | `256` |  |  | Transcript-tail answers the cache keeps at most; past it the least recently used is dropped first. |
 | `mem.transcript_tail_soft_bytes` | `4194304` |  | bytes | Bytes of cached transcript-tail answers (`transcriptDedupeTail`) held before the least recently used are dropped down to the low-water mark. |
+| `mem.transcript_view_hard_bytes` | `16777216` |  | bytes | Bytes of kept transcript-view lines at which an insert is refused (the answer is returned, not kept) and the cache is recycled. |
+| `mem.transcript_view_low_water_pct` | `80` |  |  | Percent of mem.transcript_view_soft_bytes the kept transcript-view lines are evicted down to when the soft limit is reached. |
+| `mem.transcript_view_soft_bytes` | `8388608` |  | bytes | Bytes of kept transcript-view lines held before the least recently used are dropped down to the low-water mark. |
 
 ### wire.toml / busy_reason
 
@@ -15977,6 +15983,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `tier_items` | gauge | items |  | Active key-value items held in memory (D22). |
 | `tier_misses` | gauge | reads |  | Key-value reads that went to SQLite since the daemon started. |
 | `token_usage_unresolved` | counter | readings |  | Roster token totals displayed as unknown because their transcript or usage sample could not be verified (devswarm.tokenUnknown). |
+| `transcript_cache` | counter | lookups | result | Lookups of the shared incremental transcript view (idle-teammate scan, `ah.fs.tailLines` with needles, `ah.transcript.grep`): hit (nothing appended), append (only the appended bytes were read) or rebuild (the window was read afresh). |
+| `transcript_cache_rebuild` | counter | lookups | reason | Why a transcript-view lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines), digest (the file was rewritten in place) or gen (the settings changed). |
 | `transcript_line_skipped_oversize` | counter | lines | reader | Transcript lines the agent scan read past without holding or parsing because they were longer than agent_scan.max_line_bytes (one huge tool_result), by reader: scan_window (a fresh read of the window) or scan_kept (the kept walk). A line is counted each time a scan reads past it. The scan is then unknown (agent_scan_degraded), never an answer made as if the line were not there. |
 | `transcript_read_buf_max_bytes` | gauge | bytes |  | The most memory any transcript reader held at once (its fixed buffer plus the longest line kept); the memory gate bounds it by transcript.read_buf_bytes plus transcript.max_line_bytes. |
 | `transcript_scan_peak_bytes` | histogram | bytes | check | The most one call of a check held for transcript reads (a block plus the line being assembled; transcript::scan), by check: a histogram whose max is the check's worst call. It stays at the block size whatever the transcript or window size. |

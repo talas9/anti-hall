@@ -217,20 +217,34 @@ pub(super) fn answer<S: AsRef<str>>(items: &[S], truncated: bool) -> String {
 /// but never stopped, in the order the scan lists them: `{"teammates":[{"name","idleSinceMs","stopId"}]}`; `null` when the file is
 /// missing, unreadable or empty; `{"unsure":true}` for a relative path or anything JavaScript might read differently.
 pub fn teammates(path: &str, tail: f64) -> String {
-    use crate::checks::guardkit::tail::tail_lines_bounded;
     if !path.starts_with('/') {
         return unsure();
     }
     let cap = defaults::num("script.tail_max_bytes");
     let n = if tail.is_finite() && tail > 0.0 { (tail as u64).min(cap) } else { cap };
-    let Some((mut lines, _)) = tail_lines_bounded(path, n, defaults::num("agent_scan.max_line_bytes")) else { return "null".into() };
-    let found = crate::checks::idle_agent_sweep::scan::finished_teammates(lines.by_ref());
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) == 0 {
+        return "null".into();
+    }
+    // each line is digested once into the facts the scan needs from it and kept between calls by the shared incremental view (#953):
+    // a call digests the bytes appended since the last one and replays the kept facts, so its cost tracks the new bytes
+    let marks = defaults::list("idle_sweep.prefilter");
+    let key = format!("teammates\u{1f}{}", marks.join("\u{1f}"));
+    let digest = |line: &str| -> Option<Option<(crate::transcript::view::Item, usize)>> {
+        Some(crate::checks::idle_agent_sweep::scan::digest_line(line).map(|f| {
+            let weight = f.weight();
+            (std::sync::Arc::new(f) as crate::transcript::view::Item, weight)
+        }))
+    };
+    let q = crate::transcript::view::DigestQuery { key: &key, window: n, crlf: false, line_max: defaults::num("agent_scan.max_line_bytes"), digest: &digest };
+    let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return "null".into() };
     // a line too long to hold may have carried a notice: the answer is then unknown, never "none finished"
-    if lines.skipped() > 0 {
+    if found.oversize > 0 {
         crate::load::note_count("transcript_line_skipped_oversize", "reader", "teammates");
         return unsure();
     }
-    match found {
+    let facts: Vec<&crate::checks::idle_agent_sweep::scan::LineFacts> =
+        found.items.iter().filter_map(|i| i.downcast_ref::<crate::checks::idle_agent_sweep::scan::LineFacts>()).collect();
+    match crate::checks::idle_agent_sweep::scan::finished_from(facts) {
         Ok(v) => {
             json!({"teammates": v.iter().map(|f| json!({"name": f.name, "idleSinceMs": f.idle_since_ms, "stopId": f.stop_id})).collect::<Vec<_>>()}).to_string()
         }

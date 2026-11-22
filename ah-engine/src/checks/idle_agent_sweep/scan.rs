@@ -267,6 +267,7 @@ fn inbox_target(text: &str) -> Option<String> {
 }
 
 /// `teammateIdles(entry, entryTs, spawned)`: the idle notifications a genuine teammate report carries.
+#[cfg(test)]
 fn teammate_idles(e: &Value, ts: f64, spawned: &OMap<Info>) -> Result<Vec<(String, f64, String)>, Defer> {
     let mut out = Vec::new();
     if str_of(e, "type") != Some("user") {
@@ -321,8 +322,422 @@ fn teammate_idles(e: &Value, ts: f64, spawned: &OMap<Info>) -> Result<Vec<(Strin
     Ok(out)
 }
 
+/// What one transcript line contributes to the scan, free of any state of the lines before it (#953): the facts apply in order, so a
+/// line digested once is good for every window that holds it, and a call after an appended turn digests only that turn.
+#[derive(Debug, Clone)]
+pub struct LineFacts {
+    /// A line a marker names that neither parser reads, or whose timestamp only JavaScript reads exactly: the whole scan is unknown.
+    defer: bool,
+    ops: Vec<Op>,
+}
+
+impl LineFacts {
+    /// Roughly the bytes the facts of a line hold, for the view's memory accounting.
+    pub fn weight(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .ops
+                .iter()
+                .map(|o| {
+                    std::mem::size_of::<Op>()
+                        + match o {
+                            Op::Launched(s) | Op::Terminal(s) | Op::Errored(s) | Op::Gone(s) => s.len(),
+                            Op::ToolUse { id, name } => id.len() + name.as_ref().map_or(0, String::len),
+                            Op::Stop { id, tuid, .. } => id.len() + tuid.as_ref().map_or(0, String::len),
+                            Op::Idle { name, reason, .. } => name.len() + reason.len(),
+                            Op::Spawn { tuid, name, agent_id, stop_id, .. } => tuid.as_ref().map_or(0, String::len) + name.len() + agent_id.len() + stop_id.len(),
+                            Op::LaunchedIf { tuid, id } => tuid.as_ref().map_or(0, String::len) + id.len(),
+                            Op::Text { tuid, inbox, .. } => tuid.as_ref().map_or(0, String::len) + inbox.as_ref().map_or(0, String::len),
+                        }
+                })
+                .sum::<usize>()
+    }
+}
+
+/// One effect of a line, in the order the scan applies them. A guard that asks "does this result answer a call of these tools"
+/// depends on earlier lines, so it is kept as the question and answered when the facts are applied.
+#[derive(Debug, Clone)]
+enum Op {
+    /// A background agent a `task_status` attachment re-injects as running.
+    Launched(String),
+    /// A background agent that ended (a terminal `task_status`, or a terminal notification).
+    Terminal(String),
+    /// An assistant tool call: its id and name.
+    ToolUse { id: String, name: Option<String> },
+    /// A `TaskStop` call: the task it names, its call id, the line's time.
+    Stop { id: String, tuid: Option<String>, ts: f64 },
+    /// A genuine teammate report: who, when it says it went idle (`Err`: only JavaScript reads the time), the line's time, the reason.
+    Idle { name: String, inner: Result<f64, Defer>, ts: f64, reason: String },
+    /// A teammate spawn result, valid when its tool result answers a launch call.
+    Spawn { tuid: Option<String>, name: String, ts: f64, agent_id: String, stop_id: String },
+    /// A tool result that carried an error.
+    Errored(String),
+    /// A tool result that says the stopped task no longer exists.
+    Gone(String),
+    /// A background launch result (an agent id), valid when its tool result answers a launch call.
+    LaunchedIf { tuid: Option<String>, id: String },
+    /// A text of a tool result that is a resume result, a queued-message result, or names the teammate a SendMessage reached.
+    Text { tuid: Option<String>, tool_result: bool, resume: bool, queued: bool, inbox: Option<String>, ts: f64 },
+}
+
+/// The idle reports a genuine teammate report carries, before they are matched with a spawn: `(name, time it names, reason)`.
+fn teammate_idle_candidates(e: &Value) -> Vec<(String, Result<f64, Defer>, String)> {
+    let mut out = Vec::new();
+    if str_of(e, "type") != Some("user") {
+        return out;
+    }
+    let Some(c) = e.get("message").and_then(|m| m.get("content")).and_then(Value::as_str) else { return out };
+    let prefix = defaults::text("idle_sweep.report_prefix");
+    if !c.starts_with(prefix) {
+        return out;
+    }
+    for k in defaults::list("idle_sweep.not_a_report_keys") {
+        let present = if k == "isSidechain" { e.get(k) == Some(&Value::Bool(true)) } else { e.get(k).is_some() };
+        if present {
+            return out;
+        }
+    }
+    let (open, close) = (defaults::text("idle_sweep.block_open"), defaults::text("idle_sweep.block_close"));
+    let skip_ws = |at: usize| at + c[at..].chars().take_while(|ch| is_js_space(*ch)).map(char::len_utf8).sum::<usize>();
+    let mut at = skip_ws(prefix.len());
+    while let Some(rest) = c[at..].strip_prefix(open) {
+        let Some(q) = rest.find('"') else { break };
+        if q == 0 {
+            break;
+        }
+        let name = &rest[..q];
+        let after_name = &rest[q + 1..];
+        let Some(gt) = after_name.find('>') else { break };
+        let Some(body_start) = after_name[gt + 1..].strip_prefix('\n') else { break };
+        let Some(end) = body_start.find(close) else { break };
+        let body = &body_start[..end];
+        let consumed = c.len() - body_start.len() + end + close.len();
+        at = skip_ws(consumed);
+        if body.contains('\n') || !body.starts_with('{') {
+            continue;
+        }
+        let Some(o) = parse_line(body) else { continue };
+        if str_of(&o, "type") != Some("idle_notification") || str_of(&o, "from") != Some(name) {
+            continue;
+        }
+        let inner = match str_of(&o, "timestamp") {
+            Some(s) => ts_of(s),
+            None => Ok(f64::NAN),
+        };
+        out.push((name.to_string(), inner, str_of(&o, "idleReason").unwrap_or("").to_string()));
+    }
+    out
+}
+
+/// `raw` as the facts it contributes, `None` for a line the scan skips (blank, no marker, not a JSON object).
+pub fn digest_line(raw: &str) -> Option<LineFacts> {
+    let r = res();
+    let line = js_trim(raw);
+    if line.is_empty() || !defaults::list("idle_sweep.prefilter").iter().any(|m| line.contains(m)) {
+        return None;
+    }
+    let deferred = || Some(LineFacts { defer: true, ops: Vec::new() });
+    let Some(entry) = parse_line(line) else { return deferred() };
+    if !entry.is_object() {
+        return None;
+    }
+    let launch_phrase = defaults::text("idle_sweep.launch_phrase");
+    let has_launch = line.contains(launch_phrase);
+    let has_notif = line.contains(defaults::text("idle_sweep.notification_tag"));
+    let has_tool_use = line.contains("\"tool_use\"");
+    let has_idle = line.contains(defaults::text("idle_sweep.idle_marker"));
+    let has_task_stop = defaults::list("idle_sweep.task_stop_marks").iter().any(|m| line.contains(m));
+    let Ok(ts) = entry_ts(&entry) else { return deferred() };
+    let etype = str_of(&entry, "type");
+    let mut ops: Vec<Op> = Vec::new();
+
+    if let Some(att) = entry.get("attachment")
+        && str_of(att, "type") == Some("task_status")
+        && let Some(id) = str_of(att, "taskId").filter(|s| !s.is_empty())
+    {
+        let status = att.get("status");
+        if status == Some(&Value::String("running".into())) {
+            ops.push(Op::Launched(id.to_string()));
+        } else if r.terminal_status.is_match(&status.map_or_else(|| "undefined".to_string(), crate::checks::guardkit::jsval::js_to_string)) {
+            ops.push(Op::Terminal(id.to_string()));
+        }
+    }
+    let content = entry.get("message").and_then(|m| m.get("content"));
+    let blocks_of_content: &[Value] = match content {
+        Some(Value::Array(a)) => a,
+        _ => &[],
+    };
+    if has_tool_use && etype == Some("assistant") {
+        for b in blocks_of_content {
+            if str_of(b, "type") == Some("tool_use")
+                && let Some(id) = str_of(b, "id")
+            {
+                ops.push(Op::ToolUse { id: id.to_string(), name: str_of(b, "name").map(str::to_string) });
+            }
+        }
+    }
+    if has_task_stop && etype == Some("assistant") {
+        for b in blocks_of_content {
+            if str_of(b, "type") == Some("tool_use")
+                && str_of(b, "name") == Some("TaskStop")
+                && let Some(id) = b.get("input").and_then(|i| str_of(i, "task_id")).filter(|i| !i.is_empty())
+            {
+                ops.push(Op::Stop { id: id.to_string(), tuid: str_of(b, "id").map(str::to_string), ts });
+            }
+        }
+    }
+    if has_notif {
+        for text in notification_texts(&entry) {
+            for m in r.notification_block.captures_iter(text) {
+                let body = &m[1];
+                let tid = r.task_id.captures(body).map(|c| c[1].to_string());
+                let status = r.status.captures(body).map(|c| c[1].to_string());
+                if let (Some(tid), Some(st)) = (tid, status)
+                    && !tid.is_empty()
+                    && r.terminal_status.is_match(&st)
+                {
+                    ops.push(Op::Terminal(tid));
+                }
+            }
+        }
+    }
+    if has_idle {
+        for (name, inner, reason) in teammate_idle_candidates(&entry) {
+            ops.push(Op::Idle { name, inner, ts, reason });
+        }
+    }
+    if etype == Some("user") {
+        if let Some(tur) = entry.get("toolUseResult")
+            && str_of(tur, "status") == Some(defaults::text("idle_sweep.spawned_status"))
+            && let Some(name) = str_of(tur, "name").filter(|s| !s.is_empty())
+            && let Some(Value::Array(blocks)) = content
+            && let Some(tr) = blocks.iter().find(|b| str_of(b, "type") == Some("tool_result"))
+        {
+            ops.push(Op::Spawn {
+                tuid: str_of(tr, "tool_use_id").map(str::to_string),
+                name: name.to_string(),
+                ts,
+                agent_id: str_of(tur, "agent_id").unwrap_or("").to_string(),
+                stop_id: str_of(tur, defaults::text("idle_order.spawn_id_field")).unwrap_or("").to_string(),
+            });
+        }
+        let blocks: Vec<Blk<'_>> = match content {
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter(|b| truthy(b))
+                .map(|b| Blk {
+                    tuid: str_of(b, "tool_use_id"),
+                    is_tool_result: str_of(b, "type") == Some("tool_result"),
+                    is_error: b.get("is_error") == Some(&Value::Bool(true)),
+                    inner: b.get("content").unwrap_or(b),
+                })
+                .collect(),
+            Some(other) => vec![Blk { tuid: None, is_tool_result: false, is_error: false, inner: other }],
+            None => Vec::new(),
+        };
+        for b in &blocks {
+            if b.is_tool_result
+                && b.is_error
+                && let Some(t) = b.tuid
+            {
+                ops.push(Op::Errored(t.to_string()));
+            }
+            let mut texts: Vec<&str> = Vec::new();
+            extract_texts(b.inner, &mut texts);
+            if b.is_tool_result
+                && let Some(t) = b.tuid
+                && texts.iter().any(|x| r.stop_gone.is_match(x))
+            {
+                ops.push(Op::Gone(t.to_string()));
+            }
+            for text in texts {
+                if b.is_tool_result && has_launch && text.trim_start_matches(is_js_space).starts_with(launch_phrase) {
+                    let sid = entry.get("toolUseResult").and_then(|t| str_of(t, "agentId")).filter(|id| r.hex_id.is_match(id)).map(str::to_string);
+                    let idm = r.agent_id.captures(text).map(|c| c[1].to_string());
+                    if let Some(id) = sid.or(idm) {
+                        ops.push(Op::LaunchedIf { tuid: b.tuid.map(str::to_string), id });
+                    }
+                }
+                let resume = b.is_tool_result && is_resume_result(text);
+                let queued = is_queued_message(text);
+                let inbox = if b.is_tool_result { inbox_target(text) } else { None };
+                if resume || queued || inbox.is_some() {
+                    ops.push(Op::Text { tuid: b.tuid.map(str::to_string), tool_result: b.is_tool_result, resume, queued, inbox, ts });
+                }
+            }
+        }
+    }
+    Some(LineFacts { defer: false, ops })
+}
+
 /// The finished-but-not-stopped teammates of the transcript lines, in the order the Node scan lists them.
 pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> Result<Vec<Finished>, Defer> {
+    let facts: Vec<LineFacts> = lines.into_iter().filter_map(|l| digest_line(l.as_ref())).collect();
+    finished_from(&facts)
+}
+
+/// The scan over lines already digested ([`digest_line`]), oldest first: the facts apply in order, then the stops and the
+/// per-teammate state machine decide who is finished.
+pub fn finished_from<'a, F: IntoIterator<Item = &'a LineFacts>>(facts: F) -> Result<Vec<Finished>, Defer> {
+    let r = res();
+    let mut sc = Scan {
+        tool_uses: std::collections::HashMap::new(),
+        team_events: OMap::new(),
+        team_info: OMap::new(),
+        launched: HashSet::new(),
+        terminal: HashSet::new(),
+        errored: HashSet::new(),
+        gone: HashSet::new(),
+        stops: Vec::new(),
+    };
+    let skew = defaults::num("idle_sweep.report_future_skew_ms") as f64;
+    let mut seq = 0usize;
+    for line in facts {
+        seq += 1;
+        if line.defer {
+            return Err(Defer);
+        }
+        for op in &line.ops {
+            match op {
+                Op::Launched(id) => {
+                    sc.launched.insert(id.clone());
+                }
+                Op::Terminal(id) => {
+                    sc.terminal.insert(id.clone());
+                }
+                Op::ToolUse { id, name } => {
+                    sc.tool_uses.insert(id.clone(), name.clone());
+                }
+                Op::Stop { id, tuid, ts } => sc.stops.push((id.clone(), seq, tuid.clone(), *ts)),
+                Op::Idle { name, inner, ts, reason } => {
+                    if !sc.team_info.has(name) {
+                        continue;
+                    }
+                    let inner = (*inner)?;
+                    if inner.is_finite() && ts.is_finite() && inner > *ts + skew {
+                        continue;
+                    }
+                    let when = if inner.is_finite() && ts.is_finite() { inner } else { *ts };
+                    sc.event(name, Kind::Idle, when, seq, reason);
+                }
+                Op::Spawn { tuid, name, ts, agent_id, stop_id } => {
+                    if sc.answers(tuid.as_deref(), "idle_sweep.launch_tools") {
+                        sc.event(name, Kind::Spawn, *ts, seq, "");
+                        sc.team_info.set(name, Info { agent_id: agent_id.clone(), stop_id: stop_id.clone() });
+                    }
+                }
+                Op::Errored(t) => {
+                    sc.errored.insert(t.clone());
+                }
+                Op::Gone(t) => {
+                    sc.gone.insert(t.clone());
+                }
+                Op::LaunchedIf { tuid, id } => {
+                    if sc.answers(tuid.as_deref(), "idle_sweep.launch_tools") {
+                        sc.launched.insert(id.clone());
+                    }
+                }
+                Op::Text { tuid, tool_result, resume, queued, inbox, ts } => {
+                    if *tool_result && *resume && sc.answers(tuid.as_deref(), "idle_sweep.resume_tools") {
+                        continue;
+                    }
+                    if *queued {
+                        continue;
+                    }
+                    if *tool_result
+                        && sc.answers(tuid.as_deref(), "idle_sweep.send_tools")
+                        && let Some(name) = inbox
+                    {
+                        sc.event(name, Kind::Send, *ts, seq, "");
+                    }
+                }
+            }
+        }
+    }
+    // Background-agent ids as of now: a teammate named like one of them is not a teammate.
+    let background: HashSet<String> = sc.launched.union(&sc.terminal).cloned().collect();
+    let stops = std::mem::take(&mut sc.stops);
+    for (id, sseq, tuid, sts) in stops {
+        if tuid.as_ref().is_some_and(|t| sc.errored.contains(t) && !sc.gone.contains(t)) {
+            continue;
+        }
+        // Every id form a stop may carry: the spawn's internal agent_id, its TaskStop id (`name@session-xxxx`), or the bare name (below).
+        // A teammate whose spawn is outside the window is never listed (its idle reports are only read for a spawned name).
+        let named: Vec<String> = sc
+            .team_info
+            .items
+            .iter()
+            .filter(|(_, info)| info.agent_id == id || (!info.stop_id.is_empty() && info.stop_id == id))
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in named {
+            if !sc.team_events.has(&id) {
+                sc.event(&name, Kind::Stop, sts, sseq, "");
+            }
+        }
+        if sc.team_events.has(&id) {
+            sc.event(&id, Kind::Stop, sts, sseq, "");
+        }
+    }
+    let mut finished = Vec::new();
+    for (name, evs) in &sc.team_events.items {
+        if !evs.iter().any(|e| matches!(e.kind, Kind::Spawn | Kind::Idle)) || evs.iter().any(|e| !e.ts.is_finite()) {
+            continue;
+        }
+        let mut ordered: Vec<&Ev> = evs.iter().collect();
+        ordered.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal).then(a.seq.cmp(&b.seq)));
+        #[derive(PartialEq)]
+        enum State {
+            Idle,
+            Busy,
+            Stopped,
+        }
+        let (mut state, mut queued, mut last_idle, mut last_reason) = (State::Idle, false, f64::NAN, String::new());
+        for e in ordered {
+            match e.kind {
+                Kind::Spawn => {
+                    state = State::Busy;
+                    queued = false;
+                }
+                Kind::Stop => {
+                    state = State::Stopped;
+                    queued = false;
+                }
+                _ if state == State::Stopped => {}
+                Kind::Send => {
+                    if state == State::Idle {
+                        state = State::Busy;
+                    } else {
+                        queued = true;
+                    }
+                }
+                Kind::Idle => {
+                    last_idle = e.ts;
+                    last_reason = e.reason.clone();
+                    if queued {
+                        queued = false;
+                        state = State::Busy;
+                    } else {
+                        state = State::Idle;
+                    }
+                }
+            }
+        }
+        if state == State::Idle && r.finished_reason.is_match(&last_reason) && last_idle.is_finite() && !background.contains(name) {
+            finished.push(Finished {
+                name: name.clone(),
+                idle_since_ms: last_idle,
+                stop_id: sc.team_info.items.iter().find(|(n, _)| n == name).map(|(_, i)| i.stop_id.clone()).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(finished)
+}
+
+#[cfg(test)]
+/// The scan as it was before the per-line facts were kept between calls (#953), verbatim: the oracle the parity tests compare the
+/// digest-and-apply path against.
+pub(super) fn finished_teammates_reference<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> Result<Vec<Finished>, Defer> {
     let r = res();
     let mut sc = Scan {
         tool_uses: std::collections::HashMap::new(),

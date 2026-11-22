@@ -166,6 +166,24 @@ value = 80
 min = 1
 max = 100
 
+[mem.transcript_view_soft_bytes]
+doc = "Bytes of kept transcript-view lines held before the least recently used are dropped down to the low-water mark."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[mem.transcript_view_hard_bytes]
+doc = "Bytes of kept transcript-view lines at which an insert is refused (the answer is returned, not kept) and the cache is recycled."
+value = 16777216
+min = 4096
+unit = "bytes"
+
+[mem.transcript_view_low_water_pct]
+doc = "Percent of mem.transcript_view_soft_bytes the kept transcript-view lines are evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
 [mem.transcript_tail_soft_bytes]
 doc = "Bytes of cached transcript-tail answers (`transcriptDedupeTail`) held before the least recently used are dropped down to the low-water mark."
 value = 4194304

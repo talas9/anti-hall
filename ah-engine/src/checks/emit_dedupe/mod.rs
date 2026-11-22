@@ -23,6 +23,7 @@
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, parse_line};
 use crate::checks::guardkit::settings::{get_bool, get_number};
+#[cfg(test)]
 use crate::checks::guardkit::tail::read_tail;
 use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
@@ -181,6 +182,7 @@ fn prune_stale(dir: &std::path::Path, keep: &std::path::Path) {
 }
 
 /// One `hook_additional_context` UserPromptSubmit attachment of the transcript tail.
+#[derive(Clone)]
 pub struct Att {
     /// The attachment's timestamp in milliseconds.
     pub ts: f64,
@@ -196,53 +198,96 @@ pub struct Tail {
     pub size: u64,
 }
 
-/// `scanTail`: `Ok(None)` is "unusable" (missing, unreadable, empty, or no timestamp anywhere in the window).
-pub fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
-    let Some((lines, size)) = read_tail(path, bytes) else { return Ok(None) };
-    let marker = defaults::text("emit_dedupe.attachment_type");
-    let mut atts = Vec::new();
-    let mut any_ts = false;
-    for line in &lines {
-        if line.is_empty() {
-            continue;
-        }
-        if !any_ts && line.contains("\"timestamp\"") {
-            any_ts = true;
-        }
-        if !line.contains(marker) {
-            continue;
-        }
-        // `JSON.parse` in a try/catch: a line that is not JSON is skipped, and only a line serde rejects for a reason JavaScript
-        // might not (replykit.unsure_parse_errors: a lone surrogate, a number past the double range, deep nesting) defers.
-        let e = match parse_line(line) {
-            Some(e) => e,
-            None => match crate::checks::replykit::transcript::parse_text(line) {
-                Ok(_) => continue,
-                Err(_) => return Err(Defer),
-            },
-        };
-        let Some(a) = (e.get("type").and_then(Value::as_str) == Some("attachment")).then(|| e.get("attachment")).flatten() else { continue };
-        if a.get("type").and_then(Value::as_str) != Some(marker) || a.get("hookEvent").and_then(Value::as_str) != Some(defaults::text("emit_dedupe.hook_event"))
-        {
-            continue;
-        }
-        let ts = match e.get("timestamp") {
-            Some(Value::String(s)) => match date_parse(s) {
-                DateParse::Ms(ms) => ms,
-                DateParse::Nan => continue,
-                DateParse::Unsupported => return Err(Defer),
-            },
-            Some(Value::Number(_)) | Some(Value::Array(_)) => return Err(Defer),
-            _ => continue,
-        };
-        let els = match a.get("content") {
-            Some(Value::Array(v)) => v.iter().map(js_to_string).collect(),
-            Some(Value::Null) | None => vec![String::new()],
-            Some(other) => vec![js_to_string(other)],
-        };
-        atts.push(Att { ts, els });
+/// What one line of the window contributes to [`scan_tail`], free of the lines around it (#953): kept between calls by the shared
+/// incremental view, so a call digests only the bytes appended since the last one.
+#[derive(Clone)]
+struct TailLine {
+    /// The line holds a `"timestamp"` key.
+    has_ts: bool,
+    /// A line `JSON.parse` would read but this reader cannot: the whole scan is unknown.
+    defer: bool,
+    /// The hook attachment the line carries.
+    att: Option<Att>,
+}
+
+/// `line` as what [`scan_tail`] needs of it, `None` for a line that contributes nothing (blank, or neither a timestamp nor the marker).
+fn digest_tail_line(line: &str) -> Option<TailLine> {
+    if line.is_empty() {
+        return None;
     }
-    Ok(any_ts.then_some(Tail { atts, size }))
+    let marker = defaults::text("emit_dedupe.attachment_type");
+    let has_ts = line.contains("\"timestamp\"");
+    if !line.contains(marker) {
+        return has_ts.then_some(TailLine { has_ts, defer: false, att: None });
+    }
+    let mut out = TailLine { has_ts, defer: false, att: None };
+    // `JSON.parse` in a try/catch: a line that is not JSON is skipped, and only a line serde rejects for a reason JavaScript
+    // might not (replykit.unsure_parse_errors: a lone surrogate, a number past the double range, deep nesting) defers.
+    let e = match parse_line(line) {
+        Some(e) => e,
+        None => match crate::checks::replykit::transcript::parse_text(line) {
+            Ok(_) => return Some(out),
+            Err(_) => {
+                out.defer = true;
+                return Some(out);
+            }
+        },
+    };
+    let Some(a) = (e.get("type").and_then(Value::as_str) == Some("attachment")).then(|| e.get("attachment")).flatten() else { return Some(out) };
+    if a.get("type").and_then(Value::as_str) != Some(marker) || a.get("hookEvent").and_then(Value::as_str) != Some(defaults::text("emit_dedupe.hook_event")) {
+        return Some(out);
+    }
+    let ts = match e.get("timestamp") {
+        Some(Value::String(s)) => match date_parse(s) {
+            DateParse::Ms(ms) => ms,
+            DateParse::Nan => return Some(out),
+            DateParse::Unsupported => {
+                out.defer = true;
+                return Some(out);
+            }
+        },
+        Some(Value::Number(_)) | Some(Value::Array(_)) => {
+            out.defer = true;
+            return Some(out);
+        }
+        _ => return Some(out),
+    };
+    let els = match a.get("content") {
+        Some(Value::Array(v)) => v.iter().map(js_to_string).collect(),
+        Some(Value::Null) | None => vec![String::new()],
+        Some(other) => vec![js_to_string(other)],
+    };
+    out.att = Some(Att { ts, els });
+    Some(out)
+}
+
+/// `scanTail`: `Ok(None)` is "unusable" (missing, unreadable, empty, or no timestamp anywhere in the window). The lines come from the
+/// shared incremental view, so a call reads and parses only what was appended since the last one (#953).
+pub fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    let digest = |line: &str| -> Option<Option<(crate::transcript::view::Item, usize)>> {
+        Some(digest_tail_line(line).map(|t| {
+            let weight = std::mem::size_of::<TailLine>() + t.att.as_ref().map_or(0, |a| a.els.iter().map(String::len).sum::<usize>() + 32);
+            (std::sync::Arc::new(t) as crate::transcript::view::Item, weight)
+        }))
+    };
+    let key = format!("scan_tail\u{1f}{}\u{1f}{}", defaults::text("emit_dedupe.attachment_type"), defaults::text("emit_dedupe.hook_event"));
+    let q = crate::transcript::view::DigestQuery { key: &key, window: bytes, crlf: false, line_max: 0, digest: &digest };
+    let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return Ok(None) };
+    let (mut atts, mut any_ts) = (Vec::new(), false);
+    for item in &found.items {
+        let Some(t) = item.downcast_ref::<TailLine>() else { continue };
+        if t.defer {
+            return Err(Defer);
+        }
+        any_ts |= t.has_ts;
+        if let Some(a) = &t.att {
+            atts.push(a.clone());
+        }
+    }
+    Ok(any_ts.then_some(Tail { atts, size: found.size }))
 }
 
 /// The tail scans of one decision, read at most once per window size (Node memoizes them per process).
@@ -543,3 +588,55 @@ pub fn transcript_of(p: &Value) -> Result<Option<&str>, Defer> {
         _ => Ok(None),
     }
 }
+
+#[cfg(test)]
+/// `scanTail` as it was before the lines' digests were kept between calls (#953), verbatim: the oracle the parity test compares to.
+/// `Ok(None)` is "unusable" (missing, unreadable, empty, or no timestamp anywhere in the window).
+pub(super) fn scan_tail_reference(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
+    let Some((lines, size)) = read_tail(path, bytes) else { return Ok(None) };
+    let marker = defaults::text("emit_dedupe.attachment_type");
+    let mut atts = Vec::new();
+    let mut any_ts = false;
+    for line in &lines {
+        if line.is_empty() {
+            continue;
+        }
+        if !any_ts && line.contains("\"timestamp\"") {
+            any_ts = true;
+        }
+        if !line.contains(marker) {
+            continue;
+        }
+        // `JSON.parse` in a try/catch: a line that is not JSON is skipped, and only a line serde rejects for a reason JavaScript
+        // might not (replykit.unsure_parse_errors: a lone surrogate, a number past the double range, deep nesting) defers.
+        let e = match parse_line(line) {
+            Some(e) => e,
+            None => match crate::checks::replykit::transcript::parse_text(line) {
+                Ok(_) => continue,
+                Err(_) => return Err(Defer),
+            },
+        };
+        let Some(a) = (e.get("type").and_then(Value::as_str) == Some("attachment")).then(|| e.get("attachment")).flatten() else { continue };
+        if a.get("type").and_then(Value::as_str) != Some(marker) || a.get("hookEvent").and_then(Value::as_str) != Some(defaults::text("emit_dedupe.hook_event"))
+        {
+            continue;
+        }
+        let ts = match e.get("timestamp") {
+            Some(Value::String(s)) => match date_parse(s) {
+                DateParse::Ms(ms) => ms,
+                DateParse::Nan => continue,
+                DateParse::Unsupported => return Err(Defer),
+            },
+            Some(Value::Number(_)) | Some(Value::Array(_)) => return Err(Defer),
+            _ => continue,
+        };
+        let els = match a.get("content") {
+            Some(Value::Array(v)) => v.iter().map(js_to_string).collect(),
+            Some(Value::Null) | None => vec![String::new()],
+            Some(other) => vec![js_to_string(other)],
+        };
+        atts.push(Att { ts, els });
+    }
+    Ok(any_ts.then_some(Tail { atts, size }))
+}
+
