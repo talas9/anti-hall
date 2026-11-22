@@ -228,7 +228,8 @@ pub fn teammates(path: &str, tail: f64) -> String {
     // each line is digested once into the facts the scan needs from it and kept between calls by the shared incremental view (#953):
     // a call digests the bytes appended since the last one and replays the kept facts, so its cost tracks the new bytes
     let marks = defaults::list("idle_sweep.prefilter");
-    let key = format!("teammates\u{1f}{}", marks.join("\u{1f}"));
+    let parts: Vec<&str> = std::iter::once("teammates").chain(marks.iter().copied()).collect();
+    let key = crate::transcript::view::key_of(&parts);
     let digest = |line: &str| -> Option<Option<(crate::transcript::view::Item, usize)>> {
         Some(crate::checks::idle_agent_sweep::scan::digest_line(line).map(|f| {
             let weight = f.weight();
@@ -262,12 +263,16 @@ pub fn teammates(path: &str, tail: f64) -> String {
 /// a script can ask whether the line holds `"name"` as `q.indexOf(name) >= 0` without being handed the line. Lines longer than
 /// `lineMax` UTF-16 units are left out. `null`: the file is missing or unreadable;
 /// `{"unsure":true}`: a relative path or a bad spec.
-pub fn features(path: &str, window: f64, spec: &str) -> String {
+///
+/// # Errors
+/// A regex of `spec.res` the engine cannot compile raises the same `RegExp` error as a bad `new RegExp` (counted in
+/// `script_regex_invalid`); it never stops the daemon.
+pub fn features(path: &str, window: f64, spec: &str) -> rquickjs::Result<String> {
     use serde_json::Value;
     if !path.starts_with('/') {
-        return unsure();
+        return Ok(unsure());
     }
-    let Ok(sp) = serde_json::from_str::<Value>(spec) else { return unsure() };
+    let Ok(sp) = serde_json::from_str::<Value>(spec) else { return Ok(unsure()) };
     let strs = |k: &str| -> Vec<String> { sp.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
     let idx = |k: &str| -> Vec<usize> { sp.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_u64().map(|n| n as usize)).collect() };
     let (needles, marks, paths) = (strs("needles"), strs("marks"), strs("paths"));
@@ -276,8 +281,8 @@ pub fn features(path: &str, window: f64, spec: &str) -> String {
     let line_max = sp.get("lineMax").and_then(Value::as_u64).unwrap_or(0) as usize;
     let mut res = Vec::new();
     for r in sp.get("res").and_then(Value::as_array).into_iter().flatten() {
-        let (Some(src), flags) = (r.get("src").and_then(Value::as_str), r.get("flags").and_then(Value::as_str).unwrap_or("")) else { return unsure() };
-        res.push(crate::checks::guardkit::jsre::compile(src, flags.contains('i')));
+        let (Some(src), flags) = (r.get("src").and_then(Value::as_str), r.get("flags").and_then(Value::as_str).unwrap_or("")) else { return Ok(unsure()) };
+        res.push(super::recache::get(src, if flags.contains('i') { "i" } else { "" })?);
     }
     let n = if window.is_finite() && window > 0.0 { window as u64 } else { defaults::num("script.tail_max_bytes") };
     let digest = |line: &str| -> Option<Option<(crate::transcript::view::Item, usize)>> {
@@ -287,7 +292,10 @@ pub fn features(path: &str, window: f64, spec: &str) -> String {
         let m: Vec<bool> = marks.iter().map(|x| line.contains(x.as_str())).collect();
         let r: Vec<Value> = res
             .iter()
-            .map(|re| re.captures(line).map_or(Value::Null, |c| Value::Array(c.iter().map(|g| g.map_or(Value::Null, |g| json!(g.as_str()))).collect())))
+            .map(|re| {
+                let spans: Option<Vec<Option<(usize, usize)>>> = re.searched(|r| r.captures(line).map(|c| c.iter().map(|g| g.map(|g| (g.start(), g.end()))).collect()));
+                spans.map_or(Value::Null, |v| Value::Array(v.into_iter().map(|g| g.map_or(Value::Null, |(a, b)| json!(line.get(a..b).unwrap_or_default()))).collect()))
+            })
             .collect();
         let mut p = serde_json::Map::new();
         if parse_if.iter().any(|i| m.get(*i).copied().unwrap_or(false))
@@ -316,7 +324,7 @@ pub fn features(path: &str, window: f64, spec: &str) -> String {
     };
     let key = format!("features\u{1f}{spec}");
     let q = crate::transcript::view::DigestQuery { key: &key, window: n, crlf: false, line_max: 0, digest: &digest };
-    let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return "null".into() };
+    let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return Ok("null".into()) };
     let mut out = String::from("[");
     for (i, it) in found.items.iter().filter_map(|i| i.downcast_ref::<String>()).enumerate() {
         if i > 0 {
@@ -325,7 +333,7 @@ pub fn features(path: &str, window: f64, spec: &str) -> String {
         out.push_str(it);
     }
     out.push(']');
-    out
+    Ok(out)
 }
 
 /// `codex_agents(path, tail)`: JSON text. The agents a Codex rollout tail shows finished but never closed, in the order the

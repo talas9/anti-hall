@@ -88,6 +88,15 @@ struct Line {
     weight: usize,
 }
 
+/// A digest of the consumed bytes `[start, start + len)` of the file, sealed when they were read: the proof that they have not been
+/// rewritten since.
+#[derive(Clone, Copy)]
+struct Rec {
+    start: u64,
+    len: u64,
+    digest: u64,
+}
+
 #[derive(Clone)]
 struct Kept {
     gen_: u64,
@@ -97,8 +106,22 @@ struct Kept {
     parsed_to: u64,
     head: u64,
     back: u64,
+    /// Digests of the consumed bytes, in order, contiguous up to `parsed_to` (the bytes before `base` stay in until a record is wholly before it).
+    recs: VecDeque<Rec>,
+    /// Where the next call's rotating verification of `recs` starts.
+    cursor: usize,
     lines: VecDeque<Line>,
     over: VecDeque<u64>,
+}
+
+/// A cache key naming `parts`, each prefixed by its length so that no choice of parts (a separator inside one of them included) can
+/// give the key of another list.
+pub fn key_of(parts: &[&str]) -> String {
+    use std::fmt::Write;
+    parts.iter().fold(String::new(), |mut k, p| {
+        let _ = write!(k, "{}:{p};", p.len());
+        k
+    })
 }
 
 fn cache() -> &'static BoundedCache<String, Kept> {
@@ -118,11 +141,11 @@ pub fn usage() -> (usize, u64) {
 }
 
 fn weight(k: &Kept) -> usize {
-    k.lines.iter().map(|l| l.weight + std::mem::size_of::<Line>()).sum::<usize>() + k.over.len() * 8 + std::mem::size_of::<Kept>()
+    k.lines.iter().map(|l| l.weight + std::mem::size_of::<Line>()).sum::<usize>() + k.over.len() * 8 + k.recs.len() * std::mem::size_of::<Rec>() + std::mem::size_of::<Kept>()
 }
 
 /// Why a kept entry cannot serve a window whose first line starts at `fls`, or `None` when it can.
-fn miss_reason(k: &Kept, f: &std::fs::File, m: &std::fs::Metadata, fls: u64) -> Option<&'static str> {
+fn miss_reason(k: &mut Kept, f: &std::fs::File, m: &std::fs::Metadata, fls: u64) -> Option<&'static str> {
     if k.gen_ != defaults::generation() {
         return Some("gen");
     }
@@ -138,7 +161,57 @@ fn miss_reason(k: &Kept, f: &std::fs::File, m: &std::fs::Metadata, fls: u64) -> 
     if d(f, k.base, n) != Some(k.head) || d(f, k.parsed_to - n, n) != Some(k.back) {
         return Some("digest");
     }
+    // the consumed bytes: the record nearest the boundary every call, then the next ones round the ring until `view_verify_bytes` have
+    // been hashed, so that a rewrite anywhere before the boundary (a same-length edit, a truncate and regrowth that kept both ends) is
+    // met within a few calls, and at once when the consumed part fits in the budget
+    let budget = defaults::num("transcript.view_verify_bytes").max(1);
+    let count = k.recs.len();
+    let mut spent = 0u64;
+    let check = |r: &Rec| d(f, r.start, r.len) == Some(r.digest);
+    if let Some(last) = k.recs.back() {
+        if !check(last) {
+            return Some("rewrite");
+        }
+        spent += last.len;
+    }
+    let ring = count.saturating_sub(1);
+    let mut walked = 0usize;
+    while walked < ring {
+        let Some(r) = k.recs.get((k.cursor + walked) % ring) else { break };
+        if spent + r.len > budget {
+            break;
+        }
+        if !check(r) {
+            return Some("rewrite");
+        }
+        spent += r.len;
+        walked += 1;
+    }
+    if ring > 0 {
+        k.cursor = (k.cursor + walked) % ring;
+    }
     None
+}
+
+/// Seal the consumed bytes `[from, to)` into `recs`, in pieces of at most `seg` bytes (the last record is grown first while it is
+/// shorter, so that many small appends do not make many records). False: the file could not be read there.
+fn seal(recs: &mut VecDeque<Rec>, f: &std::fs::File, from: u64, to: u64, seg: u64) -> bool {
+    let d = crate::script::tasks_cache::digest_at;
+    let mut at = from;
+    if let Some(l) = recs.back().copied().filter(|l| l.start + l.len == from && l.len < seg) {
+        let len = l.len + (seg - l.len).min(to - from);
+        let Some(digest) = d(f, l.start, len) else { return false };
+        recs.pop_back();
+        recs.push_back(Rec { start: l.start, len, digest });
+        at = l.start + len;
+    }
+    while at < to {
+        let len = seg.min(to - at);
+        let Some(digest) = d(f, at, len) else { return false };
+        recs.push_back(Rec { start: at, len, digest });
+        at += len;
+    }
+    true
 }
 
 /// One piece of the window as text: `\r` taken off when `crlf`, lossily decoded.
@@ -192,11 +265,13 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
         parsed_to: fls,
         head: 0,
         back: 0,
+        recs: VecDeque::new(),
+        cursor: 0,
         lines: VecDeque::new(),
         over: VecDeque::new(),
     };
     let mut k = match cache().remove(&key) {
-        Some(k) => match miss_reason(&k, &f, &m, fls) {
+        Some(mut k) => match miss_reason(&mut k, &f, &m, fls) {
             None => {
                 crate::load::note_count("transcript_cache", "result", if size == k.parsed_to { "hit" } else { "append" });
                 k
@@ -220,6 +295,10 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
         k.over.pop_front();
     }
     k.base = fls;
+    while k.recs.front().is_some_and(|r| r.start + r.len <= fls) {
+        k.recs.pop_front();
+    }
+    let sealed_from = k.parsed_to;
     // read what was appended, a block at a time: the complete lines are judged for good, the last one (no newline yet) now and again
     let block = crate::transcript::scan::block_bytes();
     let mut buf = vec![0u8; block];
@@ -286,8 +365,10 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
     // keep it for the next call, with a digest of both ends
     let fp = defaults::num("transcript.evidence_fingerprint_bytes").max(1);
     let n = fp.min(k.parsed_to - k.base);
-    let w = weight(&k);
-    if defaults::num("transcript.view_max_paths") > 0
+    let sealed = k.parsed_to <= sealed_from || seal(&mut k.recs, &f, sealed_from, k.parsed_to, block as u64);
+        let w = weight(&k);
+    if sealed
+        && defaults::num("transcript.view_max_paths") > 0
         && w as u64 <= defaults::num("transcript.view_entry_max_bytes")
         && let (Some(head), Some(back)) =
             (crate::script::tasks_cache::digest_at(&f, k.base, n), crate::script::tasks_cache::digest_at(&f, k.parsed_to - n, n))
@@ -438,5 +519,110 @@ mod tests {
         let slack = 2 * defaults::num("transcript.evidence_fingerprint_bytes");
         assert!(same <= slack, "an unchanged file reads only the digests: {same}");
         assert!(appended <= turn.len() as u64 + slack + 4096, "one appended turn read {appended} bytes of a {} byte window", big.len());
+    }
+
+    #[test]
+    fn a_needle_holding_the_old_separator_does_not_share_the_key_of_two_needles() {
+        assert_ne!(key_of(&["a\u{1f}b"]), key_of(&["a", "b"]));
+        assert_ne!(key_of(&["ab", ""]), key_of(&["a", "b"]));
+        assert_ne!(key_of(&["1:x;", "y"]), key_of(&["1:x", ";y"]));
+        assert_eq!(key_of(&["a", "b"]), key_of(&["a", "b"]));
+    }
+
+    #[test]
+    fn two_needle_lists_that_joined_alike_read_their_own_lines() {
+        let d = dir("keys");
+        let p = d.join("k.jsonl").to_string_lossy().to_string();
+        std::fs::write(&p, "has x\u{1f}y here\nhas x and y here\nplain\n").unwrap();
+        let ask_with = |needles: &[&str]| {
+            let wants = |l: &str| Some(needles.iter().any(|n| l.contains(n)));
+            let key = key_of(needles);
+            matching(&p, &Query { key: &key, window: 1 << 20, crlf: false, line_max: 0, wants: &wants }).unwrap().unwrap().lines
+        };
+        assert_eq!(ask_with(&["x\u{1f}y"]), vec!["has x\u{1f}y here".to_string()]);
+        assert_eq!(ask_with(&["x", "y"]).len(), 2, "not the answer kept for the single needle");
+    }
+
+    fn lines_file(n: usize, tag: &str) -> String {
+        (0..n).map(|i| format!("line {i:04} {tag} needle {}\n", "y".repeat(40))).collect()
+    }
+
+    /// A same-length edit of a middle line, far from both ends of a file over 8 KiB and from the read boundary, with the inode and the
+    /// size unchanged: the old fingerprints of the two ends cannot see it, the consumed-byte records must.
+    #[test]
+    fn a_same_length_rewrite_of_a_middle_line_is_not_served_stale() {
+        let d = dir("middle");
+        let p = d.join("m.jsonl").to_string_lossy().to_string();
+        let big = lines_file(400, "a");
+        assert!(big.len() > 8 * 1024 * 2);
+        std::fs::write(&p, &big).unwrap();
+        parity(&p, 1_000_000, false, 0);
+        let at = big.find("line 0200").unwrap() + big[big.find("line 0200").unwrap()..].find("needle").unwrap();
+        assert!(at as u64 > 4096 * 2 && (big.len() - at) as u64 > 4096 * 2, "the edit is outside both fingerprints");
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().write_all_at(b"NEEDLE", at as u64).unwrap();
+        let got = ask(&p, 1_000_000, false, 0);
+        assert_eq!(got, reference(&p, 1_000_000, false, 0, &|l| l.contains("needle")));
+        assert_eq!(got.unwrap().lines.len(), 399, "the edited line no longer holds the needle");
+    }
+
+    /// A truncate and regrowth that keeps the first and last bytes the old fingerprints look at, at the same size and past it.
+    #[test]
+    fn a_truncate_and_regrowth_that_keeps_both_ends_is_not_served_stale() {
+        for (name, extra) in [("same", 0usize), ("past", 7)] {
+            let d = dir(&format!("regrow-{name}"));
+            let p = d.join("g.jsonl").to_string_lossy().to_string();
+            let big = lines_file(400, "a");
+            std::fs::write(&p, &big).unwrap();
+            parity(&p, 1_000_000, false, 0);
+            let fp = 4096usize;
+            let (head, tail) = (&big[..fp + 100], &big[big.len() - fp - 100..]);
+            let mid_len = big.len() - head.len() - tail.len();
+            let mut mid = lines_file(400, "b").replace("needle", "noodle");
+            mid.truncate(mid_len);
+            let mut grown = format!("{head}{mid}{tail}");
+            grown.push_str(&lines_file(extra, "c"));
+            assert!(grown.len() >= big.len());
+            std::fs::write(&p, &grown).unwrap(); // truncates the same inode, then regrows it
+            let got = ask(&p, 1_000_000, false, 0);
+            assert_eq!(got, reference(&p, 1_000_000, false, 0, &|l| l.contains("needle")), "{name}");
+        }
+    }
+
+    /// A consumed part sealed in many records still meets a rewrite deep inside it.
+    #[test]
+    fn a_rewrite_deep_in_a_consumed_part_sealed_in_many_records_is_met() {
+        let d = dir("rotation");
+        let p = d.join("o.jsonl").to_string_lossy().to_string();
+        let big = lines_file(3000, "a");
+        std::fs::write(&p, &big).unwrap();
+        crate::transcript::scan::set_test_block(4096); // many records
+        parity(&p, 10_000_000, false, 0);
+        assert!(cache().values().iter().any(|k| k.recs.len() > 8), "the consumed part is sealed in many records");
+        let at = big.find("line 1500").unwrap() + 14;
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().write_all_at(b"NEEDLE", at as u64).unwrap();
+        let want = reference(&p, 10_000_000, false, 0, &|l| l.contains("needle"));
+        let got = ask(&p, 10_000_000, false, 0);
+        crate::transcript::scan::set_test_block(0);
+        assert_eq!(got, want);
+    }
+
+    /// An expired view is dropped and rebuilt, never reused (the read after it covers the whole window again).
+    #[test]
+    fn an_expired_view_is_rebuilt_not_reused() {
+        let d = dir("expiry");
+        let p = d.join("x.jsonl").to_string_lossy().to_string();
+        let big = lines_file(2000, "a");
+        std::fs::write(&p, &big).unwrap();
+        let window = 1 << 40;
+        ask(&p, window, false, 0);
+        crate::load::take_check_scan();
+        ask(&p, window, false, 0);
+        assert!(crate::load::take_check_scan() < 16 * 1024, "a live view is reused");
+        let key = format!("{p}\0{window}\0t{}{}", false, 0);
+        let kept = cache().remove(&key).expect("the view is kept");
+        assert!(cache().insert_with_ttl(key, kept, 1024, Some(crate::health::now_ms().saturating_sub(1))));
+        crate::load::take_check_scan();
+        ask(&p, window, false, 0);
+        assert!(crate::load::take_check_scan() >= big.len() as u64, "an expired view is read afresh");
     }
 }

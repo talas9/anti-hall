@@ -100,7 +100,9 @@ pub fn grep(path: &str, bytes: f64, needles: &str, re: &str, flags: &str) -> rqu
             }
         }
     };
-    let key = format!("grep\u{1f}{re}\u{1f}{flags}\u{1f}{}", needles.join("\u{1f}"));
+    let head = format!("grep\u{1f}{flags}");
+    let parts: Vec<&str> = [head.as_str(), re].into_iter().chain(needles.iter().map(String::as_str)).collect();
+    let key = crate::transcript::view::key_of(&parts);
     let q = crate::transcript::view::Query { key: &key, window: n, crlf: false, line_max: 0, wants: &wants };
     let found = crate::transcript::view::matching(path, &q);
     if let Some(e) = failed.into_inner() {

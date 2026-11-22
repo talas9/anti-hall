@@ -209,6 +209,12 @@ value = 4096
 min = 1
 unit = "bytes"
 
+[transcript.view_verify_bytes]
+doc = "The most consumed transcript bytes the shared incremental view re-hashes on one call to prove they were not rewritten (the record nearest the read position every call, then the others in rotation). A consumed part within this size is proved whole on every call; a larger one is covered over successive calls."
+value = 4194304
+min = 4096
+unit = "bytes"
+
 [transcript.evidence_read_chunk_bytes]
 doc = "Bytes read at a time while looking for the newline that ends the cut first line of a window."
 value = 65536

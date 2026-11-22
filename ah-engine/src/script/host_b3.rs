@@ -87,7 +87,9 @@ pub(super) fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: 
     use crate::transcript::scan::{Flow, Window};
     // with needles the lines come from the shared incremental view (#953): only the bytes appended since the last call are read
     if !needles.is_empty() && needles.iter().all(|n| !n.is_empty()) {
-        let key = format!("any\u{1f}{crlf}\u{1f}{}", needles.join("\u{1f}"));
+        let head = format!("any\u{1f}{crlf}");
+        let parts: Vec<&str> = std::iter::once(head.as_str()).chain(needles.iter().map(String::as_str)).collect();
+        let key = crate::transcript::view::key_of(&parts);
         let wants = |line: &str| Some(needles.iter().any(|n| line.contains(n.as_str())));
         let q = crate::transcript::view::Query { key: &key, window, crlf, line_max: 0, wants: &wants };
         return crate::transcript::view::matching(path, &q).ok().flatten().map(|f| f.lines);

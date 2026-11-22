@@ -468,6 +468,10 @@ value = { kind = "counter", unit = "bytes", labels = [] }
 doc = "`ah.re.*` patterns compiled while the process was over its global hard memory limit. With mem.regex_latched_bytes each pattern should compile at most once per excursion; a rate here means the latch cap is too small."
 value = { kind = "counter", unit = "patterns", labels = [] }
 
+[metric.script_regex_invalid]
+doc = "Patterns a script handed the engine (`ah.re.*`, `ah.transcript.*` regexes, patterns read from settings) that the engine's regex dialect cannot compile (for example a lookahead). The script call raises the same RegExp error a bad `new RegExp` does; the daemon is unaffected."
+value = { kind = "counter", unit = "patterns", labels = [] }
+
 [metric.burst_dumps_written]
 doc = "Burst allocation-site dumps written (diagnostics.burst_profile): the counted heap grew past diagnostics.burst_dump_mb inside diagnostics.burst_window_ms."
 value = { kind = "counter", unit = "dumps", labels = [] }

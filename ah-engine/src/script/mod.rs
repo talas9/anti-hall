@@ -1295,5 +1295,8 @@ mod tests_host_e;
 #[path = "host_tests_f/tests.rs"]
 mod tests_host_f;
 #[cfg(test)]
+#[path = "host_tests_ts/tests.rs"]
+mod tests_host_ts;
+#[cfg(test)]
 #[path = "tests_scan_turn/tests.rs"]
 mod tests_scan_turn;
