@@ -306,9 +306,13 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
         k.over.pop_front();
     }
     k.base = fls;
+    let mut trimmed = 0usize;
     while k.recs.front().is_some_and(|r| r.start + r.len <= fls) {
         k.recs.pop_front();
+        trimmed += 1;
     }
+    // the rotation's position is an index into `recs`: it follows the records it was about to visit when the front goes
+    k.cursor = k.cursor.saturating_sub(trimmed);
     let sealed_from = k.parsed_to;
     // read what was appended, a block at a time: the complete lines are judged for good, the last one (no newline yet) now and again
     let block = crate::transcript::scan::block_bytes();
@@ -534,10 +538,11 @@ mod tests {
         assert!(appended <= turn.len() as u64 + slack + 4096, "one appended turn read {appended} bytes of a {} byte window", big.len());
     }
 
-    /// Measurement (#953): the bytes one warm append-one-turn call reads (parse reads plus verification hashes) and its CPU on a
-    /// synthetic 16 MiB window. Prints; `cargo test -- --nocapture` shows it.
+    /// The point of the view, on a 16 MiB window: a warm call that follows one appended turn parses only the appended bytes and
+    /// hashes at most the verification budget plus a few fixed pieces (the two fingerprints twice, and the last record grown and
+    /// one more rotation record at a block each). Prints the measurement (`--no-capture`).
     #[test]
-    fn measure_a_warm_append_on_a_16_mib_window() {
+    fn a_warm_append_on_a_16_mib_window_reads_the_appended_bytes_plus_a_bounded_verification() {
         let d = dir("measure");
         let p = d.join("w.jsonl").to_string_lossy().to_string();
         let big: String = (0..(16 << 20) / 89 + 1)
@@ -710,10 +715,15 @@ mod tests {
         let at = big.find("line 01000").unwrap() + 11; // far from the read boundary
         assert!(cache().values().iter().any(|k| k.recs.len() > 8), "sealed in many records");
         std::fs::OpenOptions::new().write(true).open(&p).unwrap().write_all_at(b"NEEDLE", at as u64).unwrap();
-        let want = reference(&p, 10_000_000, false, 0, &|l| l.contains("needle"));
         let bound = (big.len() as u64).div_ceil(block.max(budget.saturating_sub(block))) + 1;
         let mut calls = 0u64;
-        while ask(&p, 10_000_000, false, 0) != want {
+        loop {
+            // a turn is appended between the calls: the rotation goes on while the last record grows and is sealed
+            append(&p, "line 99999 plain tail\n");
+            let want = reference(&p, 10_000_000, false, 0, &|l| l.contains("needle"));
+            if ask(&p, 10_000_000, false, 0) == want {
+                break;
+            }
             calls += 1;
             assert!(calls <= bound, "still stale after {calls} calls (bound {bound})");
         }
@@ -738,6 +748,59 @@ mod tests {
             crate::transcript::scan::set_test_block(0);
             assert_eq!(got, reference(&p, 10_000_000, false, 0, &|l| l.contains("needle")), "{name}");
         }
+    }
+
+    /// Only the bytes just before the read position change (the head, the last record and the one record the rotation visits
+    /// first are untouched), and the file regrows past its old size: the digest of the bytes before the position must see it on
+    /// the first call.
+    #[test]
+    fn a_rewrite_of_only_the_bytes_before_the_read_position_is_met_on_the_first_call() {
+        let d = dir("before-offset");
+        let p = d.join("o.jsonl").to_string_lossy().to_string();
+        let block = crate::transcript::scan::block_bytes() as u64;
+        let _budget = Setting::set("transcript.view_verify_bytes", block);
+        // 100-byte lines: two whole records and a 12-byte last one
+        let text: String = (0..5243).map(|i| format!("{i:06} needle {}\n", "p".repeat(85))).collect();
+        assert_eq!(text.len() as u64, 2 * block + 12);
+        std::fs::write(&p, &text).unwrap();
+        parity(&p, 10_000_000, false, 0);
+        crate::load::take_counts();
+        let at = 5222 * 100 + 7; // "needle" of a line 2093 bytes before the end: inside the last 4096 bytes, outside the last record
+        assert!(text.len() as u64 - at < defaults::num("transcript.evidence_fingerprint_bytes") && text.len() as u64 - at > 12);
+        std::fs::OpenOptions::new().write(true).open(&p).unwrap().write_all_at(b"NEEDLE", at).unwrap();
+        append(&p, "tail needle\n"); // regrown past the old size
+        parity(&p, 10_000_000, false, 0);
+        let notes = crate::load::take_counts();
+        assert!(notes.contains(&("transcript_cache_rebuild", "reason", "digest")), "met by the digest before the position, on the first call: {notes:?}");
+    }
+
+    /// The window slides: records leave the front and the rotation's position follows them, so no record is skipped in the cycle.
+    #[test]
+    fn the_rotation_follows_the_records_that_leave_the_front_of_the_window() {
+        let d = dir("slide");
+        let p = d.join("w.jsonl").to_string_lossy().to_string();
+        let block = crate::transcript::scan::block_bytes() as u64;
+        let _budget = Setting::set("transcript.view_verify_bytes", block); // one ring record a call
+        let line = |i: usize| format!("{i:06} {} {}\n", if i % 500 == 0 { "needle" } else { "plain" }, "p".repeat(85));
+        let text: String = (0..20_000).map(line).collect(); // about 2 MiB: eight records
+        std::fs::write(&p, &text).unwrap();
+        let window = 1_500_000u64;
+        parity(&p, window, false, 0);
+        for _ in 0..3 {
+            parity(&p, window, false, 0);
+        }
+        let old = cache().values().into_iter().next().unwrap();
+        let (c, old_recs) = (old.cursor, old.recs.iter().copied().collect::<Vec<_>>());
+        assert!(c >= 1 && old_recs.len() > 4, "the rotation is under way over several records: cursor {c} of {}", old_recs.len());
+        // about 0.5 MB appended: the window moves on and records leave the front
+        let more: String = (20_000..25_300).map(line).collect();
+        append(&p, &more);
+        parity(&p, window, false, 0);
+        let k = cache().values().into_iter().next().unwrap();
+        let gone = old_recs.iter().filter(|r| r.start + r.len <= k.base).count();
+        assert!(gone > 0, "records left the front");
+        let next = (c + 1) % (old_recs.len() - 1); // where the call that slid the window left the rotation
+        assert_eq!(k.cursor, next.saturating_sub(gone), "the rotation still points at the record it was about to visit (was {next}, {gone} left the front)");
     }
 
     /// The view's records and lines are counted against the cache before it is admitted: an entry that cannot be kept is not even
