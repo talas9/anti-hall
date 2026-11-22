@@ -791,6 +791,10 @@ value = "⚠️ Do now: {n} workspace(s) report working but delivered nothing: {
 doc = "The repeat order for workspaces still stalled after the first. Placeholders: {n}, {list}, {cli}, {id} as for idle_order.msg_stall_advise."
 value = "⚠️ Do now: {n} workspace(s) still stalled, no commit or PR progress: {list}. Each must converge (finish and open its PR; give it a concrete next step and a deadline) or be archived once its PRs are pushed and nothing is in flight (`{cli} archive-request {id}`; archive refuses uncommitted or unpushed work)."
 
+[metric.archive_submodule_drift_passed]
+doc = "Archives that passed because the only uncommitted entries were submodule checkout drift (clean submodule, HEAD on a remote branch; #943, devswarm.archiveIgnoreSubmoduleDrift), by verb."
+value = { kind = "counter", unit = "archives", labels = ["verb"] }
+
 [metric.archive_refused_unsafe]
 doc = "Archives refused because the workspace's worktree held uncommitted changes, unpushed commits or a state git could not read (#876, devswarm_cli.archive_work_guard), by verb."
 value = { kind = "counter", unit = "archives", labels = ["verb"] }
