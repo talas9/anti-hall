@@ -261,9 +261,10 @@ var ah = {
     // [timestamp (a string, else null), [[name, file_path|null, command|null]]] per entry with a string timestamp or a tool use
     // (found through the `keys` of nested objects; a non-string name is ''). Blank and invalid lines are left out.
     toolUseScan: function (p, windowBytes, needles, keys) { var r = ahHost.toolUseScan(p, windowBytes || 0, needles, keys); return r === null || r === undefined ? null : JSON.parse(r); },
+    // The lines of the tail that hold a needle, each reduced to the facts a reducer reads (m: marks, r: regex captures, p: parsed paths, q: quoted pieces):
+    // null or an array of {m, r, p, q?}; the engine keeps them between calls, so only the appended bytes are digested. See host_ts.rs `features`.
+    features: function (p, windowBytes, spec) { var r = ahHost.transcriptFeatures(p, windowBytes, JSON.stringify(spec)); if (r === null || r === undefined) return null; var v = JSON.parse(r); return v && v.unsure ? null : v; },
     // Finished-but-not-stopped named teammates of a Claude transcript tail: null, {unsure: true} or {teammates: [{name, idleSinceMs}]}.
-    // Teammates idle and waiting on their own work, in the tail: null, {unsure: true} or {idle: [{name, ms, reason}], stopIds: [[name, id]]}.
-    waiting: function (p, windowBytes, stopIds) { var r = ahHost.transcriptWaiting(p, windowBytes, JSON.stringify(stopIds || [])); return r === null || r === undefined ? null : JSON.parse(r); },
     teammates: function (p, tailBytes) { var r = ahHost.transcriptTeammates(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-closed agents of a Codex rollout tail: null, {unsure: true} or {agents: [{id, label, idleSinceMs}]}.
     codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },

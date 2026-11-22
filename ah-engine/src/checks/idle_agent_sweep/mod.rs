@@ -10,7 +10,6 @@ use crate::checks::emit_dedupe::Defer;
 
 pub mod codex;
 pub mod scan;
-pub mod waiting;
 
 #[cfg(test)]
 mod tests;

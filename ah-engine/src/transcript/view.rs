@@ -53,6 +53,8 @@ pub struct DigestQuery<'a> {
 pub struct Digests {
     /// The kept items, oldest first.
     pub items: Vec<Item>,
+    /// Where each item's line starts in the file, parallel to `items`.
+    pub starts: Vec<u64>,
     /// The window starts inside the file.
     pub truncated: bool,
     /// The window held at least one element.
@@ -175,7 +177,7 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
         match crate::script::tasks_cache::first_line_start(&f, size - q.window, size) {
             None => return Ok(None),
             // the window holds no newline: its one piece is the cut first line, which is dropped
-            Some(None) => return Ok(Some(Digests { items: Vec::new(), truncated: true, seen: false, oversize: 0, size })),
+            Some(None) => return Ok(Some(Digests { items: Vec::new(), starts: Vec::new(), truncated: true, seen: false, oversize: 0, size })),
             Some(Some(s)) => s,
         }
     } else {
@@ -267,18 +269,20 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
     }
     // the last element: no newline after it, so no `\r` goes with a separator
     let mut oversize = k.over.len() as u64;
-    let mut last: Option<Item> = None;
+    let mut last: Option<(u64, Item)> = None;
     if carry_over {
         oversize += 1;
     } else {
         let text = text_of(&carry, false);
         match (q.digest)(&text) {
             None => return Err(()),
-            Some(Some((item, _))) => last = Some(item),
+            Some(Some((item, _))) => last = Some((k.parsed_to, item)),
             Some(None) => {}
         }
     }
-    let found = Digests { items: k.lines.iter().map(|l| l.item.clone()).chain(last).collect(), truncated, seen: true, oversize, size };
+    let starts: Vec<u64> = k.lines.iter().map(|l| l.start).chain(last.iter().map(|(s, _)| *s)).collect();
+    let items: Vec<Item> = k.lines.iter().map(|l| l.item.clone()).chain(last.map(|(_, i)| i)).collect();
+    let found = Digests { items, starts, truncated, seen: true, oversize, size };
     // keep it for the next call, with a digest of both ends
     let fp = defaults::num("transcript.evidence_fingerprint_bytes").max(1);
     let n = fp.min(k.parsed_to - k.base);

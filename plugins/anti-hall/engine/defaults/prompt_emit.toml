@@ -689,6 +689,12 @@ value = 262144
 doc = "Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate."
 value = ["SendMessage", "TaskStop", "No task found", "teammate_spawned"]
 
+[idle_order.quote_max]
+doc = "Longest piece of a transcript line between two double quotes the waiting-teammate scan keeps to ask whether a line names a teammate (`\"name\"`); a name longer than this is never found in a line, as no teammate name is that long."
+value = 128
+min = 16
+max = 4096
+
 [idle_order.idle_marker]
 doc = "The type of the notice a teammate sends when its turn ends (read from the transcript)."
 value = "idle_notification"

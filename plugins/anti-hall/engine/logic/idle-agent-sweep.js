@@ -72,18 +72,54 @@ function idTaskOf(owners, name) {
 // GH #744: a teammate that went idle saying it waits on its own background work (an idle_notification with no idleReason), still idle
 // after idle_order.waiting_after_min, with no later send or stop naming it: [{id, label, idleSinceMs}]. Read from the transcript tail.
 function idWaiting(tp, now, finished) {
-  // the engine walks the tail's lines once and keeps what each contributes between calls (#953); the script only applies the thresholds
-  var w = ah.transcript.waiting(tp, ah.cfgNum('idle_sweep.scan_bytes'), Object.keys(idStopIds).map(function (n) { return [n, idStopIds[n]]; }));
-  if (w === null) return [];
-  if (w.unsure) { ah.unable('idle-agent-sweep:waiting_scan_unsure'); return []; }
-  idStopIds = {};
-  w.stopIds.forEach(function (e) { idStopIds[e[0]] = e[1]; });
+  var tag = ah.cfg('idle_order.idle_marker'), spawnTag = ah.cfg('idle_sweep.spawned_status'), resultField = ah.cfg('idle_order.spawn_result_field'), nameField = ah.cfg('idle_order.spawn_name_field'), idField = ah.cfg('idle_order.spawn_id_field');
+  var pStatus = resultField + '.status', pName = resultField + '.' + nameField, pId = resultField + '.' + idField, pContent = 'message.content';
+  // the engine digests each line once (marks, regex captures, the few parsed fields) and keeps the facts between calls (#953): this reducer
+  // folds small facts of the window, never megabytes of text through the interpreter
+  var feats = ah.transcript.features(tp, ah.cfgNum('idle_sweep.scan_bytes'), {
+    needles: ah.cfg('idle_order.scan_needles').concat([tag]), marks: [tag, spawnTag], parseIf: [0, 1], quotedIf: [0], quoteMax: ah.cfgNum('idle_order.quote_max'),
+    res: [{ src: ah.cfg('idle_order.re_retask'), flags: '' }, { src: ah.cfg('idle_order.re_stop'), flags: '' }, { src: ah.cfg('idle_order.re_gone'), flags: '' }, { src: ah.cfg('idle_order.re_task_id'), flags: '' }],
+    paths: [pContent, pStatus, pName, pId], lineMax: ah.cfgNum('idle_order.line_max'),
+  });
+  if (feats === null || !Array.isArray(feats)) return [];
+  var jsonRe = jx.re('idle_order.re_idle_json'), state = {}, ended = {};
+  feats.forEach(function (f) {
+    if (f.m[0]) {
+      var c = typeof f.p[pContent] === 'string' ? f.p[pContent] : '';
+      var m = jsonRe.exec(c), o = null;
+      try { o = m ? JSON.parse(m[0]) : null; } catch (y) { o = null; }
+      if (o && o.type === tag && typeof o.from === 'string') {
+        var ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
+        // a stopped or removed teammate stays gone: its last idle notice can land after the stop and must not list it again
+        if (isFinite(ts) && ended[o.from] !== true) state[o.from] = { ms: ts, reason: typeof o.idleReason === 'string' ? o.idleReason : '' };
+      }
+      return;
+    }
+    // a teammate spawned again under a stopped name is a new one
+    if (f.m[1] && f.p[pStatus] === spawnTag && typeof f.p[pName] === 'string') {
+      delete ended[f.p[pName]];
+      var sid = f.p[pId];
+      if (typeof sid === 'string' && sid !== '') idStopIds[f.p[pName]] = sid;
+    }
+    var gone = f.r[2];
+    if (gone && typeof gone[1] === 'string') { var gn = idStopName(gone[1]); ended[gn] = true; delete state[gn]; }
+    var stopped = f.r[1] !== null;
+    if (stopped) {
+      // the teammate a stop names (task_id), seen or not yet idle
+      var tid = f.r[3];
+      if (tid) { var sn = idStopName(tid[1]); ended[sn] = true; delete state[sn]; }
+    }
+    var quoted = f.q || [];
+    // a message to a stopped teammate resumes it: it may idle (and be listed) again
+    if (f.r[0] !== null && !stopped) Object.keys(ended).forEach(function (n) { if (quoted.indexOf(n) >= 0) delete ended[n]; });
+    if (f.r[0] !== null) Object.keys(state).forEach(function (n) { if (quoted.indexOf(n) >= 0) delete state[n]; });
+  });
   var after = ah.cfgNum('idle_order.waiting_after_min') * ah.cfgNum('idle_order.ms_per_minute'), stale = ah.cfgNum('idle_sweep.stale_minutes') * ah.cfgNum('idle_sweep.ms_per_minute');
   var out = [];
-  w.idle.forEach(function (st) {
-    var idle = now - st.ms;
-    if (st.reason !== '' || finished.indexOf(st.name) >= 0 || idle < after || idle >= stale) return;
-    out.push({ id: st.name, label: st.name, idleSinceMs: st.ms });
+  Object.keys(state).forEach(function (n) {
+    var st = state[n], idle = now - st.ms;
+    if (st.reason !== '' || finished.indexOf(n) >= 0 || idle < after || idle >= stale) return;
+    out.push({ id: n, label: n, idleSinceMs: st.ms });
   });
   return out;
 }

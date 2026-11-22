@@ -252,38 +252,80 @@ pub fn teammates(path: &str, tail: f64) -> String {
     }
 }
 
-/// `waiting(path, window, stopIds)`: JSON text. The teammates the last `window` bytes of a Claude transcript show idle (an idle report
-/// with no later end or re-task of them) as `{"idle":[{"name","ms","reason"}],"stopIds":[[name,id]]}`; `stopIds` starts from the ids
-/// given (a JSON array of `[name, id]`) and takes the ones the window's spawns record. `null` when the file is missing or unreadable;
-/// `{"unsure":true}` for a relative path or a timestamp only JavaScript reads exactly. The lines come from the shared incremental view.
-pub fn waiting(path: &str, window: f64, stop_ids: &str) -> String {
-    use crate::checks::idle_agent_sweep::waiting as w;
+/// `features(path, window, spec)`: JSON text. The lines of the last `window` bytes of a transcript that hold one of `spec.needles`, each
+/// reduced to the few facts a script's reducer reads (so the script folds small objects, not megabytes of text), kept between calls by
+/// the shared incremental view: a call digests only the bytes appended since the last one (#953). `spec` is JSON:
+/// `{"needles":[..], "marks":[..], "res":[{"src","flags"}], "paths":[..], "parseIf":[mark index..], "quotedIf":[res index..], "quoteMax":n, "lineMax":n}`;
+/// each answer item is `{"m":[0|1 per mark], "r":[null | [match, group..] per regex], "p":{path: value}, "q":[..]}` where `p` is read
+/// from the line parsed as JSON when one of the `parseIf` marks is in it (a path is dotted keys), and `q` is present when one of the
+/// `quotedIf` regexes matched: the distinct pieces of the line between two double quotes (at most `quoteMax` characters each), so that
+/// a script can ask whether the line holds `"name"` as `q.indexOf(name) >= 0` without being handed the line. Lines longer than
+/// `lineMax` UTF-16 units are left out. `null`: the file is missing or unreadable;
+/// `{"unsure":true}`: a relative path or a bad spec.
+pub fn features(path: &str, window: f64, spec: &str) -> String {
+    use serde_json::Value;
     if !path.starts_with('/') {
         return unsure();
     }
-    let initial: Vec<(String, String)> = serde_json::from_str::<Vec<(String, String)>>(stop_ids).unwrap_or_default();
-    let mut needles: Vec<String> = defaults::list("idle_order.scan_needles").iter().map(|s| s.to_string()).collect();
-    needles.push(defaults::text("idle_order.idle_marker").to_string());
-    let key = format!("waiting\u{1f}{}", needles.join("\u{1f}"));
+    let Ok(sp) = serde_json::from_str::<Value>(spec) else { return unsure() };
+    let strs = |k: &str| -> Vec<String> { sp.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
+    let idx = |k: &str| -> Vec<usize> { sp.get(k).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_u64().map(|n| n as usize)).collect() };
+    let (needles, marks, paths) = (strs("needles"), strs("marks"), strs("paths"));
+    let (parse_if, quoted_if) = (idx("parseIf"), idx("quotedIf"));
+    let quote_max = sp.get("quoteMax").and_then(Value::as_u64).unwrap_or(128) as usize;
+    let line_max = sp.get("lineMax").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let mut res = Vec::new();
+    for r in sp.get("res").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(src), flags) = (r.get("src").and_then(Value::as_str), r.get("flags").and_then(Value::as_str).unwrap_or("")) else { return unsure() };
+        res.push(crate::checks::guardkit::jsre::compile(src, flags.contains('i')));
+    }
+    let n = if window.is_finite() && window > 0.0 { window as u64 } else { defaults::num("script.tail_max_bytes") };
     let digest = |line: &str| -> Option<Option<(crate::transcript::view::Item, usize)>> {
-        if !needles.iter().any(|n| line.contains(n.as_str())) {
+        if !needles.iter().any(|x| line.contains(x.as_str())) || (line_max > 0 && line.encode_utf16().count() > line_max) {
             return Some(None);
         }
-        Some(w::digest_line(line).map(|f| {
-            let weight = f.weight();
-            (std::sync::Arc::new(f) as crate::transcript::view::Item, weight)
-        }))
+        let m: Vec<bool> = marks.iter().map(|x| line.contains(x.as_str())).collect();
+        let r: Vec<Value> = res
+            .iter()
+            .map(|re| re.captures(line).map_or(Value::Null, |c| Value::Array(c.iter().map(|g| g.map_or(Value::Null, |g| json!(g.as_str()))).collect())))
+            .collect();
+        let mut p = serde_json::Map::new();
+        if parse_if.iter().any(|i| m.get(*i).copied().unwrap_or(false))
+            && let Some(doc) = crate::checks::guardkit::jsval::parse_line(line)
+        {
+            for path in &paths {
+                let mut cur = Some(&doc);
+                for key in path.split('.') {
+                    cur = cur.and_then(|c| c.get(key));
+                }
+                if let Some(v) = cur {
+                    p.insert(path.clone(), v.clone());
+                }
+            }
+        }
+        let mut item = json!({"m": m.iter().map(|b| u8::from(*b)).collect::<Vec<_>>(), "r": r, "p": p});
+        if quoted_if.iter().any(|i| r.get(*i).is_some_and(|v| !v.is_null())) {
+            let mut pieces: Vec<&str> = line.split('"').filter(|x| x.chars().count() <= quote_max).collect();
+            pieces.sort_unstable();
+            pieces.dedup();
+            item["q"] = json!(pieces);
+        }
+        let text = item.to_string();
+        let weight = text.len();
+        Some(Some((std::sync::Arc::new(text) as crate::transcript::view::Item, weight)))
     };
-    let n = if window.is_finite() && window > 0.0 { window as u64 } else { defaults::num("script.tail_max_bytes") };
+    let key = format!("features\u{1f}{spec}");
     let q = crate::transcript::view::DigestQuery { key: &key, window: n, crlf: false, line_max: 0, digest: &digest };
     let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return "null".into() };
-    let lines: Vec<&w::WLine> = found.items.iter().filter_map(|i| i.downcast_ref::<w::WLine>()).collect();
-    let Some(st) = w::state_of(lines, initial) else { return unsure() };
-    json!({
-        "idle": st.idle.iter().map(|(n, ms, r)| json!({"name": n, "ms": ms, "reason": r})).collect::<Vec<_>>(),
-        "stopIds": st.stop_ids.iter().map(|(n, i)| json!([n, i])).collect::<Vec<_>>(),
-    })
-    .to_string()
+    let mut out = String::from("[");
+    for (i, it) in found.items.iter().filter_map(|i| i.downcast_ref::<String>()).enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(it);
+    }
+    out.push(']');
+    out
 }
 
 /// `codex_agents(path, tail)`: JSON text. The agents a Codex rollout tail shows finished but never closed, in the order the
@@ -332,7 +374,7 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     super::evidence_walk::install(c, h)?;
     super::tool_use_scan::install(c, h)?;
     h.set("transcriptTeammates", Function::new(c.clone(), |p: String, t: f64| teammates(&p, t))?)?;
-    h.set("transcriptWaiting", Function::new(c.clone(), |p: String, w: f64, ids: String| waiting(&p, w, &ids))?)?;
+    h.set("transcriptFeatures", Function::new(c.clone(), |p: String, w: f64, spec: String| features(&p, w, &spec))?)?;
     h.set("transcriptCodexAgents", Function::new(c.clone(), |p: String, t: f64| codex_agents(&p, t))?)?;
     Ok(())
 }
