@@ -63,8 +63,12 @@ fn remember(key: &str, out: &str) -> bool {
     }
     // an answer that says "not found / unknown" depends on what is installed, which the key cannot see: never kept
     let unkept = defaults::text("host_spawn.cache_skip_stdout");
-    if !unkept.is_empty() && jsre::compile(unkept, false).is_match(v["stdout"].as_str().unwrap_or("")) {
-        return false;
+    if !unkept.is_empty() {
+        // an unreadable pattern keeps nothing: an uncachable answer costs a re-probe, a wrongly kept one is stale
+        let Some(re) = jsre::config_re("host_spawn.cache_skip_stdout", false) else { return false };
+        if re.is_match(v["stdout"].as_str().unwrap_or("")) {
+            return false;
+        }
     }
     let expires = crate::health::now_ms().saturating_add(defaults::num("host_spawn.cache_ttl_ms"));
     cache().insert_with_ttl(key.to_string(), out.to_string(), out.len(), Some(expires))
@@ -226,7 +230,8 @@ struct Run {
 impl Run {
     /// Run it for at most `limit`: the result JSON and whether the program finished by itself.
     fn exec(&self, limit: Duration) -> (String, bool) {
-        let scrub = jsre::compile(defaults::text("host_spawn.scrub_env"), true);
+        // an unreadable scrub pattern would pass every variable through to the program: nothing runs, as if it were not installed
+        let Some(scrub) = jsre::config_re("host_spawn.scrub_env", true) else { return (json!({"found": false}).to_string(), false) };
         let mut cmd = std::process::Command::new(&self.bin);
         cmd.args(&self.args).env_clear();
         for (k, v) in self.env.iter().filter(|(k, _)| !scrub.is_match(k)) {
@@ -320,6 +325,23 @@ mod tests {
 
     fn args() -> Vec<String> {
         vec!["--version".into()]
+    }
+
+    /// #957: a settings pattern that does not compile is counted and answers safely (nothing kept, nothing run); never an abort.
+    #[test]
+    fn sp_08_an_invalid_pattern_in_the_settings_is_counted_and_never_aborts() {
+        let bad = |k: &str| crate::defaults::set_overlay(&[(k, json!("(unbalanced"))]);
+        let before = crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]);
+        bad("host_spawn.cache_skip_stdout");
+        assert!(!remember("sp08-key", &done("Python 3.12.1")), "an unreadable skip pattern keeps nothing");
+        assert_eq!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]), before + 1);
+        bad("host_spawn.scrub_env");
+        let run = Run { prog: "sh".into(), bin: "/bin/sh".into(), args: vec!["-c".into(), "echo hi".into()], env: HashMap::new(), cwd: None };
+        let (out, completed) = run.exec(Duration::from_secs(5));
+        crate::defaults::set_overlay(&[]);
+        assert_eq!(out, json!({"found": false}).to_string());
+        assert!(!completed);
+        assert_eq!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]), before + 2);
     }
 
     #[test]
