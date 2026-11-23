@@ -4630,7 +4630,7 @@ fn rt_step_1_advise_fires_at_45_minutes_for_an_agent_with_outcomes() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     rt_tick(&h, &child, &mut st, n + 38 * MIN, 2);
     assert!(
         rt_texts(&h).is_empty() && rt_fired("advise") == 0,
@@ -4649,17 +4649,35 @@ fn rt_step_1_advise_fires_at_45_minutes_for_an_agent_with_outcomes() {
     assert!(st.nudges.get("abc").is_some_and(|x| x.trigger == "runtime"), "the nudge is a runtime nudge");
 }
 
-/// The token side of a step: 1.0 x the per-agent budget (1M) fires step 1 long before 45 minutes, even with outcomes.
+/// The token side of a step: 1.0 x the budget (1M) spent SINCE THE LAST OUTCOME fires step 1 long before 45 minutes.
 #[test]
 fn rt_step_1_fires_on_one_budget_of_tokens_before_45_minutes() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let (h, n, child) = nudge_home("rt687-tok");
     drained();
     let mut st = State::default();
-    append(&child, &[asst(n + 3 * MIN, "big", 1_100_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
-    append(&child, &[tool(n + 5 * MIN, "kc", 10, "gc", "Bash", json!({"command": "git commit -m done"})), result(n + 5 * MIN + 1000, "gc", "ok", false)]);
-    rt_tick(&h, &child, &mut st, n + 10 * MIN, 1);
-    assert_eq!(rt_fired("advise"), 1, "1.1M tokens >= 1.0 x budget fires step 1 at 15 minutes of running");
+    append(&child, &[tool(n + 3 * MIN, "kc", 10, "gc", "Bash", json!({"command": "git commit -m done"})), result(n + 3 * MIN + 1000, "gc", "ok", false)]);
+    rt_tick(&h, &child, &mut st, n + 4 * MIN, 1);
+    append(&child, &[asst(n + 5 * MIN, "big", 1_100_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    rt_tick(&h, &child, &mut st, n + 10 * MIN, 2);
+    assert_eq!(rt_fired("advise"), 1, "1.1M tokens since the last outcome >= 1.0 x budget fires step 1 at 10 minutes after it");
+}
+
+/// A productive agent (a fresh outcome every 30 minutes, 2M tokens spent in all) is never nudged on its total runtime or spend (#958).
+#[test]
+fn rt_a_productive_long_running_agent_is_not_nudged() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt958-productive");
+    drained();
+    let mut st = State::default();
+    for k in 0..6u64 {
+        let (commit, spend) = spend_cycle(&child, k, n + k * 30 * MIN);
+        append(&child, &commit);
+        append(&child, &spend);
+        rt_tick(&h, &child, &mut st, n + k * 30 * MIN + 5 * MIN, k);
+    }
+    assert_eq!(rt_fired("advise") + rt_fired("order") + rt_fired("block"), 0, "3 hours of running and 4M tokens, but an outcome every 30 minutes");
+    assert!(rt_texts(&h).is_empty(), "no runtime nudge: {:?}", rt_texts(&h));
 }
 
 /// Steps climb: advise, then order (90 min), then block (120 min). An extension moves the agent on to the next step (never back to
@@ -4678,7 +4696,7 @@ fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
         k += 1;
         rt_tick(&h, &child, st, n + m * MIN, k)
     };
-    at(&mut st, 20);
+    at(&mut st, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = at(&mut st, 46);
     assert_eq!(rt_fired("advise"), 1);
     let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
@@ -4723,7 +4741,7 @@ fn rt_block_step_blocks_every_stop_until_extended_and_never_says_advisory() {
         k += 1;
         rt_tick(&h, &child, st, n + m * MIN, k)
     };
-    at(&mut st, 20);
+    at(&mut st, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = at(&mut st, 123);
     assert_eq!(rt_fired("block"), 1, "the block step fired");
     at(&mut st, 124); // the escalation is published by the next follow
@@ -4749,7 +4767,7 @@ fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "an old explanation", "min": 0})).unwrap();
@@ -4770,7 +4788,7 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let first = st.nudges.get("abc").expect("step 1 opens").ref_id.clone();
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
@@ -4858,7 +4876,7 @@ fn rt_msg_and_wrong_are_counted_per_step() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "it is waiting on CI", "min": 0})).unwrap();
@@ -5133,6 +5151,40 @@ fn n923_stuck_on_names_only_a_call_that_ran_past_the_configured_time() {
     assert!(old.contains("stuck on: Bash mkdir out"), "a call quiet past the time is: {old}");
 }
 
+/// #958: a merge run with an env assignment, a timeout and nice in front counts like a bare `gh pr merge` (the commit and push patterns
+/// already allowed that prefix; the merge pattern did not, so a merging agent showed no outcome).
+#[test]
+fn a_merge_behind_an_env_timeout_and_nice_prefix_is_a_shipped_outcome() {
+    for (i, cmd) in ["gh pr merge 5 --squash", "GH_TOKEN=x gh pr merge 5 --squash", "GH_TOKEN=x timeout 60 nice -n 10 gh pr merge 5 --squash"].into_iter().enumerate() {
+        let h = home(&format!("merge-prefix-{i}"));
+        let n = now0();
+        write(
+            &sess(&h, "s1"),
+            &[prompt(n - 9 * MIN, "/w"), tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": cmd})), result(n - 7 * MIN, "u1", "Merged pull request #5", false)],
+        );
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n - 6 * MIN]);
+        assert_eq!(agent(&st, "s1").shipped, 1, "`{cmd}` is one shipped merge");
+    }
+}
+
+/// #951 (#958): a waste nudge about an agent that HAS outcomes says "no new outcome since flagged", never "0 outcomes", and shows the
+/// lifetime count, so the figure cannot be read as the agent's total.
+#[test]
+fn p951_the_waste_evidence_says_no_new_outcome_since_flagged_and_shows_the_lifetime_outcomes() {
+    let (h, n, _child) = nudge_home("p951-waste");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n + MIN]);
+    let mut a = st.agents.get("abc").cloned().unwrap();
+    let s = |t: u64, tin: u64| Sample { t, tin, tout: 0, tcr: 0, tcw: 0, tools: 0, progress: 3 };
+    a.samples = vec![s(n, 0), s(n + 10 * MIN, 400_000)];
+    a.progress = 3;
+    let f = Flag { since: n, base_progress: 3, text: "waste".into(), ..Flag::default() };
+    let (ev, ..) = nudge::evidence_for_tests(&a, "waste", &f, n + 12 * MIN);
+    assert!(ev.contains("no new outcome since flagged (12m ago)") && ev.contains("3 outcomes in its lifetime"), "{ev}");
+    assert!(!ev.contains("0 outcomes"), "{ev}");
+}
+
 /// #923 item 3: a snooze recorded for a runtime nudge holds the next step until it runs out, then the step fires.
 #[test]
 fn n923_a_runtime_snooze_holds_the_next_step_until_it_runs_out() {
@@ -5142,7 +5194,7 @@ fn n923_a_runtime_snooze_holds_the_next_step_until_it_runs_out() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     assert_eq!(rt_fired("advise"), 1);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
@@ -5185,7 +5237,7 @@ fn n923_a_busy_health_hold_does_not_hold_a_runtime_step_and_the_tokens_are_label
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     st.nudge_hold.insert("abc".into(), n + 46 * MIN + 30_000); // a busy hold (within health_recheck_ms, so not read as a legacy done hold)
     rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     assert_eq!(rt_fired("advise"), 1, "a busy health hold must not hold the runtime step");

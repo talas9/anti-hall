@@ -536,7 +536,6 @@ value = "the dispatch table has no well-formed row for {host} {event}: the Node 
 [dispatch.hooks_claude_UserPromptSubmit]
 doc = "The claude UserPromptSubmit hook entries, in dispatch order."
 value = [
-  { id = "verify-first", matcher = "", timeout = 10, check = "verify-first" },
   { id = "task-tracker", matcher = "", timeout = 10, check = "task-tracker" },
   { id = "idle-agent-sweep", matcher = "", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", timeout = 10, check = "limit-conserve-inject" },
@@ -736,7 +735,6 @@ value = [
 [dispatch.hooks_codex_UserPromptSubmit]
 doc = "The codex UserPromptSubmit hook entries, in dispatch order."
 value = [
-  { id = "verify-first", matcher = "", timeout = 10, check = "verify-first" },
   { id = "task-tracker", matcher = "", timeout = 10, check = "task-tracker" },
   { id = "idle-agent-sweep", matcher = "", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", timeout = 10, check = "limit-conserve-inject" },

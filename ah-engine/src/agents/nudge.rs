@@ -415,7 +415,10 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     if super::signals::building(a, now) {
         parts.push(ef.str_field("building").to_string());
     } else if spent > 0 && a.progress == f.base_progress {
-        parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent)), ("cache_pct", &super::lim("cache_read_pct"))]));
+        parts.push(defaults::fill(
+            ef.str_field("waste"),
+            &[("tokens", &tokens(spent)), ("cache_pct", &super::lim("cache_read_pct")), ("since", &age(now.saturating_sub(f.since))), ("outcomes", &a.progress)],
+        ));
     }
     if super::signals::waiting_on_ci(a) {
         parts.push(ef.str_field("ci_wait").to_string());
@@ -542,11 +545,12 @@ fn rt_steps() -> Vec<Step> {
         .collect()
 }
 
-/// The highest step (1-based) the agent has reached by running time or spend; 0 = none. A threshold of 0 is off.
+/// The highest step (1-based) the agent has reached by time or spend SINCE ITS LAST OUTCOME (not its total runtime or spend, so an agent
+/// that keeps producing outcomes is never nudged); 0 = none. A threshold of 0 is off.
 fn rt_reached(a: &Agent, now: u64, steps: &[Step]) -> u64 {
     let min_ms = super::fmtn("ms_per_s") * 60;
-    let mins = now.saturating_sub(super::started_ms(a)) / min_ms;
-    let spent = super::signals::total_spent(a);
+    let mins = now.saturating_sub(last_outcome_ms(a)) / min_ms;
+    let spent = super::signals::total_spent(a).saturating_sub(a.progress_spent);
     let budget = rt_cfg().get("budget_tokens").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let pct = super::fmtn("pct").max(1);
     steps
@@ -555,10 +559,9 @@ fn rt_reached(a: &Agent, now: u64, steps: &[Step]) -> u64 {
         .map_or(0, |i| i as u64 + 1)
 }
 
-/// When the agent's last outcome came: the start of the newest run of samples at its current progress, else when it started.
+/// When the agent's last outcome came, as the sampler saw it (its start when it was never sampled).
 fn last_outcome_ms(a: &Agent) -> u64 {
-    let Some(cur) = a.samples.last() else { return super::started_ms(a) };
-    a.samples.iter().rev().take_while(|s| s.progress == cur.progress).last().map_or(super::started_ms(a), |s| s.t).max(super::started_ms(a))
+    if a.progress_at > 0 { a.progress_at.max(super::started_ms(a)) } else { super::started_ms(a) }
 }
 
 fn rt_text(n: &Nudge, a: &Agent, step: &Step, now: u64) -> String {

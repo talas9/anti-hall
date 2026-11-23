@@ -167,9 +167,8 @@ labelled with how it was measured in the README of `ah-engine/`.
   `--audit` pass of git-guard) and `failure-root-cause-nudge` (PostToolUseFailure), plus the three context checks `verify-first-subagent`
   (SubagentStart), `verify-first-full` (SessionStart) and `fable-availability` (SessionStart). The context checks are not
   guards: they inject text or record a fact, never block, and anything they cannot reproduce exactly defers to the Node
-  hook (D74); the four spawn/path context ports below; and the three prompt-emission ports `verify-first` (the
-  short rotating reminder), `idle-agent-sweep` (agents that finished but were never stopped) and `emit-dedupe-reset`
-  (marks a context loss at SessionStart); the four context-budget gates; and the six session maintenance ports above:
+  hook (D74); the four spawn/path context ports below; and the two prompt-emission ports `idle-agent-sweep` (agents that finished but were never stopped) and `emit-dedupe-reset`
+  (marks a context loss at SessionStart); the retired per-turn `verify-first` rotating reminder has no dispatch row any more (#958: the protocol arrives at SessionStart and SubagentStart); the four context-budget gates; and the six session maintenance ports above:
   `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`, `defect-nudge` and `progress-prune`; and the three agent and transcript controls `ask-guard`, `silent-agent-nudge`
   and `stale-agent-stop-note`, which share one streaming port of the transcript agent scan (see the README of `ah-engine/`); and the two edit and shell guards `merge-gate` and `api-guard`, which answer only what
   Node answers with no output and no side effect and defer the rest, so a possible block, a Jev shadow ask or an
@@ -1432,7 +1431,7 @@ Files:
 | `units.toml` | the background-service units (`ah-engine units`, lane L08b): the unit names, launchd and systemd file shapes, the service-manager command lines, the ledger and lock files, the report words and the switch `maintenance.unitsHeal` |
 | `agent_tracker.toml` | the agent tracker: every threshold, window, weight, route, cooldown, pattern, word, path and text, the Claude Code CLI source and the `agent-reminders` check |
 | `host_proc.toml` | the generic process primitives (`ah.proc.*`, `ah.sleep`): the listing, age and service-manager commands and their bounds, the start-time forms, the signal and sleep caps |
-| `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |
+| `task_tracker.toml` | the task-tracker directive and reminder texts, the untracked-request evidence gate, the open-tasks line (off by default), the Jev label question and the demand-metrics file |
 | `realtime.toml` | the realtime watch facility: backend, poll interval, debounce and ceiling, queue and directory caps, the filesystem types that are polled, SQLite side-file suffixes, the mount-table path, and the latency and CPU targets |
 | `judge.toml` | the judge calls the engine makes itself: the local Claude CLI client, the speculation-judge prompts and evidence limits, the mesh-triage worker's prompts and budgets, and the Jev-first cascade (thresholds, prompts, telemetry words) |
 | `spawn_context.toml` | paths, switches, limits, messages and the orchestration text of the spawn/path context ports |

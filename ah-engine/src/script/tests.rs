@@ -741,6 +741,33 @@ fn handover_and_budget_scripts_match_their_compiled_ports() {
     }
 }
 
+/// #958: limit conservation speaks when it turns on and when it turns off, never in between (the keepalive is 0: no repeat while it holds),
+/// and speaks again when it turns back on.
+#[test]
+fn limit_conserve_speaks_only_when_conservation_turns_on_or_off() {
+    let h = home("lc-transitions");
+    let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": "lc1", "cwd": "/tmp", "prompt": "go on"});
+    let say = |mode: &str| -> String {
+        let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("ANTIHALL_LIMIT_CONSERVE", mode)]);
+        match super::run_forced("limit-conserve-inject", &p, &Value::Null, "UserPromptSubmit", &e).unwrap().unwrap() {
+            Verdict::Exact(x) => x.out,
+            other => panic!("an exact line: {other:?}"),
+        }
+    };
+    let quiet = defaults::text("ctxbudget.ups_empty");
+    let on = say("on");
+    assert!(on.contains("limit conservation is active"), "turning on speaks: {on}");
+    for i in 0..3 {
+        assert_eq!(say("on"), quiet, "still on, call {i}: nothing repeats");
+    }
+    let off = say("off");
+    assert!(off.contains("limit conservation is over"), "turning off speaks once: {off}");
+    for i in 0..3 {
+        assert_eq!(say("off"), quiet, "still off, call {i}: silent");
+    }
+    assert!(say("on").contains("limit conservation is active"), "turning on again speaks again");
+}
+
 #[test]
 fn phase_tracker_script_matches_the_compiled_port() {
     golden_report("phase-tracker", 12);

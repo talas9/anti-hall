@@ -441,13 +441,13 @@ fn a_shadowed_answer_is_decided_and_suppressed_never_delivered() {
     let (code, out, err) = e.run(&["hook", "--event", "UserPromptSubmit"], false, &p, true);
     let until = Instant::now() + common::scaled(Duration::from_secs(30));
     let mut f = e.funnel();
-    while stage_sum(&f, "verify-first", "suppressed") == 0 && Instant::now() < until {
+    while stage_sum(&f, "task-tracker", "suppressed") == 0 && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(100));
         f = e.funnel();
     }
     e.stop();
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "shadow: nothing reaches the agent");
-    for check in ["verify-first", "task-tracker"] {
+    for check in ["task-tracker"] {
         assert_eq!(stage_sum(&f, check, "decided"), 1, "{check}: {f}");
         assert_eq!(stage_sum(&f, check, "suppressed"), 1, "{check}: {f}");
         assert_eq!(stage_sum(&f, check, "delivered"), 0, "{check} is not delivered: {f}");
@@ -466,7 +466,7 @@ fn an_empty_additional_context_is_never_decided_or_delivered() {
     let (code, _, err) = e.run(&["hook", "--event", "UserPromptSubmit"], false, &p, true);
     let until = Instant::now() + common::scaled(Duration::from_secs(30));
     let mut f = e.funnel();
-    while stage_sum(&f, "verify-first", "delivered") == 0 && Instant::now() < until {
+    while stage_sum(&f, "task-tracker", "delivered") == 0 && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(100));
         f = e.funnel();
     }
@@ -474,7 +474,7 @@ fn an_empty_additional_context_is_never_decided_or_delivered() {
     let f = e.funnel();
     e.stop();
     assert_eq!(code, 0, "{err}");
-    assert!(stage_sum(&f, "verify-first", "delivered") >= 1, "a check that says something is delivered: {f}");
+    assert!(stage_sum(&f, "task-tracker", "delivered") >= 1, "a check that says something is delivered: {f}");
     for check in ["auto-handover", "limit-conserve-inject"] {
         assert_eq!((stage_sum(&f, check, "decided"), stage_sum(&f, check, "delivered")), (0, 0), "{check} said nothing: {f}");
     }
@@ -1277,7 +1277,7 @@ fn notice_turn_counters_reach_the_daemons_metrics_with_the_switch_off_and_on() {
     e.stop();
     for (kind, _) in notices {
         assert_eq!(counter_in(&m, "notice_turn_matched", &[("kind", kind)]), 2, "{kind}: counted again with the switch on: {m}");
-        for check in ["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
+        for check in ["task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
             assert_eq!(counter_in(&m, "notice_turn_skipped", &[("kind", kind), ("check", check)]), 1, "{kind}/{check}: skipped once: {m}");
         }
     }

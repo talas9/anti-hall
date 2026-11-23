@@ -21,7 +21,7 @@ value = { notification = '^\s*(?:<system-reminder>\s*)?<task-notification>', mes
 
 [notice_turn.skip_checks]
 doc = "The UserPromptSubmit dispatch entry ids (a variant suffix is ignored) dropped on a notice turn while notice_turn.sw_main is on: the pure per-prompt reminders. Not idle-agent-sweep or agent-reminders (a notification usually reports a finished agent, and they carry that fact), not devswarm-parent-inbox or devswarm-rt-advisory (the tick turn is the inbox turn), and not auto-handover, afk-mode, repair-on-reload or limit-conserve-inject (state or mode, not reminders)."
-value = ["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"]
+value = ["task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"]
 
 [metric.notice_turn_matched]
 doc = "UserPromptSubmit prompts that are a harness notice, by kind (notice_turn.kinds). Counted with the switch on or off, so it measures the share of notice turns before the skip is enabled."

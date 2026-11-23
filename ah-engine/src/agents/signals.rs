@@ -63,6 +63,9 @@ fn label(a: &Agent) -> String {
 
 fn sample(a: &mut Agent, now: u64) {
     super::facts::episode_sync(a, now); // the burn episode starts at the last hard outcome (PR #472)
+    if a.samples.last().is_none_or(|p| p.progress != a.progress) {
+        (a.progress_at, a.progress_spent) = (now, total_spent(a)); // an outcome since the last sample (or the first sight): the runtime clock restarts
+    }
     a.samples.push(Sample { t: now, tin: a.tin, tout: a.tout, tcr: a.tcr, tcw: a.tcw, tools: a.tools, progress: a.progress });
     let keep = now.saturating_sub(lim("waste_window_ms") * 2);
     a.samples.retain(|s| s.t >= keep);

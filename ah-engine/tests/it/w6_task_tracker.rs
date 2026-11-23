@@ -1,6 +1,6 @@
-//! W6: transcript growth alone no longer re-sends the whole task-list directive ("capture EVERY user request") on every prompt. In a
-//! session whose transcript grows past the growth threshold each turn it was sent 463 times; now growth re-sends it only once the
-//! minimum gap since the last full directive has passed. Engine alone: the narrowing is intentional.
+//! W6 / #958: the whole task-list directive ("capture EVERY user request") goes out once per context epoch (the first prompt of a
+//! session, and the first one after a context loss), never on a clock window or on transcript growth; the short reminder speaks only on
+//! evidence (a substantive prompt while no task is open). Engine alone: the narrowing is intentional.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::{Value, json};
@@ -13,19 +13,45 @@ fn plugin() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall")
 }
 
+/// What one prompt of session `s1` looks like to the tracker: when the last full directive was sent, when the context was last lost
+/// (the SessionStart reset marker), the prompt, and the transcript.
+struct Case<'a> {
+    last_full_ago_ms: u64,
+    reset_ago_ms: Option<u64>,
+    prompt: &'a str,
+    transcript: String,
+}
+
+/// A transcript that parses (one user line) and holds no task.
+fn no_tasks() -> String {
+    format!("{}\n", json!({"type": "user", "message": {"role": "user", "content": "hello"}}))
+}
+
+/// A transcript with one open task.
+fn one_open_task() -> String {
+    format!(
+        "{}\n{}\n",
+        json!({"type": "assistant", "message": {"id": "c1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "t1"}}]}}),
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: t1"}]}})
+    )
+}
+
 /// The additional context the task tracker puts in front of the model for one prompt of session `s1`.
-fn context(tag: &str, last_full_ago_ms: u64) -> String {
+fn context(tag: &str, c: &Case) -> String {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("w6-tt-{tag}-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     let home = dir.join("home");
-    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::create_dir_all(home.join(".anti-hall/emit-dedupe")).unwrap();
     std::fs::create_dir_all(home.join("proj")).unwrap();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    // the last full directive was sent `last_full_ago_ms` ago, when the transcript was 10 bytes; it now holds 300 KB
-    std::fs::write(home.join(".anti-hall/task-tracker-s1.json"), format!("{{\"lastFull\":{},\"lastFullSize\":10}}", now - last_full_ago_ms)).unwrap();
+    std::fs::write(home.join(".anti-hall/task-tracker-s1.json"), format!("{{\"lastFull\":{},\"lastFullSize\":10}}", now - c.last_full_ago_ms)).unwrap();
+    if let Some(ago) = c.reset_ago_ms {
+        let at = now - ago;
+        std::fs::write(home.join(".anti-hall/emit-dedupe/dedupe-s1.json"), format!("{{\"__reset\":{{\"resetAt\":{at},\"lastSeenAt\":{at}}}}}")).unwrap();
+    }
     let transcript = home.join("t.jsonl");
-    std::fs::write(&transcript, "x".repeat(300_000)).unwrap();
-    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "please do the thing", "cwd": home.join("proj"), "transcript_path": transcript});
+    std::fs::write(&transcript, &c.transcript).unwrap();
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": c.prompt, "cwd": home.join("proj"), "transcript_path": transcript});
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.args(["check", "task-tracker"])
         .env_clear()
@@ -55,13 +81,38 @@ fn context(tag: &str, last_full_ago_ms: u64) -> String {
 }
 
 const FULL: &str = "task tracker: requests need tracking before work starts.";
+const SHORT: &str = "capture every request as a priority-sorted task";
+const LONG_PROMPT: &str = "please refactor the billing export so it streams rows instead of loading them";
+const HOUR: u64 = 3_600_000;
 
 #[test]
-fn growth_alone_resends_the_full_directive_only_after_the_minimum_gap() {
-    let soon = context("soon", 60_000);
-    assert!(!soon.contains(FULL), "a full directive one minute ago: growth alone must not re-send it: {soon}");
-    let later = context("later", 2 * 3_600_000);
-    assert!(later.contains(FULL), "two hours on (inside the window) the growth re-sends it: {later}");
+fn the_full_directive_is_sent_once_per_context_epoch_not_on_a_timer_or_growth() {
+    // sent 7 hours ago (past the old 6 h window), the transcript grown since: no new epoch, so nothing is re-sent
+    let c = Case { last_full_ago_ms: 7 * HOUR, reset_ago_ms: None, prompt: LONG_PROMPT, transcript: one_open_task() + &"x".repeat(300_000) };
+    let same = context("same", &c);
+    assert!(!same.contains(FULL), "the same context epoch: the directive is not re-sent: {same}");
+    // the context was lost 1 h ago (the SessionStart reset marker), after the directive: the new epoch gets it once
+    let c = Case { last_full_ago_ms: 2 * HOUR, reset_ago_ms: Some(HOUR), prompt: LONG_PROMPT, transcript: one_open_task() };
+    let again = context("again", &c);
+    assert!(again.contains(FULL), "a context loss after the last directive: it is sent again: {again}");
+    // the reset is OLDER than the directive: the directive already belongs to this epoch
+    let c = Case { last_full_ago_ms: HOUR, reset_ago_ms: Some(2 * HOUR), prompt: LONG_PROMPT, transcript: one_open_task() };
+    assert!(!context("older", &c).contains(FULL), "a reset older than the last directive is no new epoch");
+}
+
+#[test]
+fn a_compliant_prompt_gets_no_compliance_line_and_an_untracked_request_gets_the_reminder() {
+    // a task is open: the work is tracked, nothing to say (no short reminder, no open-tasks line, no DISPATCH NOW)
+    let tracked = Case { last_full_ago_ms: HOUR, reset_ago_ms: None, prompt: LONG_PROMPT, transcript: one_open_task() };
+    let out = context("tracked", &tracked);
+    assert!(out.is_empty(), "a compliant prompt is met with silence: {out}");
+    // a short follow-up with no task open is no request either
+    let short = Case { last_full_ago_ms: HOUR, reset_ago_ms: None, prompt: "yes do it", transcript: no_tasks() };
+    assert!(context("short", &short).is_empty(), "a short follow-up is silent");
+    // a substantive prompt while no task is open: the evidence of an untracked request
+    let untracked = Case { last_full_ago_ms: HOUR, reset_ago_ms: None, prompt: LONG_PROMPT, transcript: no_tasks() };
+    let out = context("untracked", &untracked);
+    assert!(out.contains(SHORT), "a substantive prompt with no task open gets the reminder: {out}");
 }
 
 /// One UserPromptSubmit of session `s1` in `home` (kept between calls) over a transcript of three tasks, two of them completed, with the
@@ -100,6 +151,7 @@ fn prompt_context(home: &std::path::Path, dir: &std::path::Path, sid: &str, tran
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .env("ANTIHALL_TASK_TRACKER_TERSE", "0") // the earlier wording these assertions read: the terse wording ships on
         .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", prune_after)
+        .env("ANTIHALL_TASK_TRACKER_LINES", "1") // the open-tasks line is off by default (#958); these assertions read it
         .env("AH_ENGINE_DIR", dir.join("state"))
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_PLUGIN_ROOT", plugin())
@@ -190,7 +242,7 @@ fn a_long_session_whose_transcript_tail_lacks_the_creates_reads_its_list_from_th
 
 /// The prompt digest (#338 item 2, `inject_gate.digest_hooks`) keeps one headline per advisory inline and spills the rest to a file the
 /// model has to open. The prune advisory used to trail the tracker's generic reminder, so it was always in the spilled part: produced
-/// correctly, never seen. Through the real dispatcher, with the digest threshold at its minimum (the verify-first reminder speaks too), the INLINE
+/// correctly, never seen. Through the real dispatcher, with the digest threshold at its minimum (the limit-conservation directive speaks too), the INLINE
 /// part (before the spill pointer) must carry it.
 #[test]
 fn the_prune_advisory_survives_the_prompt_digest_inline() {
@@ -227,7 +279,8 @@ fn the_prune_advisory_survives_the_prompt_digest_inline() {
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .env("ANTIHALL_TASK_TRACKER_TERSE", "0") // the earlier wording these assertions read: the terse wording ships on
         .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", "10")
-        .env("ANTIHALL_PROMPT_DIGEST_MIN", "2") // the verify-first reminder and the tracker are two digestible advisories
+        .env("ANTIHALL_LIMIT_CONSERVE", "on") // the conservation directive and the tracker are two digestible advisories
+        .env("ANTIHALL_PROMPT_DIGEST_MIN", "2")
         .env("AH_ENGINE_DIR", dir.join("state"))
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
