@@ -5429,3 +5429,43 @@ fn n923_a_busy_health_hold_does_not_hold_a_runtime_step_and_the_tokens_are_label
     let texts = rt_texts(&h);
     assert!(texts.iter().any(|t| t.contains(&format!("tokens (cache reads count {pct}%)"))), "the token figure is not labelled: {texts:?}");
 }
+
+#[test]
+fn a_task_with_a_stated_blocked_on_reason_is_held_not_negligence_in_every_tick_signal() {
+    let n = now0();
+    let late = [n, n + 16 * MIN, n + 17 * MIN];
+    let task = |m: Value| json!({"id": "1", "subject": "Choose disk items", "status": "in_progress", "owner": "", "blockedBy": [], "metadata": m});
+    // in progress with a reason: silent in inprogress_waiting and idle_no_agents
+    let h = home("ipw-held");
+    task_file(&h, SID, task(json!({"blockedOn": "owner: choose which disk items to delete"})));
+    working_session(&h, n, reads(n - 5 * MIN, 2, "r"));
+    let mut st = State::default();
+    ticks(&h, &mut st, &late);
+    assert!(compliance_rows(&h, "inprogress_waiting").is_empty(), "held: {:?}", queue(&h, SID));
+    // the same task with null / empty / blank blockedOn still fires
+    for (i, m) in [json!({"blockedOn": null}), json!({"blockedOn": ""}), json!({"blockedOn": "  "}), json!({})].into_iter().enumerate() {
+        let h = home(&format!("ipw-open-{i}"));
+        task_file(&h, SID, task(m.clone()));
+        working_session(&h, n, reads(n - 5 * MIN, 2, "r"));
+        let mut st = State::default();
+        ticks(&h, &mut st, &late);
+        assert_eq!(compliance_rows(&h, "inprogress_waiting").len(), 1, "{m}: {:?}", queue(&h, SID));
+    }
+    // idle main session: a held in-progress or pending task is not dispatchable, an unheld one is
+    let h = home("held-dispatch");
+    task_file(&h, SID, json!({"id": "1", "subject": "Held pending", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "owner decision"}}));
+    task_file(&h, SID, task(json!({"blockedOn": "owner: pick"})));
+    main_session(&h, SID, n, 15, "done for now");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(queue(&h, SID).iter().all(|r| r["signal"] != "idle_no_agents" && r["signal"] != "underparallel"), "{:?}", queue(&h, SID));
+    let e = env(&h, n + 2 * MIN);
+    let ts = compliance::session_tasks(&e, SID);
+    assert!(ts.iter().all(|t| t.held));
+    assert!(compliance::dispatchable(&ts, &st, &st.agents[SID], e.now_ms).is_empty());
+    let h = home("unheld-dispatch");
+    task_file(&h, SID, json!({"id": "1", "subject": "Free pending", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": null}}));
+    let e = env(&h, n);
+    let ts = compliance::session_tasks(&e, SID);
+    assert!(!ts[0].held);
+}

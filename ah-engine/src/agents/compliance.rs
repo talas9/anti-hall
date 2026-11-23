@@ -18,6 +18,8 @@ pub(super) struct Task {
     pub(super) status: String,
     pub(super) owner: String,
     pub(super) blocked: Vec<String>,
+    /// `metadata.blockedOn` carries a stated reason: the task waits on something outside the session, so it is never negligence.
+    pub(super) held: bool,
 }
 
 fn num(t: &V, k: &str) -> u64 {
@@ -107,7 +109,12 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
             .and_then(Value::as_array)
             .map(|b| b.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect())
             .unwrap_or_default();
-        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked });
+        let held = v
+            .get(c.str_field("f_metadata"))
+            .and_then(|m| m.get(c.str_field("f_blocked_on")))
+            .and_then(Value::as_str)
+            .is_some_and(|r| r.trim().chars().count() >= defaults::num("idle_rule.blocked_on_min") as usize);
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held });
     }
     out.sort_by(|x, y| x.id.cmp(&y.id));
     out
@@ -139,7 +146,7 @@ fn running_children(st: &State, a: &Agent) -> bool {
 
 /// An in-progress task nobody works on: its owner is not a running agent (no owner at all: no lane of the session runs either).
 fn orphaned(t: &Task, st: &State, a: &Agent) -> bool {
-    t.status == defaults::raw("nudges.compliance").str_field("in_progress") && !owner_live(st, a, &t.owner) && (!t.owner.is_empty() || !running_children(st, a))
+    !t.held && t.status == defaults::raw("nudges.compliance").str_field("in_progress") && !owner_live(st, a, &t.owner) && (!t.owner.is_empty() || !running_children(st, a))
 }
 
 /// Open tasks whose blockers are all closed (or gone) that nobody works on: pending with no owner, or in progress and orphaned, with no
@@ -151,7 +158,7 @@ pub(super) fn dispatchable<'a>(tasks: &'a [Task], st: &State, a: &Agent, now: u6
     let cover = covered(a, now);
     tasks
         .iter()
-        .filter(|t| t.blocked.iter().all(shut) && ((open.contains(&t.status.as_str()) && t.owner.is_empty()) || (!cover && orphaned(t, st, a))))
+        .filter(|t| !t.held && t.blocked.iter().all(shut) && ((open.contains(&t.status.as_str()) && t.owner.is_empty()) || (!cover && orphaned(t, st, a))))
         .collect()
 }
 
@@ -168,7 +175,7 @@ fn watched(env: &Env, a: &Agent) -> bool {
 
 fn open_tasks<'a>(tasks: &'a [Task]) -> Vec<&'a Task> {
     let closed = defaults::raw("nudges.idle_wake").get("closed_statuses").map(V::strings).unwrap_or_default();
-    tasks.iter().filter(|t| !closed.contains(&t.status.as_str())).collect()
+    tasks.iter().filter(|t| !t.held && !closed.contains(&t.status.as_str())).collect()
 }
 
 /// Record, before the signals are read, since when each in-progress task has had nobody on it; any cover clears the clocks.
