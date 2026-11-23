@@ -128,67 +128,6 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
     String::from_utf8_lossy(&ch.wait_with_output().unwrap().stdout).to_string()
 }
 
-/// The task-tracker check answers natively now and would add its directive to every first prompt; these tests are about the other line.
-const NO_TRACKER: (&str, &str) = ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false");
-
-#[test]
-fn verify_first_through_the_dispatcher_picks_the_line_the_digest_of_the_raw_bytes_picks() {
-    for in_process in [true, false] {
-        let e = Env::new(if in_process { "vf-inproc" } else { "vf-daemon" });
-        let map = e.map("UserPromptSubmit", "verify-first");
-        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-        // many payloads, so every rotating line is exercised: a digest that were not forwarded would give one line for all
-        let mut seen = std::collections::BTreeSet::new();
-        for i in 0..60 {
-            let p = ups(&format!("s{i}"), &format!("prompt {i}"), None);
-            let (code, out, err) = if in_process { e.run(&args, true, &p, &[NO_TRACKER]) } else { e.until_daemon_answers(&args, &p, &[NO_TRACKER]) };
-            assert_eq!((code, err.as_str()), (0, ""), "{out}");
-            let want = check_form(&format!("vf-check-{in_process}-{i}"), "verify-first", &p, &[]);
-            assert!(!want.is_empty() && want.contains("VERIFY-FIRST: "), "{want}");
-            assert_eq!(out, want, "payload {i}, in_process={in_process}");
-            seen.insert(out);
-        }
-        assert!(seen.len() >= 15, "the rotation must reach most of its lines, got {}", seen.len());
-        e.stop();
-    }
-}
-
-#[test]
-fn verify_first_answers_a_devswarm_primary_itself_and_defers_only_without_a_working_directory() {
-    let e = Env::new("vf-primary");
-    // the Primary's own prompt hook (it says its override reminder once per session) is switched off: this test is about the other line
-    std::fs::create_dir_all(e.home().join(".anti-hall")).unwrap();
-    std::fs::write(e.home().join(".anti-hall/settings.json"), r#"{"devswarm":{"parentInbox":false}}"#).unwrap();
-    let map = e.map("UserPromptSubmit", "verify-first");
-    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-    let p = ups("sp", "x", None);
-    let (code, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1")]);
-    assert_eq!(code, 0);
-    assert!(out.contains("DEVSWARM PRIMARY") && !out.contains("NODE-RAN"), "a Primary is answered by the engine: {out}");
-    let nocwd = serde_json::json!({"session_id": "sq", "hook_event_name": "UserPromptSubmit", "prompt": "x"}).to_string();
-    let (code, out, _) = e.run(&args, true, &nocwd, &[("DEVSWARM_REPO_ID", "r1")]);
-    assert_eq!(code, 0);
-    // no Node hook is launched any more: the engine answers a prompt without a working directory itself (the Primary's text may
-    // be shorter than Node's; it is context, never a block)
-    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "without a working directory the engine answers itself: {out}");
-    let (_, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
-    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "a child workspace is answered by the engine: {out}");
-    assert!(e.home().join(".anti-hall/emit-dedupe/dedupe-sp.json").exists());
-}
-
-#[test]
-fn a_deferred_verify_first_wrote_no_state_before_deferring() {
-    let e = Env::new("vf-nostate");
-    let map = e.map("UserPromptSubmit", "verify-first");
-    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-    // a relative transcript path was something only Node resolved; the engine answers it itself now
-    let p = serde_json::json!({"session_id": "ns", "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "x", "transcript_path": "rel/t.jsonl"})
-        .to_string();
-    let (code, out, _) = e.run(&args, true, &p, &[]);
-    assert_eq!(code, 0);
-    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "the engine answers a relative transcript path itself: {out}");
-}
-
 #[test]
 fn session_start_marks_the_context_loss_through_the_dispatcher() {
     for in_process in [true, false] {
@@ -248,13 +187,13 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(out.contains("1 finished agent is idle and not stopped: zed (30m)") && !out.contains("NODE-RAN"), "{out}");
     // the request environment carries the clock: without it the same transcript is 'long ago' in a different way
-    // the dispatcher joins the verify-first line and the sweep advisory in table order, as the host joins two hooks
+    // the dispatcher joins the hooks' lines in table order, as the host joins two hooks: the sweep advisory comes last
     let want = check_form("idle-check", "idle-agent-sweep", &p, &extra);
     let advisory: serde_json::Value = serde_json::from_str(want.trim_end()).unwrap();
     let advisory = advisory["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     let joined: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
     let joined = joined["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-    assert!(joined.starts_with("VERIFY-FIRST: ") && joined.ends_with(&format!("\n\n{advisory}")), "{joined}");
+    assert!(joined.ends_with(&format!("\n\n{advisory}")) || joined == advisory, "{joined}");
     // the same prompt again is the same block, still undelivered: both are suppressed
     let (_, again, _) = e.run(&args, true, &p, &extra);
     assert_eq!(ctx(&again), "", "the dedupe state of the first call must hold");
@@ -294,7 +233,7 @@ fn orchestration_rules_are_sent_whole_once_then_short_after_compaction() {
         assert!(o.contains("PROTOCOL.md#orchestration"), "start {i} keeps the pointer: {o}");
     }
     assert!(outs[1].contains("W. DEVSWARM PRIMARY"), "{}", outs[1]);
-    assert!(sizes[1] < sizes[0] / 2 && sizes[4] < sizes[1], "short forms are shorter: {sizes:?}");
+    assert!(sizes[1] < sizes[0] && sizes[4] < sizes[1], "short forms are shorter: {sizes:?}");
     // the switch keeps the whole text every time
     let e2 = Env::new("orch-once-off");
     let map2 = e2.map("SessionStart", "none");

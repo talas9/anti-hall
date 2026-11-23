@@ -46,6 +46,8 @@ function tgActionable(open, tasks, skips) {
     if (tk.statusLc(t) !== pending || t.blockUnknown) return false;
     if (t.owner && !tgCoordinator(t.owner)) return false;
     if (tgOwnerBlocked(t)) return false;
+    var bo = tk.blockedOnText(t);
+    if (bo !== '' && ah.cfg('dispatch_tier.owner_values').indexOf(bo) < 0) return false; // a task that names what it waits on is held, not dispatchable (the owner values keep their own, switchable test above)
     if (skips !== null && skips[t.id] !== undefined) return false; // attended by an agent's description or launch name too: tk.evaluate reads descriptions only
     if (t.blockedBy.some(function (id) { return notDone[id] === true || known[id] !== true; })) return false;
     return tgPriorityRank(t.priority) <= floor;
@@ -61,7 +63,7 @@ function tgIdleRuleOn() { return ah.settings.bool('task_guard.idle_rule_setting'
 function tgIrText(t) { return ((t.content || '') + '\n' + (t.description || '')).slice(0, ah.cfgNum('idle_rule.text_max')); }
 
 // The tasks that are not idle, each with the reason it is skipped: {taskId: reason}. A live owner agent, an agent whose description (or
-// launch name) names the task, an owner decision, a blockedOn marker with a reason, a parked/blocked/waiting marker that gives its reason,
+// launch name) names the task, an owner decision, a blockedOn marker with a reason, an in-progress task while a background shell or Monitor runs, a parked/blocked/waiting marker that gives its reason,
 // a wait on a clock. A bare "BLOCKED" with no reason is not skipped. Reads only what the Stop already read (tasks, agent rows).
 function tgIdleSkips(open, rows) {
   var out = {}, minReason = ah.cfgNum('idle_rule.blocked_on_min'), refRe = new RegExp(ah.cfg('task_guard.task_ref_re'), 'g'), covered = {};
@@ -81,6 +83,8 @@ function tgIdleSkips(open, rows) {
       if (subj.length >= ah.cfgNum('idle_rule.subject_ref_min') && hay.indexOf(subj) >= 0) covered[t.id] = true;
     });
   });
+  // a live background shell or Monitor is the work an in-progress task is waiting on: the session is not idle
+  var bgLive = (rows || []).some(function (r) { return typeof r.shellKind === 'string' && r.shellKind !== '' && r.live !== false; });
   open.forEach(function (t) {
     var why = '';
     if (tgOwnerBlocked(t)) why = ah.cfg('idle_rule.reason_owner');
@@ -89,6 +93,7 @@ function tgIdleSkips(open, rows) {
     else if (tgRe('idle_rule.clock_re', 'i').test(tgIrText(t))) why = ah.cfg('idle_rule.reason_clock');
     else if (t.owner && !tgCoordinator(t.owner) && (tgLiveAgentOwner(t.owner, rows) || tgChildAttended(t.owner))) why = ah.cfg('idle_rule.reason_live_agent');
     else if (covered[t.id] === true) why = ah.cfg('idle_rule.reason_agent_ref');
+    else if (bgLive && ah.cfg('taskstate.in_progress_statuses').indexOf(tk.statusLc(t)) >= 0) why = ah.cfg('idle_rule.reason_bg_job');
     if (why !== '') out[t.id] = why;
   });
   return out;

@@ -484,6 +484,13 @@ pub struct Agent {
     pub hb_step: String,
     /// Series samples.
     pub samples: Vec<Sample>,
+    /// When the agent's progress (its outcome count) last changed, as the sampler saw it; 0 = not sampled yet. Unlike `samples` it is not
+    /// trimmed with the window, so the time since the last outcome stays true for an agent quiet for hours (the runtime steps read it).
+    #[serde(default)]
+    pub progress_at: u64,
+    /// The agent's total spend (`signals::total_spent`) at `progress_at`: what it spent before its last outcome.
+    #[serde(default)]
+    pub progress_spent: u64,
     /// When the last series record was written.
     pub last_series: u64,
     /// The waste sensor's last evaluation of this agent (score, judge verdict, action).

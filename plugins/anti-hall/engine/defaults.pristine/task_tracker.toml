@@ -8,7 +8,7 @@
 
 [task_tracker.summary]
 doc = "One-line description of the task-tracker check in the generated reference."
-value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
+value = "UserPromptSubmit task-list discipline: the full directive (once per context epoch) or the short reminder (only on evidence: a substantive prompt while no task is open), the open-tasks line and the per-turn DISPATCH NOW line with its Jev tier annotations (both off unless context.taskTrackerLines) (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
 
 [task_tracker.setting]
 doc = "Where the check's on/off switch is read from (context.taskTracker, default on)."
@@ -93,22 +93,6 @@ value = "task-tracker"
 [task_tracker.session_hash_len]
 doc = "How many hexadecimal digits of the working directory's hash name a session that has no id."
 value = 16
-
-[task_tracker.window_ms]
-doc = "How long the full directive stays fresh before it is injected again."
-value = 21600000
-unit = "ms"
-
-[task_tracker.growth_bytes]
-doc = "How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay)."
-value = 245760
-unit = "bytes"
-
-[task_tracker.growth_min_gap_ms]
-doc = "The least time since the last full directive before transcript growth alone injects it again. In a session whose transcript grows by the growth threshold every turn, growth alone re-sent the whole directive on every prompt; the window (window_ms) still re-sends it on expiry."
-value = 1800000
-unit = "ms"
-min = 0
 
 [task_tracker.future_tolerance_ms]
 doc = "How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired."
@@ -447,8 +431,12 @@ doc = "Quiets DISPATCH NOW during the spawn stop. Where the switch is read from 
 value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DISPATCH_QUIET_SPAWN_STOP", aliases = [], option = "", default = true }
 
 [task_tracker.change_setting]
-doc = "Short reminder speaks only on list change. Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window."
+doc = "Short reminder speaks only on evidence. Where the switch is read from that makes the short reminder speak only when the prompt holds a request no task can cover: a substantive prompt (untracked_min_chars) while no task is open, repeated after untracked_prompts such prompts (context.taskTrackerChangeOnly, default on). Off restores the reminder on every prompt (rationed by the dedupe store). The full directive is sent once per context epoch either way."
 value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[task_tracker.lines_setting]
+doc = "Where the switch is read from that lets the tracker say the open-tasks line and the per-turn DISPATCH NOW line (context.taskTrackerLines, default off). Off, both stay silent: whether the list is kept and tasks are dispatched is judged on the engine tick from evidence, not announced on every list change."
+value = { section = "context", key = "taskTrackerLines", env = "ANTIHALL_TASK_TRACKER_LINES", aliases = [], option = "", default = false }
 
 [task_tracker.terse_setting]
 doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off."
@@ -475,8 +463,14 @@ doc = "Counter event: the short reminder was withheld because the task list is i
 value = "short_suppressed_same_state"
 
 [task_tracker.untracked_prompts]
-doc = "Prompts before the short reminder repeats. Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."
+doc = "Prompts before the short reminder repeats. Prompts holding a request no task covers (see change_setting) after which the short reminder speaks again (context.taskTrackerUntrackedPrompts)."
 value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }
+
+[task_tracker.untracked_min_chars]
+doc = "The fewest characters a prompt needs to count as a request that may need a task (a shorter one is a follow-up, a yes or a command)."
+value = 40
+min = 1
+unit = "chars"
 
 [metric.task_tracker_emitted]
 doc = "Task tracker messages, by form (full_emitted: the full directive was sent; short_emitted: the short reminder was sent; short_suppressed_same_state: the short reminder was withheld because the agent was already told this state)."

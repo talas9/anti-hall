@@ -45,7 +45,6 @@ apply_patch	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${P
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js"
 @SubagentStop	10	empty
 @UserPromptSubmit	10
-*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/../anti-hall-node/hooks/task-tracker.js"
 *	10	node "${PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js"

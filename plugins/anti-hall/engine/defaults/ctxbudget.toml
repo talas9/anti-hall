@@ -170,9 +170,13 @@ doc = "The emit-dedupe key of the limit-conservation directive."
 value = "limit-conserve"
 
 [ctxbudget.lc_keepalive_turns]
-doc = "The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns."
-value = 10
+doc = "The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns. 0 = state-only, never re-sent while delivered: the directive is said when conservation turns on (or its reason changes, or the context was lost) and once more, as lc_off, when it turns off."
+value = 0
 unit = "turns"
+
+[ctxbudget.lc_off]
+doc = "The line said once when limit conservation turns off (the directive was delivered earlier in this context)."
+value = "limit conservation is over; use the normal model and effort routing again."
 
 [ctxbudget.lc_what]
 doc = "The first line of the directive; {reason} is the tripped buckets joined with + (or the manual reason)."

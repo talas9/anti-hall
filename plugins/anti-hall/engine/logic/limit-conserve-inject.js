@@ -18,12 +18,29 @@ function lcMinuteRounded(iso) {
   return new Date(Math.round(t / r.ms) * r.ms).toISOString().replace(r.cut, r.to);
 }
 
+// The line that says conservation ended: once, and only for a session whose store still holds the delivered directive of this context
+// (a reset marker or no record means the model never heard of it). The store entry becomes an `off` marker, so a later activation emits afresh.
+function lcOffLine(p) {
+  var sid = p && typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
+  if (sid === null || dedupe.disabled() || spawn.osHome() === null) return null;
+  var key = ah.cfg('ctxbudget.lc_dedupe_key'), st = dedupe.readState(dedupe.stateRel(sid)), prev = st[key], rk = st[ah.cfg('emit_dedupe.reset_key')];
+  var resetAt = rk && typeof rk.resetAt === 'number' && isFinite(rk.resetAt) ? rk.resetAt : 0;
+  if (!prev || prev.off === true || typeof prev.lastEmittedAt !== 'number' || !(prev.lastEmittedAt >= resetAt)) return null;
+  var now = ah.clock.now();
+  if (!dedupe.writeEntry(sid, key, { off: true, hash: '', lastEmittedAt: now, lastSeenAt: now }, now)) return null;
+  return text.message('tip', ah.cfg('ctxbudget.lc_guard'), { what: ah.cfg('ctxbudget.lc_off') });
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('ctxbudget.judge_child_env')) === ah.cfg('ctxbudget.judge_child_on')) return 'allow';
   var pend = { w: null };
   var active = lcSessionConserving(p, pend);
   var tp = p && typeof p.transcript_path === 'string' && p.transcript_path !== '' ? p.transcript_path : null;
-  if (active === null) { if (pend.w) pend.w(); return lcEmpty(); }
+  if (active === null) {
+    if (pend.w) pend.w();
+    var off = lcOffLine(p);
+    return off === null ? lcEmpty() : { exact: { code: 0, out: text.render(ah.cfg('ctxbudget.ups_line'), { text: JSON.stringify(off) }), err: '' } };
+  }
   var resets = active.resetsAt !== null ? text.render(ah.cfg('ctxbudget.lc_resets_at'), { at: lcMinuteRounded(active.resetsAt) }) : ah.cfg('ctxbudget.lc_resets_next');
   var built = text.message('warn', ah.cfg('ctxbudget.lc_guard'), {
     what: text.render(ah.cfg('ctxbudget.lc_what'), { reason: active.reason }), why: ah.cfg('ctxbudget.lc_why'),
@@ -32,7 +49,7 @@ function decide(p) {
   var sid = p && typeof p.session_id === 'string' ? p.session_id : null;
   var emit = true;
   if (sid !== null) {
-    var o = { sessionId: sid, transcriptPath: tp, readPath: tp !== null ? hookProc.open(p, tp) : null, key: ah.cfg('ctxbudget.lc_dedupe_key'), content: built, keepaliveTurns: ah.cfgNum('ctxbudget.lc_keepalive_turns') };
+    var o = { sessionId: sid, transcriptPath: tp, readPath: tp !== null ? hookProc.open(p, tp) : null, key: ah.cfg('ctxbudget.lc_dedupe_key'), content: built, keepaliveTurns: ah.cfgNum('ctxbudget.lc_keepalive_turns'), stateOnly: ah.cfgNum('ctxbudget.lc_keepalive_turns') === 0 };
     if (!dedupe.canDecide(o)) ah.unable('limit-conserve-inject:dedupe_unsure'); // a transcript timestamp only V8 reads: decided on what the engine reads
     if (pend.w) pend.w();
     emit = dedupe.shouldEmit(o);

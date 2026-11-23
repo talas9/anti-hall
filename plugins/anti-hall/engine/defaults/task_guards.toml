@@ -1872,6 +1872,10 @@ value = "live_agent"
 doc = "Suppression reason label: a running agent's description or launch name names the task (#<id>)."
 value = "agent_ref"
 
+[idle_rule.reason_bg_job]
+doc = "Suppression reason label: an in-progress task while a background shell or Monitor of this session is running (the task waits on that job)."
+value = "bg_job"
+
 [idle_rule.reason_plan_mode]
 doc = "Suppression reason label: the session is in plan mode (counted once per open task)."
 value = "plan_mode"

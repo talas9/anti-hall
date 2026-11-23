@@ -41,14 +41,10 @@ function vfoConfident(p) {
   return under;
 }
 
-// `orchCompact(spawnDelivery, root, codex)`.
-function vfoCompact(spawnDelivery, root, codex) {
+// `orchCompact(spawnDelivery, root)`: the one-line orchestration text.
+function vfoCompact(spawnDelivery, root) {
   var first = ah.cfg('verify_first_orch.compact_first').split(ah.cfg('verify_first_orch.delivery_placeholder')).join(spawnDelivery ? ah.cfg('verify_first_orch.compact_delivery') : '');
-  var mn = ah.cfg('verify_first_orch.mn_prefix'), body = ah.cfg('verify_first_orch.compact_body'), swapped = -1;
-  for (var i = 0; i < body.length; i++) if (body[i].indexOf(mn) === 0) { swapped = i; break; }
-  var lines = [first];
-  for (var k = 0; k < body.length; k++) lines.push(codex && k === swapped ? ah.cfg('verify_first_orch.compact_mn_codex') : body[k]);
-  return lines.join('\n').split(ah.cfg('verify_first_orch.root_placeholder')).join(root);
+  return first.split(ah.cfg('verify_first_orch.root_placeholder')).join(root);
 }
 
 // ORCH_FULL, or ORCH_FULL_PRIMARY (rule W after the header line) for a DevSwarm Primary.
@@ -102,7 +98,7 @@ function vfoDecide(p, opts, claudeHost) {
     if (kind === 'first') return emit(fullText);
     var root = vfoRoot(opts);
     if (root === null) { ah.unable('verify-first-orch:no_plugin_root'); return emit(fullText); }
-    var t = kind === 'resend' ? vfoCompact(false, root, codex) : ah.cfg('verify_first_orch.repeat_line').split(ah.cfg('verify_first_orch.root_placeholder')).join(root);
+    var t = kind === 'resend' ? vfoCompact(false, root) : ah.cfg('verify_first_orch.repeat_line').split(ah.cfg('verify_first_orch.root_placeholder')).join(root);
     if (kind === 'resend' && primary) t += '\n' + ah.cfg('verify_first_orch.primary_rule_short');
     return emit(vf.capBytes(t, ah.cfgNum('verify_first_orch.resend_max_bytes')));
   }
@@ -121,8 +117,8 @@ function vfoDecide(p, opts, claudeHost) {
   var root = mode === 'off' || mode === 'spawn' ? vfoRoot(opts) : null;
   if (root === null && (mode === 'off' || mode === 'spawn')) ah.unable('verify-first-orch:no_plugin_root');
   if (root !== null) {
-    if (mode === 'off') { writeNone(); return emit(vfoCompact(false, root, codex)); }
-    if (state.ok !== undefined && sid !== null && vfoWriteMarker(sid, pending)) return emit(vfoCompact(true, root, codex));
+    if (mode === 'off') { writeNone(); return emit(vfoCompact(false, root)); }
+    if (state.ok !== undefined && sid !== null && vfoWriteMarker(sid, pending)) return emit(vfoCompact(true, root));
   }
   writeNone();
   return once(vfoFull(codex), vf.deliveryKind(p, 'verify_first_orch.delivery_dir', 'verify_first_orch.delivery_prefix'));
