@@ -16,6 +16,7 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod compliance;
 mod ctl;
 mod escalate;
 mod facts;
@@ -29,6 +30,7 @@ mod signals;
 mod sinks;
 mod sources;
 mod status;
+pub(crate) use compliance::note_task_list;
 pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
@@ -244,6 +246,9 @@ pub struct Flag {
     /// The session key the delivered row names (the parent that got it).
     #[serde(default)]
     pub delivered_to: String,
+    /// The agent's task-list calls when it was raised (GH #958).
+    #[serde(default)]
+    pub base_task_calls: u64,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -517,6 +522,21 @@ pub struct Agent {
     /// When the owner last sent this session a message (0 = not seen); only read for main and workspace sessions.
     #[serde(default)]
     pub owner_ms: u64,
+    /// Work tool calls since the last task-list call (TaskCreate, TaskUpdate or a list rewrite), GH #958.
+    #[serde(default)]
+    pub calls_since_task: u64,
+    /// Tool calls since the owner's last prompt, counted while no task-list call has answered it (`ask_open`), GH #958.
+    #[serde(default)]
+    pub calls_since_ask: u64,
+    /// The owner's last prompt has had no task-list call since.
+    #[serde(default)]
+    pub ask_open: bool,
+    /// Task-list calls made, cumulative: a signal that cleared with this higher than when it was raised was acted on (GH #958).
+    #[serde(default)]
+    pub task_calls: u64,
+    /// Task id -> when it was first seen in progress with no live agent and no background job; any cover clears the entry (GH #958).
+    #[serde(default)]
+    pub ip_since: BTreeMap<String, u64>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,

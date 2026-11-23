@@ -6,6 +6,7 @@
 //! clears, its outcome is recorded: recovered after a reminder (with how long it took), or a false positive (it cleared on its own
 //! while the agent made progress). A reminded flag still up after the outcome window is recorded as not recovered. Nothing here
 //! stops an agent: escalation to the owner and the stop actions are in `escalate`.
+use super::compliance::{self, Task};
 use super::facts::words;
 use super::sinks::{self, MeshOutbox, OwnerNotices, Reminder, SessionQueue, Sink, WakeFeed, age};
 use super::{Agent, Env, Flag, Sample, State, cap, chan, defaults_signals, fmtn, kind_name, lim, pth, state_name};
@@ -50,7 +51,7 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
     }
 }
 
-fn running(a: &Agent) -> bool {
+pub(super) fn running(a: &Agent) -> bool {
     state_of(a) == state_name("running")
 }
 
@@ -630,53 +631,13 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     Some((idle / fmtn("ms_per_s"), what.to_string()))
 }
 
-/// One task of the session's task list.
-struct Task {
-    id: String,
-    subject: String,
-    status: String,
-    owner: String,
-    blocked: Vec<String>,
-}
-
-/// The session's task list (`nudges.idle_wake.tasks_dir`); unreadable files are skipped (no task list is no nudge).
-fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
-    let c = defaults::raw("nudges.idle_wake");
-    let dir = env.home.join(c.str_field("tasks_dir")).join(sinks::key_of(sid));
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out = Vec::new();
-    for e in rd.flatten() {
-        if !e.file_name().to_string_lossy().ends_with(c.str_field("task_ext")) {
-            continue;
-        }
-        let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
-        let s = |k: &str| v.get(c.str_field(k)).map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).unwrap_or_default();
-        let blocked = v
-            .get(c.str_field("f_blocked"))
-            .and_then(serde_json::Value::as_array)
-            .map(|b| b.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect())
-            .unwrap_or_default();
-        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked });
-    }
-    out.sort_by(|x, y| x.id.cmp(&y.id));
-    out
-}
-
-/// Open (an open status), unassigned (no owner) tasks whose blockers are all closed (or gone).
-fn dispatchable(tasks: &[Task]) -> Vec<&Task> {
-    let c = defaults::raw("nudges.idle_wake");
-    let (open, closed) = (c.get("open_statuses").map(V::strings).unwrap_or_default(), c.get("closed_statuses").map(V::strings).unwrap_or_default());
-    let shut = |id: &String| tasks.iter().find(|t| t.id == *id).is_none_or(|t| closed.contains(&t.status.as_str()));
-    tasks.iter().filter(|t| open.contains(&t.status.as_str()) && t.owner.is_empty() && t.blocked.iter().all(shut)).collect()
-}
-
 fn running_children(st: &State, a: &Agent) -> u64 {
     st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64
 }
 
 /// A main session idle for `idle_ms` past its turn: the idle time, or None.
 fn main_idle(a: &Agent, now: u64, idle_ms: u64) -> Option<u64> {
-    if a.kind != kind_name("main") || a.gone || a.running || a.last_output_ms == 0 {
+    if (a.kind != kind_name("main") && a.kind != kind_name("workspace")) || a.gone || a.running || a.last_output_ms == 0 {
         return None;
     }
     let idle = now.saturating_sub(a.last_output_ms);
@@ -688,13 +649,12 @@ fn joined(items: &[String], shown: u64, joiner: &str) -> String {
 }
 
 /// GH #515: open unblocked unassigned tasks and no agent running for `idle_ms`. Evidence: the task count; text: their subjects.
-fn idle_no_agents(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
+fn idle_no_agents(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> Option<Raised> {
     let c = defaults::raw("nudges.idle_wake");
-    if !env.switch("agent_tracker.idle_wake_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || running_children(st, a) > 0 {
+    if !env.switch("agent_tracker.idle_wake_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || running_children(st, a) > 0 || compliance::covered(a, now) {
         return None;
     }
-    let tasks = session_tasks(env, &a.id);
-    let open: Vec<String> = dispatchable(&tasks).iter().map(|t| t.subject.clone()).collect();
+    let open: Vec<String> = compliance::dispatchable(tasks, st, a, now).iter().map(|t| t.subject.clone()).collect();
     if open.is_empty() {
         return None;
     }
@@ -762,9 +722,9 @@ fn gap_items(reply: &str) -> Vec<String> {
 
 /// GH #517: an idle main session with fewer running agents than the cap and open items: unassigned tasks while an agent runs
 /// (none running is idle_no_agents), or gap lines of its last reply no task subject covers. Text: running, cap and items, tab-joined.
-fn underparallel(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
+fn underparallel(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> Option<Raised> {
     let c = defaults::raw("nudges.parallel_limits");
-    if !env.switch("agent_tracker.parallel_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() {
+    if !env.switch("agent_tracker.parallel_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || compliance::covered(a, now) {
         return None;
     }
     let cap = crate::checks::guardkit::settings::get_num(&env.settings, defaults::raw("spawn_ceiling.max_concurrent_setting")).max(0.0) as u64;
@@ -772,8 +732,7 @@ fn underparallel(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
     if cap > 0 && run >= cap {
         return None;
     }
-    let tasks = session_tasks(env, &a.id);
-    let mut items: Vec<String> = if run > 0 { dispatchable(&tasks).iter().map(|t| t.subject.clone()).collect() } else { Vec::new() };
+    let mut items: Vec<String> = if run > 0 { compliance::dispatchable(tasks, st, a, now).iter().map(|t| t.subject.clone()).collect() } else { Vec::new() };
     let covered = |g: &str| {
         let g = g.to_lowercase();
         tasks.iter().any(|t| {
@@ -792,7 +751,7 @@ fn underparallel(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
     Some((items.len() as u64, format!("{run}\t{cap_text}\t{}", joined(&items, num(c, "items_shown"), c.str_field("joiner")))))
 }
 
-fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, Raised> {
+fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap<&'static str, Raised> {
     let mut out = BTreeMap::new();
     for s in defaults_signals() {
         let r = match s {
@@ -810,9 +769,12 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
             "stalled" => stalled(env, a, now),
-            "idle_no_agents" => idle_no_agents(env, a, st, now),
+            "idle_no_agents" => idle_no_agents(env, a, st, tasks, now),
             "false_claim" => false_claim(env, a, now),
-            "underparallel" => underparallel(env, a, st, now),
+            "underparallel" => underparallel(env, a, st, tasks, now),
+            "stale_list" => compliance::stale_list(env, a, tasks),
+            "untracked_request" => compliance::untracked_request(env, a),
+            "inprogress_waiting" => compliance::inprogress_waiting(env, a, tasks, now),
             _ => None,
         };
         if let Some(r) = r {
@@ -941,6 +903,9 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             let (run, cap, items) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
             defaults::render("msg.agent_underparallel", &[("n", &f.evidence), ("items", &items), ("running", &run), ("cap", &cap)])
         }
+        "stale_list" => defaults::render("msg.agent_stale_list", &[("n", &f.evidence), ("tasks", &f.text)]),
+        "untracked_request" => defaults::render("msg.agent_untracked_request", &[("n", &f.evidence)]),
+        "inprogress_waiting" => defaults::render("msg.agent_inprogress_waiting", &[("tasks", &f.text), ("idle", &age(f.evidence * fmtn("ms_per_s")))]),
         "monitor_off" => {
             let e = defaults::raw(wake_switch_key(a));
             defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])
@@ -1078,6 +1043,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             let quiet = a.last_sent.get(&format!("held:{sig}")).is_some_and(|t| now.saturating_sub(*t) < cool.max(1));
             if !quiet {
                 rec(env, "reminder", sig, Outcome::Skip, f.tok("source", h));
+                compliance::suppressed(sig, h);
                 st.day(env).suppressed += 1;
                 a.last_sent.insert(format!("held:{sig}"), now);
             }
@@ -1099,6 +1065,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         }
     }
     if sent > 0 {
+        compliance::fired(sig);
         st.day(env).queued += 1;
         *queued += 1;
         a.last_sent.insert(sig.into(), now);
@@ -1120,6 +1087,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
 fn resolve(env: &Env, st: &mut State, a: &Agent, sig: &str, f: &Flag) {
     let now = env.now_ms;
     if f.reminded_at > 0 {
+        compliance::cleared(sig, a.task_calls > f.base_task_calls);
         let lat = now.saturating_sub(f.reminded_at) / fmtn("ms_per_s");
         rec(env, "outcome", "recovered", Outcome::Allow, base(a).tok("source", sig).num("recovered", 1).num("lat_s", lat));
         if sig == "monitor_unarmed" {
@@ -1140,7 +1108,7 @@ fn apply(env: &Env, st: &mut State, a: &mut Agent, raised: BTreeMap<&'static str
         match (raised.get(sig), a.flags.contains_key(sig)) {
             (Some((ev, text)), false) => {
                 let f =
-                    Flag { since: now, evidence: *ev, text: text.clone(), ticks: 1, base_progress: a.progress, base_tokens: a.tin + a.tout, ..Flag::default() };
+                    Flag { since: now, evidence: *ev, text: text.clone(), ticks: 1, base_progress: a.progress, base_tokens: a.tin + a.tout, base_task_calls: a.task_calls, ..Flag::default() };
                 rec(
                     env,
                     "signal",
@@ -1239,7 +1207,9 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         let root = roots.get(&id).copied().unwrap_or((0, false));
         stall_sample(env, &mut a, root, &mut procs_table, now);
         super::waste::update(env, &mut a, &mut judge_budget);
-        let raised = raise(env, &a, st, now);
+        let tasks = compliance::load(env, &a);
+        compliance::update_waiting(env, &mut a, st, &tasks, now);
+        let raised = raise(env, &a, st, &tasks, now);
         mark_breaker(env, &a, raised.get("burn_hard"));
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {

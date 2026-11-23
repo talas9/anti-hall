@@ -1399,6 +1399,9 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     crate::nodeback::shadow::note(&entries, &results, &shadow); // what the engine decided per check (a no-op unless the shadow follows this call)
     let mut results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
     // #516: the ladder reads the advisories before the token cuts below blank the repeated ones; its block is added after them
+    if parsed.is_some() {
+        crate::agents::note_task_list(&req_env, &p); // the named task list the session writes (GH #958): the tracker reads it back
+    }
     let ladder_block = parsed.as_ref().and_then(|_| ladder::apply(&args.event, &p, &req_env, &results));
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold

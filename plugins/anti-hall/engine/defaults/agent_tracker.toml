@@ -98,8 +98,8 @@ value = 30000
 unit = "ms"
 
 [agent_tracker.paths]
-doc = "Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), sessions (the host's registry of live sessions, one file per process), codex (the Codex session tree: year/month/day directories of rollout files), rollout_prefix (the start of a rollout file name)."
-value = { projects = ".claude/projects", base = ".anti-hall", dir = "agent-tracker", state = "state.json", series = "series.ndjson", reminders = "reminders", delivered = "delivered.ndjson", outbox = "mesh-outbox.ndjson", notices = "owner-notices.ndjson", probe = "claude-probe.json", heartbeats = "agents", devswarm = "devswarm", subagents = "subagents", wake = "wake", armed_ext = ".armed", transcript_ext = ".jsonl", agent_prefix = "agent-", meta_ext = ".meta.json", queue_ext = ".ndjson", cursor_ext = ".cursor", plans = "plans", workspaces = "workspaces", names = "names", archived = "archived", locks = "locks", lock_prefix = "wake-watch-", lock_ext = ".lock", json_ext = ".json", sessions = ".claude/sessions", codex = ".codex/sessions", rollout_prefix = "rollout-" }
+doc = "Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), sessions (the host's registry of live sessions, one file per process), codex (the Codex session tree: year/month/day directories of rollout files), rollout_prefix (the start of a rollout file name), tasklists (under dir: one file per session holding the named task list id its hooks saw in the list-id variable)."
+value = { projects = ".claude/projects", base = ".anti-hall", dir = "agent-tracker", state = "state.json", series = "series.ndjson", reminders = "reminders", delivered = "delivered.ndjson", outbox = "mesh-outbox.ndjson", notices = "owner-notices.ndjson", probe = "claude-probe.json", heartbeats = "agents", devswarm = "devswarm", subagents = "subagents", wake = "wake", armed_ext = ".armed", transcript_ext = ".jsonl", agent_prefix = "agent-", meta_ext = ".meta.json", queue_ext = ".ndjson", cursor_ext = ".cursor", plans = "plans", workspaces = "workspaces", names = "names", archived = "archived", locks = "locks", lock_prefix = "wake-watch-", lock_ext = ".lock", json_ext = ".json", sessions = ".claude/sessions", codex = ".codex/sessions", rollout_prefix = "rollout-", tasklists = "tasklists" }
 
 [agent_tracker.limits]
 doc = """Bounds and thresholds of one tick (milliseconds unless the name says otherwise).
@@ -154,7 +154,7 @@ value = { commit = 10, step = 5, test = 2, file = 1, push = 3, build = 3, merge 
 
 [agent_tracker.cooldowns]
 doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). monitor_unarmed uses only a 25-minute cooldown: recovery between ticks must not silence a later expiry."
-value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 1500000, max_per_day = 0 }, monitor_off = { cooldown_ms = 86400000, max_per_day = 1, once = true, confirm_ticks = 1 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 }, stalled = { cooldown_ms = 1800000, max_per_day = 8 }, idle_no_agents = { cooldown_ms = 1800000, max_per_day = 8 }, false_claim = { cooldown_ms = 1800000, max_per_day = 8 }, underparallel = { cooldown_ms = 1800000, max_per_day = 8 } }
+value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, agent_waste = { cooldown_ms = 1800000, max_per_day = 4 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 1500000, max_per_day = 0 }, monitor_off = { cooldown_ms = 86400000, max_per_day = 1, once = true, confirm_ticks = 1 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 }, no_work = { cooldown_ms = 3600000, max_per_day = 20, once = true, confirm_ticks = 1 }, stalled = { cooldown_ms = 1800000, max_per_day = 8 }, idle_no_agents = { cooldown_ms = 1800000, max_per_day = 8 }, false_claim = { cooldown_ms = 1800000, max_per_day = 8 }, underparallel = { cooldown_ms = 1800000, max_per_day = 8 }, stale_list = { cooldown_ms = 1800000, max_per_day = 8 }, untracked_request = { cooldown_ms = 1800000, max_per_day = 8 }, inprogress_waiting = { cooldown_ms = 1800000, max_per_day = 8 } }
 
 [agent_tracker.spam]
 doc = "Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder)."
@@ -166,11 +166,11 @@ value = { self = { to = "self", via = "queue" }, coordinator = { to = "coordinat
 
 [agent_tracker.routes]
 doc = "Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on)."
-value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], agent_waste = ["coordinator", "wake", "owner"], burn_soft = ["self", "coordinator", "wake"], burn_hard = ["self", "coordinator", "wake"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], monitor_off = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"], no_work = ["coordinator", "wake"], stalled = ["coordinator", "wake"], idle_no_agents = ["self", "self_wake"], false_claim = ["coordinator", "wake"], underparallel = ["self", "self_wake"] }
+value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], agent_waste = ["coordinator", "wake", "owner"], burn_soft = ["self", "coordinator", "wake"], burn_hard = ["self", "coordinator", "wake"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], monitor_off = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"], no_work = ["coordinator", "wake"], stalled = ["coordinator", "wake"], idle_no_agents = ["self", "self_wake"], false_claim = ["coordinator", "wake"], underparallel = ["self", "self_wake"], stale_list = ["self"], untracked_request = ["self"], inprogress_waiting = ["self", "self_wake"] }
 
 [agent_tracker.signals]
 doc = "The signals the tick evaluates, in order. A name not listed here is never raised."
-value = ["hung", "looping", "token_waste", "agent_waste", "burn_soft", "burn_hard", "drift", "heartbeat_stale", "monitor_unarmed", "monitor_off", "idle_open_task", "watched_exit", "no_work", "stalled", "idle_no_agents", "false_claim", "underparallel"]
+value = ["hung", "looping", "token_waste", "agent_waste", "burn_soft", "burn_hard", "drift", "heartbeat_stale", "monitor_unarmed", "monitor_off", "idle_open_task", "watched_exit", "no_work", "stalled", "idle_no_agents", "false_claim", "underparallel", "stale_list", "untracked_request", "inprogress_waiting"]
 
 [agent_tracker.kinds]
 doc = "The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file)."
@@ -229,8 +229,8 @@ doc = "Field and value names of the Claude Code transcript lines the tracker rea
 value = { type_key = "type", assistant = "assistant", user = "user", message = "message", content = "content", usage = "usage", id = "id", stop_reason = "stop_reason", end_turn = "end_turn", ts = "timestamp", cwd = "cwd", session = "sessionId", tool_use = "tool_use", tool_result = "tool_result", text = "text", name = "name", input = "input", tool_use_id = "tool_use_id", is_error = "is_error", in_tok = "input_tokens", out_tok = "output_tokens", cr_tok = "cache_read_input_tokens", cw_tok = "cache_creation_input_tokens", command = "command", file_path = "file_path", pattern = "pattern", path = "path", background = "run_in_background", persistent = "persistent", delay = "delaySeconds", recurring = "recurring", todos = "todos", status = "status", completed = "completed", in_progress = "in_progress", active_form = "activeForm", subject = "subject", content_key = "content", task_status = "status", task_id = "taskId", description = "description", sidechain = "isSidechain", meta = "isMeta", origin = "origin", origin_kind = "kind", tool_result_top = "toolUseResult" }
 
 [agent_tracker.tools]
-doc = "Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_create (a new task-list item), task_update (a single task update), monitor / cron / wakeup (arm a wake path), read (look at a file or search: their targets count as recent work for the drift check, a read of the step's files is on-step)."
-value = { edit = ["Edit", "Write", "MultiEdit", "NotebookEdit"], shell = ["Bash"], agent = ["Agent", "Task"], todo = ["TodoWrite"], task_create = ["TaskCreate"], task_update = ["TaskUpdate"], monitor = ["Monitor"], cron = ["CronCreate"], wakeup = ["ScheduleWakeup"], read = ["Read", "Grep", "Glob"] }
+doc = "Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_create (a new task-list item), task_update (a single task update), task_read (a read of the list: neither work nor a list update for the compliance signals), monitor / cron / wakeup (arm a wake path), read (look at a file or search: their targets count as recent work for the drift check, a read of the step's files is on-step)."
+value = { edit = ["Edit", "Write", "MultiEdit", "NotebookEdit"], shell = ["Bash"], agent = ["Agent", "Task"], todo = ["TodoWrite"], task_create = ["TaskCreate"], task_update = ["TaskUpdate"], task_read = ["TaskList", "TaskGet"], monitor = ["Monitor"], cron = ["CronCreate"], wakeup = ["ScheduleWakeup"], read = ["Read", "Grep", "Glob"] }
 
 [agent_tracker.wake]
 doc = "How long each kind of wake path keeps the session reachable, in milliseconds: monitor (a Monitor without persistent: true, which ends at its own cap), persistent (a persistent Monitor), cron (a CronCreate job), wakeup_slack (added to a ScheduleWakeup's own delay)."
@@ -298,11 +298,15 @@ value = { section = "nudges", key = "stall", env = "ANTIHALL_NUDGES_STALL", alia
 
 [agent_tracker.idle_wake_sw]
 doc = "Idle wake on/off (#515)."
-value = { section = "nudges", key = "idleWake", env = "ANTIHALL_NUDGES_IDLE_WAKE", aliases = [], option = "", default = false }
+value = { section = "nudges", key = "idleWake", env = "ANTIHALL_NUDGES_IDLE_WAKE", aliases = [], option = "", default = true }
 
 [agent_tracker.parallel_sw]
 doc = "Parallel nudge on/off (#517)."
-value = { section = "nudges", key = "parallel", env = "ANTIHALL_NUDGES_PARALLEL", aliases = [], option = "", default = false }
+value = { section = "nudges", key = "parallel", env = "ANTIHALL_NUDGES_PARALLEL", aliases = [], option = "", default = true }
+
+[agent_tracker.compliance_sw]
+doc = "Task-list compliance signals on/off (GH #958): stale_list, untracked_request, inprogress_waiting."
+value = { section = "nudges", key = "compliance", env = "ANTIHALL_NUDGES_COMPLIANCE", aliases = [], option = "", default = true }
 
 [msg.agent_stalled]
 doc = "Reminder of the stalled signal (GH #518): a running agent with no observable change, or the same progress line and no outcome, for nudges.stall_limits. Placeholders: {kind}, {agent}, {what} (nudges.stall_words), {idle}, {age} (since first seen), {lines} (its last distinct progress lines)."
@@ -553,3 +557,31 @@ value = { class = "wake_scope", dropped = "dropped", foreign_agent = "foreign_ag
 [agent_reminders.monitor_signal]
 doc = "Queued signal suppressed at delivery when a live session heartbeat already covers wake-watch. Other agent events are delivered unchanged."
 value = "monitor_unarmed"
+
+[nudges.compliance]
+doc = """Task-list compliance signals (GH #958), each evidence-gated on the tracker's event stream (the tool calls and task calls of the transcript) and the session's task store. stale_calls: work tool calls (every call but a task create, update or list rewrite) with no TaskCreate/TaskUpdate while a task is open, before stale_list. untracked_calls: tool calls after an owner prompt with no TaskCreate/TaskUpdate, before untracked_request. inprogress_ms: how long a task stays in progress with no live agent (its owner not running) and no background job or Monitor, before inprogress_waiting; the clock restarts whenever any cover appears. tasks_shown: most task subjects named; joiner: between them. kinds: the session kinds the signals watch. in_progress: the status word of a task being worked. A background job (a shell the session started and has not seen end) or an armed Monitor, cron or wakeup is cover for these signals and for idle_no_agents and underparallel."""
+value = { stale_calls = 25, untracked_calls = 15, inprogress_ms = 900000, tasks_shown = 3, joiner = ", ", kinds = ["main", "workspace"], in_progress = "in_progress" }
+
+[agent_tracker.compliance_signals]
+doc = "The signals whose reminders, suppressions and outcomes the compliance counter (`compliance{signal,outcome}`) records."
+value = ["stale_list", "untracked_request", "inprogress_waiting"]
+
+[nudges.compliance_outcomes]
+doc = "The `outcome` label values of the compliance counter: fired (a reminder was queued), suppressed (a reminder was held; the reason follows after `reason_sep`: cooldown, cap, pending, once, tick_cap), acted_on (the flag cleared after a reminder and the session created or updated a task since it was raised), not_acted (the label `false`: it cleared after a reminder with no task action: extended, snoozed, or the list changed on its own)."
+value = { fired = "fired", suppressed = "suppressed", acted_on = "acted_on", not_acted = "false", reason_sep = ":" }
+
+[metric.compliance]
+doc = "Task-list compliance signals (GH #958) by signal and outcome: fired, suppressed:<reason>, acted_on, false."
+value = { kind = "counter", unit = "signals", labels = ["signal", "outcome"] }
+
+[msg.agent_stale_list]
+doc = "Reminder of the stale_list signal (GH #958): work tool calls with no TaskCreate/TaskUpdate while tasks are open. Placeholders: {n}, {tasks}."
+value = "agent tracker: Do now: update the task list, {n} work calls since the last TaskCreate/TaskUpdate. Open: {tasks}."
+
+[msg.agent_untracked_request]
+doc = "Reminder of the untracked_request signal (GH #958): tool calls after an owner prompt with no task created or updated. Placeholders: {n}."
+value = "agent tracker: Do now: TaskCreate the owner's request, {n} tool calls since the prompt and no task was created."
+
+[msg.agent_inprogress_waiting]
+doc = "Reminder of the inprogress_waiting signal (GH #958): a task in progress with no live agent and no background job or Monitor. Placeholders: {tasks}, {idle}."
+value = "agent tracker: Do now: {tasks} in progress for {idle} with no agent and no background job; dispatch it, arm a Monitor, or set it back to pending."

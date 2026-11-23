@@ -184,6 +184,8 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
         let content = msg.and_then(|m| m.get(tr("content")));
         if !super::is_child(a) && a.kind != super::kind_name("codex") && owner_turn(v, content) {
             a.owner_ms = a.owner_ms.max(ts);
+            a.ask_open = true;
+            a.calls_since_ask = 0;
         }
         // a wake opens a turn that counts as a poke unless it calls a tool; any other prompt (not a tool result) closes the open one
         if !blocks.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) {
@@ -485,6 +487,22 @@ fn poke_close(a: &mut Agent, ts: u64, now: u64) {
     a.poke_tokens = 0;
 }
 
+/// Count one tool call for the compliance signals (GH #958): a task-list call answers the owner's prompt and restarts the count of work
+/// calls; a read of the list (`task_read`) is neither; every other call is work.
+fn note_call(a: &mut Agent, name: &str) {
+    if ["task_create", "task_update", "todo"].iter().any(|r| tools(r).contains(&name)) {
+        a.task_calls += 1;
+        a.calls_since_task = 0;
+        a.calls_since_ask = 0;
+        a.ask_open = false;
+    } else if !tools("task_read").contains(&name) {
+        a.calls_since_task += 1;
+        if a.ask_open {
+            a.calls_since_ask += 1;
+        }
+    }
+}
+
 fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let name = str_of(b, tr("name"));
     let input = b.get(tr("input")).cloned().unwrap_or(Value::Null);
@@ -494,6 +512,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         a.rescue_calls.insert(id.clone());
     }
     a.tools += 1;
+    note_call(a, name);
     let arg = [tr("command"), tr("file_path"), tr("pattern"), tr("path")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
     let label = if tools("task_create").contains(&name) { cap(str_of(&input, tr("subject")), lim("text_cap")) } else { cap(arg, lim("text_cap")) };
     let is_edit = tools("edit").contains(&name);
