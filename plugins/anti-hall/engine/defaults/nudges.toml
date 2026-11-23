@@ -10,7 +10,7 @@
 
 [nudges.sw_enabled]
 doc = "Nudge ladder on/off."
-value = { section = "nudges", key = "enabled", env = "ANTIHALL_NUDGES", aliases = [], option = "", default = false }
+value = { section = "nudges", key = "enabled", env = "ANTIHALL_NUDGES", aliases = [], option = "", default = true }
 
 [nudges.override_key]
 doc = "The key in the nudges section of settings.json that holds the per-kind class override: an object of kind name to class word (advisory, escalate, block, off), e.g. {\"nudges\": {\"kinds\": {\"model_routing\": \"escalate\"}}}."

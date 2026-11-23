@@ -233,3 +233,9 @@ pub(super) fn cleared(sig: &str, acted: bool) {
 pub(super) fn fired(sig: &str) {
     count(sig, defaults::raw("nudges.compliance_outcomes").str_field("fired"));
 }
+
+/// A reminder reached its channel: `delivered_wake` (a wake row) or `delivered_hook` (the session's hook delivered it); `key` names the
+/// outcome in `nudges.compliance_outcomes`.
+pub(super) fn delivered(sig: &str, key: &str) {
+    count(sig, defaults::raw("nudges.compliance_outcomes").str_field(key));
+}

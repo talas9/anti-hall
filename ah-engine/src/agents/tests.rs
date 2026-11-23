@@ -3500,8 +3500,15 @@ fn main_session(h: &Path, sid: &str, n: u64, idle_min: u64, reply: &str) {
     write(&sess(h, sid), &[prompt(n - 90 * MIN, "/w"), asst(n - idle_min * MIN, "p1", 5, 5, json!([{"type": "text", "text": reply}]), Some("end_turn"))]);
 }
 
+/// A task of the session's list at the layout Claude Code really writes: `~/.claude/tasks/session-<first 8 of the session id>/`.
 fn task_file(h: &Path, sid: &str, t: Value) {
-    let d = h.join(".claude/tasks").join(sid);
+    let sid8: String = sid.chars().take(8).collect();
+    task_file_in(h, &format!("session-{sid8}"), t);
+}
+
+/// A task in the list directory `dir` (a named list when the session ran with `CLAUDE_CODE_TASK_LIST_ID`).
+fn task_file_in(h: &Path, dir: &str, t: Value) {
+    let d = h.join(".claude/tasks").join(dir);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join(format!("{}.json", t["id"].as_str().unwrap())), t.to_string()).unwrap();
 }
@@ -3628,6 +3635,183 @@ fn an_idle_coordinator_under_the_cap_with_reply_gaps_not_in_the_task_list_is_tol
     assert_eq!(q.len(), 1, "{:?}", queue(&h, "s1"));
     let t = q[0]["text"].as_str().unwrap();
     assert!(t.contains("wire the codex port") && !t.contains("add the docs page") && t.contains("only 1 agent(s) running") && t.contains("in parallel"), "{t}");
+}
+
+// ---- task-list compliance (GH #958) ----
+
+const SID: &str = "a1b2c3d4-0000-4000-8000-000000000001";
+
+/// `count` answered Read calls from `from` on, a minute apart.
+fn reads(from: u64, count: u64, tag: &str) -> Vec<String> {
+    (0..count)
+        .flat_map(|i| {
+            let id = format!("{tag}{i}");
+            [tool(from + i * 1000, &format!("m{id}"), 5, &id, "Read", json!({"file_path": format!("/w/{id}")})), result(from + i * 1000 + 500, &id, "ok", false)]
+        })
+        .collect()
+}
+
+fn task_create(ts: u64, tag: &str) -> Vec<String> {
+    vec![tool(ts, &format!("m{tag}"), 5, tag, "TaskCreate", json!({"subject": "Port the gauge"})), result(ts + 500, tag, "Task #1 created successfully: Port the gauge", false)]
+}
+
+/// A busy main session whose transcript is `lines` after the owner's prompt.
+fn working_session(h: &Path, n: u64, lines: Vec<String>) {
+    register(h, std::process::id(), SID, "busy", n);
+    let mut all = vec![prompt(n - 60 * MIN, "/w")];
+    all.extend(lines);
+    write(&sess(h, SID), &all);
+}
+
+fn compliance_rows(h: &Path, sig: &str) -> Vec<Value> {
+    queue(h, SID).into_iter().filter(|r| r["signal"] == sig).collect()
+}
+
+#[test]
+fn the_task_list_is_read_from_the_session_dir_a_named_list_and_a_pointer_not_the_uuid_dir() {
+    let h = home("list-layout");
+    let e = env(&h, now0());
+    let t = |s: &str| json!({"id": "1", "subject": s, "status": "pending", "owner": "", "blockedBy": []});
+    assert!(compliance::session_tasks(&e, SID).is_empty(), "no list on disk");
+    task_file_in(&h, SID, t("full-id dir: the hook side's last candidate"));
+    assert_eq!(compliance::session_tasks(&e, SID)[0].subject, "full-id dir: the hook side's last candidate");
+    task_file(&h, SID, t("session dir"));
+    assert_eq!(compliance::session_tasks(&e, SID)[0].subject, "session dir", "the session-<8> directory is tried first");
+    // the hook side saves the named list the session ran with; the tick reads that list instead
+    task_file_in(&h, "named-list", t("named list"));
+    let req = crate::reqenv::RequestEnv::from_pairs([("HOME", h.to_string_lossy().to_string()), ("CLAUDE_CODE_TASK_LIST_ID", "named-list".to_string())]);
+    compliance::note_task_list(&req, &json!({"session_id": SID}));
+    assert_eq!(compliance::session_tasks(&e, SID)[0].subject, "named list", "the named list wins");
+    // a pointer file in the session dir moves the list one hop (a resumed session)
+    let h2 = home("list-pointer");
+    let e2 = env(&h2, now0());
+    task_file(&h2, SID, t("own"));
+    task_file_in(&h2, "shared", t("shared"));
+    std::fs::write(h2.join(".claude/tasks/session-a1b2c3d4/.session-list"), "shared").unwrap();
+    assert_eq!(compliance::session_tasks(&e2, SID)[0].subject, "shared");
+}
+
+#[test]
+fn stale_list_fires_after_many_work_calls_with_no_task_call_and_stays_silent_on_a_fresh_list() {
+    let n = now0();
+    let h = home("stale-list");
+    task_file(&h, SID, json!({"id": "1", "subject": "Port the gauge", "status": "pending", "owner": "", "blockedBy": []}));
+    let mut lines = task_create(n - 40 * MIN, "tc");
+    lines.extend(reads(n - 30 * MIN, 30, "r"));
+    working_session(&h, n, lines);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    assert!(compliance_rows(&h, "stale_list").is_empty(), "confirm_ticks: one tick is not enough");
+    ticks(&h, &mut st, &[n + MIN]);
+    let q = compliance_rows(&h, "stale_list");
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, SID));
+    let t = q[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now:") && t.contains("30 work calls") && t.contains("Port the gauge"), "{t}");
+    assert!(wake_rows(&h, SID).iter().any(|r| r["text"].as_str().unwrap_or("").contains("30 work calls")), "the tick alone writes the wake row");
+    ticks(&h, &mut st, &[n + 2 * MIN, n + 3 * MIN]);
+    assert_eq!(compliance_rows(&h, "stale_list").len(), 1, "the cooldown holds the repeat");
+    // compliant: the list was updated in the last calls
+    let h2 = home("stale-list-ok");
+    task_file(&h2, SID, json!({"id": "1", "subject": "Port the gauge", "status": "pending", "owner": "", "blockedBy": []}));
+    let mut ok = reads(n - 40 * MIN, 30, "r");
+    ok.extend(task_create(n - 5 * MIN, "tc"));
+    ok.extend(reads(n - 4 * MIN, 5, "q"));
+    working_session(&h2, n, ok);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN, n + 2 * MIN]);
+    assert!(!agent(&st2, SID).flags.contains_key("stale_list") && compliance_rows(&h2, "stale_list").is_empty());
+}
+
+#[test]
+fn untracked_request_fires_after_a_prompt_with_many_calls_and_no_task_and_clears_when_a_task_is_made() {
+    let n = now0();
+    let h = home("untracked");
+    working_session(&h, n, reads(n - 30 * MIN, 20, "r"));
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let q = compliance_rows(&h, "untracked_request");
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, SID));
+    assert!(q[0]["text"].as_str().unwrap().contains("Do now:") && q[0]["text"].as_str().unwrap().contains("20 tool calls"), "{q:?}");
+    // the session answers the nudge with a TaskCreate: the flag clears
+    append(&sess(&h, SID), &task_create(n + 2 * MIN, "tc"));
+    ticks(&h, &mut st, &[n + 3 * MIN]);
+    assert!(!agent(&st, SID).flags.contains_key("untracked_request"), "a task call answers the prompt");
+    // compliant: the task came first
+    let h2 = home("untracked-ok");
+    let mut ok = task_create(n - 40 * MIN, "tc");
+    ok.extend(reads(n - 30 * MIN, 20, "r"));
+    working_session(&h2, n, ok);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN, n + 2 * MIN]);
+    assert!(compliance_rows(&h2, "untracked_request").is_empty() && !agent(&st2, SID).flags.contains_key("untracked_request"));
+}
+
+#[test]
+fn inprogress_waiting_fires_with_nothing_running_and_stays_silent_under_lanes_a_background_job_or_a_monitor() {
+    let n = now0();
+    let task = json!({"id": "1", "subject": "Ship the gauge", "status": "in_progress", "owner": "", "blockedBy": []});
+    let late = [n, n + 16 * MIN, n + 17 * MIN];
+    let h = home("ipw");
+    task_file(&h, SID, task.clone());
+    working_session(&h, n, reads(n - 5 * MIN, 2, "r"));
+    let mut st = State::default();
+    ticks(&h, &mut st, &late[..2]);
+    assert!(compliance_rows(&h, "inprogress_waiting").is_empty(), "the clock starts at the first tick that saw nothing on it");
+    ticks(&h, &mut st, &late[2..]);
+    let q = compliance_rows(&h, "inprogress_waiting");
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, SID));
+    assert!(q[0]["text"].as_str().unwrap().contains("Ship the gauge") && q[0]["text"].as_str().unwrap().contains("no agent and no background job"), "{q:?}");
+    assert!(!wake_rows(&h, SID).is_empty(), "an idle session is reached by the wake row");
+    // lanes running
+    let h1 = home("ipw-lanes");
+    task_file(&h1, SID, task.clone());
+    working_session(&h1, n, reads(n - 5 * MIN, 2, "r"));
+    running_sub(&h1, SID, n + 16 * MIN, 1);
+    let mut st1 = State::default();
+    ticks(&h1, &mut st1, &late);
+    assert!(compliance_rows(&h1, "inprogress_waiting").is_empty(), "a lane runs");
+    // a background job
+    let h2 = home("ipw-bg");
+    task_file(&h2, SID, task.clone());
+    let mut bg = reads(n - 5 * MIN, 2, "r");
+    bg.push(tool(n - 2 * MIN, "mbg", 5, "bg", "Bash", json!({"command": "cargo build", "run_in_background": true, "background": true})));
+    bg.push(result(n - 2 * MIN + 500, "bg", "Command running in background with ID: bg1", false));
+    working_session(&h2, n, bg);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &late);
+    assert!(compliance_rows(&h2, "inprogress_waiting").is_empty(), "a background job covers: {:?}", agent(&st2, SID).bg_ids);
+    // a Monitor
+    let h3 = home("ipw-monitor");
+    task_file(&h3, SID, task);
+    let mut mon = reads(n - 5 * MIN, 2, "r");
+    mon.push(tool(n - 2 * MIN, "mmon", 5, "mon", "Monitor", json!({"command": "tail -f x", "persistent": true})));
+    mon.push(result(n - 2 * MIN + 500, "mon", "started", false));
+    working_session(&h3, n, mon);
+    let mut st3 = State::default();
+    ticks(&h3, &mut st3, &late);
+    assert!(compliance_rows(&h3, "inprogress_waiting").is_empty(), "a Monitor covers");
+}
+
+#[test]
+fn an_idle_workspace_primary_and_an_orphaned_in_progress_task_count_as_dispatchable() {
+    let n = now0();
+    let h = home("workspace-idle");
+    task_file(&h, SID, json!({"id": "1", "subject": "Orphaned work", "status": "in_progress", "owner": "ghost", "blockedBy": []}));
+    main_session(&h, SID, n, 15, "done for now");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let q: Vec<Value> = queue(&h, SID).into_iter().filter(|r| r["signal"] == "idle_no_agents").collect();
+    assert_eq!(q.len(), 1, "an in-progress task whose owner is not running is dispatchable: {:?}", queue(&h, SID));
+    assert!(q[0]["text"].as_str().unwrap().contains("Orphaned work"));
+    let mut ws = agent(&st, SID).clone();
+    ws.kind = "workspace".into();
+    ws.flags.clear();
+    ws.last_sent.clear();
+    ws.sent_log.clear();
+    let mut st2 = State::default();
+    st2.agents.insert(ws.id.clone(), ws);
+    let e = env(&h, n + 2 * MIN);
+    assert!(compliance::dispatchable(&compliance::session_tasks(&e, SID), &st2, &st2.agents[SID], e.now_ms).len() == 1);
 }
 
 // ---- the signals up now on one session's agents (the nudge ladder's fact check) ----

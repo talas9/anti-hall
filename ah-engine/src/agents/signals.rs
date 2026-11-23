@@ -1058,6 +1058,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         };
         match sink.deliver(env, &key, &r) {
             Ok(()) => {
+                if matches!(t, Target::Wake(_)) {
+                    compliance::delivered(sig, "delivered_wake");
+                }
                 rec(env, "reminder", sig, Outcome::Advise, f);
                 sent += 1;
             }
@@ -1171,6 +1174,9 @@ fn take_deliveries(env: &Env, st: &mut State) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let (agent, sig, ts) = (v["agent"].as_str().unwrap_or(""), v["signal"].as_str().unwrap_or(""), v["ts"].as_u64().unwrap_or(env.now_ms));
         super::nudge::delivered(st, &v, ts);
+        if v["channel"].as_str().unwrap_or(chan("session")) == chan("session") {
+            compliance::delivered(sig, "delivered_hook");
+        }
         // a nudge row names the nudge, not the flag: the flag it answers is the child's trigger signal (#207: those flags stayed at 0)
         let flag = super::nudge::flag_signal(st, &v).unwrap_or_else(|| sig.to_string());
         let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(flag.as_str())).map(|f| {
