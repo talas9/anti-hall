@@ -332,3 +332,43 @@ fn every_documented_ahhost_primitive_is_registered() {
     }
     assert!(documented.len() > 30, "the scan found the documented API ({} names)", documented.len());
 }
+
+/// #957: a settings pattern that does not compile is counted and answers safely; it never stops the daemon.
+struct BadPattern;
+
+impl BadPattern {
+    fn set(key: &str) -> BadPattern {
+        crate::defaults::set_overlay(&[(key, json!("(unbalanced"))]);
+        BadPattern
+    }
+}
+
+impl Drop for BadPattern {
+    fn drop(&mut self) {
+        crate::defaults::set_overlay(&[]);
+    }
+}
+
+#[test]
+fn an_invalid_list_line_pattern_is_a_null_listing_and_a_counted_error_not_an_abort() {
+    let h = home("list-bad-re");
+    let path = fakes(&h, &[("ps", "      1       0 /sbin/launchd")]);
+    put_override(&h, "zz-plist-bad", &format!("function decide(p){{ var res = ah.proc.list(); {WRITE} }}"));
+    let _bad = BadPattern::set("hostproc.list_line_re");
+    let before = crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]);
+    assert_eq!(run("zz-plist-bad", &env(&h, Some(&path))), Some(Some(Verdict::Allow)));
+    assert_eq!(out(&h), Value::Null);
+    assert_eq!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]), before + 1);
+}
+
+#[test]
+fn an_invalid_etimes_pattern_leaves_the_ages_unknown_and_is_counted() {
+    let h = home("ages-bad-re");
+    let path = fakes(&h, &[("ps", "  111 7200")]);
+    put_override(&h, "zz-pages-bad", &format!("function decide(p){{ var res = ah.proc.ages([111]); {WRITE} }}"));
+    let _bad = BadPattern::set("hostproc.etimes_line_re");
+    let before = crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]);
+    assert_eq!(run("zz-pages-bad", &env(&h, Some(&path))), Some(Some(Verdict::Allow)));
+    assert!(out(&h)["ages"].get("111").is_none(), "{}", out(&h));
+    assert!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]) > before);
+}
