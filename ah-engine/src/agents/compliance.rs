@@ -70,7 +70,7 @@ fn store_dir(env: &Env, sid: &str) -> Option<PathBuf> {
             return Some(dir);
         }
     }
-    let sid8: String = sid.chars().take(8).collect();
+    let sid8: String = sid.chars().take(num(defaults::raw("nudges.compliance"), "sid_chars") as usize).collect();
     for name in defaults::list("taskstate.store_dir_names") {
         let dir = base.join(defaults::fill(name, &[("sid", &sid), ("sid8", &sid8)]));
         if !dir.is_dir() {
@@ -116,7 +116,7 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
 /// The tasks the compliance and idle signals read for `a`: only the session kinds `nudges.compliance.kinds` watch, and only while one
 /// of the signals that read them is switched on.
 pub(super) fn load(env: &Env, a: &Agent) -> Vec<Task> {
-    let on = ["agent_tracker.idle_wake_sw", "agent_tracker.parallel_sw", "agent_tracker.compliance_sw"].iter().any(|k| env.switch(k));
+    let on = env.switch("agent_tracker.idle_wake_sw") || env.switch("agent_tracker.parallel_sw") || env.switch("agent_tracker.compliance_sw");
     if !on || a.gone || !defaults::raw("nudges.compliance").get("kinds").map(V::strings).unwrap_or_default().contains(&a.kind.as_str()) {
         return Vec::new();
     }
