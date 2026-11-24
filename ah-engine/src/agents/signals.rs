@@ -478,6 +478,29 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
     })
 }
 
+/// `watcher_missing` (owner rule: every main and workspace session keeps a wake Monitor armed, no exemption): the session has had no
+/// live wake-watch for `nudges.watcher.missing_ms`. Unlike `monitor_unarmed` it ignores whether anything is running. The clock starts
+/// at the latest of the first sighting, the expiry of the armed stamp and the end of a Monitor the session armed itself, so every
+/// exemption is bounded. Evidence: seconds without a watcher.
+fn watcher_missing(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    if !watcher_session(a) || !wake_switch(env, a) || a.first_seen == 0 || a.ws.as_ref().is_some_and(|w| w.armed == Some(true)) {
+        return None;
+    }
+    let stamp_end = crate::checks::agent_scan::mtime_ms(&sinks::WakeFeed::stamp(env, &a.id)).map_or(0, |m| m as u64 + lim("stale_lock_ms"));
+    let since = a.first_seen.max(stamp_end).max(a.armed_until);
+    let gone = now.saturating_sub(since);
+    (gone >= defaults::raw("nudges.watcher").get("missing_ms").and_then(V::as_integer).unwrap_or(0).max(0) as u64).then_some((gone / fmtn("ms_per_s"), String::new()))
+}
+
+/// The reminder text of `watcher_missing`: advice first, the order once `order_after` reminders went out unanswered.
+fn watcher_text(a: &Agent, evidence: u64) -> String {
+    let w = defaults::raw("nudges.watcher");
+    let sent = a.sent_log.iter().filter(|(s, _)| s == "watcher_missing").count() as u64;
+    let key = if sent >= w.get("order_after").and_then(V::as_integer).unwrap_or(0).max(0) as u64 { "msg.agent_watcher_missing_order" } else { "msg.agent_watcher_missing" };
+    let command = if a.ws.is_some() { defaults::text("agent_tracker.wake_command") } else { defaults::text("agent_tracker.wake_command_agents") };
+    defaults::render(key, &[("command", &command), ("timeout", &defaults::num("agent_tracker.wake_timeout_ms")), ("missing", &age(evidence * fmtn("ms_per_s"))), ("sent", &sent)])
+}
+
 // ---- nudge signals (GH #515, #517, #518): every threshold, list and text is in nudges.toml / agent_tracker.toml ----------------
 
 fn num(t: &V, k: &str) -> u64 {
@@ -769,6 +792,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "monitor_off" => monitor_off(env, a),
+            "watcher_missing" => watcher_missing(env, a, now),
             "idle_open_task" => idle_open_task(a, now),
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
@@ -914,6 +938,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         "inprogress_waiting" => defaults::render("msg.agent_inprogress_waiting", &[("tasks", &f.text), ("idle", &age(f.evidence * fmtn("ms_per_s")))]),
         "lead_waiting_on_done" => super::lead_wait::text(a, f.evidence, &f.text, a.seen.saturating_sub(a.last_output_ms)),
         "hold_expired" => compliance::hold_text(a, f.evidence, &f.text),
+        "watcher_missing" => watcher_text(a, f.evidence),
         "monitor_off" => {
             let e = defaults::raw(wake_switch_key(a));
             defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])

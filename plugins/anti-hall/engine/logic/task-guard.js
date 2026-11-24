@@ -14,8 +14,52 @@ function tgRe(key, flags) { return jx.re(key, flags); }
 
 function tgCoordinator(owner) { return tgRe('task_guard.coordinator_owner_re', 'i').test(owner); }
 
+// ---- bounded holds (owner principle: no exemption lasts for ever) ----
+// Every marker exemption (owner decision, blockedOn reason, parked, clock) holds a task out of the rule for nudges.hold.hold_max_ms from
+// when the Stop first saw that marker text on that task; past it the exemption lapses and the normal rule applies. A changed marker
+// text restarts the clock. The first-seen times live in one small state file per session. Outside a decision (tgHolds null) nothing lapses.
+var tgHolds = null;
+
+function tgHoldsOpen(home, safeSession, now) {
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.hold_state_prefix') + safeSession, prior = {}, raw = ah.state.readText(rel);
+  if (raw !== null) {
+    var r = jx.parse(raw);
+    if (r.unsure) ah.unable('task-guard:hold_state_unsure');
+    else if (!r.invalid && r.v !== null && typeof r.v === 'object' && !Array.isArray(r.v)) prior = r.v;
+  }
+  tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms };
+}
+
+// Whether the `kind` exemption of task `t` (marker text `marker`) is still in force.
+function tgHeld(t, kind, marker) {
+  if (tgHolds === null) return true;
+  var key = t.id + '|' + kind + '|' + ah.sha1(marker), first = tgHolds.seen[key];
+  if (first === undefined) {
+    var was = tgHolds.prior[key];
+    first = typeof was === 'number' && isFinite(was) && was <= tgHolds.now ? was : tgHolds.now;
+    tgHolds.seen[key] = first;
+  }
+  if (tgHolds.now - first < tgHolds.max) return true;
+  if (tgHolds.lapsed[key] === undefined) { tgHolds.lapsed[key] = kind; ah.metric('idle_rule_hold_lapsed', ['reason', kind]); }
+  return false;
+}
+
+// Save the clocks of the holds this Stop saw (the ones gone are dropped); written only when something changed.
+function tgHoldsClose() {
+  var h = tgHolds;
+  if (h === null) return;
+  var keys = Object.keys(h.seen), same = keys.length === Object.keys(h.prior).length && keys.every(function (k) { return h.prior[k] === h.seen[k]; });
+  if (same) return;
+  if (keys.length === 0) { ah.state.remove(h.rel); return; }
+  ah.state.op(h.home, 'after_reply', h.rel, JSON.stringify(h.seen));
+}
+
 // `isOwnerBlocked` of lib/dispatch-demand.js.
 function tgOwnerBlocked(t) {
+  return tgOwnerMarked(t) && tgHeld(t, ah.cfg('idle_rule.reason_owner'), tgIrText(t) + '\n' + tk.blockedOnText(t));
+}
+
+function tgOwnerMarked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
   if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
   var value = [t.owner || '', t.content || '', t.description || ''].join(' ').toLowerCase();
@@ -47,7 +91,7 @@ function tgActionable(open, tasks, skips) {
     if (t.owner && !tgCoordinator(t.owner)) return false;
     if (tgOwnerBlocked(t)) return false;
     var bo = tk.blockedOnText(t);
-    if (bo !== '' && ah.cfg('dispatch_tier.owner_values').indexOf(bo) < 0) return false; // a task that names what it waits on is held, not dispatchable (the owner values keep their own, switchable test above)
+    if (bo !== '' && ah.cfg('dispatch_tier.owner_values').indexOf(bo) < 0 && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), bo)) return false; // a task that names what it waits on is held, not dispatchable (the owner values keep their own, switchable test above)
     if (skips !== null && skips[t.id] !== undefined) return false; // attended by an agent's description or launch name too: tk.evaluate reads descriptions only
     if (t.blockedBy.some(function (id) { return notDone[id] === true || known[id] !== true; })) return false;
     return tgPriorityRank(t.priority) <= floor;
@@ -88,9 +132,9 @@ function tgIdleSkips(open, rows) {
   open.forEach(function (t) {
     var why = '';
     if (tgOwnerBlocked(t)) why = ah.cfg('idle_rule.reason_owner');
-    else if (tk.blockedOnText(t).length >= minReason) why = ah.cfg('idle_rule.reason_blocked_on');
-    else if (tgRe('idle_rule.parked_re', 'i').test(tgIrText(t))) why = ah.cfg('idle_rule.reason_parked');
-    else if (tgRe('idle_rule.clock_re', 'i').test(tgIrText(t))) why = ah.cfg('idle_rule.reason_clock');
+    else if (tk.blockedOnText(t).length >= minReason && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), tk.blockedOnText(t))) why = ah.cfg('idle_rule.reason_blocked_on');
+    else if (tgRe('idle_rule.parked_re', 'i').test(tgIrText(t)) && tgHeld(t, ah.cfg('idle_rule.reason_parked'), tgIrText(t))) why = ah.cfg('idle_rule.reason_parked');
+    else if (tgRe('idle_rule.clock_re', 'i').test(tgIrText(t)) && tgHeld(t, ah.cfg('idle_rule.reason_clock'), tgIrText(t))) why = ah.cfg('idle_rule.reason_clock');
     else if (t.owner && !tgCoordinator(t.owner) && (tgLiveAgentOwner(t.owner, rows) || tgChildAttended(t.owner))) why = ah.cfg('idle_rule.reason_live_agent');
     else if (covered[t.id] === true) why = ah.cfg('idle_rule.reason_agent_ref');
     else if (bgLive && ah.cfg('taskstate.in_progress_statuses').indexOf(tk.statusLc(t)) >= 0) why = ah.cfg('idle_rule.reason_bg_job');
@@ -431,6 +475,7 @@ function tgQuiet(out, tasks, home, sessionId) {
 }
 
 function tgDecideCore(p) {
+  tgHolds = null;
   if (ah.env.get(ah.cfg('task_guard.judge_child_env')) === '1') return 'allow';
   if (!ah.settings.bool('task_guard.setting') || ah.settings.skipped(ah.cfg('task_guard.guard_name'))) return 'allow';
   if (p === null || typeof p !== 'object') p = {};
@@ -485,6 +530,7 @@ function tgDecideCore(p) {
     });
     rows.scanUnknown = scanUnknown;
   }
+  tgHoldsOpen(home, safeSession, now);
   var skips = rule ? tgIdleSkips(open, rows) : null;
   var actionable = tgActionable(open, tasks, skips);
   var haveAgents = tgAgentsRunning(home, now);
@@ -503,6 +549,7 @@ function tgDecideCore(p) {
   var unresolved = ah.cfg('task_guard.advise_unresolved_owners') ? open.filter(function (t) { return tgUnresolvedOwner(t, rows); }) : [];
   if (unresolved.length > 0) out += text.render(ah.cfg('task_guard.unresolved_owner_advisory'), { list: tgRenderList(unresolved) });
   var nudge = tgUnblocked(open, tasks, rows, skips);
+  tgHoldsClose();
   if (!idle && nudge.length === 0) return tgQuiet(out, tasks, home, sessionId);
 
   var sep = ah.cfg('task_guard.hash_sep');

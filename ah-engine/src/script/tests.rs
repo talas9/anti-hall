@@ -5294,6 +5294,49 @@ mod idle_rule_counters {
         assert_eq!(m.counter("idle_slot_minutes", &[("kind", "open")]), defaults::num("idle_rule.minutes_cap"), "the proxy is capped");
         assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
     }
+
+    /// A parked marker exempts a task only for nudges.hold.hold_max_ms from when the Stop first saw it; past it the exemption lapses, the
+    /// task is listed again and the lapse is counted.
+    #[test]
+    fn a_parked_exemption_lapses_after_hold_max_and_the_task_is_listed_again() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let body = lines(&[(1, "[P1] idle one", "", "in_progress"), (2, "[P1] parked", "PARKED: waiting for the owner", "in_progress")]);
+        let h = home("ir-hold-lapse");
+        std::fs::write(format!("{h}/t.jsonl"), &body).unwrap();
+        let run = |sid: &str| {
+            let p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": sid, "cwd": h});
+            let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_IDLE_RULE".to_string(), "1".to_string())];
+            super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs))
+        };
+        let reason = |v: Option<Option<Verdict>>| match v {
+            Some(Some(Verdict::Exact(x))) => x.out,
+            other => panic!("{other:?}"),
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let first = reason(run("hold-a"));
+        assert!(first.contains("#1") && !first.contains("#2"), "inside the hold the parked task is kept out: {first}");
+        let file = format!("{h}/.anti-hall/{}hold-a", defaults::text("task_guard.hold_state_prefix"));
+        let saved = std::fs::read_to_string(&file).expect("the first sight of the hold is saved");
+        // age every clock past hold_max_ms, then ask again as a new Stop
+        let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+        let aged: serde_json::Map<String, Value> = serde_json::from_str::<serde_json::Map<String, Value>>(&saved)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, json!(v.as_u64().unwrap() - max - 1000)))
+            .collect();
+        std::fs::write(&file, Value::Object(aged).to_string()).unwrap();
+        for f in std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten() {
+            if f.file_name().to_string_lossy().starts_with(&defaults::text("task_guard.state_prefix").to_string()) {
+                std::fs::remove_file(f.path()).unwrap();
+            }
+        }
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let later = reason(run("hold-a"));
+        assert!(later.contains("#1") && later.contains("#2"), "past hold_max_ms the parked task is listed again: {later}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("idle_rule_hold_lapsed", &[("reason", "parked")]), 1);
+    }
 }
 
 // ---- reply-length-guard R-style (guards.styleRule): its counters, the repeat marker and the message text ----
