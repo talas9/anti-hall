@@ -20,6 +20,12 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.21 (local integration build)
+
+- Owner no-stop orders put the session in a no-stop mode: Stop is held while open work is uncovered. Under AFK, no-stop or open work there is no stopping-point or compact advice, only an incremental handover refresh (#958).
+- New `watcher_missing` tick signal; task-guard exemptions lapse after `nudges.hold.hold_max_ms` (#958).
+- Read-only calls pass under load; a closed guard that cannot answer fails open for reads and holds only risky calls (#945).
+
 ## Engine 0.3.20 (local integration build)
 
 - Every signal about a main or workspace session also goes to that session's own wake feed while its watcher is armed; the parent copy is additional (#958).
