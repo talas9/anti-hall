@@ -429,6 +429,10 @@ value = { section = "guards", key = "taskGuard", env = "", aliases = [], option 
 doc = "Completed or cancelled tasks kept before the task tracker suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 3 }
 
+[task_guard.hold_state_prefix]
+doc = "Prefix of the per-session file under the state directory that holds, per task hold (the task id, the exemption kind and a hash of its marker text), when the Stop first saw it: the clock of nudges.hold.hold_max_ms. Past it the hold lapses and the normal rule applies; a changed marker text is a confirmed blocker and restarts the clock. Covers the owner, blocked_on, parked and clock exemptions of task-guard."
+value = "task-holds-"
+
 [task_guard.state_prefix]
 doc = "Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`)."
 value = "last-stop-taskset-"
@@ -1953,6 +1957,10 @@ value = { kind = "counter", unit = "blocks", labels = ["kind"] }
 [metric.idle_rule_listed]
 doc = "Tasks named by delivered R-idle blocks, by kind."
 value = { kind = "counter", unit = "tasks", labels = ["kind"] }
+
+[metric.idle_rule_hold_lapsed]
+doc = "Task holds whose exemption lapsed after nudges.hold.hold_max_ms (the normal rule applies again), by exemption kind (owner, blocked_on, parked, clock). Counted once per Stop and task."
+value = { kind = "counter", unit = "tasks", labels = ["reason"] }
 
 [metric.idle_rule_suppressed]
 doc = "Open tasks the R-idle filter kept out of a block's list, by reason (owner, blocked_on, parked, clock, live_agent, agent_ref; plan_mode counts the open tasks of a plan-mode Stop). Counted once per delivered block, plus once per plan-mode Stop."

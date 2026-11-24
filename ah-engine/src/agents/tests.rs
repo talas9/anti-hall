@@ -5659,6 +5659,39 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     assert_eq!(cleared, 1, "an unexplained or explained clear is always counted");
 }
 
+/// Owner rule: every main session keeps a wake Monitor armed, even one with nothing running (monitor_unarmed stays silent there).
+/// After nudges.watcher.missing_ms with no live watcher the session is told the exact command and it is counted; an armed one is not.
+#[test]
+fn watcher_missing_fires_for_an_unarmed_session_and_stays_silent_for_an_armed_one() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let max = defaults::raw("nudges.watcher").get("missing_ms").and_then(V::as_integer).unwrap() as u64;
+    let n = now0();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, "s1").into_iter().filter(|r| r["signal"] == "watcher_missing").collect() };
+    // unarmed, nothing running: silent inside missing_ms, then ordered to arm with the exact command, escalating when ignored
+    let h = idle_main_alone("watcher-missing", n);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + max - MIN]);
+    assert!(rows(&h).is_empty(), "{:?}", queue(&h, "s1"));
+    ticks_unarmed(&h, &mut st, &[n + max + MIN, n + max + 2 * MIN]);
+    let r = rows(&h);
+    assert_eq!(r.len(), 1, "{:?}", queue(&h, "s1"));
+    let t = r[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now: arm the wake Monitor") && t.contains("ah-engine agents wake-watch --auto"), "{t}");
+    assert!(compliance_count("watcher_missing", "fired") >= 1);
+    let mut at = n + max + 2 * MIN;
+    for _ in 0..4 {
+        take_queue(&h, "s1");
+        at += 21 * MIN;
+        ticks_unarmed(&h, &mut st, &[at]);
+    }
+    assert!(rows(&h).iter().any(|r| r["text"].as_str().unwrap().contains("reminders unanswered")), "{:?}", queue(&h, "s1"));
+    // armed (fresh stamp every tick): never flagged
+    let h2 = idle_main_alone("watcher-armed", n);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + max + MIN, n + 2 * max]);
+    assert!(!agent(&st2, "s1").flags.contains_key("watcher_missing") && rows(&h2).is_empty());
+}
+
 /// A flag the nudge loop owns but never opens a nudge for (here: a standing busy hold) is delivered by the plain route once it has sat
 /// for limits.undelivered_ms, and counted undeliverable: no exemption silences a raised flag for ever.
 #[test]
