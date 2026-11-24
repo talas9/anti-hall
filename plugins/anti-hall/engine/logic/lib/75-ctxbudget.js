@@ -249,10 +249,20 @@ var cb = {
   },
   // ---- quiet mode (GH #958 (b)) ----
   // Whether the session must keep working: the machine-wide AFK flag or the session's no-stop state is on, or a task is open (lib/87-nostop.js).
-  quiet: function (p) {
+  // A task of a subagent's own sidechain is not the session's work: the store lists only the session's tasks, and the transcript tail is read
+  // as hasOpenTasks reads it (sidechain records skipped); `lines` is the tail the caller already holds (read here when omitted).
+  quiet: function (p, lines) {
     if (nostop.afkOn() || nostop.session(p) !== null) return true;
-    var all = nostop.tasks(p);
-    return all !== null && all.some(tk.isOpen);
+    var home = ah.home(), sid = p && p.session_id ? String(p.session_id) : '';
+    if (home && sid !== '') {
+      var gaps = { n: 0, strict: true }, st = tk.storeTasks(home, sid, gaps);
+      if (st !== null && gaps.n === 0) return tk.withStore([], st).some(tk.isOpen);
+    }
+    if (lines === undefined) {
+      var tp = p && typeof p.transcript_path === 'string' ? p.transcript_path : null;
+      lines = tp ? ah.fs.tailLines(hookProc.open(p, tp), cb.n('ctxbudget.tail_bytes'), false) : null;
+    }
+    return cb.hasOpenTasks(lines) === true;
   },
   // The refresh nudge (the only context message in quiet mode): null unless the saved handover is older than the last task or milestone change
   // by ctxbudget.refresh_stale_ms (or there is none) and the last nudge is older than ctxbudget.refresh_interval_ms.

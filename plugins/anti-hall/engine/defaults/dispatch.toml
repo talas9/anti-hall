@@ -820,3 +820,11 @@ value = [
 [dispatch.msg_unparsed]
 doc = "Deferral reason (event log, counted with the other dispatch fallbacks) when the payload is not readable as JSON, so the Node hooks decide (D74). Placeholder: {len} (bytes read)."
 value = "payload not readable as JSON ({len} bytes): the Node hooks decide"
+
+[script.failure_risk_weighted]
+doc = "The `closed` guards that are risk-weighted (GH #945, blocks protect, not disrupt): when one of them cannot answer (a cut call, a starved script, a late or missing daemon reply, a spent budget) it still fails closed for a call in a hold class of dispatch.capacity_hold (a push, a merge, a recursive delete, a deploy, a publish ...), but a call outside every hold class (a plain read: ls, ps, grep, gh pr checks, git ls-remote ...) passes, counted under script.risk_open_counter and told once per session. Only a call of a tool listed in dispatch.capacity_hold.tools is judged; any other call keeps the check's failure mode. A guard not listed fails closed for every call. Empty = every closed guard fails closed for every call."
+value = ["git", "command"]
+
+[script.risk_open_counter]
+doc = "The status counter group (status.advisory.<group>.<check>) that counts a read-only call a risk-weighted closed guard (script.failure_risk_weighted) let through because it could not answer."
+value = "risk_open"

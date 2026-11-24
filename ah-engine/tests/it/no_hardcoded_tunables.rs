@@ -274,6 +274,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/checks/scripted.rs", "const fn new(", "the constructor signature of the registry identity above"),
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
+    ("src/script/mod.rs", "static CALL", "a thread-local slot for the tool call being decided, initialised empty: state, not a tunable"),
     ("src/script/mod.rs", "static POLLS", "a thread-local count of the interpreter's interrupt polls, starting at the type's default: state, not a tunable"),
     ("src/script/host.rs", "static CLOCK", "a thread-local clock override slot initialised empty (tests inject time): state, not a tunable"),
     (
