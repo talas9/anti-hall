@@ -1163,6 +1163,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         *queued += 1;
         a.last_sent.insert(sig.into(), now);
         a.sent_log.push((sig.into(), now));
+        if sig == "hold_expired" {
+            compliance::hold_sent(a, now);
+        }
         if sig == "drift" {
             a.drift_step = step_hash;
         }

@@ -23,6 +23,8 @@ pub(super) struct Task {
     /// Identity of the hold for its clock: the task id and a hash of the `blockedOn` text (empty when not held). A changed reason is a
     /// confirmed blocker and restarts the clock; an unchanged one does not.
     pub(super) held_key: String,
+    /// The `blockedOn` reason names the owner or a human (a word of `dispatch_tier.owner_values`): only they can clear it.
+    pub(super) owner_held: bool,
 }
 
 fn num(t: &V, k: &str) -> u64 {
@@ -117,7 +119,12 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
         let reason = v.get(c.str_field("f_metadata")).and_then(|m| m.get(c.str_field("f_blocked_on"))).and_then(Value::as_str).map(str::trim).unwrap_or("");
         let held = reason.chars().count() >= defaults::num("idle_rule.blocked_on_min") as usize;
         let held_key = if held { format!("{}#{:x}", s("f_id"), crate::health::fnv(reason)) } else { String::new() };
-        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key });
+        let owner_held = held && {
+            let lower = reason.to_lowercase();
+            let owners = defaults::list("dispatch_tier.owner_values");
+            lower.split(|ch: char| !ch.is_alphanumeric()).any(|w| owners.contains(&w))
+        };
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key, owner_held });
     }
     out.sort_by(|x, y| x.id.cmp(&y.id));
     out
@@ -229,12 +236,73 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
     for k in keys {
         a.held_since.entry(k.to_string()).or_insert(now);
     }
+    let held_since = &a.held_since;
+    a.hold_n.retain(|k, _| held_since.contains_key(k));
+    let owner_ids: Vec<&str> = tasks.iter().filter(|t| t.owner_held && !closed.contains(&t.status.as_str())).map(|t| t.id.as_str()).collect();
+    a.hold_owner.retain(|id, _| owner_ids.contains(&id.as_str()));
+    owner_notice(env, a, tasks, now);
+}
+
+/// A hold_expired reminder was delivered: every hold now past `hold_max_ms` has one more reminder on its count, and an owner-held task
+/// counts as confirmed with the session (from here on only the owner is told).
+pub(super) fn hold_sent(a: &mut Agent, now: u64) {
+    let max = num(defaults::raw("nudges.hold"), "hold_max_ms");
+    let due: Vec<String> = a.held_since.iter().filter(|(_, s)| now.saturating_sub(**s) >= max).map(|(k, _)| k.clone()).collect();
+    for k in due {
+        let id = k.split('#').next().unwrap_or_default().to_string();
+        *a.hold_n.entry(k).or_insert(0) += 1;
+        a.hold_owner.entry(id).or_insert(0);
+    }
+}
+
+/// Owner-held tasks the session was already asked to confirm (its hold ran past `hold_max_ms` then): one notice for the owner per
+/// task id per `owner_notice_ms` (the existing owner-notices route), never another word to the session. Keyed by task id, not by the
+/// reason text, so rewriting the reason cannot restart it.
+fn owner_notice(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
+    if !env.act || !env.switch("agent_tracker.remind_setting") || !watched(env, a) {
+        return;
+    }
+    let hold = defaults::raw("nudges.hold");
+    let every = num(hold, "owner_notice_ms");
+    let due: Vec<(&Task, u64)> = tasks
+        .iter()
+        .filter(|t| t.owner_held)
+        .filter(|t| a.hold_owner.get(&t.id).is_some_and(|last| *last == 0 || now.saturating_sub(*last) >= every))
+        .filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s))))
+        .collect();
+    let Some(longest) = due.iter().map(|(_, w)| *w).max() else { return };
+    let who: String = (if a.name.is_empty() { &a.id } else { &a.name }).chars().take(fmtn("name_max") as usize).collect();
+    let text = defaults::render(
+        "msg.agent_hold_owner",
+        &[("agent", &who), ("tasks", &subjects(&due.iter().map(|(t, _)| *t).collect::<Vec<_>>())), ("held", &super::sinks::age(longest))],
+    );
+    let r = super::sinks::Reminder {
+        id: format!("{:x}", crate::health::fnv(&format!("{}hold_owner{now}", a.id))),
+        ts: now,
+        signal: "hold_owner".into(),
+        agent: a.id.clone(),
+        text,
+    };
+    use super::sinks::Sink;
+    let sink = super::sinks::OwnerNotices;
+    let f = super::signals::base(a).tok("channel", sink.channel()).num("evidence", due.len() as u64);
+    match sink.deliver(env, "", &r) {
+        Ok(()) => {
+            for (t, _) in &due {
+                a.hold_owner.insert(t.id.clone(), now);
+            }
+            super::signals::rec(env, "reminder", "hold_owner", crate::telemetry::event::Outcome::Advise, f);
+            count_any("hold_owner", defaults::raw("nudges.compliance_outcomes").str_field("fired"));
+        }
+        Err(e) => crate::health::log_event("agents", "queue_write", &e),
+    }
 }
 
 /// The open held tasks whose hold has run past `nudges.hold.hold_max_ms`, with how long each has been held.
 fn expired_holds<'a>(a: &Agent, tasks: &'a [Task], now: u64) -> Vec<(&'a Task, u64)> {
     let max = num(defaults::raw("nudges.hold"), "hold_max_ms");
-    tasks.iter().filter(|t| t.held).filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s)))).filter(|(_, w)| *w >= max).collect()
+    // an owner-held task the session already confirmed once is the owner's to hear about, not the session's (see `owner_notice`)
+    tasks.iter().filter(|t| t.held && !(t.owner_held && a.hold_owner.contains_key(&t.id))).filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s)))).filter(|(_, w)| *w >= max).collect()
 }
 
 /// `hold_expired`: a task has carried a `blockedOn` reason for `hold_max_ms`. Evidence: the longest hold in seconds; text: the subjects.
@@ -250,7 +318,8 @@ pub(super) fn hold_expired(env: &Env, a: &Agent, tasks: &[Task], now: u64) -> Op
 
 /// The reminder text: advice first, the order once `order_after` reminders went out and were ignored.
 pub(super) fn hold_text(a: &Agent, evidence: u64, tasks: &str) -> String {
-    let sent = a.sent_log.iter().filter(|(s, _)| s == "hold_expired").count() as u64;
+    // per task: the most reminders any one held reason has had (a rewritten reason is a new key and starts at zero)
+    let sent = a.hold_n.values().copied().max().unwrap_or(0);
     let key = if sent >= num(defaults::raw("nudges.hold"), "order_after") { "msg.agent_hold_expired_order" } else { "msg.agent_hold_expired" };
     defaults::render(key, &[("tasks", &tasks), ("n", &evidence), ("held", &super::sinks::age(evidence * fmtn("ms_per_s"))), ("sent", &sent)])
 }

@@ -5621,6 +5621,82 @@ fn a_workspace_idle_on_an_open_task_hears_it_on_its_own_wake_feed() {
     assert_eq!(own.len(), 1, "{:?}", wake_rows(&h, "sessW"));
 }
 
+/// A rewritten blockedOn is the answer: the flag clears, the unanswered count restarts at zero (it was a 24 h sum across tasks before),
+/// and a second task keeps its own count.
+#[test]
+fn a_rewritten_blocked_on_resets_the_unanswered_count_per_task() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-rewrite");
+    let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |id: &str, m: &str| json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("1", "waiting on the CI run one"));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let mut at = n + max + MIN;
+    for _ in 0..5 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    assert!(rows(&h).last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"));
+    assert!(agent(&st, SID).hold_n.values().any(|c| *c >= 3));
+    // rewrite: count gone, flag cleared, silent for a fresh hold_max, then advice again (not the order)
+    task_file(&h, SID, task("1", "waiting on the CI run two"));
+    at += MIN;
+    ticks(&h, &mut st, &[at]);
+    assert!(!agent(&st, SID).flags.contains_key("hold_expired"));
+    assert!(agent(&st, SID).hold_n.is_empty(), "{:?}", agent(&st, SID).hold_n);
+    let before = rows(&h).len();
+    ticks(&h, &mut st, &[at + max - MIN]);
+    assert_eq!(rows(&h).len(), before, "silent inside the restarted hold");
+    ticks(&h, &mut st, &[at + max + MIN]);
+    let all = rows(&h);
+    assert!(all.len() > before, "reminds again after the restarted hold");
+    assert!(!all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
+}
+
+/// A blocker that names the owner: the session is asked to confirm it once, then never again; the owner gets one notice per day per task.
+#[test]
+fn an_owner_held_blocker_notifies_the_owner_once_a_day_and_never_renags_the_session() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-owner");
+    let hold = defaults::raw("nudges.hold");
+    let max = hold.get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let every = hold.get("owner_notice_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: GitHub release ruleset change only the owner can make"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    // one reminder lands on both the queue and the wake feed with one id: count distinct ids
+    let agent_rows = |h: &Path| -> Vec<Value> {
+        let mut seen = std::collections::BTreeSet::new();
+        queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+    };
+    let owner_rows = |h: &Path| -> Vec<String> {
+        let d = env(h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+        std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect()
+    };
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(agent_rows(&h).len(), 1, "the session confirms it once: {:?}", agent_rows(&h));
+    let mut at = n + max + MIN;
+    // 20 more hours of ticks with the reason rewritten each time (fresh text): the session hears nothing, the owner one notice
+    for i in 0..20 {
+        at += 61 * MIN;
+        task_file(&h, SID, task(&format!("owner: GitHub release ruleset change only the owner can make (checked {i})")));
+        ticks(&h, &mut st, &[at]);
+    }
+    assert_eq!(agent_rows(&h).len(), 1, "no re-nag: {:?}", agent_rows(&h));
+    assert_eq!(owner_rows(&h).len(), 1, "one owner notice a day: {:?}", owner_rows(&h));
+    assert!(owner_rows(&h)[0].contains("Ruleset change"));
+    at += every;
+    ticks(&h, &mut st, &[at]);
+    assert_eq!(owner_rows(&h).len(), 2, "the next day: another owner notice");
+    assert_eq!(agent_rows(&h).len(), 1);
+}
+
 /// A task held by a blockedOn reason is silent until nudges.hold.hold_max_ms, then told to confirm or clear it, and the reminder turns
 /// into an order when ignored (never silent for ever). Clearing it is counted with its reason.
 #[test]
@@ -5630,7 +5706,7 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     let h = home("hold-bound");
     let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
     let task = |m: Value| json!({"id": "1", "subject": "Choose disk items", "status": "pending", "owner": "", "blockedBy": [], "metadata": m});
-    task_file(&h, SID, task(json!({"blockedOn": "owner: choose which disk items to delete"})));
+    task_file(&h, SID, task(json!({"blockedOn": "waiting on the CI run of the disk report"})));
     main_session(&h, SID, n, 15, "waiting on the owner");
     let mut st = State::default();
     let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
@@ -5650,7 +5726,7 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     assert!(all.len() >= 4, "{} rows", all.len());
     assert!(all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
     // a changed reason is a confirmed blocker: the clock restarts and the flag clears, counted with its reason
-    task_file(&h, SID, task(json!({"blockedOn": "owner: replied, waiting on the disk report"})));
+    task_file(&h, SID, task(json!({"blockedOn": "CI replied, waiting on the second disk report"})));
     at += MIN;
     ticks(&h, &mut st, &[at]);
     assert!(!agent(&st, SID).flags.contains_key("hold_expired"));

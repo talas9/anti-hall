@@ -579,8 +579,8 @@ doc = "Reminder of the lead_waiting_on_done signal once earlier reminders were i
 value = "agent tracker: Do now, {sent} reminders unanswered: {agents} finished {idle} ago. Read their results (or TaskStop them), update or close the tasks they own, and continue the work."
 
 [nudges.hold]
-doc = "Time-bounded task holds (owner principle: no exemption lasts for ever). hold_max_ms: how long a task whose metadata.blockedOn carries a stated reason is exempt from the negligence signals; the clock starts when the engine first sees that reason on the task and restarts when the reason text changes (a confirmed blocker). After it the session gets the hold_expired reminder every cooldown (agent_tracker.cooldowns) until the blocker is cleared, changed or the task closed. order_after: reminders already sent before the text turns from advice into an order."
-value = { hold_max_ms = 7200000, order_after = 2 }
+doc = "Time-bounded task holds (owner principle: no exemption lasts for ever). hold_max_ms: how long a task whose metadata.blockedOn carries a stated reason is exempt from the negligence signals; the clock starts when the engine first sees that reason on the task and restarts when the reason text changes (a confirmed blocker). After it the session gets the hold_expired reminder every cooldown (agent_tracker.cooldowns) until the blocker is cleared, changed or the task closed. order_after: reminders already sent about the same blockedOn text (counted per task, reset when the text is rewritten) before the text turns from advice into an order. owner_notice_ms: a blocker that names the owner or a human (a word of dispatch_tier.owner_values) is confirmed with the session once; after that only the owner is told, at most once per task per this interval, and the session hears nothing further."
+value = { hold_max_ms = 7200000, order_after = 2, owner_notice_ms = 86400000 }
 
 [agent_tracker.compliance_signals]
 doc = "The signals whose reminders, suppressions and outcomes the compliance counter (`compliance{signal,outcome}`) records."
@@ -597,6 +597,10 @@ value = { kind = "counter", unit = "signals", labels = ["signal", "outcome"] }
 [msg.agent_hold_expired]
 doc = "Reminder of the hold_expired signal: a task has been held by a blockedOn reason longer than nudges.hold.hold_max_ms. Placeholders: {tasks}, {n}, {held}."
 value = "agent tracker: Do now: confirm or clear the blocker on {tasks} (held {held}); update blockedOn with what it still waits on and who unblocks it, or clear it and work the task."
+
+[msg.agent_hold_owner]
+doc = "Owner notice of the hold_owner signal: a task held by a blockedOn reason that names the owner or a human has stood past nudges.hold.hold_max_ms and the session already confirmed it. Placeholders: {agent}, {tasks}, {held}."
+value = "agent tracker: {agent} is waiting on you for {tasks} (blocked {held}); it will not be reminded again."
 
 [msg.agent_hold_expired_order]
 doc = "Reminder of the hold_expired signal once earlier reminders were ignored (order). Placeholders: {tasks}, {n}, {held}, {sent}."

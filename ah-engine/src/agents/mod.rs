@@ -551,6 +551,14 @@ pub struct Agent {
     /// Held-task key (id and `blockedOn` hash) -> when the engine first saw that reason on an open task: the clock of `nudges.hold.hold_max_ms`.
     #[serde(default)]
     pub held_since: BTreeMap<String, u64>,
+    /// Held-task key -> hold_expired reminders sent about that exact reason: the count of "N reminders unanswered". Per task, and gone
+    /// with the key, so a rewritten `blockedOn` (a confirmed blocker) starts again at zero.
+    #[serde(default)]
+    pub hold_n: BTreeMap<String, u64>,
+    /// Task id of an owner-held task (its `blockedOn` names the owner or a human) the session was already asked to confirm once -> when
+    /// the owner was last told about it (0 = never): the agent hears nothing further, the owner is told at most once per interval.
+    #[serde(default)]
+    pub hold_owner: BTreeMap<String, u64>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,
