@@ -196,7 +196,19 @@ fn kind_word(a: &Agent) -> &'static str {
 
 /// Whether the nudge loop owns this signal for this agent (the plain reminder routes then stay quiet about it).
 pub(crate) fn owns(env: &Env, a: &Agent, sig: &str) -> bool {
-    env.switch("agent_nudge.setting") && trigger_of(sig).is_some() && !escalate::primary(a) && a.kind != kind_name("heartbeat")
+    // the loop opens nudges only for a RUNNING child (`open_new`): for any other state it owns nothing, so the plain reminder route
+    // speaks (idle_open_task is raised only while the agent is NOT running; owning it here left every such flag undelivered)
+    env.switch("agent_nudge.setting") && trigger_of(sig).is_some() && !escalate::primary(a) && a.kind != kind_name("heartbeat") && super::signals::running(a)
+}
+
+/// The live session a delivery about `a` falls back to when its own routes reach nobody (see `signals::remind`).
+pub(super) fn fallback_session(env: &Env, st: &State, a: &Agent) -> Option<String> {
+    target(env, st, a).1
+}
+
+/// Whether a snooze the parent asked for still runs for this child (any trigger): its answer proves the nudge was seen.
+pub(super) fn snoozed(env: &Env, st: &State, a: &Agent, now: u64) -> bool {
+    env.switch("agent_nudge.snooze_setting") && st.nudge_snooze.iter().any(|(k, s)| s.until > now && k.split_once('|').is_some_and(|(c, _)| c == a.id))
 }
 
 /// Tokens as k/M (`agent_nudge.units`).
@@ -417,7 +429,12 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     } else if spent > 0 && a.progress == f.base_progress {
         parts.push(defaults::fill(
             ef.str_field("waste"),
-            &[("tokens", &tokens(spent)), ("cache_pct", &super::lim("cache_read_pct")), ("since", &age(now.saturating_sub(f.since))), ("outcomes", &a.progress)],
+            &[
+                ("tokens", &tokens(spent)),
+                ("cache_pct", &super::lim("cache_read_pct")),
+                ("since", &age(now.saturating_sub(f.since))),
+                ("outcomes", &a.progress),
+            ],
         ));
     }
     if super::signals::waiting_on_ci(a) {
@@ -862,7 +879,11 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             snoozes: st.nudge_snooze.get(&snooze_key(&a.id, trig)).filter(|_| hold_snooze).map_or(0, |s| s.snoozes),
             tokens_at_sent: super::signals::total_spent(&a),
             out_mark: a.last_output_ms,
-            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() { vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())] } else { Vec::new() },
+            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() {
+                vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())]
+            } else {
+                Vec::new()
+            },
             ..Nudge::default()
         };
         let note = if walked {

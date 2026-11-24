@@ -20,6 +20,9 @@ pub(super) struct Task {
     pub(super) blocked: Vec<String>,
     /// `metadata.blockedOn` carries a stated reason: the task waits on something outside the session, so it is never negligence.
     pub(super) held: bool,
+    /// Identity of the hold for its clock: the task id and a hash of the `blockedOn` text (empty when not held). A changed reason is a
+    /// confirmed blocker and restarts the clock; an unchanged one does not.
+    pub(super) held_key: String,
 }
 
 fn num(t: &V, k: &str) -> u64 {
@@ -79,7 +82,9 @@ fn store_dir(env: &Env, sid: &str) -> Option<PathBuf> {
             continue;
         }
         let max = defaults::num("taskstate.store_pointer_max_bytes") as usize;
-        let ptr = std::fs::read(dir.join(defaults::text("taskstate.store_pointer_file"))).ok().map(|b| String::from_utf8_lossy(&b[..b.len().min(max)]).trim().to_string());
+        let ptr = std::fs::read(dir.join(defaults::text("taskstate.store_pointer_file")))
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b[..b.len().min(max)]).trim().to_string());
         if let Some(id) = ptr.filter(|id| valid_list_id(id))
             && base.join(&id).is_dir()
         {
@@ -109,12 +114,10 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
             .and_then(Value::as_array)
             .map(|b| b.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect())
             .unwrap_or_default();
-        let held = v
-            .get(c.str_field("f_metadata"))
-            .and_then(|m| m.get(c.str_field("f_blocked_on")))
-            .and_then(Value::as_str)
-            .is_some_and(|r| r.trim().chars().count() >= defaults::num("idle_rule.blocked_on_min") as usize);
-        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held });
+        let reason = v.get(c.str_field("f_metadata")).and_then(|m| m.get(c.str_field("f_blocked_on"))).and_then(Value::as_str).map(str::trim).unwrap_or("");
+        let held = reason.chars().count() >= defaults::num("idle_rule.blocked_on_min") as usize;
+        let held_key = if held { format!("{}#{:x}", s("f_id"), crate::health::fnv(reason)) } else { String::new() };
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key });
     }
     out.sort_by(|x, y| x.id.cmp(&y.id));
     out
@@ -148,7 +151,10 @@ fn running_children(st: &State, a: &Agent) -> bool {
 /// waits on it is stale (the 2026-11-23 incident: every open task carried a reason naming lanes that had finished, so nothing spoke for 8 h).
 pub(super) fn owner_done(st: &State, a: &Agent, owner: &str) -> bool {
     !owner.is_empty()
-        && st.agents.values().any(|s| super::is_child(s) && s.parent == a.id && (s.name == owner || s.id == owner) && super::signals::state_of(s) == super::state_name("done"))
+        && st
+            .agents
+            .values()
+            .any(|s| super::is_child(s) && s.parent == a.id && (s.name == owner || s.id == owner) && super::signals::state_of(s) == super::state_name("done"))
 }
 
 /// A task held by a stated `blockedOn` reason, unless its owner is a finished child of the session (then the reason cannot still hold).
@@ -158,7 +164,10 @@ fn held_now(t: &Task, st: &State, a: &Agent) -> bool {
 
 /// An in-progress task nobody works on: its owner is not a running agent (no owner at all: no lane of the session runs either).
 fn orphaned(t: &Task, st: &State, a: &Agent) -> bool {
-    !held_now(t, st, a) && t.status == defaults::raw("nudges.compliance").str_field("in_progress") && !owner_live(st, a, &t.owner) && (!t.owner.is_empty() || !running_children(st, a))
+    !held_now(t, st, a)
+        && t.status == defaults::raw("nudges.compliance").str_field("in_progress")
+        && !owner_live(st, a, &t.owner)
+        && (!t.owner.is_empty() || !running_children(st, a))
 }
 
 /// Open tasks whose blockers are all closed (or gone) that nobody works on: pending with no owner, or in progress and orphaned, with no
@@ -207,6 +216,45 @@ pub(super) fn update_waiting(env: &Env, a: &mut Agent, st: &State, tasks: &[Task
     }
 }
 
+/// Record, before the signals are read, since when each open held task has carried its current `blockedOn` reason (the clock of
+/// `nudges.hold.hold_max_ms`). Unlike the in-progress clocks, a cover does not stop it: a hold is bounded whatever else runs.
+pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
+    if !watched(env, a) {
+        a.held_since.clear();
+        return;
+    }
+    let closed = defaults::raw("nudges.idle_wake").get("closed_statuses").map(V::strings).unwrap_or_default();
+    let keys: Vec<&str> = tasks.iter().filter(|t| t.held && !closed.contains(&t.status.as_str())).map(|t| t.held_key.as_str()).collect();
+    a.held_since.retain(|k, _| keys.contains(&k.as_str()));
+    for k in keys {
+        a.held_since.entry(k.to_string()).or_insert(now);
+    }
+}
+
+/// The open held tasks whose hold has run past `nudges.hold.hold_max_ms`, with how long each has been held.
+fn expired_holds<'a>(a: &Agent, tasks: &'a [Task], now: u64) -> Vec<(&'a Task, u64)> {
+    let max = num(defaults::raw("nudges.hold"), "hold_max_ms");
+    tasks.iter().filter(|t| t.held).filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s)))).filter(|(_, w)| *w >= max).collect()
+}
+
+/// `hold_expired`: a task has carried a `blockedOn` reason for `hold_max_ms`. Evidence: the longest hold in seconds; text: the subjects.
+/// The exemption is time-bounded: this is what speaks after it, every cooldown, until the blocker is confirmed, cleared or the task closed.
+pub(super) fn hold_expired(env: &Env, a: &Agent, tasks: &[Task], now: u64) -> Option<Raised> {
+    if !watched(env, a) {
+        return None;
+    }
+    let due = expired_holds(a, tasks, now);
+    let longest = due.iter().map(|(_, w)| *w).max()?;
+    Some((longest / fmtn("ms_per_s"), subjects(&due.iter().map(|(t, _)| *t).collect::<Vec<_>>())))
+}
+
+/// The reminder text: advice first, the order once `order_after` reminders went out and were ignored.
+pub(super) fn hold_text(a: &Agent, evidence: u64, tasks: &str) -> String {
+    let sent = a.sent_log.iter().filter(|(s, _)| s == "hold_expired").count() as u64;
+    let key = if sent >= num(defaults::raw("nudges.hold"), "order_after") { "msg.agent_hold_expired_order" } else { "msg.agent_hold_expired" };
+    defaults::render(key, &[("tasks", &tasks), ("n", &evidence), ("held", &super::sinks::age(evidence * fmtn("ms_per_s"))), ("sent", &sent)])
+}
+
 /// `stale_list`: a task is open and the session made `stale_calls` work calls with no TaskCreate/TaskUpdate. Text: the open subjects.
 pub(super) fn stale_list(env: &Env, a: &Agent, tasks: &[Task]) -> Option<Raised> {
     let open = open_tasks(tasks);
@@ -218,7 +266,8 @@ pub(super) fn stale_list(env: &Env, a: &Agent, tasks: &[Task]) -> Option<Raised>
 
 /// `untracked_request`: the owner's last prompt was followed by `untracked_calls` tool calls and no TaskCreate/TaskUpdate.
 pub(super) fn untracked_request(env: &Env, a: &Agent) -> Option<Raised> {
-    (watched(env, a) && a.ask_open && a.calls_since_ask >= num(defaults::raw("nudges.compliance"), "untracked_calls")).then(|| (a.calls_since_ask, String::new()))
+    (watched(env, a) && a.ask_open && a.calls_since_ask >= num(defaults::raw("nudges.compliance"), "untracked_calls"))
+        .then(|| (a.calls_since_ask, String::new()))
 }
 
 /// `inprogress_waiting`: a task has been in progress for `inprogress_ms` with no live agent and no background job or Monitor.
@@ -261,4 +310,22 @@ pub(super) fn fired(sig: &str) {
 /// outcome in `nudges.compliance_outcomes`.
 pub(super) fn delivered(sig: &str, key: &str) {
     count(sig, defaults::raw("nudges.compliance_outcomes").str_field(key));
+}
+
+/// Count one event for ANY signal (not only the compliance ones): `undeliverable` and `cleared:<why>` are owed for every flag.
+pub(super) fn count_any(sig: &str, outcome: &str) {
+    crate::metrics::bump("compliance", &[("signal", sig), ("outcome", outcome)]);
+}
+
+/// A raised flag that reached nobody (no route, every write failed, or it stayed undelivered past `limits.undelivered_ms`).
+pub(super) fn undeliverable(sig: &str, why: &str) {
+    let o = defaults::raw("nudges.compliance_outcomes");
+    count_any(sig, o.str_field("undeliverable"));
+    crate::health::log_event("agents", "undeliverable", &format!("{sig}: {why}"));
+}
+
+/// A flag cleared, and why (`cleared:<why>`).
+pub(super) fn cleared_why(sig: &str, why: &str) {
+    let o = defaults::raw("nudges.compliance_outcomes");
+    count_any(sig, &format!("{}{}{why}", o.str_field("cleared"), o.str_field("reason_sep")));
 }

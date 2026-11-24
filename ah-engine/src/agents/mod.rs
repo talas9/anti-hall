@@ -20,8 +20,8 @@ mod compliance;
 mod ctl;
 mod escalate;
 mod facts;
-mod live;
 mod lead_wait;
+mod live;
 mod lockwatch;
 pub(crate) mod native_wake;
 pub mod nudge;
@@ -250,6 +250,9 @@ pub struct Flag {
     /// The agent's task-list calls when it was raised (GH #958).
     #[serde(default)]
     pub base_task_calls: u64,
+    /// Already counted `undeliverable` (once per raised flag).
+    #[serde(default)]
+    pub undeliverable: bool,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -545,6 +548,9 @@ pub struct Agent {
     /// Task id -> when it was first seen in progress with no live agent and no background job; any cover clears the entry (GH #958).
     #[serde(default)]
     pub ip_since: BTreeMap<String, u64>,
+    /// Held-task key (id and `blockedOn` hash) -> when the engine first saw that reason on an open task: the clock of `nudges.hold.hold_max_ms`.
+    #[serde(default)]
+    pub held_since: BTreeMap<String, u64>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,

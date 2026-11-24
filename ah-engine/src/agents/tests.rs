@@ -3646,13 +3646,19 @@ fn reads(from: u64, count: u64, tag: &str) -> Vec<String> {
     (0..count)
         .flat_map(|i| {
             let id = format!("{tag}{i}");
-            [tool(from + i * 1000, &format!("m{id}"), 5, &id, "Read", json!({"file_path": format!("/w/{id}")})), result(from + i * 1000 + 500, &id, "ok", false)]
+            [
+                tool(from + i * 1000, &format!("m{id}"), 5, &id, "Read", json!({"file_path": format!("/w/{id}")})),
+                result(from + i * 1000 + 500, &id, "ok", false),
+            ]
         })
         .collect()
 }
 
 fn task_create(ts: u64, tag: &str) -> Vec<String> {
-    vec![tool(ts, &format!("m{tag}"), 5, tag, "TaskCreate", json!({"subject": "Port the gauge"})), result(ts + 500, tag, "Task #1 created successfully: Port the gauge", false)]
+    vec![
+        tool(ts, &format!("m{tag}"), 5, tag, "TaskCreate", json!({"subject": "Port the gauge"})),
+        result(ts + 500, tag, "Task #1 created successfully: Port the gauge", false),
+    ]
 }
 
 /// A busy main session whose transcript is `lines` after the owner's prompt.
@@ -5004,8 +5010,12 @@ fn a_closed_nudge_reports_its_outcome_against_the_jev_decisions_behind_it() {
     st.nudges.insert("abc".into(), nudge::Nudge { child: "abc".into(), jev, said_not_done: 1, ..nudge::Nudge::default() });
     nudge::close_finished(&e, &mut st, "abc");
     let rows: Vec<Value> = crate::jev::testkit::log_rows(&h).into_iter().filter(|r| r["type"] == "outcome").collect();
-    let got: Vec<(String, String, String, String)> =
-        rows.iter().map(|r| (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())).collect();
+    let got: Vec<(String, String, String, String)> = rows
+        .iter()
+        .map(|r| {
+            (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())
+        })
+        .collect();
     assert_eq!(
         got,
         vec![
@@ -5129,7 +5139,8 @@ fn run_waste(tag: &str, lines: Vec<String>, now_shift: u64) {
 fn a_turn_that_rebuilds_its_cache_after_an_idle_gap_is_cache_expiry_waste() {
     let n = now0();
     let text = json!([{"type": "text", "text": "ok"}]);
-    let call = |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
+    let call =
+        |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
     let dup = asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), text.clone(), Some("end_turn"));
     run_waste(
         "cacheexp",
@@ -5339,12 +5350,18 @@ fn n923_stuck_on_names_only_a_call_that_ran_past_the_configured_time() {
 /// already allowed that prefix; the merge pattern did not, so a merging agent showed no outcome).
 #[test]
 fn a_merge_behind_an_env_timeout_and_nice_prefix_is_a_shipped_outcome() {
-    for (i, cmd) in ["gh pr merge 5 --squash", "GH_TOKEN=x gh pr merge 5 --squash", "GH_TOKEN=x timeout 60 nice -n 10 gh pr merge 5 --squash"].into_iter().enumerate() {
+    for (i, cmd) in
+        ["gh pr merge 5 --squash", "GH_TOKEN=x gh pr merge 5 --squash", "GH_TOKEN=x timeout 60 nice -n 10 gh pr merge 5 --squash"].into_iter().enumerate()
+    {
         let h = home(&format!("merge-prefix-{i}"));
         let n = now0();
         write(
             &sess(&h, "s1"),
-            &[prompt(n - 9 * MIN, "/w"), tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": cmd})), result(n - 7 * MIN, "u1", "Merged pull request #5", false)],
+            &[
+                prompt(n - 9 * MIN, "/w"),
+                tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": cmd})),
+                result(n - 7 * MIN, "u1", "Merged pull request #5", false),
+            ],
         );
         let mut st = State::default();
         ticks(&h, &mut st, &[n - 6 * MIN]);
@@ -5453,7 +5470,11 @@ fn a_task_with_a_stated_blocked_on_reason_is_held_not_negligence_in_every_tick_s
     }
     // idle main session: a held in-progress or pending task is not dispatchable, an unheld one is
     let h = home("held-dispatch");
-    task_file(&h, SID, json!({"id": "1", "subject": "Held pending", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "owner decision"}}));
+    task_file(
+        &h,
+        SID,
+        json!({"id": "1", "subject": "Held pending", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "owner decision"}}),
+    );
     task_file(&h, SID, task(json!({"blockedOn": "owner: pick"})));
     main_session(&h, SID, n, 15, "done for now");
     let mut st = State::default();
@@ -5490,8 +5511,16 @@ fn an_idle_lead_with_finished_teammates_and_blocked_on_tasks_is_woken_by_the_tic
     let n = now0();
     let h = home("lead-wait");
     // every open task carries a stated blockedOn reason and is owned by the finished teammate (the incident shape)
-    task_file(&h, SID, json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge via the land flow"}}));
-    task_file(&h, SID, json!({"id": "2", "subject": "Final verify", "status": "pending", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "waits on the release"}}));
+    task_file(
+        &h,
+        SID,
+        json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge via the land flow"}}),
+    );
+    task_file(
+        &h,
+        SID,
+        json!({"id": "2", "subject": "Final verify", "status": "pending", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "waits on the release"}}),
+    );
     main_session(&h, SID, n, 20, "waiting on the lanes");
     finished_sub(&h, SID, n, 15);
     let mut st = State::default();
@@ -5521,7 +5550,11 @@ fn an_idle_lead_with_finished_teammates_and_blocked_on_tasks_is_woken_by_the_tic
 fn a_lead_whose_teammates_still_run_is_not_told_to_stop_waiting() {
     let n = now0();
     let h = home("lead-wait-compliant");
-    task_file(&h, SID, json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge"}}));
+    task_file(
+        &h,
+        SID,
+        json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge"}}),
+    );
     main_session(&h, SID, n, 30, "waiting on the lanes");
     running_sub(&h, SID, n, 1);
     let mut st = State::default();
@@ -5529,4 +5562,130 @@ fn a_lead_whose_teammates_still_run_is_not_told_to_stop_waiting() {
     assert!(lead_rows(&h, SID).is_empty(), "{:?}", wake_rows(&h, SID));
     let e = env(&h, n + 40 * MIN);
     assert!(compliance::dispatchable(&compliance::session_tasks(&e, SID), &st, &st.agents[SID], e.now_ms).is_empty());
+}
+
+// ---- GH #958: no flag goes undelivered, no exemption lasts for ever ----
+
+fn compliance_count(sig: &str, outcome: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("compliance", &[("signal", sig), ("outcome", outcome)])
+}
+
+fn ticks_nudge(h: &Path, st: &mut State, sessions: &[&str], at: &[u64]) {
+    for n in at {
+        let e = nudge_env(h, *n, &[]);
+        for s in sessions {
+            arm_wake(&e, s);
+        }
+        tick(&e, st);
+    }
+}
+
+/// 2026-11-23 live incident: with the nudge loop on, an idle agent holding an open task raised idle_open_task, the loop "owned" it,
+/// and the loop only opens nudges for RUNNING children: the flag sat 6 hours and reached nobody.
+#[test]
+fn an_idle_open_task_flag_is_delivered_with_the_nudge_loop_on_never_left_to_sit() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("idle-open-nudge-on");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["parent"], &[n, n + MIN, n + 2 * MIN]);
+    assert!(agent(&st, "w1").flags.contains_key("idle_open_task"));
+    let rows: Vec<Value> = wake_rows(&h, "parent").into_iter().chain(queue(&h, "parent")).filter(|r| r["signal"] == "idle_open_task").collect();
+    assert!(!rows.is_empty(), "the flag was raised and delivered nowhere: {:?}", wake_rows(&h, "parent"));
+    assert!(compliance_count("idle_open_task", "undeliverable") == 0, "it was delivered, not undeliverable");
+}
+
+/// A workspace's own idle_open_task reaches the workspace itself through its wake feed.
+#[test]
+fn a_workspace_idle_on_an_open_task_hears_it_on_its_own_wake_feed() {
+    let h = home("ws-idle-open");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/sessW.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/wt/x"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - 30 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert_eq!(a.kind, kind_name("workspace"));
+    assert!(a.flags.contains_key("idle_open_task"), "open={} flags={:?}", a.open, a.flags.keys().collect::<Vec<_>>());
+    let own: Vec<Value> = wake_rows(&h, "sessW").into_iter().filter(|r| r["signal"] == "idle_open_task").collect();
+    assert_eq!(own.len(), 1, "{:?}", wake_rows(&h, "sessW"));
+}
+
+/// A task held by a blockedOn reason is silent until nudges.hold.hold_max_ms, then told to confirm or clear it, and the reminder turns
+/// into an order when ignored (never silent for ever). Clearing it is counted with its reason.
+#[test]
+fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-bound");
+    let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |m: Value| json!({"id": "1", "subject": "Choose disk items", "status": "pending", "owner": "", "blockedBy": [], "metadata": m});
+    task_file(&h, SID, task(json!({"blockedOn": "owner: choose which disk items to delete"})));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
+    ticks(&h, &mut st, &[n, n + MIN, n + max - MIN]);
+    assert!(rows(&h).is_empty(), "silent while the hold is inside hold_max_ms: {:?}", rows(&h));
+    ticks(&h, &mut st, &[n + max + MIN]);
+    let first = rows(&h);
+    assert!(!first.is_empty(), "the expired hold said nothing");
+    let t = first[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now: confirm or clear the blocker on Choose disk items"), "{t}");
+    let mut at = n + max + MIN;
+    for _ in 0..5 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    let all = rows(&h);
+    assert!(all.len() >= 4, "{} rows", all.len());
+    assert!(all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
+    // a changed reason is a confirmed blocker: the clock restarts and the flag clears, counted with its reason
+    task_file(&h, SID, task(json!({"blockedOn": "owner: replied, waiting on the disk report"})));
+    at += MIN;
+    ticks(&h, &mut st, &[at]);
+    assert!(!agent(&st, SID).flags.contains_key("hold_expired"));
+    let cleared: u64 =
+        ["acted_on", "condition_gone", "expired", "undelivered", "unexplained"].iter().map(|w| compliance_count("hold_expired", &format!("cleared:{w}"))).sum();
+    assert_eq!(cleared, 1, "an unexplained or explained clear is always counted");
+}
+
+/// A flag the nudge loop owns but never opens a nudge for (here: a standing busy hold) is delivered by the plain route once it has sat
+/// for limits.undelivered_ms, and counted undeliverable: no exemption silences a raised flag for ever.
+#[test]
+fn a_flag_the_nudge_loop_never_opens_is_delivered_after_undelivered_ms_and_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("undelivered-watchdog");
+    let n = now0();
+    write(&sess(&h, "parent"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    write(&dir.join("agent-abc.jsonl"), &[prompt(n - 40 * MIN, "/w"), asst(n - 35 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)]);
+    std::fs::write(dir.join("agent-abc.meta.json"), r#"{"description":"Identify skipped tests"}"#).unwrap();
+    register(&h, std::process::id(), "parent", "busy", n);
+    let limit = lim("undelivered_ms");
+    let hung = |h: &Path| -> Vec<Value> { queue(h, "parent").into_iter().chain(wake_rows(h, "parent")).filter(|r| r["signal"] == "hung").collect() };
+    let mut st = State::default();
+    let mut t = n;
+    while t <= n + limit + 20 * MIN {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        st.nudge_hold.insert("abc".into(), t + 10 * MIN); // the judge keeps calling it busy
+        tick(&e, &mut st);
+        if t < n + limit {
+            assert!(hung(&h).is_empty(), "the nudge loop owns it and it is on hold: nothing yet at +{} min: {:?}", (t - n) / MIN, hung(&h));
+        }
+        t += 10 * MIN;
+    }
+    assert!(agent(&st, "abc").flags.contains_key("hung"));
+    assert!(!hung(&h).is_empty(), "the flag sat past undelivered_ms and was never delivered");
+    assert_eq!(compliance_count("hung", "undeliverable"), 1, "counted once");
 }

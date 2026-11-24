@@ -654,7 +654,8 @@ fn joined(items: &[String], shown: u64, joiner: &str) -> String {
 /// GH #515: open unblocked unassigned tasks and no agent running for `idle_ms`. Evidence: the task count; text: their subjects.
 fn idle_no_agents(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> Option<Raised> {
     let c = defaults::raw("nudges.idle_wake");
-    if !env.switch("agent_tracker.idle_wake_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || running_children(st, a) > 0 || compliance::covered(a, now) {
+    if !env.switch("agent_tracker.idle_wake_sw") || main_idle(a, now, num(c, "idle_ms")).is_none() || running_children(st, a) > 0 || compliance::covered(a, now)
+    {
         return None;
     }
     let open: Vec<String> = compliance::dispatchable(tasks, st, a, now).iter().map(|t| t.subject.clone()).collect();
@@ -779,6 +780,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap
             "untracked_request" => compliance::untracked_request(env, a),
             "inprogress_waiting" => compliance::inprogress_waiting(env, a, tasks, now),
             "lead_waiting_on_done" => super::lead_wait::raised(env, a, st, tasks, now),
+            "hold_expired" => compliance::hold_expired(env, a, tasks, now),
             _ => None,
         };
         if let Some(r) = r {
@@ -911,6 +913,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         "untracked_request" => defaults::render("msg.agent_untracked_request", &[("n", &f.evidence)]),
         "inprogress_waiting" => defaults::render("msg.agent_inprogress_waiting", &[("tasks", &f.text), ("idle", &age(f.evidence * fmtn("ms_per_s")))]),
         "lead_waiting_on_done" => super::lead_wait::text(a, f.evidence, &f.text, a.seen.saturating_sub(a.last_output_ms)),
+        "hold_expired" => compliance::hold_text(a, f.evidence, &f.text),
         "monitor_off" => {
             let e = defaults::raw(wake_switch_key(a));
             defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])
@@ -986,9 +989,30 @@ pub(super) fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target
     out
 }
 
-fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64) {
-    // an unhealthy child is the nudge loop's: one question to its direct parent, never a broadcast
-    if !env.act || !env.switch("agent_tracker.remind_setting") || super::nudge::owns(env, a, sig) {
+/// Where a flag goes when its own routes reach nobody: the direct parent or nearest live ancestor (a workspace's Primary), by wake feed
+/// and session queue; failing that the owner notices file (while it is on).
+fn fallback_targets(env: &Env, st: &State, a: &Agent) -> Vec<Target> {
+    match super::nudge::fallback_session(env, st, a) {
+        Some(k) => vec![Target::Wake(k.clone()), Target::Session(k)],
+        None if env.switch("agent_tracker.owner_setting") => vec![Target::Owner],
+        None => Vec::new(),
+    }
+}
+
+/// Count and log, once per raised flag, that it could not be delivered along its own routes.
+fn mark_undeliverable(a: &mut Agent, sig: &str, why: &str) {
+    if let Some(f) = a.flags.get_mut(sig)
+        && !f.undeliverable
+    {
+        f.undeliverable = true;
+        compliance::undeliverable(sig, why);
+    }
+}
+
+fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64, force: bool) {
+    // an unhealthy child is the nudge loop's: one question to its direct parent, never a broadcast (unless the loop never opened one:
+    // `force`, from the undelivered watchdog)
+    if !env.act || !env.switch("agent_tracker.remind_setting") || (!force && super::nudge::owns(env, a, sig)) {
         return;
     }
     let now = env.now_ms;
@@ -1031,51 +1055,72 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             return;
         }
     }
-    let tg = targets(env, st, a, sig);
-    let mut sent = 0;
-    for t in &tg {
-        // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
-        let mut held = why;
-        let (sink, key): (Box<dyn Sink>, String) = match t {
-            Target::Session(k) => (Box::new(SessionQueue), k.clone()),
-            Target::Wake(k) => (Box::new(WakeFeed), k.clone()),
-            Target::Mesh { ws, to_parent } => (Box::new(MeshOutbox { to_parent: *to_parent }), ws.clone()),
-            Target::Owner => (Box::new(OwnerNotices), String::new()),
-        };
-        if held.is_none() && sink.backlog(env, &key) >= spam("max_pending") {
-            held = Some("pending");
-        }
-        if held.is_none() && sink.has_pending(env, &key, sig, &a.id) {
-            held = Some("pending");
-        }
-        let f = base(a).tok("channel", sink.channel()).tok("result", held.unwrap_or("queued")).num("evidence", flag.evidence);
-        if let Some(h) = held {
-            let quiet = a.last_sent.get(&format!("held:{sig}")).is_some_and(|t| now.saturating_sub(*t) < cool.max(1));
-            if !quiet {
-                rec(env, "reminder", sig, Outcome::Skip, f.tok("source", h));
-                compliance::suppressed(sig, h);
-                st.day(env).suppressed += 1;
-                a.last_sent.insert(format!("held:{sig}"), now);
+    let mut tg = targets(env, st, a, sig);
+    if tg.is_empty() {
+        mark_undeliverable(a, sig, "no_route");
+        tg = fallback_targets(env, st, a);
+    }
+    let (mut sent, mut failed, mut fell_back) = (0, 0, false);
+    loop {
+        for t in &tg {
+            // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
+            let mut held = why;
+            let (sink, key): (Box<dyn Sink>, String) = match t {
+                Target::Session(k) => (Box::new(SessionQueue), k.clone()),
+                Target::Wake(k) => (Box::new(WakeFeed), k.clone()),
+                Target::Mesh { ws, to_parent } => (Box::new(MeshOutbox { to_parent: *to_parent }), ws.clone()),
+                Target::Owner => (Box::new(OwnerNotices), String::new()),
+            };
+            if held.is_none() && sink.backlog(env, &key) >= spam("max_pending") {
+                held = Some("pending");
             }
-            continue;
-        }
-        let r = Reminder {
-            id: format!("{:x}", crate::health::fnv(&format!("{}{sig}{now}", a.id))),
-            ts: now,
-            signal: sig.into(),
-            agent: a.id.clone(),
-            text: text_for(a, sig, &flag),
-        };
-        match sink.deliver(env, &key, &r) {
-            Ok(()) => {
-                if matches!(t, Target::Wake(_)) {
-                    compliance::delivered(sig, "delivered_wake");
+            if held.is_none() && sink.has_pending(env, &key, sig, &a.id) {
+                held = Some("pending");
+            }
+            let f = base(a).tok("channel", sink.channel()).tok("result", held.unwrap_or("queued")).num("evidence", flag.evidence);
+            if let Some(h) = held {
+                let quiet = a.last_sent.get(&format!("held:{sig}")).is_some_and(|t| now.saturating_sub(*t) < cool.max(1));
+                if !quiet {
+                    rec(env, "reminder", sig, Outcome::Skip, f.tok("source", h));
+                    compliance::suppressed(sig, h);
+                    st.day(env).suppressed += 1;
+                    a.last_sent.insert(format!("held:{sig}"), now);
                 }
-                rec(env, "reminder", sig, Outcome::Advise, f);
-                sent += 1;
+                continue;
             }
-            Err(e) => crate::health::log_event("agents", "queue_write", &e),
+            let r = Reminder {
+                id: format!("{:x}", crate::health::fnv(&format!("{}{sig}{now}", a.id))),
+                ts: now,
+                signal: sig.into(),
+                agent: a.id.clone(),
+                text: text_for(a, sig, &flag),
+            };
+            match sink.deliver(env, &key, &r) {
+                Ok(()) => {
+                    if matches!(t, Target::Wake(_)) {
+                        compliance::delivered(sig, "delivered_wake");
+                    }
+                    rec(env, "reminder", sig, Outcome::Advise, f);
+                    sent += 1;
+                }
+                Err(e) => {
+                    crate::health::log_event("agents", "queue_write", &e);
+                    failed += 1;
+                }
+            }
         }
+        if sent == 0 && failed > 0 {
+            mark_undeliverable(a, sig, "write_failed");
+            if !fell_back {
+                fell_back = true;
+                failed = 0;
+                tg = fallback_targets(env, st, a);
+                if !tg.is_empty() {
+                    continue;
+                }
+            }
+        }
+        break;
     }
     if sent > 0 {
         compliance::fired(sig);
@@ -1097,8 +1142,31 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     }
 }
 
+/// Why a flag cleared (`nudges.compliance_outcomes` clear_*): the session acted; the condition went (the agent finished, died or
+/// resumed); it went quiet past the tracked window (expired); it was never delivered; or nothing explains it (counted, never silent).
+fn clear_reason(env: &Env, a: &Agent, f: &Flag) -> &'static str {
+    let o = defaults::raw("nudges.compliance_outcomes");
+    let key = if a.task_calls > f.base_task_calls || a.progress >= f.base_progress + lim("fp_min_progress") {
+        "clear_acted"
+    } else if a.gone || a.dead || a.finished || a.running {
+        "clear_gone"
+    } else if env.now_ms.saturating_sub(a.last_output_ms) > lim("active_window_ms") {
+        "clear_expired"
+    } else if f.reminded_at == 0 && f.delivered_at == 0 {
+        "clear_undelivered"
+    } else {
+        "clear_unexplained"
+    };
+    o.str_field(key)
+}
+
 fn resolve(env: &Env, st: &mut State, a: &Agent, sig: &str, f: &Flag) {
     let now = env.now_ms;
+    let why = clear_reason(env, a, f);
+    compliance::cleared_why(sig, why);
+    if why == defaults::raw("nudges.compliance_outcomes").str_field("clear_undelivered") {
+        crate::health::log_event("agents", "cleared_undelivered", sig);
+    }
     if f.reminded_at > 0 {
         compliance::cleared(sig, a.task_calls > f.base_task_calls);
         let lat = now.saturating_sub(f.reminded_at) / fmtn("ms_per_s");
@@ -1120,8 +1188,16 @@ fn apply(env: &Env, st: &mut State, a: &mut Agent, raised: BTreeMap<&'static str
     for sig in defaults_signals() {
         match (raised.get(sig), a.flags.contains_key(sig)) {
             (Some((ev, text)), false) => {
-                let f =
-                    Flag { since: now, evidence: *ev, text: text.clone(), ticks: 1, base_progress: a.progress, base_tokens: a.tin + a.tout, base_task_calls: a.task_calls, ..Flag::default() };
+                let f = Flag {
+                    since: now,
+                    evidence: *ev,
+                    text: text.clone(),
+                    ticks: 1,
+                    base_progress: a.progress,
+                    base_tokens: a.tin + a.tout,
+                    base_task_calls: a.task_calls,
+                    ..Flag::default()
+                };
                 rec(
                     env,
                     "signal",
@@ -1158,7 +1234,19 @@ fn apply(env: &Env, st: &mut State, a: &mut Agent, raised: BTreeMap<&'static str
         let Some(f) = a.flags.get(sig).cloned() else { continue };
         let confirm = defaults::raw("agent_tracker.cooldowns").get(sig).and_then(|c| c.get("confirm_ticks")).and_then(V::as_integer);
         if f.ticks >= confirm.map_or(lim("confirm_ticks"), |c| c.max(0) as u64) {
-            remind(env, st, a, sig, queued);
+            remind(env, st, a, sig, queued, false);
+        }
+        // a flag the nudge loop owns but never acted on (no reminder, no delivery, no open nudge, no snooze) is not left to sit
+        if let Some(f) = a.flags.get(sig)
+            && f.reminded_at == 0
+            && f.delivered_at == 0
+            && now.saturating_sub(f.since) >= lim("undelivered_ms")
+            && super::nudge::owns(env, a, sig)
+            && !st.nudges.contains_key(&a.id)
+            && !super::nudge::snoozed(env, st, a, now)
+        {
+            mark_undeliverable(a, sig, "undelivered_watchdog");
+            remind(env, st, a, sig, queued, true);
         }
         if let Some(f) = a.flags.get_mut(sig)
             && f.reminded_at > 0
@@ -1225,6 +1313,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         super::waste::update(env, &mut a, &mut judge_budget);
         let tasks = compliance::load(env, &a);
         compliance::update_waiting(env, &mut a, st, &tasks, now);
+        compliance::update_held(env, &mut a, &tasks, now);
         let raised = raise(env, &a, st, &tasks, now);
         mark_breaker(env, &a, raised.get("burn_hard"));
         apply(env, st, &mut a, raised, &mut queued);
