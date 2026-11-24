@@ -5689,3 +5689,19 @@ fn a_flag_the_nudge_loop_never_opens_is_delivered_after_undelivered_ms_and_count
     assert!(!hung(&h).is_empty(), "the flag sat past undelivered_ms and was never delivered");
     assert_eq!(compliance_count("hung", "undeliverable"), 1, "counted once");
 }
+
+/// Owner rule (2026-11-23): a signal about a workspace session reaches its OWN wake feed while its watcher is armed, whatever the
+/// route table says (hung routes to the coordinator only); the parent's copy is additional.
+#[test]
+fn every_signal_about_a_workspace_reaches_its_own_wake_feed_when_armed() {
+    let h = home("ws-own-feed");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    write(&h.join(".claude/projects/p/sessW.jsonl"), &[prompt(n - 60 * MIN, "/wt/x"), asst(n - 40 * MIN, "w1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert_eq!(a.kind, kind_name("workspace"));
+    assert!(a.flags.contains_key("hung"), "{:?}", a.flags.keys().collect::<Vec<_>>());
+    assert!(wake_rows(&h, "sessW").iter().any(|r| r["signal"] == "hung"), "{:?}", wake_rows(&h, "sessW"));
+}

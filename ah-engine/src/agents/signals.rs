@@ -1012,7 +1012,12 @@ fn mark_undeliverable(a: &mut Agent, sig: &str, why: &str) {
 fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64, force: bool) {
     // an unhealthy child is the nudge loop's: one question to its direct parent, never a broadcast (unless the loop never opened one:
     // `force`, from the undelivered watchdog)
-    if !env.act || !env.switch("agent_tracker.remind_setting") || (!force && super::nudge::owns(env, a, sig)) {
+    if !env.act || !env.switch("agent_tracker.remind_setting") {
+        return;
+    }
+    // the nudge loop's question goes to the parent; the flagged session still hears its own signal on its own wake feed
+    let own_only = !force && super::nudge::owns(env, a, sig);
+    if own_only && !(watcher_session(a) && sinks::wake_armed(env, &a.id)) {
         return;
     }
     let now = env.now_ms;
@@ -1055,8 +1060,13 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
             return;
         }
     }
-    let mut tg = targets(env, st, a, sig);
-    if tg.is_empty() {
+    let mut tg = if own_only { Vec::new() } else { targets(env, st, a, sig) };
+    // owner rule: EVERY signal about a session reaches that session's own wake feed while its watcher is armed; parent and Primary
+    // copies are additional, never instead (the 2026-11-23 workspace heard nothing while its Monitor was armed all night)
+    if watcher_session(a) && !tg.iter().any(|t| matches!(t, Target::Wake(k) if *k == a.id)) && sinks::wake_armed(env, &a.id) {
+        tg.push(Target::Wake(a.id.clone()));
+    }
+    if tg.is_empty() && !own_only {
         mark_undeliverable(a, sig, "no_route");
         tg = fallback_targets(env, st, a);
     }
