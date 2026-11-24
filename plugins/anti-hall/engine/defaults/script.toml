@@ -201,6 +201,14 @@ value = { git = "closed", command = "closed", api-guard = "closed", edit-guard =
 doc = "Failure mode of a check not listed in script.failure_mode_by_check."
 value = "open"
 
+[script.failure_risk_weighted]
+doc = "The `closed` guards that are risk-weighted (GH #945, blocks protect, not disrupt): when one of them cannot answer (a cut call, a starved script, a late or missing daemon reply, a spent budget) it still fails closed for a call in a hold class of dispatch.capacity_hold (a push, a merge, a recursive delete, a deploy, a publish ...), but a call outside every hold class (a plain read: ls, ps, grep, gh pr checks, git ls-remote ...) passes, counted under script.risk_open_counter and told once per session. Only a call of a tool listed in dispatch.capacity_hold.tools is judged; any other call keeps the check's failure mode. A guard not listed fails closed for every call. Empty = every closed guard fails closed for every call."
+value = ["git", "command"]
+
+[script.risk_open_counter]
+doc = "The status counter group (status.advisory.<group>.<check>) that counts a read-only call a risk-weighted closed guard (script.failure_risk_weighted) let through because it could not answer."
+value = "risk_open"
+
 [script.failure_mode_closed]
 doc = "The failure-mode value that blocks on a guard event (any other value allows)."
 value = "closed"

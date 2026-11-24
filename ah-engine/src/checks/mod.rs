@@ -150,6 +150,7 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
 
 fn run_env_unmeasured(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
     crate::script::set_session(payload.get("session_id").and_then(Value::as_str).unwrap_or_default());
+    crate::script::set_call(payload);
     if env.is_incomplete() {
         return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_env_incomplete")));
     }

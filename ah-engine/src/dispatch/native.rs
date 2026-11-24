@@ -138,6 +138,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
     {
         crate::gate::global().turn(sid);
     }
+    crate::script::set_call(p); // a closed guard that cannot answer tells a read-only call from a risky one
     let guard_event = crate::defaults::list("dispatch.guard_events").contains(&meta.event.as_str());
     let mut out = Vec::new();
     let entries: Vec<Entry> = table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
