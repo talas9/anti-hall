@@ -6677,6 +6677,39 @@ fn shared_includes_are_compiled_once_and_a_steady_load_never_reloads() {
 
 // ---- FW-1 (command-family misfires): the counters of the five guard changes ----
 
+/// #945: a risk-weighted closed guard (`script.failure_risk_weighted`) that cannot answer holds a call in a hold class of
+/// `dispatch.capacity_hold` and lets a read through; a guard that is not weighted, or a call of a tool the hold rules do not read,
+/// keeps the check's failure mode.
+#[test]
+fn a_closed_guard_that_cannot_answer_holds_only_risky_calls() {
+    let bash = |c: &str| json!({"tool_name": "Bash", "tool_input": {"command": c}});
+    let blocked = |name: &str, p: &Value| {
+        super::set_call(p);
+        let a = matches!(super::unanswered(name, "PreToolUse"), Verdict::Block(_));
+        let b = matches!(super::failed(name, "PreToolUse", "boom"), Verdict::Block(_));
+        assert_eq!(a, b, "{name}: unanswered and failed agree");
+        a
+    };
+    for read in ["gh pr checks 1", "git ls-remote origin", "ls | grep x", "ps -ef | grep node", "git status", "gh run list", "cargo build"] {
+        assert!(!blocked("git", &bash(read)), "a read passes: {read}");
+        assert!(!blocked("command", &bash(read)), "a read passes the command guard: {read}");
+        super::set_call(&bash(read));
+        assert!(super::cut_at_deadline("git", "PreToolUse"), "a read is cut at the deadline: {read}");
+    }
+    for risky in ["git push --force origin main", "gh pr merge 1", "rm -rf build", "git -C x push", "gh issue comment 1 -b x"] {
+        assert!(blocked("git", &bash(risky)), "a risky call is held: {risky}");
+        super::set_call(&bash(risky));
+        assert!(!super::cut_at_deadline("git", "PreToolUse"), "a risky call keeps the guard's own limit: {risky}");
+    }
+    // not weighted (edit-guard) and not a judged tool: the failure mode decides
+    assert!(blocked("edit-guard", &bash("ls | grep x")));
+    assert!(blocked("git", &json!({"tool_name": "Edit", "tool_input": {"file_path": "/x"}})));
+    assert!(blocked("git", &Value::Null), "no tool call: closed");
+    // an event that is no guard event never blocks
+    super::set_call(&bash("git push -f"));
+    assert!(!matches!(super::unanswered("git", "PostToolUse"), Verdict::Block(_)));
+}
+
 mod fw1_counters {
     use super::*;
 

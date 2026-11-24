@@ -34,7 +34,7 @@ H echo `git push -f`
 H cat <(git push -f)
 H echo ok\ngit push
 H git log --format='git push' | sh
-H cat notes.md | grep 'gh pr merge'
+P cat notes.md | grep 'gh pr merge'
 H echo x > f; rm -rf /x
 H rg --pre 'rm -rf /x' p
 H rg --pre='rm -rf /x' p
@@ -393,3 +393,19 @@ P python3 -c "op='status'; cmd=['git', op]; print(cmd)"
 H python3 -c "import subprocess; subprocess.run(['git', op])"
 H python3 -c "import subprocess; cmd=['git', op]; subprocess.run(cmd)"
 H python3 -c "op='push'; cmd=['git', op]; import os; os.execvp('git', cmd)"
+# #945: remote reads and local read pipelines pass under load; a writer after the pipe, a gh api write and a hook-running fetch are held
+H gh pr checks 1 | sh
+H git ls-remote origin | git push
+H gh api repos/o/r/pulls/1/merge -X PUT
+H git fetch --upload-pack='git push' origin
+P gh pr checks 1
+P gh pr checks 1 | grep -i merge
+P gh run view 5 | tail -20
+P gh run list --limit 5
+P gh issue view 945 | head -40
+P git ls-remote origin
+P git fetch origin
+P ls | grep push
+P ps -ef | grep "git push"
+P gh pr list --json number | head
+P gh api repos/o/r/pulls

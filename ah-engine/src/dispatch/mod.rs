@@ -1126,6 +1126,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     let guard = guarded(&args.event);
     let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
+    crate::script::set_call(&p);
     let mut pre_err = String::new();
     let entries = if guard {
         table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
@@ -1276,6 +1277,9 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         *fail_open_on.get_or_init(|| fail_open_enabled(&req_env))
             && e.check.as_deref().is_some_and(|c| crate::script::failure_mode(c) != defaults::text("script.failure_mode_closed"))
     };
+    // a closed guard of a risk-weighted kind (`script.failure_risk_weighted`) lets a read-only call through when it gave no answer,
+    // whatever `guards.failOpenNonSafety` says: only an irreversible or shared-remote action is held
+    let fails_open = |e: &table::Entry| fails_open(e) || e.check.as_deref().is_some_and(|c| crate::script::read_only_call_of(c, &p));
     let mut blocking: Vec<usize> = Vec::new();
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     let mut shadow_results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
@@ -1675,7 +1679,7 @@ mod tests {
             if want { held += 1 } else { passed += 1 }
         }
         assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
-        assert!(held >= 244 && passed >= 101, "corpus read: {held} held, {passed} pass");
+        assert!(held >= 247 && passed >= 113, "corpus read: {held} held, {passed} pass");
     }
 
     /// #928: the exemptions that kept a false hold away are counted (wrapper_opt, local_tool, trusted_script) and the commands pass.
@@ -1886,6 +1890,7 @@ mod tests {
                     rows += 1;
                     let check = e.check.as_deref().unwrap_or_else(|| panic!("{host}/{event}/{}: a shipped row without a built-in check", e.id));
                     assert!(crate::checks::get(check).is_some(), "{host}/{event}/{}: unknown check {check}", e.id);
+                    crate::script::set_call(&Value::Null);
                     let r = resolve_unanswered(&e, event);
                     assert_eq!(r.id, e.id);
                     let closed = crate::script::failure_mode(check) == defaults::text("script.failure_mode_closed");
