@@ -4268,6 +4268,107 @@ mod afk_mode {
         }
     }
 
+    fn task(h: &str, id: &str, subject: &str, status: &str) {
+        let d = format!("{h}/.claude/tasks/session-s1");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(format!("{d}/{id}.json"), json!({"id": id, "subject": subject, "status": status, "blockedBy": []}).to_string()).unwrap();
+    }
+
+    fn nostop(h: &str) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/afk-nostop-s1.json")).unwrap_or_default()).unwrap_or(Value::Null)
+    }
+
+    /// GH #958 (a): the owner's plain-word no-stop orders set a per-session state; a Stop with open work nothing covers is held with the
+    /// next task named; an owner stop phrase ends it; the machine-wide AFK flag is untouched.
+    #[test]
+    fn an_owner_no_stop_phrase_sets_the_state_and_a_stop_with_open_work_is_held() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop");
+        drained();
+        task(&h, "1", "[P1] ship the widget", "pending");
+        task(&h, "2", "[P2] write the docs", "in_progress");
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "no order yet: a Stop is not held by this check");
+        for phrase in [
+            "No stopping",
+            "U stop only when i allow you to stop",
+            "You are not allowed to decide it is a good stopping point",
+            "No blocking questions allowed or stopping until full workplan is done",
+            "no more questions, if confused ask advisor",
+            "always ask advisor don't decide on your own",
+        ] {
+            std::fs::remove_file(format!("{h}/.anti-hall/afk-nostop-s1.json")).ok();
+            run(&h, "UserPromptSubmit", json!({"prompt": phrase}), &[]);
+            assert_eq!(nostop(&h)["on"], json!(true), "{phrase}");
+        }
+        assert!(flag(&h).is_null(), "the machine-wide AFK flag is not set by a no-stop order");
+        let o = stop();
+        assert!(o.contains("\"decision\":\"block\""), "{o}");
+        assert!(o.contains("Do now: continue the work plan: [P2] write the docs; consult the advisor if unsure."), "the in-progress task is named first: {o}");
+        let o = out(&run(&h, "Stop", json!({"stop_hook_active": true}), &[]));
+        assert!(o.contains("continue the work plan"), "the host flag does not end the hold, the count does: {o}");
+        // an owner prompt that is not a stop phrase keeps it; a stop phrase ends it
+        run(&h, "UserPromptSubmit", json!({"prompt": "what is the status?"}), &[]);
+        assert_eq!(nostop(&h)["on"], json!(true));
+        run(&h, "UserPromptSubmit", json!({"prompt": "ok, you can stop now"}), &[]);
+        assert_eq!(nostop(&h)["on"], json!(false));
+        assert!(stop().is_empty(), "the owner allowed the stop");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "set")]), 1 + 5, "the first phrase and each re-armed one");
+        assert_eq!(m.counter("afk_nostop", &[("action", "held")]), 2);
+        assert_eq!(m.counter("afk_nostop", &[("action", "cleared")]), 1);
+    }
+
+    /// GH #958 (a): no open work left ends the state; the hold count is capped per owner prompt and a new prompt restarts it.
+    #[test]
+    fn no_stop_ends_when_no_open_work_remains_and_is_capped_per_owner_prompt() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-end");
+        drained();
+        task(&h, "1", "[P1] only task", "pending");
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), "{}").unwrap();
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        let cap = 30;
+        for i in 0..cap {
+            assert!(stop().contains("only task"), "hold {i}");
+        }
+        assert!(stop().is_empty(), "capped after afk.nostop_max_holds");
+        assert_eq!(nostop(&h)["on"], json!(true), "capped, not ended");
+        run(&h, "UserPromptSubmit", json!({"prompt": "carry on"}), &[]);
+        assert!(stop().contains("only task"), "an owner prompt restarts the count");
+        task(&h, "1", "[P1] only task", "completed");
+        assert!(stop().is_empty());
+        assert_eq!(nostop(&h)["on"], json!(false), "no open work remains: ended");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "capped")]), 1);
+        assert_eq!(m.counter("afk_nostop", &[("action", "done")]), 1);
+    }
+
+    /// GH #958 (b): with AFK on and the context high, auto-handover never advises a stopping point, /compact or /clear; its one message is
+    /// the handover refresh, sent only when the saved handover is older than the last task change.
+    #[test]
+    fn afk_with_high_context_gives_no_stopping_point_advice_and_only_a_stale_handover_refresh() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-ctx");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let tr = format!("{h}/t.jsonl");
+        let line = json!({"type": "assistant", "message": {"usage": {"input_tokens": 10, "cache_creation_input_tokens": 180000, "cache_read_input_tokens": 0}, "content": [{"type": "text", "text": "x"}]}});
+        std::fs::write(&tr, format!("{line}\n")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"autoHandover": {"pct": 85}}).to_string()).unwrap();
+        let ups = || {
+            let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "cwd": h, "transcript_path": tr, "prompt": "go on"});
+            out(&super::super::run_forced("auto-handover", &p, &Value::Null, "UserPromptSubmit", &RequestEnv::from_pairs([("HOME", h.as_str()), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")])))
+        };
+        let o = ups();
+        assert!(!o.contains("stopping point") && !o.contains("/compact") && !o.contains("/clear"), "{o}");
+        assert!(o.contains("Do now:") && o.contains("write the handover"), "no handover saved yet: {o}");
+        let again = ups();
+        assert!(!again.contains("Do now"), "not repeated inside ctxbudget.refresh_interval_ms: {again}");
+        assert_eq!(drained().counter("auto_handover_fired", &[("via", "pct")]), 0, "the fire never ran in quiet mode");
+    }
+
     #[test]
     fn output_tokens_per_turn_are_measured_from_usage_split_afk_vs_present() {
         let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());

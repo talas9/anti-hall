@@ -377,10 +377,50 @@ function afkQuestionHold(p, f, now, reply) {
   return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_stop')) }), err: '' } };
 }
 
+// ---- no-stop orders (GH #958 (a)): the owner's plain-word "do not stop" directives, held per session (lib/87-nostop.js) ----
+function afkNoStopCapture(p, now) {
+  if (!ah.settings.bool('afk.set_nostop') || ah.settings.skipped(ah.cfg('afk.guard_name'))) return;
+  var prompt = typeof p.prompt === 'string' ? p.prompt.slice(0, ah.cfgNum('afk.nostop_prompt_max')) : '';
+  var test = function (r) { return ah.re.test(r, 'i', prompt); };
+  var on = ah.cfg('afk.nostop_on_res').some(test), off = !on && ah.cfg('afk.nostop_off_res').some(test), cur = nostop.session(p);
+  if (on) {
+    if (cur === null || cur.holds !== 0) {
+      var since = cur !== null && typeof cur.since === 'number' ? cur.since : now;
+      if (nostop.write(p, { on: true, since: since, holds: 0 }) && cur === null) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_set') });
+    }
+  } else if (off && cur !== null) {
+    if (nostop.write(p, { on: false, since: cur.since, ended: now, holds: 0 })) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_cleared') });
+  } else if (cur !== null && cur.holds > 0) nostop.write(p, { on: true, since: cur.since, holds: 0 }); // an owner prompt restarts the hold count
+}
+
+// A Stop while the session's no-stop state is on and open work nothing covers remains: held with the next task named (null = not held).
+function afkNoStopHold(p, now) {
+  if (ah.settings.skipped(ah.cfg('afk.guard_name'))) return null;
+  var s = nostop.session(p);
+  if (s === null) return null;
+  var all = nostop.tasks(p);
+  if (all === null || all.length === 0) return null;
+  var open = all.filter(tk.isOpen);
+  if (open.length === 0) {
+    if (nostop.write(p, { on: false, since: s.since, ended: now, holds: 0 })) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_done') });
+    return null;
+  }
+  var unc = nostop.uncovered(p, open);
+  if (unc.length === 0) return null;
+  var holds = typeof s.holds === 'number' ? s.holds : 0;
+  if (holds >= ah.cfgNum('afk.nostop_max_holds')) { afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_capped') }); return null; }
+  if (!nostop.write(p, { on: true, since: s.since, holds: holds + 1 })) return null; // the cap cannot be recorded: never hold
+  afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_held') });
+  var reason = afkR(ah.cfg('afk.msg_nostop_stop'), { subject: nostop.subject(nostop.next(unc)) });
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(reason) }), err: '' } };
+}
+
 function afkStop(p, f, now) {
-  if (p.stop_hook_active === true) return 'allow';
   var codex = coordinator.isCodexPayload(p);
   if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return 'allow';
+  var nh = afkNoStopHold(p, now); // before the stop_hook_active exit: the count, not the host flag, bounds it
+  if (nh !== null) return nh;
+  if (p.stop_hook_active === true) return 'allow';
   var on = afkOn(f), tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (on && !codex) afkMetric('afk_turns', {});
   if (tp && !codex && ah.settings.bool('afk.set_measure')) {
@@ -457,7 +497,9 @@ function decide(p) {
   }
   var f = afkFlush(afkFlag());
   if (ev === 'UserPromptSubmit') {
-    var owner = afkOwnerPrompt(p), r = afkPrompt(p, f, now, owner);
+    var owner = afkOwnerPrompt(p);
+    if (owner) afkNoStopCapture(p, now);
+    var r = afkPrompt(p, f, now, owner);
     if (r !== null) return r;
     f = afkFlag();
     if (!afkOn(f)) return 'allow';

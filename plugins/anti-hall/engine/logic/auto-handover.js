@@ -56,6 +56,10 @@ function decide(p) {
     var now = ah.clock.now(), over = cb.overThreshold(result, cfg);
     if (!over) {
       if (fired || latch.softFired) w.latch = { fired: false, softFired: false };
+    } else if (cb.quiet(p)) {
+      // GH #958 (b): no stopping-point, /compact or /clear advice while the session must keep working; only the handover refresh
+      var rf = cb.refreshNudge(p, latch, result.pct, now);
+      if (rf !== null) { out = rf; w.latch = Object.assign({}, latch, { lastRefreshAt: now }); }
     } else if (!fired) {
       if (over === 'pct-unknown-window') {
         if (latch.softFired !== true) { out = cb.soft(result.pct); w.latch = Object.assign({}, latch, { softFired: true, lastNagAt: now }); }

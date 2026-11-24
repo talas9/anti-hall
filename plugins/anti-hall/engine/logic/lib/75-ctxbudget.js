@@ -247,6 +247,23 @@ var cb = {
     delete next.gateBackstopPct;
     return next;
   },
+  // ---- quiet mode (GH #958 (b)) ----
+  // Whether the session must keep working: the machine-wide AFK flag or the session's no-stop state is on, or a task is open (lib/87-nostop.js).
+  quiet: function (p) {
+    if (nostop.afkOn() || nostop.session(p) !== null) return true;
+    var all = nostop.tasks(p);
+    return all !== null && all.some(tk.isOpen);
+  },
+  // The refresh nudge (the only context message in quiet mode): null unless the saved handover is older than the last task or milestone change
+  // by ctxbudget.refresh_stale_ms (or there is none) and the last nudge is older than ctxbudget.refresh_interval_ms.
+  refreshNudge: function (p, latch, pct, now) {
+    var last = latch && typeof latch.lastRefreshAt === 'number' && isFinite(latch.lastRefreshAt) ? latch.lastRefreshAt : 0;
+    if (now - last < cb.n('ctxbudget.refresh_interval_ms')) return null;
+    var h = cb.sessionHandover(p), change = nostop.lastChangeMs(p);
+    if (h !== null && change - h.mtimeMs <= cb.n('ctxbudget.refresh_stale_ms')) return null;
+    var instead = h === null ? cb.c('ctxbudget.refresh_instead_none') : cb.r('ctxbudget.refresh_instead', { min: Math.max(0, Math.round((now - h.mtimeMs) / 60000)) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.refresh_what', { pct: Math.round(pct) }), instead: instead });
+  },
   // ---- texts ----
   compactCommand: function (hp, codex) { return codex ? cb.c('ctxbudget.ah_compact_codex') : cb.r('ctxbudget.ah_compact_claude', { path: hp || cb.c('ctxbudget.ah_compact_no_path') }); },
   fire: function (result, via, p, maxTokens, hp, cfg) {

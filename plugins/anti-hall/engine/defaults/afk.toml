@@ -23,7 +23,9 @@
 #      afk.cli_lock_wait_ms, never take over a live holder, and exit non-zero writing nothing when the lock stays busy;
 #   9. owner presence (afk.presence_file) never moves backwards, and idle detection counts from the later of the last owner prompt
 #      and the flag's `ended` time (the last `back`), so a stale presence write cannot re-enter AFK right after `back`.
-# Logic: engine/logic/afk-mode.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
+#  10. no-stop orders (GH #958): the owner's plain-word no-stop directives set a per-session state (afk.nostop_*) that holds a Stop while open work
+#      nothing covers remains; see the section at the end of this file.
+# Logic: engine/logic/afk-mode.js, engine/logic/lib/87-nostop.js. Every phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax.
 
 [afk.set_enabled]
 doc = "The afk.enabled setting (master switch): off turns the whole AFK feature off (no idle detection, no prompt commands, no rule, no enforcement, no measurement); the `ah-engine afk` verbs still edit the flag."
@@ -499,3 +501,76 @@ value = { kind = "counter", unit = "tokens", labels = ["mode"] }
 [metric.afk_turns_measured]
 doc = "Main-session turns whose output tokens were measured, by mode (afk, present)."
 value = { kind = "counter", unit = "turns", labels = ["mode"] }
+
+# ---- no-stop orders (GH #958 (a)): the owner's plain-word "do not stop" directives, held per session by the engine ----
+# A prompt the owner types that matches afk.nostop_on_res turns the session's no-stop state on (a small file per session under the per-user
+# state directory, afk.nostop_prefix); one that matches afk.nostop_off_res turns it off (an on-match in the same prompt wins). While it is on and
+# the session has open tasks that no live agent or running background job covers, a Stop is held with afk.msg_nostop_stop (the next task's
+# subject), at most afk.nostop_max_holds times per owner prompt. It ends on an owner stop phrase or when no open work remains. Independent of the
+# machine-wide AFK flag: either one makes ctxbudget stay quiet about stopping points, /compact and /clear (ctxbudget.refresh_*).
+
+[afk.set_nostop]
+doc = "The afk.noStop setting: capture the owner's plain-word no-stop orders per session and hold a Stop while the session has open work nothing covers (afk.nostop_on_res, afk.nostop_off_res, afk.msg_nostop_stop)."
+value = { section = "afk", key = "noStop", kind = "bool", env = "", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.nostop_prefix]
+doc = "Prefix of the per-session no-stop state file under the per-user state directory (the sanitised session id and the JSON extension follow)."
+value = "afk-nostop-"
+
+[afk.nostop_on_res]
+doc = "Owner prompts that order the session not to stop (regular expressions, case-insensitive; an unmatched prompt changes nothing). A match turns the session's no-stop state on."
+value = ["\\bno\\s+(?:more\\s+)?stopp?ing\\b", "\\b(?:you\\s+)?(?:are\\s+)?not\\s+(?:allowed|permitted)\\s+to\\s+(?:decide\\b.{0,40}\\bstopp?ing\\b|stop\\b)", "\\b(?:u|you)\\s+stop\\s+only\\s+when\\s+(?:i|we)\\b", "\\b(?:don'?t|do\\s+not|never)\\s+(?:you\\s+)?stop\\b", "\\bno\\s+blocking\\s+questions\\b.{0,80}\\b(?:stopp?ing|until)\\b", "\\bno\\s+more\\s+questions\\b.{0,60}\\badvisor\\b", "\\balways\\s+ask\\s+(?:the\\s+)?advisor\\b.{0,40}\\b(?:don'?t|do\\s+not)\\s+decide\\b"]
+
+[afk.nostop_off_res]
+doc = "Owner prompts that end the no-stop state (regular expressions, case-insensitive): a stop or pause the owner allows. A prompt that also matches afk.nostop_on_res keeps the state on."
+value = ["\\b(?:you\\s+)?(?:may|can|could)\\s+(?:now\\s+)?(?:stop|pause)\\b", "\\b(?:ok|okay|fine|go\\s+ahead\\s+and)\\s+(?:to\\s+)?(?:stop|pause)\\b", "^\\s*(?:please\\s+)?(?:stop|pause)(?:\\s+(?:now|here|working))?\\s*[.!]*\\s*$", "\\bstop\\s+(?:now|working|here)\\b", "\\bpause\\s+(?:now|here|the\\s+work)\\b"]
+
+[afk.nostop_max_holds]
+doc = "Most Stop holds per owner prompt while no-stop is on. Each hold makes the model continue; the count resets on the next owner prompt, so a stuck loop ends by itself and the owner's own message always restarts it."
+value = 30
+min = 0
+max = 1000
+
+[afk.nostop_subject_max]
+doc = "Longest task subject (characters) quoted in the no-stop hold."
+value = 120
+min = 20
+max = 500
+
+[afk.msg_nostop_stop]
+doc = "The reason of a Stop held by no-stop; {subject} is the next open task's subject (the in-progress one first)."
+value = "Do now: continue the work plan: {subject}; consult the advisor if unsure."
+
+[afk.nostop_subject_none]
+doc = "The {subject} of the hold when the open task has no readable subject."
+value = "the next open task"
+
+[afk.action_nostop_set]
+doc = "Label of metric.afk_nostop for a no-stop order captured."
+value = "set"
+
+[afk.action_nostop_cleared]
+doc = "Label of metric.afk_nostop for a no-stop state ended by an owner stop phrase."
+value = "cleared"
+
+[afk.action_nostop_done]
+doc = "Label of metric.afk_nostop for a no-stop state ended because no open work remained."
+value = "done"
+
+[afk.action_nostop_held]
+doc = "Label of metric.afk_nostop for a Stop held by no-stop."
+value = "held"
+
+[afk.action_nostop_capped]
+doc = "Label of metric.afk_nostop for a Stop let through after afk.nostop_max_holds holds."
+value = "capped"
+
+[metric.afk_nostop]
+doc = "No-stop state events (GH #958), by action: set, cleared (owner stop phrase), done (no open work left), held (a Stop held), capped (let through after afk.nostop_max_holds)."
+value = { kind = "counter", unit = "events", labels = ["action"] }
+
+[afk.nostop_prompt_max]
+doc = "Most characters of an owner prompt read for the no-stop phrases (afk.nostop_on_res, afk.nostop_off_res)."
+value = 4000
+min = 100
+max = 100000

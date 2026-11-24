@@ -63,6 +63,7 @@ const { readTail } = require('./lib/transcript-tail.js');
 const { buildFireDirective, buildPauseNag, buildDecisiveSuffix } = require('./lib/auto-handover-text.js');
 const { sessionHandover } = require('./lib/auto-handover-gate.js');
 const freshness = require('./lib/handover-freshness.js');
+const quiet = require('./lib/auto-handover-quiet.js');
 
 const SPAWN_LOG = path.join(os.homedir(), '.anti-hall', 'agent-spawns.log');
 const SPAWN_ACTIVITY_MS = 2 * 60 * 1000; // matches statusline/phase-bar.js's ACTIVITY_MS
@@ -231,7 +232,7 @@ function main() {
       // maxTokens crossing is a real count and does fire.
       const result = getContextPct(transcriptPath, env, { home, sessionId: payload.session_id, lines: lines || undefined });
       const over = overThreshold(result, settings);
-      if (over === 'pct' || over === 'tokens') {
+      if ((over === 'pct' || over === 'tokens') && !quiet.isQuiet(home, payload)) { // GH #958 (b): quiet while the work must go on
         const now = Date.now();
         writeLatch(home, tag, {
           fired: true, firedAt: now, firedPct: result.pct, firedVia: 'stop-' + over,
@@ -276,6 +277,7 @@ function main() {
     if (open === true) { emit(); return; } // KNOWN open work -> don't interrupt it
 
     if (hasRecentSpawn(tag, now)) { emit(); return; } // a subagent spawned recently
+    if (quiet.isQuiet(home, payload)) { emit(); return; } // GH #958 (b): no stopping-point advice while the work must go on
 
     writeLatch(home, tag, Object.assign({}, latch, {
       lastNagAt: now, lastPauseNagPct: shownPct, lastNagPct: risen ? result.pct : latch.lastNagPct,

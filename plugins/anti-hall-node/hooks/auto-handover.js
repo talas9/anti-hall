@@ -71,6 +71,7 @@ const { resolveEffective, overThreshold } = require('./lib/auto-handover-config.
 const { sessionTag, readLatch, writeLatch } = require('./lib/auto-handover-state.js');
 const { buildFireDirective, buildMilestoneNag, buildSoftAdvisory, buildGateDirective, buildGateBackstop } = require('./lib/auto-handover-text.js');
 const gate = require('./lib/auto-handover-gate.js');
+const quiet = require('./lib/auto-handover-quiet.js');
 
 // consultJevShadow — the `postHandoverGate` Jev integration (default mode
 // "off": an offline benchmark, n=299, found no gain over the agent's own
@@ -130,6 +131,10 @@ function main() {
             const over = overThreshold(result, settings);
             if (!over) {
               if (fired || latch.softFired) writeLatch(home, tag, { fired: false, softFired: false });
+            } else if (quiet.isQuiet(home, payload)) {
+              // GH #958 (b): no stopping-point, /compact or /clear advice while the session must keep working; only the handover refresh
+              const rf = quiet.refreshNudge(home, payload, latch, result.pct, now, gate.sessionHandover(payload));
+              if (rf) { text = rf; writeLatch(home, tag, Object.assign({}, latch, { lastRefreshAt: now })); }
             } else if (!fired) {
               if (over === 'pct-unknown-window') {
                 // Unknown window -> never the mandatory directive; a single

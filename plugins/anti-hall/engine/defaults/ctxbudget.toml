@@ -776,3 +776,34 @@ value = ["compact", "clear", "/new"]
 [ctxbudget.advice_prefilter]
 doc = "Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation."
 value = ["compact", "clear", "reset", "/new"]
+
+# ---- quiet mode (GH #958 (b)): no stopping-point, /compact or /clear advice while the session must keep working ----
+# While the machine-wide AFK flag or the session's no-stop state (afk.toml) is on, or the session has an open task, a context warning is
+# never "reach a good stopping point" and never advises /compact or /clear (auto-compact proceeds on its own). The one message left is the
+# refresh nudge: update the handover with what changed, sent only when the saved handover is older than the last task or milestone change.
+
+[ctxbudget.refresh_stale_ms]
+doc = "How much older than the session's last task-store or progress-file change the saved handover must be before the refresh nudge is sent (a handover with no newer change is current). 0 = any newer change."
+value = 300000
+unit = "ms"
+min = 0
+max = 86400000
+
+[ctxbudget.refresh_interval_ms]
+doc = "Least time between two refresh nudges of one session (the nudge is an order, so it is not repeated while the model is on it)."
+value = 900000
+unit = "ms"
+min = 0
+max = 86400000
+
+[ctxbudget.refresh_what]
+doc = "The refresh nudge's first line; {pct} is the rounded context percent."
+value = "context is ~{pct}% and the saved handover is behind the work."
+
+[ctxbudget.refresh_instead]
+doc = "The refresh nudge's action (an order, \"Do now:\"); {min} is how many minutes ago the handover was saved."
+value = "update the handover with what changed since it was saved {min} min ago; keep working, compaction runs on its own."
+
+[ctxbudget.refresh_instead_none]
+doc = "The refresh nudge's action when the session has no saved handover yet."
+value = "write the handover with the work so far; keep working, compaction runs on its own."
