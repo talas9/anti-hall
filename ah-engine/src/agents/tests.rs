@@ -5469,3 +5469,64 @@ fn a_task_with_a_stated_blocked_on_reason_is_held_not_negligence_in_every_tick_s
     let ts = compliance::session_tasks(&e, SID);
     assert!(!ts[0].held);
 }
+
+// ---- lead waiting on finished teammates (GH #958, 2026-11-23 incident) ----
+
+/// A teammate of `parent` that finished its turn `done_min` minutes ago.
+fn finished_sub(h: &Path, parent: &str, n: u64, done_min: u64) {
+    write(
+        &sub_path(h, parent),
+        &[prompt(n - 80 * MIN, "/w"), asst(n - done_min * MIN, "s1", 5, 5, json!([{"type": "text", "text": "report: all green"}]), Some("end_turn"))],
+    );
+    std::fs::write(h.join(format!(".claude/projects/p/{parent}/subagents/agent-w1.meta.json")), r#"{"description":"gate worker"}"#).unwrap();
+}
+
+fn lead_rows(h: &Path, key: &str) -> Vec<Value> {
+    wake_rows(h, key).into_iter().filter(|r| r["signal"] == "lead_waiting_on_done").collect()
+}
+
+#[test]
+fn an_idle_lead_with_finished_teammates_and_blocked_on_tasks_is_woken_by_the_tick_alone_and_escalates_when_ignored() {
+    let n = now0();
+    let h = home("lead-wait");
+    // every open task carries a stated blockedOn reason and is owned by the finished teammate (the incident shape)
+    task_file(&h, SID, json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge via the land flow"}}));
+    task_file(&h, SID, json!({"id": "2", "subject": "Final verify", "status": "pending", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "waits on the release"}}));
+    main_session(&h, SID, n, 20, "waiting on the lanes");
+    finished_sub(&h, SID, n, 15);
+    let mut st = State::default();
+    // N = min_ms 10 min idle + confirm_ticks 2: the wake row is there within 4 minutes of ticks, with no prompt
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let first = lead_rows(&h, SID);
+    assert_eq!(first.len(), 1, "{:?}", wake_rows(&h, SID));
+    let t = first[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now:") && t.contains("gate worker") && t.contains("read their results"), "{t}");
+    // ignored: the same signal repeats every cooldown and turns into an order, never 8 hours of silence
+    let mut at = n + 2 * MIN;
+    for _ in 0..4 {
+        at += 21 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    let all = lead_rows(&h, SID);
+    assert!(all.len() >= 4, "{} rows", all.len());
+    assert!(all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
+    // tasks owned by a finished teammate are negligence even with a blockedOn reason
+    let e = env(&h, at);
+    let ts = compliance::session_tasks(&e, SID);
+    assert!(ts.iter().all(|t| t.held));
+    assert_eq!(compliance::dispatchable(&ts, &st, &st.agents[SID], e.now_ms).len(), 2);
+}
+
+#[test]
+fn a_lead_whose_teammates_still_run_is_not_told_to_stop_waiting() {
+    let n = now0();
+    let h = home("lead-wait-compliant");
+    task_file(&h, SID, json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge"}}));
+    main_session(&h, SID, n, 30, "waiting on the lanes");
+    running_sub(&h, SID, n, 1);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 40 * MIN]);
+    assert!(lead_rows(&h, SID).is_empty(), "{:?}", wake_rows(&h, SID));
+    let e = env(&h, n + 40 * MIN);
+    assert!(compliance::dispatchable(&compliance::session_tasks(&e, SID), &st, &st.agents[SID], e.now_ms).is_empty());
+}

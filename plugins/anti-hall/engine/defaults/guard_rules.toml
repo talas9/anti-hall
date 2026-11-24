@@ -159,6 +159,7 @@ value = [
   { id = "agent_tracker.stale_list", setting = "nudges.compliance", tier = "off", source = "msg.agent_stale_list" },
   { id = "agent_tracker.untracked_request", setting = "nudges.compliance", tier = "off", source = "msg.agent_untracked_request" },
   { id = "agent_tracker.inprogress_waiting", setting = "nudges.compliance", tier = "off", source = "msg.agent_inprogress_waiting" },
+  { id = "agent_tracker.lead_waiting_on_done", setting = "nudges.compliance", tier = "off", source = "msg.agent_lead_waiting" },
   { id = "pair_rule.pre", setting = "guards.pairRule", hosts = ["claude"], tier = "skill", source = "pair_rule.msg_pre_what" },
   { id = "pair_rule.post", setting = "guards.pairRule", hosts = ["claude"], tier = "skill", source = "pair_rule.msg_post_what" },
   { id = "pair_rule.stop", setting = "guards.pairRule", hosts = ["claude"], tier = "skill", source = "pair_rule.msg_stop_what" },

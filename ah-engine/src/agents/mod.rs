@@ -21,6 +21,7 @@ mod ctl;
 mod escalate;
 mod facts;
 mod live;
+mod lead_wait;
 mod lockwatch;
 pub(crate) mod native_wake;
 pub mod nudge;

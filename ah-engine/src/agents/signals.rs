@@ -778,6 +778,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap
             "stale_list" => compliance::stale_list(env, a, tasks),
             "untracked_request" => compliance::untracked_request(env, a),
             "inprogress_waiting" => compliance::inprogress_waiting(env, a, tasks, now),
+            "lead_waiting_on_done" => super::lead_wait::raised(env, a, st, tasks, now),
             _ => None,
         };
         if let Some(r) = r {
@@ -909,6 +910,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         "stale_list" => defaults::render("msg.agent_stale_list", &[("n", &f.evidence), ("tasks", &f.text)]),
         "untracked_request" => defaults::render("msg.agent_untracked_request", &[("n", &f.evidence)]),
         "inprogress_waiting" => defaults::render("msg.agent_inprogress_waiting", &[("tasks", &f.text), ("idle", &age(f.evidence * fmtn("ms_per_s")))]),
+        "lead_waiting_on_done" => super::lead_wait::text(a, f.evidence, &f.text, a.seen.saturating_sub(a.last_output_ms)),
         "monitor_off" => {
             let e = defaults::raw(wake_switch_key(a));
             defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])
@@ -972,6 +974,11 @@ pub(super) fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target
                 (Some(k), _) if wake => out.push(Target::Wake(k)),
                 (Some(k), _) => out.push(Target::Session(k)),
                 (None, Some(w)) if !wake => out.push(Target::Mesh { ws: w.id.clone(), to_parent: true }),
+                // a workspace's own signal about itself (its background task ended, it idles on an open task) also reaches the workspace
+                // through its own wake feed: the mesh row goes to its parent only, so the lead itself heard nothing (2026-11-23 incident)
+                (None, Some(_)) if wake && !super::is_child(a) && defaults::list("agent_tracker.workspace_self_wake").contains(&sig) => {
+                    out.push(Target::Wake(a.id.clone()));
+                }
                 _ => {}
             }
         }

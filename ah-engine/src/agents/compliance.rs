@@ -144,9 +144,21 @@ fn running_children(st: &State, a: &Agent) -> bool {
     st.agents.values().any(|s| super::is_child(s) && s.parent == a.id && running(s))
 }
 
+/// A child of the session named `owner` has finished (state done): a task it owns has nobody on it, and a `blockedOn` reason that
+/// waits on it is stale (the 2026-11-23 incident: every open task carried a reason naming lanes that had finished, so nothing spoke for 8 h).
+pub(super) fn owner_done(st: &State, a: &Agent, owner: &str) -> bool {
+    !owner.is_empty()
+        && st.agents.values().any(|s| super::is_child(s) && s.parent == a.id && (s.name == owner || s.id == owner) && super::signals::state_of(s) == super::state_name("done"))
+}
+
+/// A task held by a stated `blockedOn` reason, unless its owner is a finished child of the session (then the reason cannot still hold).
+fn held_now(t: &Task, st: &State, a: &Agent) -> bool {
+    t.held && !owner_done(st, a, &t.owner)
+}
+
 /// An in-progress task nobody works on: its owner is not a running agent (no owner at all: no lane of the session runs either).
 fn orphaned(t: &Task, st: &State, a: &Agent) -> bool {
-    !t.held && t.status == defaults::raw("nudges.compliance").str_field("in_progress") && !owner_live(st, a, &t.owner) && (!t.owner.is_empty() || !running_children(st, a))
+    !held_now(t, st, a) && t.status == defaults::raw("nudges.compliance").str_field("in_progress") && !owner_live(st, a, &t.owner) && (!t.owner.is_empty() || !running_children(st, a))
 }
 
 /// Open tasks whose blockers are all closed (or gone) that nobody works on: pending with no owner, or in progress and orphaned, with no
@@ -158,7 +170,11 @@ pub(super) fn dispatchable<'a>(tasks: &'a [Task], st: &State, a: &Agent, now: u6
     let cover = covered(a, now);
     tasks
         .iter()
-        .filter(|t| !t.held && t.blocked.iter().all(shut) && ((open.contains(&t.status.as_str()) && t.owner.is_empty()) || (!cover && orphaned(t, st, a))))
+        .filter(|t| {
+            !held_now(t, st, a)
+                && t.blocked.iter().all(shut)
+                && ((open.contains(&t.status.as_str()) && (t.owner.is_empty() || owner_done(st, a, &t.owner))) || (!cover && orphaned(t, st, a)))
+        })
         .collect()
 }
 
@@ -167,7 +183,7 @@ fn subjects(ts: &[&Task]) -> String {
     ts.iter().take(num(c, "tasks_shown") as usize).map(|t| t.subject.as_str()).collect::<Vec<_>>().join(c.str_field("joiner"))
 }
 
-fn watched(env: &Env, a: &Agent) -> bool {
+pub(super) fn watched(env: &Env, a: &Agent) -> bool {
     env.switch("agent_tracker.compliance_sw")
         && !a.gone
         && defaults::raw("nudges.compliance").get("kinds").map(V::strings).unwrap_or_default().contains(&a.kind.as_str())
