@@ -285,8 +285,8 @@ doc = "One-time notice that the wake watcher is switched off (agents.wakeWatch=f
 value = "agent tracker: wake watcher switched off: {setting}=false. No wake-watch Monitor is armed or re-armed for this session; set it true to turn it back on."
 
 [msg.agent_monitor_unarmed_devswarm]
-doc = "Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}."
-value = "agent tracker: no live wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
+doc = "Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}, {timeout} (agent_tracker.wake_timeout_ms)."
+value = "agent tracker: no live wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` and timeout_ms {timeout} (without it the Monitor expires after the 5-minute default; add persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
 
 [msg.agent_idle_open_task]
 doc = "Wake advisory: an agent finished its turn with a task open and went quiet. Placeholders: {agent}, {kind}, {idle}, {task}."

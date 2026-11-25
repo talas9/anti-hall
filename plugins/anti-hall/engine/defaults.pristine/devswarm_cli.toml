@@ -4206,8 +4206,8 @@ doc = "The command the wake-path warning after a spawn names for the mailbox tic
 value = "ah-engine mesh"
 
 [devswarm_cli.sp_wake_watcher]
-doc = "The command the wake-path warning after a spawn names for the mailbox watcher."
-value = "ah-engine devswarm wake-watch --auto"
+doc = "The command the wake-path warning after a spawn names for the mailbox watcher: the merged watcher at the engine's full path, the same command as agent_tracker.wake_command (a bare name resolves through PATH, so cache-ttl-wait-guard could not tell it is the engine's watcher, GH #965)."
+value = "exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents wake-watch --auto"
 
 [devswarm_cli.sp_id_charset]
 doc = "The characters of a workspace id the wake-path check accepts."

@@ -957,7 +957,10 @@ fn text_for(a: &Agent, sig: &str, f: &Flag, now: u64) -> String {
             defaults::render("msg.agent_monitor_off", &[("setting", &format!("{}.{}", e.str_field("section"), e.str_field("key")))])
         }
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
-            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
+            defaults::render(
+                "msg.agent_monitor_unarmed_devswarm",
+                &[("command", &defaults::text("agent_tracker.wake_command")), ("timeout", &defaults::num("agent_tracker.wake_timeout_ms"))],
+            )
         }
         _ => defaults::render(
             "msg.agent_monitor_unarmed",

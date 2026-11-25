@@ -686,6 +686,104 @@ fn a_tool_deadline_over_the_limit_is_ordered_for_monitor_and_task_output() {
     assert!(cache_guard("Read", json!({"file_path": "/x", "timeout": 600_000}), "main", &[]).1.trim().is_empty(), "only the listed tools are judged");
 }
 
+/// GH #965: the wake-watch re-arm lines ask for a Monitor of `agent_tracker.wake_timeout_ms` (30 min) running the engine's own watcher;
+/// the guard must not order that Monitor split (the two instructions contradicted each other on every re-arm). Every configured
+/// watcher command is exempt, read from the config itself so a changed command cannot drift past the exemption. Any other long Monitor
+/// is still ordered (true positive), and so is any command that is not plainly the watcher: a wrapper, an assignment, a substitution,
+/// a chain, a pipe or another redirection (review P1-1).
+#[test]
+fn the_engine_wake_watch_monitor_is_exempt_and_every_other_long_monitor_is_still_ordered() {
+    let cfg = |k: &str| ah_engine::defaults::text(k).to_string();
+    let timeout = ah_engine::defaults::num("agent_tracker.wake_timeout_ms");
+    assert!(timeout > ah_engine::defaults::num("cache_wait.limit_s") * 1000, "the re-arm timeout is past the cache limit: the exemption is what reconciles them");
+    let ordered = |cmd: &str| {
+        let (code, out, err) = cache_guard("Monitor", json!({"command": cmd, "timeout_ms": timeout}), "main", &[]);
+        assert_eq!(code, 0, "{cmd}: never a block: {out}{err}");
+        out.contains("240s or less")
+    };
+    let mut watchers = vec![cfg("agent_tracker.wake_command_agents"), cfg("agent_tracker.wake_command")];
+    watchers.push("$HOME/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto".into()); // the same watcher, written another way
+    for w in &watchers {
+        assert!(!ordered(w), "the engine's own wake watcher is exempt: {w}");
+    }
+    for cmd in [
+        "gh pr checks 12 --watch",
+        "tail -f build.log",
+        "~/.anti-hall/ah-engine/bin/ah-engine agents status --json", // the engine binary, not the watcher verb
+        "~/.anti-hall/ah-engine/bin/ah-engine agents wake-watch --auto; sleep 1800", // the watcher plus a real wait
+        "echo agents wake-watch --auto",                                               // only mentions it
+        "~/.anti-hall/ah-engine/bin/ah-engine agents wake-watch extra",               // a non-option word after the verb
+        // review P1-1: a wrapper, an assignment, a substitution, a chain, a pipe, a background or another redirection hides a wait
+        "TOKEN=$(sleep 1800) ah-engine agents wake-watch",
+        "flock -w 1800 x ah-engine agents wake-watch",
+        "timeout 1800 ah-engine agents wake-watch --auto",
+        "env A=1 ah-engine agents wake-watch --auto",
+        "nice -n 10 ah-engine agents wake-watch --auto",
+        "A=1 ah-engine agents wake-watch --auto",
+        "ah-engine agents wake-watch --auto $(sleep 1800)",
+        "ah-engine agents wake-watch --auto `sleep 1800`",
+        "ah-engine agents wake-watch --auto | cat",
+        "ah-engine agents wake-watch --auto && sleep 1800",
+        "ah-engine agents wake-watch --auto &",
+        "ah-engine agents wake-watch --auto < /tmp/fifo",
+        "ah-engine agents wake-watch --auto >/tmp/x",
+        // review round 2 P1-4: at most one prefix
+        "exec exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents wake-watch --auto",
+        // review round 2 P1-3: only the engine's own program path, not any file called ah-engine (nor a bare name looked up in PATH)
+        "/tmp/x/ah-engine agents wake-watch --auto",
+        "~/elsewhere/ah-engine agents wake-watch --auto",
+        "ah-engine devswarm wake-watch --auto",
+        // review round 3 P1-B: single quotes keep `~` and `$HOME` literal, as the shell does: that path is no engine path
+        "'~/.anti-hall/ah-engine/bin/ah-engine' agents wake-watch --auto",
+        "'$HOME/.anti-hall/ah-engine/bin/ah-engine' agents wake-watch --auto",
+        "\"~/.anti-hall/ah-engine/bin/ah-engine\" agents wake-watch --auto",
+        // review round 4 P1-2: an escape or ANSI-C quoting is not the plain command
+        "\"$HOME/\\.anti-hall/ah-engine/bin/ah-engine\" agents wake-watch",
+        "$'$HOME/.anti-hall/ah-engine/bin/ah-engine' agents wake-watch",
+        "\"$HOME/.anti-hall/ah-engine/bin/ah engine\" agents wake-watch",
+    ] {
+        assert!(ordered(cmd), "a long non-watcher Monitor is still ordered split: {cmd}");
+    }
+    // only the listed tools are exempt: a Bash call running the watcher under a long tool timeout is judged as a Bash call
+    assert!(cache_guard("Bash", bash_call(&watchers[0]), "main", &[]).1.trim().is_empty(), "a Bash watcher holds no sleep or watch");
+}
+
+/// GH #965: EVERY command the engine tells a session to run as its wake-watch Monitor is exempt, as the engine renders it for the
+/// session's home: the re-arm lines (agent_tracker.wake_command*), the spawn wake-path hint (devswarm_cli.sp_wake_watcher), the
+/// watcher shim command (`{bin} {wverb}`: the stale-build line, the post-update arm text, the role texts) and the re-verify hint's
+/// Monitor command (devswarm_role.pg_wake_watch). A hint that named a bare `ah-engine` or a shell variable brought the split order back.
+#[test]
+fn every_configured_rearm_and_hint_command_is_exempt() {
+    use ah_engine::defaults::{render, text};
+    let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("lanewaste-{}", std::process::id())).join("home");
+    let home = home.to_string_lossy().into_owned();
+    let bin = render("devswarm_role.engine_bin", &[("home", &home)]);
+    let wverb = text("devswarm_role.watcher_verb");
+    let hint = render("devswarm_role.pg_wake_watch", &[("watcher", &format!("\"{bin}\"")), ("wverb", &wverb)]);
+    let hint_mon = hint.split_once("Monitor` on `").map(|x| x.1).and_then(|x| x.split_once('`')).map(|x| x.0.to_string()).unwrap_or_default();
+    assert!(hint_mon.contains(&bin) && !hint_mon.contains('$'), "the re-verify hint names the path itself: {hint}");
+    let cmds = [
+        text("agent_tracker.wake_command_agents").to_string(),
+        text("agent_tracker.wake_command").to_string(),
+        text("devswarm_cli.sp_wake_watcher").to_string(),
+        format!("{bin} {wverb}"),
+        hint_mon,
+    ];
+    let timeout = ah_engine::defaults::num("agent_tracker.wake_timeout_ms");
+    for c in &cmds {
+        let (code, out, err) = cache_guard("Monitor", json!({"command": c, "timeout_ms": timeout}), "main", &[]);
+        assert_eq!(code, 0, "{c}: {err}");
+        assert!(out.trim().is_empty(), "the engine's own watcher command is exempt: {c}: {out}");
+    }
+}
+
+/// GH #965: the DevSwarm re-arm text renders the configured timeout (it held a literal 1800000 before).
+#[test]
+fn the_devswarm_rearm_text_carries_the_configured_timeout() {
+    let raw = ah_engine::defaults::text("msg.agent_monitor_unarmed_devswarm");
+    assert!(raw.contains("{timeout}") && !raw.contains("1800000"), "{raw}");
+}
+
 #[test]
 fn the_cache_wait_limits_are_settings_and_the_guard_is_a_switch() {
     let ordered = |cmd: &str, env_pairs: &[(&str, &str)]| !cache_guard("Bash", bash_call(cmd), "main", env_pairs).1.trim().is_empty();

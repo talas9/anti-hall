@@ -323,8 +323,8 @@ doc = "The tick command of the wake re-verify line: {id}, {verb}. $CLI holds the
 value = "`\"$CLI\" {verb} inbox tick {id} --quiet`"
 
 [devswarm_role.pg_wake_watch]
-doc = "The watcher part of the wake re-verify line: {watcher} (the double-quoted binary path only), {wverb}."
-value = "; WATCH={watcher}, `Monitor` on `\"$WATCH\" {wverb}` armed with timeout_ms 1800000 (never two)"
+doc = "The watcher part of the wake re-verify line: {watcher} (the double-quoted binary path only), {wverb}. The Monitor command names the path itself, not a shell variable, so cache-ttl-wait-guard sees the engine's own watcher (GH #965)."
+value = "; `Monitor` on `{watcher} {wverb}` armed with timeout_ms 1800000 (never two)"
 
 [devswarm_role.pg_wake_line]
 doc = "The mailbox-wake re-verify line: {cli}, {cron}, {tick}, {watch}, {id}."

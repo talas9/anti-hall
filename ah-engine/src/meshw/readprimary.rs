@@ -2219,7 +2219,7 @@ mod tests {
             &[("cli", &dq), ("verb", &verb), ("cron", &"c"), ("tick", &""), ("watch", &""), ("id", &"w1")],
         ));
         let skip = defaults::render("devswarm_role.pg_skip_cmd", &[("cli", &format!("'{bin}'")), ("verb", &verb), ("guard", &"g")]);
-        // the `CLI=` / `WATCH=` assignments are part of the printed text; run what follows them
+        // the `CLI=` assignment is part of the printed text; run what follows it
         let after = |t: &str, tag: &str| t.split_once(&format!("{tag}=")).map(|x| x.1.to_string()).unwrap_or_default();
         let run = |script: String| {
             let (ok, out) = sh(&script);
@@ -2227,10 +2227,10 @@ mod tests {
         };
         run(format!("CLI={dq}; {tick}"));
         run(format!("CLI={dq}; {ctick}"));
-        let w = after(&watch, "WATCH");
-        let (assign, rest) = w.split_once(", Monitor on ").unwrap();
-        let rest = rest.split(" armed").next().unwrap();
-        run(format!("WATCH={assign}; {rest}"));
+        // the Monitor command names the quoted path itself (GH #965: no shell variable, so the wait guard sees the engine's watcher)
+        let mon = watch.split_once("Monitor on ").unwrap().1.split(" armed").next().unwrap().to_string();
+        assert!(mon.starts_with(&dq), "{mon}");
+        run(mon);
         let r = after(&recheck, "CLI");
         let rerun = r.rsplit_once("re-run ").unwrap().1.trim_end_matches('.').to_string();
         run(format!("CLI={dq}; {rerun}"));
