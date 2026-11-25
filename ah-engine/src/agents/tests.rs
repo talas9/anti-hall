@@ -6607,3 +6607,23 @@ fn n964_a_deleted_declared_step_is_never_reported_open_a_live_step_still_is() {
         assert!(t.contains("UA ladder for the gauge"), "{tag}: the open idle step still fires: {t:?}");
     }
 }
+
+/// #964 (Codex P1 on the minimal fix): completion is the transcript's own word, never a member of nudges.idle_wake.closed_statuses;
+/// with that list emptied by an override, completing the declared step still counts the step and ends it.
+#[test]
+fn n964_completing_the_step_counts_and_ends_it_even_with_closed_statuses_emptied() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n964-closed-empty");
+    let done = [tool(n - 60 * MIN, "s2", 5, "t2", "TaskUpdate", json!({"taskId": "30", "status": "completed"})), result(n - 60 * MIN + 1000, "t2", "ok", false)];
+    ws_step_then(&h, n, &done);
+    let mut iw = defaults::raw("nudges.idle_wake").to_json();
+    iw["closed_statuses"] = json!([]);
+    defaults::set_overlay(&[("nudges.idle_wake", iw)]);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN]);
+    let (steps, open, step) = { let a = agent(&st, "sessW"); (a.steps_done, a.open, a.step.clone()) };
+    defaults::set_overlay(&[]);
+    assert_eq!(steps, 1, "the completion counted");
+    assert!(!open && step.is_empty(), "the completed step ended: open={open} step={step:?}");
+}

@@ -632,15 +632,17 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             remember_task(a, &task, subject);
         }
         match str_of(&input, tr("task_status")) {
-            // any closed status (nudges.idle_wake.closed_statuses, the list the task-list readers use) ends the declared step (GH #964:
-            // a deleted step stayed the step, still open, and idle_open_task kept naming a task gone from the list); only a completed
-            // task is progress, and closing another task without completing it leaves the step alone
+            s if s == tr("completed") => {
+                a.steps_done += 1;
+                a.progress += weight("step");
+                a.open = false;
+                // the finished task was the declared step: nothing is being done now until another starts
+                end_step(a, &task);
+            }
+            // any other closed status (nudges.idle_wake.closed_statuses, the list the task-list readers use) ends the declared step the
+            // same way (GH #964: a deleted step stayed the step, still open, and idle_open_task kept naming a task gone from the list);
+            // it is no progress, and closing another task leaves the step alone. Completion above never depends on this list.
             s if closed_statuses().iter().any(|c| *c == s) => {
-                if s == tr("completed") {
-                    a.steps_done += 1;
-                    a.progress += weight("step");
-                    a.open = false;
-                }
                 if end_step(a, &task) {
                     a.open = false;
                 }
