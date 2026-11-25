@@ -24,7 +24,7 @@ function dtFirstText(inp) {
 // `isOwnerBlocked` of lib/dispatch-demand.js.
 function dtOwnerBlocked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (typeof t.blockedOn === 'string' && ah.cfg('dispatch_tier.owner_values').indexOf(t.blockedOn.trim().toLowerCase()) >= 0) return true;
+  if (ah.ownerNamed(t.blockedOn)) return true;
   return new RegExp(ah.cfg('dispatch_tier.owner_subject_re'), 'i').test(t.content);
 }
 

@@ -5814,3 +5814,157 @@ fn every_signal_about_a_workspace_reaches_its_own_wake_feed_when_armed() {
     assert!(a.flags.contains_key("hung"), "{:?}", a.flags.keys().collect::<Vec<_>>());
     assert!(wake_rows(&h, "sessW").iter().any(|r| r["signal"] == "hung"), "{:?}", wake_rows(&h, "sessW"));
 }
+
+// ---- GH #959: hold bookkeeping (per-task unanswered count, idle_open_task inside a live hold, one owner matcher, total blocked time) ----
+
+fn hold_max() -> u64 {
+    defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64
+}
+
+/// #959 item 1 (live: a task's very first reminder read "7 reminders unanswered"): a confirmed owner-held task kept gaining a count on
+/// every reminder about OTHER tasks, and the text took the max over the whole session. A fresh task's first reminder carries no count,
+/// and the owner-held task's count stays at its one confirmation.
+#[test]
+fn n959_another_tasks_reminders_never_leak_into_a_fresh_tasks_unanswered_count() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-leak");
+    let max = hold_max();
+    let task = |id: &str, m: &str| json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("1", "NEEDS OWNER: the release ruleset"));
+    task_file(&h, SID, task("2", "waiting on the CI run of the disk report"));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> {
+        let mut seen = std::collections::BTreeSet::new();
+        queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+    };
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(rows(&h).len(), 1, "both holds expired together: one reminder {:?}", rows(&h));
+    // task 2's reason is rewritten (a confirmed blocker), task 1 stays owner-held and confirmed; the session is reminded about task 2 only
+    task_file(&h, SID, task("2", "CI replied, waiting on the second disk report"));
+    let mut at = n + max + 2 * MIN;
+    ticks(&h, &mut st, &[at]);
+    let k1 = |st: &State| agent(st, SID).hold_n.iter().filter(|(k, _)| k.starts_with("1#")).map(|(_, c)| *c).sum::<u64>();
+    assert_eq!(k1(&st), 1, "{:?}", agent(&st, SID).hold_n);
+    at += max;
+    ticks(&h, &mut st, &[at]);
+    let r = rows(&h);
+    assert_eq!(r.len(), 2, "{r:?}");
+    let t = r[1]["text"].as_str().unwrap();
+    assert!(t.contains("Task 2") && !t.contains("Task 1"), "{t}");
+    assert!(!t.contains("reminders unanswered"), "task 2's first reminder after its rewrite carried another task's count: {t}");
+    for _ in 0..3 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    assert_eq!(k1(&st), 1, "the confirmed owner-held task gained counts from reminders about task 2: {:?}", agent(&st, SID).hold_n);
+    let k2: u64 = agent(&st, SID).hold_n.iter().filter(|(k, _)| k.starts_with("2#")).map(|(_, c)| *c).sum();
+    assert_eq!(k2, rows(&h).len() as u64 - 1, "task 2 counts exactly its own reminders");
+    let last = rows(&h).last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(last.contains(&format!("{} reminders unanswered", k2 - 1)), "the order names task 2's own count: {last}");
+}
+
+/// #959 item 1, several tasks due in ONE reminder: each key counts that reminder once, and the text shows the most any of THOSE tasks
+/// has had (never a task outside the reminder).
+#[test]
+fn n959_tasks_due_together_each_count_the_shared_reminder_and_the_text_shows_their_max() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-together");
+    let max = hold_max();
+    let task = |id: &str, m: &str| json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("1", "waiting on the CI run one"));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN]);
+    task_file(&h, SID, task("2", "waiting on the CI run two"));
+    let mut at = n + max + 33 * MIN;
+    ticks(&h, &mut st, &[at]);
+    at += max + MIN;
+    ticks(&h, &mut st, &[at]);
+    let a = agent(&st, SID);
+    let c = |p: &str| a.hold_n.iter().filter(|(k, _)| k.starts_with(p)).map(|(_, c)| *c).sum::<u64>();
+    assert!(c("1#") > c("2#") && c("2#") == 1, "{:?}", a.hold_n);
+    assert_eq!(a.hold_due.len(), 2, "{:?}", a.hold_due);
+    let shown = super::compliance::hold_text(a, 1, "x");
+    assert!(shown.contains(&format!("{} reminders unanswered", c("1#"))), "{shown}");
+}
+
+/// #959 item 2: a workspace idle on an open task whose blockedOn sits inside a live bounded hold is waiting, not idle: idle_open_task
+/// stays down; past nudges.hold.hold_max_ms the exemption ends and it speaks.
+#[test]
+fn n959_idle_open_task_stays_silent_inside_a_live_hold_and_speaks_after_it() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("n959-idle-hold");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/sessW.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/wt/x"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - 30 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    task_file(&h, "sessW", json!({"id": "1", "subject": "Port the gauge", "status": "in_progress", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run of the gauge PR"}}));
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(a.open && !a.flags.contains_key("idle_open_task"), "open={} flags={:?}", a.open, a.flags.keys().collect::<Vec<_>>());
+    assert!(!wake_rows(&h, "sessW").iter().any(|r| r["signal"] == "idle_open_task"));
+    // the hold runs out (its clock moved back past hold_max): the exemption is bounded
+    for v in st.agents.get_mut("sessW").unwrap().held_since.values_mut() {
+        *v = n + 3 * MIN - hold_max() - MIN;
+    }
+    ticks_nudge(&h, &mut st, &["sessW"], &[n + 3 * MIN]);
+    assert!(agent(&st, "sessW").flags.contains_key("idle_open_task"), "{:?}", agent(&st, "sessW").flags.keys().collect::<Vec<_>>());
+}
+
+/// #959 item 2, a subagent: an idle child is in state done, and a finished owner's blockedOn holds nothing (the 2026-11-23 rule), so a
+/// child owning a held task in its parent's list is still reported idle with its task open.
+#[test]
+fn n959_a_subagent_owning_a_held_task_is_still_idle_open_its_finished_hold_holds_nothing() {
+    let h = home("n959-child-hold");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    task_file(&h, "parent", json!({"id": "7", "subject": "Port the gauge", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run of the gauge PR"}}));
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(agent(&st, "w1").flags.contains_key("idle_open_task"));
+}
+
+/// #959 item 3: one owner matcher, a word of dispatch_tier.owner_values anywhere in the reason; no partial word, no other word.
+#[test]
+fn n959_the_owner_matcher_takes_an_owner_word_anywhere_and_nothing_else() {
+    for yes in ["owner", "NEEDS OWNER: the ruleset", "owner: deferred until the release", "waiting on the user to log in", "human review"] {
+        assert!(super::owner_named(yes), "{yes}");
+    }
+    for no in ["", "waiting on the CI run", "ownership of the lane", "co-owners table", "the users table migration"] {
+        assert!(!super::owner_named(no), "{no}");
+    }
+}
+
+/// #959 item 4: the owner notice says how long the task has been blocked in total, not since the latest rewrite ("blocked 0s").
+#[test]
+fn n959_the_owner_notice_shows_the_total_blocked_time_after_a_rewrite() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-total");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: GitHub release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    task_file(&h, SID, task("owner: GitHub release ruleset change (checked again)"));
+    let at = n + max + 2 * MIN;
+    ticks(&h, &mut st, &[at]);
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices: Vec<String> = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    let want = format!("(blocked {})", super::sinks::age(at - n));
+    assert!(notices[0].contains(&want) && !notices[0].contains("(blocked 0s)"), "want {want}: {}", notices[0]);
+}

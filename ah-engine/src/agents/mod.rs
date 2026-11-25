@@ -31,7 +31,7 @@ mod signals;
 mod sinks;
 mod sources;
 mod status;
-pub(crate) use compliance::note_task_list;
+pub(crate) use compliance::{note_task_list, owner_named};
 pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
@@ -559,6 +559,14 @@ pub struct Agent {
     /// the owner was last told about it (0 = never): the agent hears nothing further, the owner is told at most once per interval.
     #[serde(default)]
     pub hold_owner: BTreeMap<String, u64>,
+    /// Task id -> when the engine first saw ANY `blockedOn` reason on that open task (a rewrite does not restart it; clearing the
+    /// reason or closing the task drops it): the total blocked time of the owner notice (GH #959).
+    #[serde(default)]
+    pub blocked_since: BTreeMap<String, u64>,
+    /// Held-task keys whose hold is past `hold_max_ms` and that a hold_expired reminder speaks about, as of the last tick: the only
+    /// counts the reminder reads and bumps (GH #959: another task's count leaked into "N reminders unanswered").
+    #[serde(default)]
+    pub hold_due: Vec<String>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,

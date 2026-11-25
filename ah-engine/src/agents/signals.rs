@@ -370,12 +370,14 @@ fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
 
 /// A subagent or workspace that finished its turn with a task still open and has said nothing for `idle_open_ms`: nobody is told, so it
 /// sits. Raised once per idle spell; it clears the moment the agent works again.
-fn idle_open_task(a: &Agent, now: u64) -> Option<Raised> {
+fn idle_open_task(a: &Agent, st: &State, tasks: &[Task], now: u64) -> Option<Raised> {
     if (!super::is_child(a) && a.kind != kind_name("workspace")) || a.gone || !a.open || a.running || a.last_output_ms == 0 {
         return None;
     }
     let idle = now.saturating_sub(a.last_output_ms);
-    (idle >= lim("idle_open_ms") && idle <= lim("active_window_ms")).then(|| (idle / fmtn("ms_per_s"), a.step.clone()))
+    // a task inside a live bounded hold is waiting on something stated, not idle (GH #959); the task list is read only this late
+    (idle >= lim("idle_open_ms") && idle <= lim("active_window_ms") && !compliance::idle_work_held(a, st, tasks, now))
+        .then(|| (idle / fmtn("ms_per_s"), a.step.clone()))
 }
 
 /// Only a complete transcript can establish no work. Partial scans and rescue wrappers never raise this signal.
@@ -793,7 +795,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "monitor_off" => monitor_off(env, a),
             "watcher_missing" => watcher_missing(env, a, now),
-            "idle_open_task" => idle_open_task(a, now),
+            "idle_open_task" => idle_open_task(a, st, tasks, now),
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
             "stalled" => stalled(env, a, now),
@@ -1164,7 +1166,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         a.last_sent.insert(sig.into(), now);
         a.sent_log.push((sig.into(), now));
         if sig == "hold_expired" {
-            compliance::hold_sent(a, now);
+            compliance::hold_sent(a);
         }
         if sig == "drift" {
             a.drift_step = step_hash;

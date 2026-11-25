@@ -136,6 +136,9 @@ var tk = {
   isDone: function (t) { return ah.cfg('taskstate.done_statuses').indexOf(tk.statusLc(t)) >= 0; },
   // The blockedOn marker as the owner-blocked test reads it: a string trimmed and lowercased, else empty.
   blockedOnText: function (t) { return typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : ''; },
+  // The task's blockedOn reason names the owner or a human ("owner", "NEEDS OWNER: x", "owner: deferred until y"): ah.ownerNamed, the
+  // matcher the agent tracker shares (GH #959), never an exact-value compare.
+  ownerHeld: function (t) { return ah.ownerNamed(t.blockedOn); },
   // oneLine: control characters become spaces, white space runs collapse, the text is trimmed and cut to `max` UTF-16 units with an
   // ellipsis; a cut through a surrogate pair drops the half pair (a Rust string cannot hold one).
   oneLine: function (s, max) {

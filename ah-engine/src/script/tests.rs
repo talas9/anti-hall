@@ -5438,6 +5438,36 @@ mod idle_rule_counters {
         crate::metrics::drain_pending(&mut m);
         assert_eq!(m.counter("idle_rule_hold_lapsed", &[("reason", "parked")]), 1);
     }
+
+    /// GH #959 item 3: the Stop idle-tasks check classes a blockedOn reason with the engine's ONE owner matcher (a word of
+    /// dispatch_tier.owner_values anywhere, the tracker's hold_owner test), not an exact compare against the bare value.
+    #[test]
+    fn n959_the_stop_check_classes_an_owner_word_anywhere_as_owner_held_with_the_trackers_matcher() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ts = "2026-11-01T00:00:00.000Z";
+        let reasons = ["NEEDS OWNER: the release ruleset", "owner: deferred until the release", "owner", "waiting on the CI run of the PR", "ownership of the lane"];
+        let mut body = String::new();
+        for (i, r) in reasons.iter().enumerate() {
+            let n = i + 1;
+            let c = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("[P1] task {n}"), "description": "", "metadata": {"blockedOn": r}}}]}, "timestamp": ts});
+            let res = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: [P1] task {n}")}]}, "timestamp": ts});
+            let u = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": "in_progress"}}]}, "timestamp": ts});
+            body.push_str(&format!("{c}\n{res}\n{u}\n"));
+        }
+        body.push_str(&lines(&[(9, "[P1] idle one", "", "in_progress")]));
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let v = stop("n959-owner", &body, true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("#9")), "{v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        let owner = defaults::text("idle_rule.reason_owner");
+        let blocked = defaults::text("idle_rule.reason_blocked_on");
+        assert_eq!(m.counter("idle_rule_suppressed", &[("reason", owner)]), 3, "the three owner-word reasons are owner-held");
+        assert_eq!(m.counter("idle_rule_suppressed", &[("reason", blocked)]), 2, "a plain reason and a partial word are not");
+        // the tracker's matcher agrees on every one of them
+        let tracker: Vec<bool> = reasons.iter().map(|r| crate::agents::owner_named(r)).collect();
+        assert_eq!(tracker, vec![true, true, true, false, false]);
+    }
 }
 
 // ---- reply-length-guard R-style (guards.styleRule): its counters, the repeat marker and the message text ----

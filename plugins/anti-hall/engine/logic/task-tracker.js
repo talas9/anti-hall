@@ -87,7 +87,7 @@ function ttJevSpec(p, prompt, sessionRaw) {
 // `isOwnerBlocked(t)`: a task waiting on the owner (the `blockedOn` marker or an `OWNER:` subject) is not work the agent can close.
 function ttOwnerBlocked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
+  if (tk.ownerHeld(t)) return true;
   return new RegExp(ah.cfg('dispatch_tier.owner_subject_re'), 'i').test(t.content);
 }
 

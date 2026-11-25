@@ -201,6 +201,9 @@ var ah = {
   // The effective value of a defaults key through the owner's editable layers (settings.json, config.toml, shipped default).
   cfgLive: function (key) { return JSON.parse(ahHost.cfgLive(key)); },
   sha1: function (t) { return ahHost.sha1(ahWf(t)); },
+  // Whether a blockedOn reason names the owner or a human (a word of dispatch_tier.owner_values): the engine's one owner matcher, the
+  // same the agent tracker's hold_owner uses (GH #959).
+  ownerNamed: function (t) { return typeof t === 'string' && ahHost.ownerNamed(ahWf(t)); },
   // The engine's outbound secret scrubber (the `jev.scrub_rules` of the plugin's jev.toml).
   scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },

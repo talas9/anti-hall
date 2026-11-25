@@ -61,7 +61,7 @@ function tgOwnerBlocked(t) {
 
 function tgOwnerMarked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
+  if (tk.ownerHeld(t)) return true;
   var value = [t.owner || '', t.content || '', t.description || ''].join(' ').toLowerCase();
   if (ah.cfg('task_guard.owner_decision_markers').some(function (m) { return value.indexOf(m.toLowerCase()) >= 0; })) return true;
   return tgRe('dispatch_tier.owner_subject_re', 'i').test(t.content);
@@ -91,7 +91,7 @@ function tgActionable(open, tasks, skips) {
     if (t.owner && !tgCoordinator(t.owner)) return false;
     if (tgOwnerBlocked(t)) return false;
     var bo = tk.blockedOnText(t);
-    if (bo !== '' && ah.cfg('dispatch_tier.owner_values').indexOf(bo) < 0 && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), bo)) return false; // a task that names what it waits on is held, not dispatchable (the owner values keep their own, switchable test above)
+    if (bo !== '' && !tk.ownerHeld(t) && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), bo)) return false; // a task that names what it waits on is held, not dispatchable (the owner values keep their own, switchable test above)
     if (skips !== null && skips[t.id] !== undefined) return false; // attended by an agent's description or launch name too: tk.evaluate reads descriptions only
     if (t.blockedBy.some(function (id) { return notDone[id] === true || known[id] !== true; })) return false;
     return tgPriorityRank(t.priority) <= floor;

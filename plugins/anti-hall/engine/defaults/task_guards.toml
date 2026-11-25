@@ -111,7 +111,7 @@ doc = "Owner-blocked marker switch. Where the switch of the owner-blocked marker
 value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
 
 [dispatch_tier.owner_values]
-doc = "The blockedOn values (trimmed, lowercase) that mark a task as waiting on the owner."
+doc = "The words that mark a task as waiting on the owner: a blockedOn reason any word of which (split at every non-alphanumeric character, lowercase) is one of these, so \"owner\", \"NEEDS OWNER: x\" and \"owner: deferred until y\" all count. One matcher (the engine's owner_named, ah.ownerNamed in scripts) serves the agent tracker's hold_owner and the task-guard, task-tracker and dispatch-tier checks alike."
 value = ["owner", "user", "human", "external"]
 
 [dispatch_tier.owner_subject_re]
