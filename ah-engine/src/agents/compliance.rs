@@ -270,6 +270,7 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
     }
     let held_since = &a.held_since;
     a.hold_n.retain(|k, _| held_since.contains_key(k));
+    a.hold_last.retain(|k, _| held_since.contains_key(k));
     let owner_ids: Vec<&str> = open_held.iter().filter(|t| t.owner_held).map(|t| t.id.as_str()).collect();
     a.hold_owner.retain(|id, _| owner_ids.contains(&id.as_str()));
     // state from before `owner_noticed` kept the last notice in `hold_owner`
@@ -278,42 +279,78 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
             a.owner_noticed.entry(id.clone()).or_insert(*last);
         }
     }
-    a.owner_noticed.retain(|id, _| owner_ids.contains(&id.as_str()));
+    // kept per task until it closes or its blockedOn is cleared: a short detour to a non-owner reason must not restart the interval
+    a.owner_noticed.retain(|id, _| ids.contains(&id.as_str()));
     owner_notice(env, a, tasks, now);
-    // the holds the next hold_expired reminder may name: at most tasks_shown (the text may still cut some; `hold_sent` advances only the
-    // ones whose name survives in the delivered text)
+    // the holds the next hold_expired reminder may name, in rank order: at most tasks_shown ([`hold_render`] lists as many as fit)
     a.hold_due = named_holds(a, tasks, now).into_iter().map(|t| HoldDue { key: t.held_key.clone(), id: t.id.clone(), subject: t.subject.clone(), owner: t.owner_held }).collect();
 }
 
-/// The holds of `hold_due` whose name is whole in the delivered reminder `text` (after every cap): the only ones it told the session
-/// about.
-pub(super) fn named_in(a: &Agent, text: &str) -> Vec<HoldDue> {
-    let count = |d: &HoldDue| a.hold_n.get(&d.key).copied().unwrap_or(0);
-    a.hold_due
-        .iter()
-        .filter(|d| {
-            let shown = defaults::render("msg.agent_hold_task_count", &[("task", &d.subject), ("sent", &count(d))]);
-            text.contains(&shown) || (!d.subject.is_empty() && text.contains(&d.subject))
-        })
-        .cloned()
-        .collect()
-}
-
-/// A hold_expired reminder reached the session itself: each hold its text named (never another task's, never one the caps cut,
-/// GH #959) has one more reminder on its count, and a named owner-held task counts as confirmed with the session.
-pub(super) fn hold_sent(a: &mut Agent, named: &[HoldDue]) {
+/// A hold_expired reminder reached the session itself: each hold [`hold_render`] listed in it (never another task's, never one the cap
+/// left out, GH #959) has one more reminder on its count and its last-reminded time, and a listed owner-held task counts as confirmed.
+pub(super) fn hold_sent(a: &mut Agent, named: &[HoldDue], now: u64) {
     for d in named {
         *a.hold_n.entry(d.key.clone()).or_insert(0) += 1;
+        a.hold_last.insert(d.key.clone(), now);
         if d.owner {
             a.hold_owner.entry(d.id.clone()).or_insert(0);
         }
     }
 }
 
+/// A subject as the reminder shows it: runs of whitespace collapsed, as the text cap ([`super::cap`]) collapses them.
+fn flat(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Lay a list out into one message, item by item, under `agent_tracker.spam.max_text` (GH #959: the forward design; nothing is
+/// matched back out of the text). `render` renders the whole message from the items listed so far (index, shown name). Each item is
+/// tried whole, then shortened to the room left (at least `nudges.hold.subject_min` characters plus `nudges.hold.subject_cut`); the
+/// first that fits in neither form ends the list. Returns the text (whitespace collapsed, so the cap leaves it unchanged) and the
+/// indices listed, in order: only those may be counted, confirmed or noticed.
+fn fit(names: &[String], render: impl Fn(&[(usize, String)]) -> String) -> (String, Vec<usize>) {
+    let max = defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap_or(0).max(0) as usize;
+    let hold = defaults::raw("nudges.hold");
+    let (min, cut) = (num(hold, "subject_min") as usize, hold.str_field("subject_cut"));
+    let fits = |shown: &[(usize, String)]| flat(&render(shown)).chars().count() <= max;
+    let short = |name: &str, n: usize| format!("{}{cut}", name.chars().take(n).collect::<String>().trim_end());
+    let mut shown: Vec<(usize, String)> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let mut trial = shown.clone();
+        trial.push((i, name.clone()));
+        if fits(&trial) {
+            shown = trial;
+            continue;
+        }
+        let len = name.chars().count();
+        // the longest prefix (min..len) that fits; the rendered length grows with the prefix, so a binary search finds it
+        let (mut lo, mut hi, mut best) = (min, len.saturating_sub(1), None);
+        while lo <= hi && hi > 0 {
+            let mid = lo + (hi - lo) / 2;
+            let mut cand = shown.clone();
+            cand.push((i, short(name, mid)));
+            if fits(&cand) {
+                best = Some(mid);
+                lo = mid + 1;
+            } else if mid == 0 {
+                break;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        match best {
+            Some(n) => shown.push((i, short(name, n))),
+            None => break,
+        }
+    }
+    (flat(&render(&shown)), shown.into_iter().map(|(i, _)| i).collect())
+}
+
 /// The owner notice: an open task whose current `blockedOn` names the owner or a human and that has been blocked (any reason, rewrites
 /// included: `blocked_since`) for `hold_max_ms` in total is the owner's to hear about, at most once per task per `owner_notice_ms` (the
 /// owner-notices route). Keyed on the total, not on the per-reason clock or the session's confirmation, so rewriting the reason never
-/// starves it (GH #959). Only the tasks the notice names (`tasks_shown`, the longest-unnoticed first) are advanced.
+/// starves it (GH #959). The tasks are listed longest-unnoticed first (then the longest blocked) as many as fit ([`fit`], at most
+/// `tasks_shown`), and only the listed ones are advanced.
 fn owner_notice(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
     if !env.act || !env.switch("agent_tracker.remind_setting") || !watched(env, a) {
         return;
@@ -329,14 +366,23 @@ fn owner_notice(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
         .map(|(t, blocked)| (t, a.owner_noticed.get(&t.id).copied().unwrap_or(0), blocked))
         .filter(|(_, last, _)| *last == 0 || now.saturating_sub(*last) >= every)
         .collect();
-    due.sort_by(|x, y| x.1.cmp(&y.1).then_with(|| x.0.id.cmp(&y.0.id)));
-    due.truncate(num(defaults::raw("nudges.compliance"), "tasks_shown") as usize);
-    let Some(longest) = due.iter().map(|(_, _, w)| *w).max() else { return };
+    due.sort_by(|x, y| x.1.cmp(&y.1).then_with(|| y.2.cmp(&x.2)).then_with(|| x.0.id.cmp(&y.0.id)));
+    let c = defaults::raw("nudges.compliance");
+    due.truncate(num(c, "tasks_shown") as usize);
+    if due.is_empty() {
+        return;
+    }
     let who: String = (if a.name.is_empty() { &a.id } else { &a.name }).chars().take(fmtn("name_max") as usize).collect();
-    let text = defaults::render(
-        "msg.agent_hold_owner",
-        &[("agent", &who), ("tasks", &subjects(&due.iter().map(|(t, _, _)| *t).collect::<Vec<_>>())), ("held", &super::sinks::age(longest))],
-    );
+    let names: Vec<String> = due.iter().map(|(t, _, _)| flat(&t.subject)).collect();
+    let (text, listed) = fit(&names, |shown| {
+        let longest = shown.iter().map(|(i, _)| due[*i].2).max().unwrap_or(0);
+        let tasks = shown.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(c.str_field("joiner"));
+        defaults::render("msg.agent_hold_owner", &[("agent", &who), ("tasks", &tasks), ("held", &super::sinks::age(longest))])
+    });
+    if listed.is_empty() {
+        return;
+    }
+    let due: Vec<(&Task, u64, u64)> = listed.into_iter().map(|i| due[i]).collect();
     let r = super::sinks::Reminder {
         id: format!("{:x}", crate::health::fnv(&format!("{}hold_owner{now}", a.id))),
         ts: now,
@@ -383,11 +429,16 @@ fn expired_holds<'a>(a: &Agent, tasks: &'a [Task], now: u64) -> Vec<(&'a Task, u
     tasks.iter().filter(|t| t.held && !(t.owner_held && a.hold_owner.contains_key(&t.id))).filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s)))).filter(|(_, w)| *w >= max).collect()
 }
 
-/// The expired holds one hold_expired reminder names: at most `nudges.compliance.tasks_shown`, the least reminded first (then by id),
-/// so a long list rotates through the cap instead of starving its tail (P1.2).
+/// The expired holds one hold_expired reminder may name, in rank order: the least reminded first, then the one reminded longest ago
+/// (never reminded first), then the oldest hold; at most `nudges.compliance.tasks_shown`. A long list rotates through the cap and no
+/// task starves the others (GH #959).
 fn named_holds<'a>(a: &Agent, tasks: &'a [Task], now: u64) -> Vec<&'a Task> {
     let mut due: Vec<&Task> = expired_holds(a, tasks, now).into_iter().map(|(t, _)| t).collect();
-    due.sort_by(|x, y| a.hold_n.get(&x.held_key).copied().unwrap_or(0).cmp(&a.hold_n.get(&y.held_key).copied().unwrap_or(0)).then_with(|| x.id.cmp(&y.id)));
+    let rank = |t: &Task| {
+        let get = |m: &std::collections::BTreeMap<String, u64>| m.get(&t.held_key).copied().unwrap_or(0);
+        (get(&a.hold_n), get(&a.hold_last), get(&a.held_since))
+    };
+    due.sort_by(|x, y| rank(x).cmp(&rank(y)).then_with(|| x.id.cmp(&y.id)));
     due.truncate(num(defaults::raw("nudges.compliance"), "tasks_shown") as usize);
     due
 }
@@ -405,19 +456,29 @@ pub(super) fn hold_expired(env: &Env, a: &Agent, tasks: &[Task], now: u64) -> Op
     Some((longest / fmtn("ms_per_s"), named.iter().map(|t| t.subject.as_str()).collect::<Vec<_>>().join(c.str_field("joiner"))))
 }
 
-/// The reminder text: advice first; once any named task has had `order_after` reminders, the order, with each named task carrying its
-/// OWN count (`msg.agent_hold_task_count`; P1.3: one shared number misreported every task but one).
-pub(super) fn hold_text(a: &Agent, evidence: u64, tasks: &str) -> String {
+/// The hold_expired reminder and the holds it lists (GH #959): the tasks of `hold_due` in rank order, added one by one, each shortened
+/// if needed, until the text cap ([`fit`]). Advice first; once a listed task has had `order_after` reminders, the order, each listed
+/// task carrying its OWN count (`msg.agent_hold_task_count`). `{held}`/`{n}` are the longest hold among the listed tasks. Only the
+/// returned holds may be counted or confirmed ([`hold_sent`]).
+pub(super) fn hold_render(a: &Agent, now: u64) -> (String, Vec<HoldDue>) {
     let hold = defaults::raw("nudges.hold");
-    let count = |d: &HoldDue| a.hold_n.get(&d.key).copied().unwrap_or(0);
-    let order = a.hold_due.iter().any(|d| count(d) >= num(hold, "order_after"));
-    let held = super::sinks::age(evidence * fmtn("ms_per_s"));
-    if !order {
-        return defaults::render("msg.agent_hold_expired", &[("tasks", &tasks), ("n", &evidence), ("held", &held)]);
-    }
     let c = defaults::raw("nudges.compliance");
-    let listed: Vec<String> = a.hold_due.iter().map(|d| defaults::render("msg.agent_hold_task_count", &[("task", &d.subject), ("sent", &count(d))])).collect();
-    defaults::render("msg.agent_hold_expired_order", &[("tasks", &listed.join(c.str_field("joiner"))), ("n", &evidence), ("held", &held)])
+    let count = |d: &HoldDue| a.hold_n.get(&d.key).copied().unwrap_or(0);
+    let names: Vec<String> = a.hold_due.iter().map(|d| flat(&d.subject)).collect();
+    let (text, listed) = fit(&names, |shown| {
+        let ds: Vec<(&HoldDue, &str)> = shown.iter().map(|(i, n)| (&a.hold_due[*i], n.as_str())).collect();
+        let longest = ds.iter().filter_map(|(d, _)| a.held_since.get(&d.key)).map(|s| now.saturating_sub(*s)).max().unwrap_or(0);
+        let n = longest / fmtn("ms_per_s");
+        let held = super::sinks::age(n * fmtn("ms_per_s"));
+        if ds.iter().any(|(d, _)| count(d) >= num(hold, "order_after")) {
+            let tasks: Vec<String> = ds.iter().map(|(d, name)| defaults::render("msg.agent_hold_task_count", &[("task", name), ("sent", &count(d))])).collect();
+            defaults::render("msg.agent_hold_expired_order", &[("tasks", &tasks.join(c.str_field("joiner"))), ("n", &n), ("held", &held)])
+        } else {
+            let tasks = ds.iter().map(|(_, name)| *name).collect::<Vec<_>>().join(c.str_field("joiner"));
+            defaults::render("msg.agent_hold_expired", &[("tasks", &tasks), ("n", &n), ("held", &held)])
+        }
+    });
+    (text, listed.into_iter().map(|i| a.hold_due[i].clone()).collect())
 }
 
 /// `stale_list`: a task is open and the session made `stale_calls` work calls with no TaskCreate/TaskUpdate. Text: the open subjects.

@@ -882,7 +882,7 @@ pub(super) enum Target {
     Owner,
 }
 
-fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
+fn text_for(a: &Agent, sig: &str, f: &Flag, now: u64) -> String {
     let who = label(a);
     let kind: &str = &a.kind;
     let t = match sig {
@@ -941,7 +941,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
         "untracked_request" => defaults::render("msg.agent_untracked_request", &[("n", &f.evidence)]),
         "inprogress_waiting" => defaults::render("msg.agent_inprogress_waiting", &[("tasks", &f.text), ("idle", &age(f.evidence * fmtn("ms_per_s")))]),
         "lead_waiting_on_done" => super::lead_wait::text(a, f.evidence, &f.text, a.seen.saturating_sub(a.last_output_ms)),
-        "hold_expired" => compliance::hold_text(a, f.evidence, &f.text),
+        "hold_expired" => compliance::hold_render(a, now).0,
         "watcher_missing" => watcher_text(a, f.evidence),
         "monitor_off" => {
             let e = defaults::raw(wake_switch_key(a));
@@ -955,7 +955,12 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             &[("command", &defaults::text("agent_tracker.wake_command_agents")), ("timeout", &defaults::num("agent_tracker.wake_timeout_ms"))],
         ),
     };
-    cap(&t, defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap_or(0).max(0) as u64)
+    capped(&t)
+}
+
+/// A reminder text under `agent_tracker.spam.max_text`.
+fn capped(t: &str) -> String {
+    cap(t, defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap_or(0).max(0) as u64)
 }
 
 /// The configured route targets: name -> (whose queue it addresses, which sink delivers). A new target is a row in
@@ -1016,6 +1021,16 @@ pub(super) fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target
         }
     }
     out
+}
+
+/// Whether a delivery to `t` reached the flagged session itself: its own queue or wake feed, or its own workspace's mesh row. The
+/// fallback to a parent or Primary and the owner notices told someone else (GH #959).
+pub(super) fn own_target(a: &Agent, t: &Target) -> bool {
+    match t {
+        Target::Session(k) | Target::Wake(k) => *k == a.id,
+        Target::Mesh { ws, to_parent } => !*to_parent && a.ws.as_ref().is_some_and(|w| w.id == *ws),
+        Target::Owner => false,
+    }
 }
 
 /// Where a flag goes when its own routes reach nobody: the direct parent or nearest live ancestor (a workspace's Primary), by wake feed
@@ -1100,8 +1115,14 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         tg = fallback_targets(env, st, a);
     }
     let (mut sent, mut failed, mut fell_back) = (0, 0, false);
-    // deliveries that reached a session (not only the owner fallback), and the text they carried
-    let (mut to_session, mut hold_text_sent) = (0, String::new());
+    // deliveries that reached the flagged session itself; one text for every target, and for hold_expired the holds it lists
+    let mut to_session = 0;
+    let (text, hold_listed) = if sig == "hold_expired" {
+        let (t, listed) = compliance::hold_render(a, now);
+        (capped(&t), listed)
+    } else {
+        (text_for(a, sig, &flag, now), Vec::new())
+    };
     loop {
         for t in &tg {
             // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
@@ -1134,16 +1155,15 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
                 ts: now,
                 signal: sig.into(),
                 agent: a.id.clone(),
-                text: text_for(a, sig, &flag),
+                text: text.clone(),
             };
             match sink.deliver(env, &key, &r) {
                 Ok(()) => {
                     if matches!(t, Target::Wake(_)) {
                         compliance::delivered(sig, "delivered_wake");
                     }
-                    if !matches!(t, Target::Owner) {
+                    if own_target(a, t) {
                         to_session += 1;
-                        hold_text_sent.clone_from(&r.text);
                     }
                     rec(env, "reminder", sig, Outcome::Advise, f);
                     sent += 1;
@@ -1173,11 +1193,10 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         *queued += 1;
         a.last_sent.insert(sig.into(), now);
         a.sent_log.push((sig.into(), now));
-        // only a reminder that reached the session itself confirms or counts (an owner-fallback-only delivery told nobody in it), and
-        // only for the tasks whose name survived into the delivered text (GH #959)
+        // only a reminder that reached the session's own target counts or confirms (a fallback to the Primary or the owner told someone
+        // else), and only for the holds its text lists (GH #959)
         if sig == "hold_expired" && to_session > 0 {
-            let named = compliance::named_in(a, &hold_text_sent);
-            compliance::hold_sent(a, &named);
+            compliance::hold_sent(a, &hold_listed, now);
         }
         if sig == "drift" {
             a.drift_step = step_hash;

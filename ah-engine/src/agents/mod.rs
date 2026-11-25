@@ -589,6 +589,10 @@ pub struct Agent {
     /// counts it reads, bumps and confirms (GH #959: another task's count leaked into "N reminders unanswered").
     #[serde(default)]
     pub hold_due: Vec<HoldDue>,
+    /// Held-task key -> when a hold_expired reminder that named it last reached the session (GH #959): the second sort key of the
+    /// rotation (least reminded, then the longest since its last reminder), so a long list rotates and no task starves the others.
+    #[serde(default)]
+    pub hold_last: BTreeMap<String, u64>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,

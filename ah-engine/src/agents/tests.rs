@@ -5886,7 +5886,7 @@ fn n959_tasks_named_together_each_show_their_own_unanswered_count() {
     let c = |p: &str| a.hold_n.iter().filter(|(k, _)| k.starts_with(p)).map(|(_, c)| *c).sum::<u64>();
     assert!(c("1#") >= 3 && c("2#") == 1, "{:?}", a.hold_n);
     assert_eq!(a.hold_due.len(), 2, "{:?}", a.hold_due);
-    let shown = super::compliance::hold_text(a, 1, "x");
+    let shown = super::compliance::hold_render(a, at).0;
     assert!(shown.contains(&format!("Task 1 ({} reminders unanswered)", c("1#"))) && shown.contains("Task 2 (1 reminders unanswered)"), "{shown}");
 }
 
@@ -6046,30 +6046,37 @@ fn n959_with_compliance_off_the_idle_exemption_still_ends_at_hold_max() {
 }
 
 
-/// #959 (Codex 2a): the reminder text is capped (agent_tracker.spam.max_text); a task whose name the cap cut was never shown to the
-/// session, so it is not counted (or confirmed) for that reminder.
+/// #959 (Codex 2a, review round 2): the reminder text is capped (agent_tracker.spam.max_text). The renderer lists tasks one by one,
+/// shortening the one that does not fit whole, and stops before the cap: exactly the listed tasks are counted, the text it returns is
+/// the text delivered (the cap leaves it unchanged), and a task left out is not counted.
 #[test]
 fn n959_a_task_the_text_cap_cut_is_not_counted() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let n = now0();
     let h = home("n959-textcap");
     let max = hold_max();
-    let cap = defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap() as usize;
+    let cap = spam_cap();
     let long = |i: usize| format!("Task {i} {}", "x".repeat(cap * 2 / 5));
     for i in 1..=3 {
         task_file(&h, SID, json!({"id": i.to_string(), "subject": long(i), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {i}")}}));
     }
     main_session(&h, SID, n, 15, "waiting");
     let mut st = State::default();
-    ticks(&h, &mut st, &[n, n + max + MIN]);
+    ticks(&h, &mut st, &[n, n + max]);
+    // the render as of the reminder's tick, before it was counted
+    let (want, listed) = super::compliance::hold_render(agent(&st, SID), n + max + MIN);
+    ticks(&h, &mut st, &[n + max + MIN]);
     let text = queue(&h, SID).into_iter().find(|r| r["signal"] == "hold_expired").expect("reminded")["text"].as_str().unwrap().to_string();
+    assert_eq!(text, want, "the delivered text is the rendered text, unchanged by the cap");
+    assert!(text.chars().count() <= cap, "{}", text.chars().count());
+    let ids: Vec<&str> = listed.iter().map(|d| d.id.as_str()).collect();
+    assert_eq!(ids, ["1", "2"], "task 1 whole, task 2 shortened, task 3 left out: {text}");
+    assert!(text.contains(&long(1)) && !text.contains(&long(2)) && text.contains("Task 2 xxx") && !text.contains("Task 3"), "{text}");
     let a = agent(&st, SID);
     for i in 1..=3 {
-        let shown = text.contains(&long(i));
-        let counted = a.hold_n.iter().any(|(k, c)| k.starts_with(&format!("{i}#")) && *c > 0);
-        assert_eq!(counted, shown, "task {i}: shown={shown} counted={counted} hold_n={:?}", a.hold_n);
+        let c = a.hold_n.iter().filter(|(k, _)| k.starts_with(&format!("{i}#"))).map(|(_, c)| *c).sum::<u64>();
+        assert_eq!(c, u64::from(i < 3), "task {i}: {:?}", a.hold_n);
     }
-    assert!(!text.contains(&long(3)), "the cap cut the third subject (the test needs that)");
 }
 
 /// #959 (Codex 2b): when the session's own routes fail and only the owner fallback receives the reminder, the session was told nothing:
@@ -6170,4 +6177,204 @@ fn n959_node_reads_the_owner_matcher_config_from_the_engine_toml() {
     // the subject pattern Node uses is the engine's own value
     let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js")).unwrap();
     assert!(!src.contains("OWNER_SUBJECT_RE") && !src.contains("'owner', 'user'"), "no hardcoded owner words or subject pattern");
+}
+
+// ---- GH #959 review round 2: forward rendering of the hold reminder, own-target counting, owner notice interval, Node TOML layouts ----
+
+fn hold_rows(h: &Path) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+}
+
+fn counted(st: &State, id: &str) -> u64 {
+    agent(st, SID).hold_n.iter().filter(|(k, _)| k.starts_with(&format!("{id}#"))).map(|(_, c)| *c).sum()
+}
+
+fn spam_cap() -> usize {
+    defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap() as usize
+}
+
+/// #959 P1-1: a short subject that sits inside a longer one ("API" in "Deploy API") must not count as shown when the reminder cut it.
+#[test]
+fn n959_a_cut_subject_is_not_counted_because_a_longer_shown_subject_contains_it() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-substring");
+    let max = hold_max();
+    let filler = format!("Filler {}", "y".repeat(spam_cap()));
+    for (id, subject) in [("1", "Deploy API".to_string()), ("2", filler), ("3", "API".to_string())] {
+        task_file(&h, SID, json!({"id": id, "subject": subject, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {id}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let text = r[0]["text"].as_str().unwrap();
+    assert!(text.contains("Deploy API"), "{text}");
+    assert_eq!(counted(&st, "1"), 1, "{:?}", agent(&st, SID).hold_n);
+    assert_eq!(counted(&st, "3"), 0, "task 3 (API) was never listed, only matched inside 'Deploy API': {text} {:?}", agent(&st, SID).hold_n);
+}
+
+/// #959 P1-1: a subject longer than the text cap is listed shortened and counted; it never holds a slot for ever, and the other tasks
+/// rotate in on the next reminders.
+#[test]
+fn n959_a_subject_longer_than_the_cap_is_listed_shortened_and_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-longsubject");
+    let max = hold_max();
+    let cap = spam_cap();
+    let long = format!("Huge {}", "z".repeat(cap * 2));
+    task_file(&h, SID, json!({"id": "1", "subject": long, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 1"}}));
+    for id in ["2", "3"] {
+        task_file(&h, SID, json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {id}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let mut at = n + max + MIN;
+    ticks(&h, &mut st, &[n, at]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let text = r[0]["text"].as_str().unwrap();
+    assert!(text.chars().count() <= cap && text.contains("Huge zzz"), "{text}");
+    assert_eq!(counted(&st, "1"), 1, "the shortened long subject was shown: {:?}", agent(&st, SID).hold_n);
+    for _ in 0..3 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    for id in ["1", "2", "3"] {
+        assert!(counted(&st, id) >= 1, "task {id} starved: {:?}", agent(&st, SID).hold_n);
+    }
+}
+
+/// #959 P1-1: a subject with runs of whitespace (the text cap collapses them) is still counted when it is shown.
+#[test]
+fn n959_a_subject_with_runs_of_whitespace_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-whitespace");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "1", "subject": "Fix  the\tgauge", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 1"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0]["text"].as_str().unwrap().contains("Fix the gauge"));
+    assert_eq!(counted(&st, "1"), 1, "{:?}", agent(&st, SID).hold_n);
+}
+
+/// #959 P1-2: among tasks with the same reminder count, the one reminded longest ago is named first, whatever its id.
+#[test]
+fn n959_equal_counts_rotate_by_the_oldest_last_reminder_not_by_id() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-rotate");
+    let max = hold_max();
+    let shown = defaults::raw("nudges.compliance").get("tasks_shown").and_then(V::as_integer).unwrap() as usize;
+    for i in 1..=shown + 1 {
+        task_file(&h, SID, json!({"id": i.to_string(), "subject": format!("Task {i}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {i}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    // every task has one reminder; the highest id had it longest ago
+    let last = shown + 1;
+    {
+        let a = st.agents.get_mut(SID).unwrap();
+        let keys: Vec<String> = a.held_since.keys().cloned().collect();
+        for k in keys {
+            a.hold_n.insert(k.clone(), 1);
+            let id: u64 = k.split('#').next().unwrap().parse().unwrap();
+            a.hold_last.insert(k, if id as usize == last { n + MIN } else { n + 2 * MIN });
+        }
+    }
+    ticks(&h, &mut st, &[n + max + MIN]);
+    let due: Vec<String> = agent(&st, SID).hold_due.iter().map(|d| d.id.clone()).collect();
+    assert_eq!(due.first(), Some(&last.to_string()), "{due:?}");
+}
+
+/// #959 P1-3: only a delivery to the session's own queue, wake feed or own mesh row reached it; the Primary/parent fallback and the
+/// owner notices did not.
+#[test]
+fn n959_only_the_sessions_own_targets_count_as_reaching_it() {
+    use super::signals::{Target, own_target};
+    let mut a = Agent { id: "sessA".into(), kind: kind_name("workspace").into(), ..Default::default() };
+    a.ws = Some(Ws { id: "ws1".into(), ..Default::default() });
+    assert!(own_target(&a, &Target::Session("sessA".into())));
+    assert!(own_target(&a, &Target::Wake("sessA".into())));
+    assert!(own_target(&a, &Target::Mesh { ws: "ws1".into(), to_parent: false }));
+    assert!(!own_target(&a, &Target::Session("primary".into())), "the fallback to the Primary's queue");
+    assert!(!own_target(&a, &Target::Wake("primary".into())), "the fallback to the Primary's wake feed");
+    assert!(!own_target(&a, &Target::Mesh { ws: "ws1".into(), to_parent: true }));
+    assert!(!own_target(&a, &Target::Owner));
+}
+
+/// #959 P2-4: a short detour of the reason to a non-owner blocker does not restart the owner-notice interval.
+#[test]
+fn n959_a_detour_to_a_non_owner_reason_does_not_restart_the_owner_notice_interval() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-detour");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let at = n + max + MIN;
+    ticks(&h, &mut st, &[n, at]);
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    ticks(&h, &mut st, &[at + MIN]);
+    task_file(&h, SID, task("owner: release ruleset change"));
+    ticks(&h, &mut st, &[at + 2 * MIN, at + 3 * 60 * MIN]);
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices: Vec<String> = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect();
+    assert_eq!(notices.len(), 1, "the detour restarted the 24 h interval: {notices:?}");
+}
+
+/// #959 P2-6: after a detour to a non-owner reason the session IS reminded again, so the owner notice must not promise it never will be.
+#[test]
+fn n959_the_owner_notice_does_not_promise_the_session_is_never_reminded_again() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-wording");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let at = n + max + MIN;
+    ticks(&h, &mut st, &[n, at, at + MIN]);
+    let before = hold_rows(&h).len();
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    ticks(&h, &mut st, &[at + 2 * MIN, at + 2 * MIN + max + MIN]);
+    assert!(hold_rows(&h).len() > before, "the session is reminded again once the reason no longer names the owner");
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notice = std::fs::read_to_string(d).unwrap_or_default().lines().find(|l| l.contains("hold_owner")).map(str::to_string).expect("owner notice");
+    assert!(!notice.contains("will not be reminded again"), "{notice}");
+}
+
+/// #959 P2-5: the Node fallback reads `value=[...]` without spaces, a multiline array (trailing comma, comments) and a trailing comment;
+/// an exact blockedOn "owner" is owner-blocked under each layout.
+#[test]
+fn n959_node_reads_every_toml_value_layout_of_the_owner_values() {
+    if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
+    let layouts = [
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue=[\"owner\",\"user\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\n  \"owner\", # the owner\n  \"user\",\n]\n\n[next]\nvalue = 1\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"user\"] # trailing comment\n",
+    ];
+    let script = format!(
+        "const DD=require({dd:?});const L={layouts};console.log(JSON.stringify(L.map((t)=>[DD.isOwnerBlocked({{content:'t',blockedOn:'owner'}},t),DD.isOwnerBlocked({{content:'t',blockedOn:'waiting on CI'}},t)])))",
+        dd = dd.to_string_lossy(),
+        layouts = serde_json::to_string(&layouts).unwrap()
+    );
+    let h = home("n959-node-layouts");
+    let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[[true,false],[true,false],[true,false]]");
 }

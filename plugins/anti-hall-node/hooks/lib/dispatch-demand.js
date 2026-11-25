@@ -297,10 +297,18 @@ module.exports = {
 const ENGINE_TASK_GUARDS = path.resolve(__dirname, '../../../anti-hall/engine/defaults/task_guards.toml');
 let tomlText = null;
 // One TOML value as the engine's defaults write them: a basic "..." or literal '...' string, an integer, a boolean, or an array /
-// inline table of those. Returns undefined for anything else.
+// inline table of those; arrays may span lines and carry comments and a trailing comma. After the value only blanks and a comment may
+// follow on its line (anything on later lines is ignored). Returns undefined for anything else.
 function parseTomlValue(src) {
   let i = 0;
-  const ws = () => { while (i < src.length && /\s/.test(src[i])) i++; };
+  // blanks, newlines and comments (inside an array or table)
+  const ws = () => {
+    for (;;) {
+      while (i < src.length && /\s/.test(src[i])) i++;
+      if (src[i] !== '#') return;
+      while (i < src.length && src[i] !== '\n') i++;
+    }
+  };
   function str() {
     const q = src[i++];
     let out = '';
@@ -324,7 +332,11 @@ function parseTomlValue(src) {
     if (c === '"' || c === "'") return str();
     if (c === '[') {
       i++; const arr = [];
-      for (;;) { ws(); if (src[i] === ']') { i++; return arr; } arr.push(val()); ws(); if (src[i] === ',') i++; }
+      for (;;) {
+        ws(); if (src[i] === ']') { i++; return arr; }
+        arr.push(val()); ws();
+        if (src[i] === ',') i++; else if (src[i] !== ']') throw new Error('bad array');
+      }
     }
     if (c === '{') {
       i++; const obj = {};
@@ -333,7 +345,8 @@ function parseTomlValue(src) {
         let k;
         if (src[i] === '"' || src[i] === "'") k = str(); else { const m = /^[A-Za-z0-9_-]+/.exec(src.slice(i)); if (!m) throw new Error('bad key'); k = m[0]; i += k.length; }
         ws(); if (src[i++] !== '=') throw new Error('bad table');
-        obj[k] = val(); ws(); if (src[i] === ',') i++;
+        obj[k] = val(); ws();
+        if (src[i] === ',') i++; else if (src[i] !== '}') throw new Error('bad table');
       }
     }
     const m = /^(true|false|[+-]?\d[\d_]*)/.exec(src.slice(i));
@@ -341,32 +354,40 @@ function parseTomlValue(src) {
     i += m[0].length;
     return m[0] === 'true' ? true : m[0] === 'false' ? false : Number(m[0].replace(/_/g, ''));
   }
-  try { const v = val(); ws(); return i === src.length ? v : undefined; } catch (_) { return undefined; }
-}
-function engineValue(key) {
   try {
-    if (tomlText === null) tomlText = fs.readFileSync(ENGINE_TASK_GUARDS, 'utf8');
+    const v = val();
+    while (i < src.length && (src[i] === ' ' || src[i] === '\t')) i++;
+    if (src[i] === '#') while (i < src.length && src[i] !== '\n') i++;
+    return i === src.length || src[i] === '\n' || (src[i] === '\r' && src[i + 1] === '\n') ? v : undefined;
+  } catch (_) { return undefined; }
+}
+function engineValue(key, text) {
+  try {
+    const own = typeof text === 'string';
+    if (!own && tomlText === null) tomlText = fs.readFileSync(ENGINE_TASK_GUARDS, 'utf8');
+    const src = own ? text : tomlText;
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(tomlText);
-    const line = section && /^value = (.+)$/m.exec(section[1]);
-    return line ? parseTomlValue(line[1].trim()) : undefined;
+    const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(src);
+    // `value=`, `value = ` and a value that runs over several lines (a multiline array) all parse: the parser reads from the '='
+    const at = section && /^value[ \t]*=[ \t]*/m.exec(section[1]);
+    return at ? parseTomlValue(section[1].slice(at.index + at[0].length)) : undefined;
   } catch (_) { return undefined; }
 }
 // The blockedOn value (trimmed, lowercase) is exactly one of dispatch_tier.owner_values. Exact on purpose: Node is the fallback, and an
 // owner word elsewhere in a reason is held by the engine only for hold_max, so matching it here would make Node weaker (GH #959).
-function ownerValue(reason) {
-  const words = engineValue('dispatch_tier.owner_values');
+function ownerValue(reason, text) {
+  const words = engineValue('dispatch_tier.owner_values', text);
   return Array.isArray(words) && words.includes(reason.trim().toLowerCase());
 }
-function isOwnerBlocked(t) {
+function isOwnerBlocked(t, text) {
   try {
     if (!require('./settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
   } catch (_) { /* fail open -> marker still honored */ }
-  if (t && typeof t.blockedOn === 'string' && ownerValue(t.blockedOn)) return true;
+  if (t && typeof t.blockedOn === 'string' && ownerValue(t.blockedOn, text)) return true;
   const subject = (t && (t.content || t.subject)) || '';
-  const src = engineValue('dispatch_tier.owner_subject_re');
-  if (typeof subject !== 'string' || typeof src !== 'string') return false;
-  try { return new RegExp(src, 'i').test(subject); } catch (_) { return false; }
+  const re = engineValue('dispatch_tier.owner_subject_re', text);
+  if (typeof subject !== 'string' || typeof re !== 'string') return false;
+  try { return new RegExp(re, 'i').test(subject); } catch (_) { return false; }
 }
 
 module.exports.isOwnerBlocked = isOwnerBlocked;
