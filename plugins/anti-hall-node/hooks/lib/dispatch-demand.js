@@ -288,76 +288,96 @@ module.exports = {
 
 // OWNER-BLOCKED marker (moved here from task-guard so task-tracker's per-turn
 // demand and task-guard's IDLE NEGLECT agree): metadata.blockedOn / blockedOn
-// is exactly one of the engine's dispatch_tier.owner_values, or an "OWNER:" /
-// "OWNER DECISION" subject prefix => not dispatchable. Setting
+// carries one of the engine's dispatch_tier.owner_values as a whole word anywhere
+// ("owner", "NEEDS OWNER: x"; dispatch_tier.owner_word_joiners join a word, so
+// "user-facing" names nobody: the engine's owner_named, GH #959), or the subject
+// matches dispatch_tier.owner_subject_re => not dispatchable. Setting
 // guards.taskGuardOwnerBlockedMarker (default on; fail-open to honoring the
-// marker).
-// GH #959: a reason that names the owner as a word anywhere ("NEEDS OWNER: x";
-// words split as the engine's owner_named does, dispatch_tier.owner_word_joiners
-// join them) is owner-blocked only while the engine's shared confirmed-owner-hold
-// file (agent_tracker.paths.owner_holds, read-only here) holds a confirmation of
-// exactly that reason that is still within its bound. Otherwise it is an ordinary
-// reason, so Node is never weaker than the engine. The words, joiners and paths
-// are read from the engine's TOML, never written here.
-const ENGINE_DEFAULTS = path.resolve(__dirname, '../../../anti-hall/engine/defaults');
-const tomlCache = {};
-function engineValue(file, key) {
+// marker). The words, joiners and subject pattern are read from the engine's
+// task_guards.toml, never written here.
+const ENGINE_TASK_GUARDS = path.resolve(__dirname, '../../../anti-hall/engine/defaults/task_guards.toml');
+let tomlText = null;
+// One TOML value as the engine's defaults write them: a basic "..." or literal '...' string, an integer, a boolean, or an array /
+// inline table of those. Returns undefined for anything else.
+function parseTomlValue(src) {
+  let i = 0;
+  const ws = () => { while (i < src.length && /\s/.test(src[i])) i++; };
+  function str() {
+    const q = src[i++];
+    let out = '';
+    while (i < src.length && src[i] !== q) {
+      if (q === '"' && src[i] === '\\') {
+        const e = src[i + 1];
+        const map = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', b: '\b', f: '\f' };
+        if (e === 'u' || e === 'U') { const len = e === 'u' ? 4 : 8; out += String.fromCodePoint(parseInt(src.substr(i + 2, len), 16)); i += 2 + len; continue; }
+        if (map[e] === undefined) throw new Error('bad escape');
+        out += map[e]; i += 2; continue;
+      }
+      out += src[i++];
+    }
+    if (src[i] !== q) throw new Error('unterminated string');
+    i++;
+    return out;
+  }
+  function val() {
+    ws();
+    const c = src[i];
+    if (c === '"' || c === "'") return str();
+    if (c === '[') {
+      i++; const arr = [];
+      for (;;) { ws(); if (src[i] === ']') { i++; return arr; } arr.push(val()); ws(); if (src[i] === ',') i++; }
+    }
+    if (c === '{') {
+      i++; const obj = {};
+      for (;;) {
+        ws(); if (src[i] === '}') { i++; return obj; }
+        let k;
+        if (src[i] === '"' || src[i] === "'") k = str(); else { const m = /^[A-Za-z0-9_-]+/.exec(src.slice(i)); if (!m) throw new Error('bad key'); k = m[0]; i += k.length; }
+        ws(); if (src[i++] !== '=') throw new Error('bad table');
+        obj[k] = val(); ws(); if (src[i] === ',') i++;
+      }
+    }
+    const m = /^(true|false|[+-]?\d[\d_]*)/.exec(src.slice(i));
+    if (!m) throw new Error('bad value');
+    i += m[0].length;
+    return m[0] === 'true' ? true : m[0] === 'false' ? false : Number(m[0].replace(/_/g, ''));
+  }
+  try { const v = val(); ws(); return i === src.length ? v : undefined; } catch (_) { return undefined; }
+}
+function engineValue(key) {
   try {
-    if (tomlCache[file] === undefined) tomlCache[file] = fs.readFileSync(path.join(ENGINE_DEFAULTS, file), 'utf8');
+    if (tomlText === null) tomlText = fs.readFileSync(ENGINE_TASK_GUARDS, 'utf8');
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(tomlCache[file]);
+    const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(tomlText);
     const line = section && /^value = (.+)$/m.exec(section[1]);
-    if (!line) return undefined;
-    const v = line[1].trim();
-    if (v.startsWith('"') || v.startsWith('[')) return JSON.parse(v);
-    const fields = {}, re = /("(?:\\.|[^"\\])*"|[\w-]+)\s*=\s*("(?:\\.|[^"\\])*")/g;
-    for (const m of v.matchAll(re)) fields[m[1][0] === '"' ? JSON.parse(m[1]) : m[1]] = JSON.parse(m[2]);
-    return fields;
+    return line ? parseTomlValue(line[1].trim()) : undefined;
   } catch (_) { return undefined; }
 }
-const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
-let ownerSession = '';
-// The hook's session id, as the engine keys the confirmed owner holds (set once per hook run).
-function setOwnerSession(sid) { ownerSession = typeof sid === 'string' ? sid : ''; }
-function ownerWords() { const v = engineValue('task_guards.toml', 'dispatch_tier.owner_values'); return Array.isArray(v) ? v : []; }
 function ownerWordNamed(reason) {
-  const joiners = engineValue('task_guards.toml', 'dispatch_tier.owner_word_joiners');
-  if (typeof joiners !== 'string') return false;
-  const words = ownerWords();
-  let cur = '';
+  const words = engineValue('dispatch_tier.owner_values'), joiners = engineValue('dispatch_tier.owner_word_joiners');
+  if (!Array.isArray(words) || typeof joiners !== 'string') return false;
   const out = [];
+  let cur = [];
   for (const ch of reason.toLowerCase()) {
-    if (/[\p{L}\p{N}]/u.test(ch) || joiners.includes(ch)) cur += ch; else { if (cur) out.push(cur); cur = ''; }
+    if (/[\p{L}\p{N}]/u.test(ch) || joiners.includes(ch)) cur.push(ch);
+    else { if (cur.length) out.push(cur.join('')); cur = []; }
   }
-  if (cur) out.push(cur);
+  if (cur.length) out.push(cur.join(''));
   return out.some((w) => words.includes(w));
-}
-function ownerConfirmed(t, reason) {
-  if (!ownerSession) return false;
-  const pt = engineValue('agent_tracker.toml', 'agent_tracker.paths');
-  if (!pt || !pt.base || !pt.dir || !pt.owner_holds || !pt.json_ext) return false;
-  try {
-    const name = require('crypto').createHash('sha1').update(ownerSession).digest('hex') + pt.json_ext;
-    const doc = JSON.parse(fs.readFileSync(path.join(os.homedir(), pt.base, pt.dir, pt.owner_holds, name), 'utf8'));
-    const e = doc && typeof doc === 'object' ? doc[String(t.id)] : null;
-    const r = require('crypto').createHash('sha1').update(reason).digest('hex');
-    return !!e && typeof e === 'object' && e.r === r && typeof e.u === 'number' && Date.now() < e.u;
-  } catch (_) { return false; }
 }
 function isOwnerBlocked(t) {
   try {
     if (!require('./settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
   } catch (_) { /* fail open -> marker still honored */ }
-  const raw = t && typeof t.blockedOn === 'string' ? t.blockedOn.trim() : '';
-  const bo = raw.toLowerCase();
-  if (bo && ownerWords().includes(bo)) return true;
-  if (bo && ownerWordNamed(raw) && ownerConfirmed(t, raw)) return true;
+  if (t && typeof t.blockedOn === 'string' && ownerWordNamed(t.blockedOn)) return true;
   const subject = (t && (t.content || t.subject)) || '';
-  return typeof subject === 'string' && OWNER_SUBJECT_RE.test(subject);
+  const src = engineValue('dispatch_tier.owner_subject_re');
+  if (typeof subject !== 'string' || typeof src !== 'string') return false;
+  try { return new RegExp(src, 'i').test(subject); } catch (_) { return false; }
 }
 
 module.exports.isOwnerBlocked = isOwnerBlocked;
-module.exports.setOwnerSession = setOwnerSession;
+module.exports.parseTomlValue = parseTomlValue;
 // blockedByAfterUpdate(existing, inp) — TaskUpdate carries EITHER a full
 // `blockedBy` replacement OR the harness's incremental `addBlockedBy` (the
 // shape real transcripts use: {"taskId":"5","addBlockedBy":["4"]}). Missing
