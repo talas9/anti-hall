@@ -288,17 +288,20 @@ module.exports = {
 
 // OWNER-BLOCKED marker (moved here from task-guard so task-tracker's per-turn
 // demand and task-guard's IDLE NEGLECT agree): metadata.blockedOn / blockedOn
-// === owner|user|human|external, or an "OWNER:" / "OWNER DECISION" subject
+// carries owner|user|human|external as a whole word anywhere ("NEEDS OWNER: x",
+// "owner: deferred ..."; "-" and "_" join a word, so "user-facing" names nobody:
+// the engine's owner_named, GH #959), or an "OWNER:" / "OWNER DECISION" subject
 // prefix => not dispatchable. Setting guards.taskGuardOwnerBlockedMarker
 // (default on; fail-open to honoring the marker).
 const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human', 'external']);
 const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
+const OWNER_WORD_SPLIT_RE = /[^\p{L}\p{N}_-]+/u;
 function isOwnerBlocked(t) {
   try {
     if (!require('./settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
   } catch (_) { /* fail open -> marker still honored */ }
   const bo = t && typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : '';
-  if (OWNER_BLOCKED_VALUES.has(bo)) return true;
+  if (bo.split(OWNER_WORD_SPLIT_RE).some((w) => w !== '' && OWNER_BLOCKED_VALUES.has(w))) return true;
   const subject = (t && (t.content || t.subject)) || '';
   return typeof subject === 'string' && OWNER_SUBJECT_RE.test(subject);
 }
