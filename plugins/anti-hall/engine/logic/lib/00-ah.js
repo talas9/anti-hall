@@ -204,6 +204,9 @@ var ah = {
   // Whether a blockedOn reason names the owner or a human (a word of dispatch_tier.owner_values): the engine's one owner matcher, the
   // same the agent tracker's hold_owner uses (GH #959).
   ownerNamed: function (t) { return typeof t === 'string' && ahHost.ownerNamed(ahWf(t)); },
+  // The home-relative path of the session's confirmed owner-hold file (task id -> confirmed at): the one state the agent tracker and
+  // task-guard share, so they cannot disagree about whose a lapsed owner hold is (GH #959).
+  ownerHoldsRel: function (sid) { return ahHost.ownerHoldsRel(String(sid)); },
   // The engine's outbound secret scrubber (the `jev.scrub_rules` of the plugin's jev.toml).
   scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },

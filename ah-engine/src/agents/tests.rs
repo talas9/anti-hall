@@ -5968,3 +5968,37 @@ fn n959_the_owner_notice_shows_the_total_blocked_time_after_a_rewrite() {
     let want = format!("(blocked {})", super::sinks::age(at - n));
     assert!(notices[0].contains(&want) && !notices[0].contains("(blocked 0s)"), "want {want}: {}", notices[0]);
 }
+
+/// #959 item 3, the tracker's side of the shared confirmed-owner-hold file: a confirmation the tracker records reaches the file (the
+/// Stop reads it), and a confirmation the Stop wrote there makes the tracker treat the hold as the owner's (no session reminder, the
+/// owner notice instead).
+#[test]
+fn n959_the_tracker_and_the_stop_share_one_confirmed_owner_hold_file() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let max = hold_max();
+    let task = json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "owner: deferred by owner order"}});
+    let file = |h: &Path| h.join(super::owner_holds_rel(SID));
+    let session_rows = |h: &Path| queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").count();
+    // tracker confirms (one reminder to the session) -> the file names the task
+    let h = home("n959-shared-a");
+    task_file(&h, SID, task.clone());
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 2 * MIN]);
+    assert!(session_rows(&h) >= 1);
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(file(&h)).expect("the confirmation is shared")).unwrap();
+    assert!(saved.get("1").is_some(), "{saved}");
+    // the Stop confirmed first -> the tracker never reminds the session, and the owner is told
+    let h2 = home("n959-shared-b");
+    task_file(&h2, SID, task);
+    main_session(&h2, SID, n, 15, "waiting on the owner");
+    std::fs::create_dir_all(file(&h2).parent().unwrap()).unwrap();
+    std::fs::write(file(&h2), r#"{"1":1}"#).unwrap();
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + max + MIN, n + max + 2 * MIN]);
+    assert_eq!(session_rows(&h2), 0, "the Stop's confirmation holds for the tracker too");
+    assert!(agent(&st2, SID).hold_owner.contains_key("1"));
+    let d = env(&h2, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    assert!(std::fs::read_to_string(d).unwrap_or_default().contains("hold_owner"), "the owner is told instead");
+}

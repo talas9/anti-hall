@@ -20,14 +20,21 @@ function tgCoordinator(owner) { return tgRe('task_guard.coordinator_owner_re', '
 // text restarts the clock. The first-seen times live in one small state file per session. Outside a decision (tgHolds null) nothing lapses.
 var tgHolds = null;
 
-function tgHoldsOpen(home, safeSession, now) {
+function tgHoldsOpen(home, safeSession, now, sid) {
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.hold_state_prefix') + safeSession, prior = {}, raw = ah.state.readText(rel);
   if (raw !== null) {
     var r = jx.parse(raw);
     if (r.unsure) ah.unable('task-guard:hold_state_unsure');
     else if (!r.invalid && r.v !== null && typeof r.v === 'object' && !Array.isArray(r.v)) prior = r.v;
   }
-  tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms };
+  // the confirmed owner holds the agent tracker and this Stop share (GH #959): keyed by the real session id, as the tracker keys it
+  var crel = sid ? ah.ownerHoldsRel(sid) : null, confirmed = {}, craw = crel === null ? null : ah.state.readText(crel);
+  if (craw !== null) {
+    var c = jx.parse(craw);
+    if (c.unsure) ah.unable('task-guard:owner_holds_unsure');
+    else if (!c.invalid && c.v !== null && typeof c.v === 'object' && !Array.isArray(c.v)) confirmed = c.v;
+  }
+  tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms, crel: crel, confirmed: confirmed, asked: {} };
 }
 
 // Whether the `kind` exemption of task `t` (marker text `marker`) is still in force.
@@ -54,9 +61,32 @@ function tgHoldsClose() {
   ah.state.op(h.home, 'after_reply', h.rel, JSON.stringify(h.seen));
 }
 
-// `isOwnerBlocked` of lib/dispatch-demand.js.
+// `isOwnerBlocked` of lib/dispatch-demand.js. An owner-named blockedOn past its hold follows the tracker's confirm-once rule (GH #959):
+// confirmed in the shared owner-hold file, it is the owner's and stays held (the tracker's daily owner notice bounds it); not yet
+// confirmed, it is released for this Stop to ask once (tgConfirmAsked records it when the block naming it is delivered). Any other
+// owner marker keeps the plain lapse.
 function tgOwnerBlocked(t) {
-  return tgOwnerMarked(t) && tgHeld(t, ah.cfg('idle_rule.reason_owner'), tgIrText(t) + '\n' + tk.blockedOnText(t));
+  if (!tgOwnerMarked(t)) return false;
+  if (tgHeld(t, ah.cfg('idle_rule.reason_owner'), tgIrText(t) + '\n' + tk.blockedOnText(t))) return true;
+  if (tgHolds === null || !tk.ownerHeld(t)) return false;
+  if (Object.prototype.hasOwnProperty.call(tgHolds.confirmed, t.id)) return true;
+  tgHolds.asked[t.id] = true;
+  return false;
+}
+
+// An owner-named blockedOn under the owner rule (switch on): its hold is tgOwnerBlocked's, never the plain blocked_on one.
+function tgOwnerNamedHold(t) { return tgOwnerMarked(t) && tk.ownerHeld(t); }
+
+// The Stop asked about these lapsed owner holds in the block it is delivering: record them confirmed in the shared file (after the reply).
+function tgConfirmAsked(home, listed) {
+  var h = tgHolds;
+  if (h === null || h.crel === null) return;
+  var ids = listed.map(function (t) { return t.id; }).filter(function (id) { return h.asked[id] === true; });
+  if (ids.length === 0) return;
+  var merged = {};
+  Object.keys(h.confirmed).forEach(function (k) { merged[k] = h.confirmed[k]; });
+  ids.forEach(function (id) { merged[id] = h.now; });
+  ah.state.op(home, 'after_reply', h.crel, JSON.stringify(merged));
 }
 
 function tgOwnerMarked(t) {
@@ -132,7 +162,7 @@ function tgIdleSkips(open, rows) {
   open.forEach(function (t) {
     var why = '';
     if (tgOwnerBlocked(t)) why = ah.cfg('idle_rule.reason_owner');
-    else if (tk.blockedOnText(t).length >= minReason && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), tk.blockedOnText(t))) why = ah.cfg('idle_rule.reason_blocked_on');
+    else if (!tgOwnerNamedHold(t) && tk.blockedOnText(t).length >= minReason && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), tk.blockedOnText(t))) why = ah.cfg('idle_rule.reason_blocked_on');
     else if (tgRe('idle_rule.parked_re', 'i').test(tgIrText(t)) && tgHeld(t, ah.cfg('idle_rule.reason_parked'), tgIrText(t))) why = ah.cfg('idle_rule.reason_parked');
     else if (tgRe('idle_rule.clock_re', 'i').test(tgIrText(t)) && tgHeld(t, ah.cfg('idle_rule.reason_clock'), tgIrText(t))) why = ah.cfg('idle_rule.reason_clock');
     else if (t.owner && !tgCoordinator(t.owner) && (tgLiveAgentOwner(t.owner, rows) || tgChildAttended(t.owner))) why = ah.cfg('idle_rule.reason_live_agent');
@@ -530,7 +560,7 @@ function tgDecideCore(p) {
     });
     rows.scanUnknown = scanUnknown;
   }
-  tgHoldsOpen(home, safeSession, now);
+  tgHoldsOpen(home, safeSession, now, given);
   var skips = rule ? tgIdleSkips(open, rows) : null;
   var actionable = tgActionable(open, tasks, skips);
   var haveAgents = tgAgentsRunning(home, now);
@@ -577,6 +607,7 @@ function tgDecideCore(p) {
   if (budget.rel !== undefined && !ah.state.op(guard.home, 'after_reply', budget.rel, budget.body)) return tgExact(out);
   var state = cap.blocked(); state[ah.cfg('task_guard.state_hash_key')] = hash; state[ah.cfg('task_guard.state_blocks_key')] = prior.blocks + 1;
   if (!ah.state.op(home, 'after_reply', stateRel, JSON.stringify(state))) return tgExact(out);
+  tgConfirmAsked(home, idle ? demand.dispatch : nudge);
   if (metrics !== null) { try { ah.state.writeAtomic(metrics.rel, metrics.body); } catch (e) { /* fail-open, as Node's writeMetrics */ } }
   if (rule) tgIdleRuleCount(idle, idle ? demand.dispatch : nudge, skips, now);
   var note = plan.write();

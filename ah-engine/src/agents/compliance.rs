@@ -252,9 +252,44 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
     }
     let owner_ids: Vec<&str> = tasks.iter().filter(|t| t.owner_held && !closed.contains(&t.status.as_str())).map(|t| t.id.as_str()).collect();
     a.hold_owner.retain(|id, _| owner_ids.contains(&id.as_str()));
+    sync_confirmed(env, a, &owner_ids, now);
     owner_notice(env, a, tasks, now);
     // the holds a hold_expired reminder sent this tick is about: the only keys it counts and bumps (GH #959)
     a.hold_due = expired_holds(a, tasks, now).iter().map(|(t, _)| t.held_key.clone()).collect();
+}
+
+/// The session's file of confirmed owner-named holds, relative to the home directory: task id -> when the hold was confirmed. The ONE
+/// "confirmed" fact the tracker (here) and the Stop task-guard (through the script host's `ownerHoldsRel`) both read and write, so they
+/// cannot disagree about whose a lapsed owner hold is (GH #959).
+pub(crate) fn owner_holds_rel(sid: &str) -> String {
+    [pth("base"), pth("dir"), pth("owner_holds"), &format!("{}{}", super::sinks::key_of(sid), pth("json_ext"))].join("/")
+}
+
+fn read_confirmed(env: &Env, sid: &str) -> std::collections::BTreeMap<String, u64> {
+    let p = env.home.join(owner_holds_rel(sid));
+    if std::fs::metadata(&p).map_or(true, |m| m.len() > lim("state_max_bytes")) {
+        return Default::default();
+    }
+    std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Merge the shared confirmations into `hold_owner` (a hold the Stop confirmed is the owner's here too) and write back the confirmed set
+/// of the session's open owner-held tasks when it changed (a confirmation the tracker recorded reaches the Stop; a closed task or a
+/// cleared reason drops out). Two writers can race; a lost entry only means the hold is confirmed once more, never a silent hold.
+fn sync_confirmed(env: &Env, a: &mut Agent, owner_ids: &[&str], now: u64) {
+    let file = read_confirmed(env, &a.id);
+    for id in owner_ids.iter().filter(|id| file.contains_key(**id)) {
+        a.hold_owner.entry((*id).to_string()).or_insert(0);
+    }
+    let want: std::collections::BTreeMap<String, u64> = a.hold_owner.keys().map(|id| (id.clone(), file.get(id).copied().unwrap_or(now))).collect();
+    if !env.act || want.keys().eq(file.keys()) {
+        return;
+    }
+    let p = env.home.join(owner_holds_rel(&a.id));
+    let body = serde_json::to_string(&want).unwrap_or_default();
+    if let Err(e) = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| crate::atomic::write(&p, body)) {
+        crate::health::log_event("agents", "owner_holds_write", &e.to_string());
+    }
 }
 
 /// A hold_expired reminder was delivered: each hold it named (`Agent::hold_due`, never another task's hold, GH #959) has one more

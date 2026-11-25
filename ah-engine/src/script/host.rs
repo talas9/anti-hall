@@ -43,6 +43,7 @@
 //! | `cfgLive(key)` | the effective value of a defaults key through the owner's editable layers (`settings.json`, `config.toml`, shipped): see [`cfg_live`] |
 //! | `sha1(text)` | lowercase hex SHA-1 of the UTF-8 text |
 //! | `ownerNamed(text)` | whether a `blockedOn` reason names the owner or a human (a word of `dispatch_tier.owner_values`): the one matcher the tracker uses too, see [`crate::agents::owner_named`] |
+//! | `ownerHoldsRel(sessionId)` | the home-relative path of the session's confirmed owner-hold file (task id -> confirmed at), the one state the tracker and task-guard share: see [`crate::agents::owner_holds_rel`] |
 //! | `tailLines(path, windowBytes, lineMax)` | the last lines of a file with their byte offsets, bounded: see [`tail_lines`] |
 //! | `tailEntries(path, windowBytes, lineMax, keep, maxLines)` | the newest lines parsed by the engine, cut down to the paths `keep` names: see [`tail_entries`] |
 //! | `rangeEntries(path, from, windowBytes, lineMax, keep, maxLines)` | an incremental forward read from a saved offset, bounded per call and per line: see [`range_entries`] |
@@ -1513,6 +1514,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
     h.set("ownerNamed", Function::new(c.clone(), |t: String| crate::agents::owner_named(&t))?)?;
+    h.set("ownerHoldsRel", Function::new(c.clone(), |sid: String| crate::agents::owner_holds_rel(&sid))?)?;
     h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| unless_cut(tail_lines(&p, w, l)))?)?;
     h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
     h.set("rangeEntries", Function::new(c.clone(), |p: String, from: f64, w: f64, l: f64, k: String, m: f64| range_entries(&p, from, w, l, &k, m))?)?;

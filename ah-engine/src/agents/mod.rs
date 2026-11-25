@@ -31,7 +31,7 @@ mod signals;
 mod sinks;
 mod sources;
 mod status;
-pub(crate) use compliance::{note_task_list, owner_named};
+pub(crate) use compliance::{note_task_list, owner_holds_rel, owner_named};
 pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
