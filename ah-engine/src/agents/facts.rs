@@ -637,11 +637,13 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
                 a.progress += weight("step");
                 a.open = false;
                 // the finished task was the declared step: nothing is being done now until another starts
-                if !task.is_empty() && a.step_task == task {
-                    a.step.clear();
-                    a.step_task.clear();
-                    a.step_events = 0;
-                    a.work.clear();
+                end_step(a, &task);
+            }
+            // a deleted declared step ends it the same way (GH #964: it stayed the step, still open, and idle_open_task kept naming a
+            // task gone from the list); a deleted task is no progress, and deleting another task leaves the step alone
+            s if s == tr("deleted") => {
+                if end_step(a, &task) {
+                    a.open = false;
                 }
             }
             s if s == tr("in_progress") => {
@@ -665,6 +667,18 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             a.pending.remove(&k);
         }
     }
+}
+
+/// The task `task` ended: when it was the declared step, nothing is being done now until another starts. Whether it was.
+fn end_step(a: &mut Agent, task: &str) -> bool {
+    if task.is_empty() || a.step_task != task {
+        return false;
+    }
+    a.step.clear();
+    a.step_task.clear();
+    a.step_events = 0;
+    a.work.clear();
+    true
 }
 
 fn remember_task(a: &mut Agent, id: &str, subject: &str) {
