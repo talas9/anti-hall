@@ -6345,10 +6345,11 @@ fn n959_the_owner_notice_does_not_promise_the_session_is_never_reminded_again() 
     main_session(&h, SID, n, 15, "waiting on the owner");
     let mut st = State::default();
     let at = n + max + MIN;
-    ticks(&h, &mut st, &[n, at, at + MIN]);
+    ticks(&h, &mut st, &[n, at, at + MIN, at + 40 * MIN]);
     let before = hold_rows(&h).len();
+    assert_eq!(before, 1, "one reminder to confirm, then none while the reason names the owner (what the notice says)");
     task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
-    ticks(&h, &mut st, &[at + 2 * MIN, at + 2 * MIN + max + MIN]);
+    ticks(&h, &mut st, &[at + 41 * MIN, at + 41 * MIN + max + MIN]);
     assert!(hold_rows(&h).len() > before, "the session is reminded again once the reason no longer names the owner");
     let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
     let notice = std::fs::read_to_string(d).unwrap_or_default().lines().find(|l| l.contains("hold_owner")).map(str::to_string).expect("owner notice");
