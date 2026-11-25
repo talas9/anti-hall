@@ -346,6 +346,7 @@ try {
 
   let payload = {};
   try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { payload = {}; }
+  DD.setOwnerSession(payload && payload.session_id ? String(payload.session_id) : '');
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   let skipped = false;

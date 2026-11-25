@@ -288,24 +288,76 @@ module.exports = {
 
 // OWNER-BLOCKED marker (moved here from task-guard so task-tracker's per-turn
 // demand and task-guard's IDLE NEGLECT agree): metadata.blockedOn / blockedOn
-// carries owner|user|human|external as a whole word anywhere ("NEEDS OWNER: x",
-// "owner: deferred ..."; "-" and "_" join a word, so "user-facing" names nobody:
-// the engine's owner_named, GH #959), or an "OWNER:" / "OWNER DECISION" subject
-// prefix => not dispatchable. Setting guards.taskGuardOwnerBlockedMarker
-// (default on; fail-open to honoring the marker).
-const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human', 'external']);
+// is exactly one of the engine's dispatch_tier.owner_values, or an "OWNER:" /
+// "OWNER DECISION" subject prefix => not dispatchable. Setting
+// guards.taskGuardOwnerBlockedMarker (default on; fail-open to honoring the
+// marker).
+// GH #959: a reason that names the owner as a word anywhere ("NEEDS OWNER: x";
+// words split as the engine's owner_named does, dispatch_tier.owner_word_joiners
+// join them) is owner-blocked only while the engine's shared confirmed-owner-hold
+// file (agent_tracker.paths.owner_holds, read-only here) holds a confirmation of
+// exactly that reason that is still within its bound. Otherwise it is an ordinary
+// reason, so Node is never weaker than the engine. The words, joiners and paths
+// are read from the engine's TOML, never written here.
+const ENGINE_DEFAULTS = path.resolve(__dirname, '../../../anti-hall/engine/defaults');
+const tomlCache = {};
+function engineValue(file, key) {
+  try {
+    if (tomlCache[file] === undefined) tomlCache[file] = fs.readFileSync(path.join(ENGINE_DEFAULTS, file), 'utf8');
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(tomlCache[file]);
+    const line = section && /^value = (.+)$/m.exec(section[1]);
+    if (!line) return undefined;
+    const v = line[1].trim();
+    if (v.startsWith('"') || v.startsWith('[')) return JSON.parse(v);
+    const fields = {}, re = /("(?:\\.|[^"\\])*"|[\w-]+)\s*=\s*("(?:\\.|[^"\\])*")/g;
+    for (const m of v.matchAll(re)) fields[m[1][0] === '"' ? JSON.parse(m[1]) : m[1]] = JSON.parse(m[2]);
+    return fields;
+  } catch (_) { return undefined; }
+}
 const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
-const OWNER_WORD_SPLIT_RE = /[^\p{L}\p{N}_-]+/u;
+let ownerSession = '';
+// The hook's session id, as the engine keys the confirmed owner holds (set once per hook run).
+function setOwnerSession(sid) { ownerSession = typeof sid === 'string' ? sid : ''; }
+function ownerWords() { const v = engineValue('task_guards.toml', 'dispatch_tier.owner_values'); return Array.isArray(v) ? v : []; }
+function ownerWordNamed(reason) {
+  const joiners = engineValue('task_guards.toml', 'dispatch_tier.owner_word_joiners');
+  if (typeof joiners !== 'string') return false;
+  const words = ownerWords();
+  let cur = '';
+  const out = [];
+  for (const ch of reason.toLowerCase()) {
+    if (/[\p{L}\p{N}]/u.test(ch) || joiners.includes(ch)) cur += ch; else { if (cur) out.push(cur); cur = ''; }
+  }
+  if (cur) out.push(cur);
+  return out.some((w) => words.includes(w));
+}
+function ownerConfirmed(t, reason) {
+  if (!ownerSession) return false;
+  const pt = engineValue('agent_tracker.toml', 'agent_tracker.paths');
+  if (!pt || !pt.base || !pt.dir || !pt.owner_holds || !pt.json_ext) return false;
+  try {
+    const name = require('crypto').createHash('sha1').update(ownerSession).digest('hex') + pt.json_ext;
+    const doc = JSON.parse(fs.readFileSync(path.join(os.homedir(), pt.base, pt.dir, pt.owner_holds, name), 'utf8'));
+    const e = doc && typeof doc === 'object' ? doc[String(t.id)] : null;
+    const r = require('crypto').createHash('sha1').update(reason).digest('hex');
+    return !!e && typeof e === 'object' && e.r === r && typeof e.u === 'number' && Date.now() < e.u;
+  } catch (_) { return false; }
+}
 function isOwnerBlocked(t) {
   try {
     if (!require('./settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
   } catch (_) { /* fail open -> marker still honored */ }
-  const bo = t && typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : '';
-  if (bo.split(OWNER_WORD_SPLIT_RE).some((w) => w !== '' && OWNER_BLOCKED_VALUES.has(w))) return true;
+  const raw = t && typeof t.blockedOn === 'string' ? t.blockedOn.trim() : '';
+  const bo = raw.toLowerCase();
+  if (bo && ownerWords().includes(bo)) return true;
+  if (bo && ownerWordNamed(raw) && ownerConfirmed(t, raw)) return true;
   const subject = (t && (t.content || t.subject)) || '';
   return typeof subject === 'string' && OWNER_SUBJECT_RE.test(subject);
 }
 
+module.exports.isOwnerBlocked = isOwnerBlocked;
+module.exports.setOwnerSession = setOwnerSession;
 // blockedByAfterUpdate(existing, inp) — TaskUpdate carries EITHER a full
 // `blockedBy` replacement OR the harness's incremental `addBlockedBy` (the
 // shape real transcripts use: {"taskId":"5","addBlockedBy":["4"]}). Missing
@@ -318,7 +370,6 @@ function blockedByAfterUpdate(existing, inp, norm) {
   return out;
 }
 
-module.exports.isOwnerBlocked = isOwnerBlocked;
 module.exports.blockedByAfterUpdate = blockedByAfterUpdate;
 
 // maxNumericKey(map) -> the highest all-digit key (0 if none). Used by the
