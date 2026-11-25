@@ -6538,7 +6538,20 @@ fn n962r_a_quiet_teammate_still_stalls() {
     let stalled = signals::stalled_for_tests(&e, &a, n).is_some();
     defaults::set_overlay(&[]);
     assert!(exempt, "the overlay makes teammates escalation-exempt");
-    assert!(!escalate::primary_ws(&a));
     assert!(stalled, "a quiet teammate is STALLED whatever exempt_kinds says");
 }
 
+/// GH #962 review: a child that kept a legacy `primary-<hash>` id after migration, but which the watcher classifies as no Primary
+/// (ws.primary = false), still stalls; only the classification exempts (n962_primary_session_is_never_stalled keeps the real Primary
+/// exempt).
+#[test]
+fn n962r_a_child_with_a_legacy_primary_id_still_stalls() {
+    let n = now0();
+    let h = home("n962r-legacy-id");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    if let Some(w) = a.ws.as_mut() {
+        w.id = "primary-abc".into();
+    }
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a primary- prefix alone does not exempt");
+}
