@@ -6518,3 +6518,19 @@ fn n962_child_workspace_still_stalls() {
     let e = env(&h, n);
     assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, false), n).is_some(), "a dispatched workspace quiet past quiet_ms is STALLED");
 }
+// ---- GH #962 review round --------------------------------------------------------------------------------------------------
+
+/// Review P2: the stall check exempts only a Primary checkout, not the escalation's exempt kinds: a quiet teammate still stalls.
+#[test]
+fn n962r_a_quiet_teammate_still_stalls() {
+    let n = now0();
+    let h = home("n962r-mate-stall");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    a.kind = "teammate".into();
+    a.ws = None;
+    a.parent = "lead".into();
+    assert!(!escalate::primary_ws(&a));
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a quiet teammate is STALLED");
+}
+
