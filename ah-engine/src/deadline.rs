@@ -22,21 +22,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// A staged state change: a written temporary file with its target and how to rename it, or a state update to run (a locked
-/// read-modify-write that must see the file as it is when the reply lands, GH #959).
-enum Staged {
-    Rename(PathBuf, PathBuf, crate::atomic::Style),
-    Run(Box<dyn FnOnce()>),
-}
-
-impl Staged {
-    /// Drop it unapplied: a staged temporary file is removed, a staged update never runs.
-    fn drop_unapplied(self) {
-        if let Staged::Rename(tmp, _, _) = self {
-            crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
-        }
-    }
-}
+/// A staged state write: the written temporary file, its target, and how to rename it.
+type Staged = (PathBuf, PathBuf, crate::atomic::Style);
 
 /// The deadlines of the request on this thread.
 #[derive(Clone, Copy)]
@@ -266,8 +253,8 @@ pub fn discard_staged_since(mark: usize) {
         let at = mark.min(s.len());
         s.split_off(at)
     });
-    for st in tail {
-        st.drop_unapplied();
+    for (tmp, _, _) in tail {
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
     }
 }
 
@@ -358,17 +345,7 @@ pub fn past_hard_ms() -> u64 {
 
 /// Hold a staged write (`tmp` already written) until the reply is delivered.
 pub fn stage(tmp: PathBuf, path: PathBuf, style: crate::atomic::Style) {
-    STAGED.with(|s| s.borrow_mut().push(Staged::Rename(tmp, path, style)));
-}
-
-/// Run `f` once the reply is delivered in time (dropped unrun otherwise), in order with the staged writes; outside a request it runs at
-/// once.
-pub fn stage_run(f: impl FnOnce() + 'static) {
-    if in_request() {
-        STAGED.with(|s| s.borrow_mut().push(Staged::Run(Box::new(f))));
-    } else {
-        f();
-    }
+    STAGED.with(|s| s.borrow_mut().push((tmp, path, style)));
 }
 
 /// The reply was written (`delivered`) or not: the staged state lands only when the client got it in time; a client past
@@ -379,18 +356,15 @@ pub fn settle_staged(delivered: bool) {
 
 /// The reply reached the client in time: rename every staged write into place, in the order it was made.
 pub fn commit_staged() {
-    for st in STAGED.with(|s| std::mem::take(&mut *s.borrow_mut())) {
-        match st {
-            Staged::Rename(tmp, path, style) => crate::discard::logged("staged_state_commit", crate::atomic::replace(&tmp, &path, style)),
-            Staged::Run(f) => f(),
-        }
+    for (tmp, path, style) in STAGED.with(|s| std::mem::take(&mut *s.borrow_mut())) {
+        crate::discard::logged("staged_state_commit", crate::atomic::replace(&tmp, &path, style));
     }
 }
 
 /// The reply was not used by the client: drop every staged write, leaving the targets as they were.
 pub fn discard_staged() {
-    for st in STAGED.with(|s| std::mem::take(&mut *s.borrow_mut())) {
-        st.drop_unapplied();
+    for (tmp, _, _) in STAGED.with(|s| std::mem::take(&mut *s.borrow_mut())) {
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
     }
 }
 
@@ -445,34 +419,6 @@ mod tests {
         crate::defaults::num("client.deadline_ms");
         crate::defaults::millis("daemon.reply_slack_ms");
         begin(Instant::now());
-    }
-
-    /// GH #959: a staged update runs only when the reply was delivered in time, never when it was not, and at once outside a request.
-    #[test]
-    fn a_staged_update_runs_only_on_a_delivered_reply() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-        let ran = Rc::new(Cell::new(0));
-        let r = ran.clone();
-        stage_run(move || r.set(r.get() + 1));
-        assert_eq!(ran.get(), 1, "outside a request it runs at once");
-        begin_now();
-        let r = ran.clone();
-        stage_run(move || r.set(r.get() + 1));
-        assert_eq!(ran.get(), 1, "staged, not run yet");
-        settle_staged(false);
-        assert_eq!(ran.get(), 1, "an undelivered reply drops it unrun");
-        let r = ran.clone();
-        stage_run(move || r.set(r.get() + 1));
-        settle_staged(true);
-        assert_eq!(ran.get(), 2, "a delivered reply runs it");
-        let mark = staged_mark();
-        let r = ran.clone();
-        stage_run(move || r.set(r.get() + 1));
-        discard_staged_since(mark);
-        settle_staged(true);
-        assert_eq!(ran.get(), 2, "a check that gave no answer drops its staged update");
-        end();
     }
 
     #[test]

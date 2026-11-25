@@ -780,7 +780,9 @@ fn underparallel(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> 
     Some((items.len() as u64, format!("{run}\t{cap_text}\t{}", joined(&items, num(c, "items_shown"), c.str_field("joiner")))))
 }
 
-fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap<&'static str, Raised> {
+/// `tasks`: the list the reader signals see (empty while all of them are off); `all`: the whole list, for the hold exemption of
+/// idle_open_task, which reads the hold clocks kept whatever the switches say.
+fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], all: &[Task], now: u64) -> BTreeMap<&'static str, Raised> {
     let mut out = BTreeMap::new();
     for s in defaults_signals() {
         let r = match s {
@@ -795,7 +797,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) -> BTreeMap
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "monitor_off" => monitor_off(env, a),
             "watcher_missing" => watcher_missing(env, a, now),
-            "idle_open_task" => idle_open_task(a, st, tasks, now),
+            "idle_open_task" => idle_open_task(a, st, all, now),
             "watched_exit" => watched_exit(a, now),
             "no_work" => no_work(a),
             "stalled" => stalled(env, a, now),
@@ -1098,6 +1100,8 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         tg = fallback_targets(env, st, a);
     }
     let (mut sent, mut failed, mut fell_back) = (0, 0, false);
+    // deliveries that reached a session (not only the owner fallback), and the text they carried
+    let (mut to_session, mut hold_text_sent) = (0, String::new());
     loop {
         for t in &tg {
             // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
@@ -1137,6 +1141,10 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
                     if matches!(t, Target::Wake(_)) {
                         compliance::delivered(sig, "delivered_wake");
                     }
+                    if !matches!(t, Target::Owner) {
+                        to_session += 1;
+                        hold_text_sent.clone_from(&r.text);
+                    }
                     rec(env, "reminder", sig, Outcome::Advise, f);
                     sent += 1;
                 }
@@ -1165,8 +1173,11 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         *queued += 1;
         a.last_sent.insert(sig.into(), now);
         a.sent_log.push((sig.into(), now));
-        if sig == "hold_expired" {
-            compliance::hold_sent(a);
+        // only a reminder that reached the session itself confirms or counts (an owner-fallback-only delivery told nobody in it), and
+        // only for the tasks whose name survived into the delivered text (GH #959)
+        if sig == "hold_expired" && to_session > 0 {
+            let named = compliance::named_in(a, &hold_text_sent);
+            compliance::hold_sent(a, &named);
         }
         if sig == "drift" {
             a.drift_step = step_hash;
@@ -1351,10 +1362,11 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         let root = roots.get(&id).copied().unwrap_or((0, false));
         stall_sample(env, &mut a, root, &mut procs_table, now);
         super::waste::update(env, &mut a, &mut judge_budget);
-        let tasks = compliance::load(env, &a);
-        compliance::update_waiting(env, &mut a, st, &tasks, now);
-        compliance::update_held(env, &mut a, &tasks, now);
-        let raised = raise(env, &a, st, &tasks, now);
+        let all = compliance::load_all(env, &a);
+        let tasks: &[Task] = if compliance::readers_on(env) { &all } else { &[] };
+        compliance::update_waiting(env, &mut a, st, tasks, now);
+        compliance::update_held(env, &mut a, &all, now);
+        let raised = raise(env, &a, st, tasks, &all, now);
         mark_breaker(env, &a, raised.get("burn_hard"));
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {

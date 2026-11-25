@@ -23,7 +23,6 @@ mod facts;
 mod lead_wait;
 mod live;
 mod lockwatch;
-pub(crate) mod owner_holds;
 pub(crate) mod native_wake;
 pub mod nudge;
 mod procs;
@@ -33,8 +32,6 @@ mod sinks;
 mod sources;
 mod status;
 pub(crate) use compliance::{note_task_list, owner_named};
-#[cfg(test)]
-pub(crate) use owner_holds::rel as owner_holds_rel;
 pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
@@ -274,7 +271,7 @@ pub struct Ws {
     pub primary: bool,
 }
 
-/// One hold a hold_expired reminder names (GH #959): its clock key, the task, whether it names the owner, and its reason hash.
+/// One hold a hold_expired reminder names (GH #959): its clock key, the task, and whether it names the owner.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HoldDue {
     /// The hold clock key (task id and reason hash).
@@ -289,9 +286,6 @@ pub struct HoldDue {
     /// The reason names the owner: a delivered reminder confirms it.
     #[serde(default)]
     pub owner: bool,
-    /// The reason hash a confirmation is tied to.
-    #[serde(default)]
-    pub rh: String,
 }
 
 /// Everything the tracker keeps about one agent.
@@ -578,18 +572,19 @@ pub struct Agent {
     /// with the key, so a rewritten `blockedOn` (a confirmed blocker) starts again at zero.
     #[serde(default)]
     pub hold_n: BTreeMap<String, u64>,
-    /// Task id of an owner-held task (its `blockedOn` names the owner or a human) the session was already asked to confirm once -> when
-    /// the owner was last told about it (0 = never): the agent hears nothing further, the owner is told at most once per interval.
+    /// Task id of an owner-held task (its `blockedOn` names the owner or a human) the session was already asked to confirm once (a
+    /// reminder that reached the session itself): the agent hears nothing further. The value is no longer read (state from before
+    /// `owner_noticed` kept the last owner notice here; it seeds that map).
     #[serde(default)]
     pub hold_owner: BTreeMap<String, u64>,
     /// Task id -> when the engine first saw ANY `blockedOn` reason on that open task (a rewrite does not restart it; clearing the
     /// reason or closing the task drops it): the total blocked time of the owner notice (GH #959).
     #[serde(default)]
     pub blocked_since: BTreeMap<String, u64>,
-    /// Task id -> the reason hash its `hold_owner` confirmation is for: a rewritten reason drops the confirmation (GH #959 P1.4). A
-    /// confirmation with no entry here (state from before it) is kept for the reason the task has now.
+    /// Task id of an open owner-held task -> when the owner was last told about it (GH #959: the notice is due on the task's total
+    /// blocked time, not on the session's confirmation, so a rewritten reason never holds it back). Seeded from `hold_owner`'s times.
     #[serde(default)]
-    pub hold_owner_reason: BTreeMap<String, String>,
+    pub owner_noticed: BTreeMap<String, u64>,
     /// The holds past `hold_max_ms` that the next hold_expired reminder names (at most `tasks_shown`), as of the last tick: the only
     /// counts it reads, bumps and confirms (GH #959: another task's count leaked into "N reminders unanswered").
     #[serde(default)]

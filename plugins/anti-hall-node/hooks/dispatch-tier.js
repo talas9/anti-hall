@@ -23,7 +23,6 @@ function main() {
   const inp = (payload && payload.tool_input) || {};
   const tier = require('./lib/dispatch-tier.js');
   const DD = require('./lib/dispatch-demand.js');
-  DD.setOwnerSession(payload && payload.session_id ? String(payload.session_id) : '');
 
   let task = null;
   if (name === 'TaskCreate') {

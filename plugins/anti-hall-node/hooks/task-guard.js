@@ -100,7 +100,6 @@ function main() {
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
-  try { require('./lib/dispatch-demand.js').setOwnerSession(payload && payload.session_id ? String(payload.session_id) : ''); } catch (_) { /* fail open */ }
   // Session-scoped loop-state under ~/.anti-hall/ (not os.tmpdir) for consistency
   // and cross-runner visibility; still keyed by session_id so dedupe is per-session.
   const stateDir = path.join(os.homedir(), '.anti-hall');
