@@ -632,16 +632,15 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             remember_task(a, &task, subject);
         }
         match str_of(&input, tr("task_status")) {
-            s if s == tr("completed") => {
-                a.steps_done += 1;
-                a.progress += weight("step");
-                a.open = false;
-                // the finished task was the declared step: nothing is being done now until another starts
-                end_step(a, &task);
-            }
-            // a deleted declared step ends it the same way (GH #964: it stayed the step, still open, and idle_open_task kept naming a
-            // task gone from the list); a deleted task is no progress, and deleting another task leaves the step alone
-            s if s == tr("deleted") => {
+            // any closed status (nudges.idle_wake.closed_statuses, the list the task-list readers use) ends the declared step (GH #964:
+            // a deleted step stayed the step, still open, and idle_open_task kept naming a task gone from the list); only a completed
+            // task is progress, and closing another task without completing it leaves the step alone
+            s if closed_statuses().iter().any(|c| *c == s) => {
+                if s == tr("completed") {
+                    a.steps_done += 1;
+                    a.progress += weight("step");
+                    a.open = false;
+                }
                 if end_step(a, &task) {
                     a.open = false;
                 }
@@ -667,6 +666,11 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             a.pending.remove(&k);
         }
     }
+}
+
+/// The task statuses that close a task (`nudges.idle_wake.closed_statuses`).
+fn closed_statuses() -> Vec<&'static str> {
+    defaults::raw("nudges.idle_wake").get("closed_statuses").map(V::strings).unwrap_or_default()
 }
 
 /// The task `task` ended: when it was the declared step, nothing is being done now until another starts. Whether it was.
