@@ -937,6 +937,10 @@ value = { kind = "counter", unit = "tokens", labels = ["category", "source"] }
 doc = "Orders to split a long single wait (GH #884, cache-ttl-wait-guard), by tool (Bash, Monitor, TaskOutput) and kind (sleep, loop, tool). Each is a call that would have waited past the prompt-cache window."
 value = { kind = "counter", unit = "orders", labels = ["tool", "kind"] }
 
+[metric.cache_wait_watcher_exempt_total]
+doc = "Monitor calls cache-ttl-wait-guard left alone because their whole command is the engine's own wake watcher (cache_wait.watcher_argv, GH #965), by tool."
+value = { kind = "counter", unit = "calls", labels = ["tool"] }
+
 [metric.waste_warnings_total]
 doc = "Waste advisories sent (#709, guards.wasteWarn), by the category whose level rose."
 value = { kind = "counter", unit = "advisories", labels = ["category"] }
