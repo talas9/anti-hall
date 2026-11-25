@@ -288,12 +288,11 @@ module.exports = {
 
 // OWNER-BLOCKED marker (moved here from task-guard so task-tracker's per-turn
 // demand and task-guard's IDLE NEGLECT agree): metadata.blockedOn / blockedOn
-// carries one of the engine's dispatch_tier.owner_values as a whole word anywhere
-// ("owner", "NEEDS OWNER: x"; dispatch_tier.owner_word_joiners join a word, so
-// "user-facing" names nobody: the engine's owner_named, GH #959), or the subject
-// matches dispatch_tier.owner_subject_re => not dispatchable. Setting
+// is exactly one of the engine's dispatch_tier.owner_values (trimmed, lowercase;
+// an owner word elsewhere in the reason does not count here, GH #959), or the
+// subject matches dispatch_tier.owner_subject_re => not dispatchable. Setting
 // guards.taskGuardOwnerBlockedMarker (default on; fail-open to honoring the
-// marker). The words, joiners and subject pattern are read from the engine's
+// marker). The values and subject pattern are read from the engine's
 // task_guards.toml, never written here.
 const ENGINE_TASK_GUARDS = path.resolve(__dirname, '../../../anti-hall/engine/defaults/task_guards.toml');
 let tomlText = null;
@@ -353,23 +352,17 @@ function engineValue(key) {
     return line ? parseTomlValue(line[1].trim()) : undefined;
   } catch (_) { return undefined; }
 }
-function ownerWordNamed(reason) {
-  const words = engineValue('dispatch_tier.owner_values'), joiners = engineValue('dispatch_tier.owner_word_joiners');
-  if (!Array.isArray(words) || typeof joiners !== 'string') return false;
-  const out = [];
-  let cur = [];
-  for (const ch of reason.toLowerCase()) {
-    if (/[\p{L}\p{N}]/u.test(ch) || joiners.includes(ch)) cur.push(ch);
-    else { if (cur.length) out.push(cur.join('')); cur = []; }
-  }
-  if (cur.length) out.push(cur.join(''));
-  return out.some((w) => words.includes(w));
+// The blockedOn value (trimmed, lowercase) is exactly one of dispatch_tier.owner_values. Exact on purpose: Node is the fallback, and an
+// owner word elsewhere in a reason is held by the engine only for hold_max, so matching it here would make Node weaker (GH #959).
+function ownerValue(reason) {
+  const words = engineValue('dispatch_tier.owner_values');
+  return Array.isArray(words) && words.includes(reason.trim().toLowerCase());
 }
 function isOwnerBlocked(t) {
   try {
     if (!require('./settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
   } catch (_) { /* fail open -> marker still honored */ }
-  if (t && typeof t.blockedOn === 'string' && ownerWordNamed(t.blockedOn)) return true;
+  if (t && typeof t.blockedOn === 'string' && ownerValue(t.blockedOn)) return true;
   const subject = (t && (t.content || t.subject)) || '';
   const src = engineValue('dispatch_tier.owner_subject_re');
   if (typeof subject !== 'string' || typeof src !== 'string') return false;

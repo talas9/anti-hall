@@ -6149,8 +6149,9 @@ fn n959_switching_a_reader_back_on_grants_no_fresh_hold() {
     assert!(agent(&st, SID).flags.contains_key("hold_expired"), "back on: the hold is already past hold_max");
 }
 
-/// #959 (Codex 2e): the Node fallback reads the owner words, joiners and subject pattern from the engine's TOML with a real TOML value
-/// parser (single-quoted literals and arrays included), never a hardcoded copy.
+/// #959 (Codex 2e): the Node fallback reads the owner values and subject pattern from the engine's TOML with a real TOML value parser
+/// (single-quoted literals and arrays included), never a hardcoded copy, and matches only an EXACT owner value: an owner word elsewhere
+/// in the reason is not exempt in Node (the fallback may nag more than the engine, never less).
 #[test]
 fn n959_node_reads_the_owner_matcher_config_from_the_engine_toml() {
     if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
@@ -6159,13 +6160,13 @@ fn n959_node_reads_the_owner_matcher_config_from_the_engine_toml() {
     let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
     let script = format!(
         "const DD=require({dd:?});const q=(t)=>DD.isOwnerBlocked(Object.assign({{content:'t'}},t));\
-         console.log(JSON.stringify([DD.parseTomlValue(\"['reviewer']\"),q({{blockedOn:'NEEDS OWNER: x'}}),q({{blockedOn:'waiting on user-facing release build'}}),q({{content:'OWNER: decide'}}),q({{content:'ownership refactor'}})]))",
+         console.log(JSON.stringify([DD.parseTomlValue(\"['reviewer']\"),q({{blockedOn:' Owner '}}),q({{blockedOn:'NEEDS OWNER: x'}}),q({{blockedOn:'waiting on user-facing release build'}}),q({{content:'OWNER: decide'}}),q({{content:'ownership refactor'}})]))",
         dd = dd.to_string_lossy()
     );
     let h = home("n959-node-config");
     let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"[["reviewer"],true,false,true,false]"#);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"[["reviewer"],true,false,false,true,false]"#);
     // the subject pattern Node uses is the engine's own value
     let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js")).unwrap();
     assert!(!src.contains("OWNER_SUBJECT_RE") && !src.contains("'owner', 'user'"), "no hardcoded owner words or subject pattern");
