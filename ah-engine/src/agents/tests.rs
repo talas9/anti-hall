@@ -5942,7 +5942,7 @@ fn n959_the_owner_matcher_takes_an_owner_word_anywhere_and_nothing_else() {
     for yes in ["owner", "NEEDS OWNER: the ruleset", "owner: deferred until the release", "waiting on the user to log in", "human review"] {
         assert!(super::owner_named(yes), "{yes}");
     }
-    for no in ["", "waiting on the CI run", "ownership of the lane", "co-owners table", "the users table migration"] {
+    for no in ["", "waiting on the CI run", "ownership of the lane", "co-owners table", "the users table migration", "waiting on user-facing release build", "owner_tools refactor", "the human-readable log"] {
         assert!(!super::owner_named(no), "{no}");
     }
 }

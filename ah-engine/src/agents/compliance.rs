@@ -126,12 +126,14 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
     out
 }
 
-/// Whether a `blockedOn` reason names the owner or a human: any word of it (split at every non-alphanumeric character, lowercase) is
-/// one of `dispatch_tier.owner_values`, so "owner", "NEEDS OWNER: x" and "owner: deferred until y" all match. The ONE owner matcher:
-/// the tracker's hold_owner and the Stop idle-tasks check (through the script host's `ownerNamed`) both call it (GH #959).
+/// Whether a `blockedOn` reason names the owner or a human: any whole word of it (lowercase; split at every character that is neither
+/// alphanumeric nor one of `dispatch_tier.owner_word_joiners`, so "user-facing" stays one word) is one of `dispatch_tier.owner_values`:
+/// "owner", "NEEDS OWNER: x" and "owner: deferred until y" match. The ONE owner matcher: the tracker's hold_owner and the Stop
+/// idle-tasks check (through the script host's `ownerNamed`) both call it (GH #959).
 pub(crate) fn owner_named(reason: &str) -> bool {
     let owners = defaults::list("dispatch_tier.owner_values");
-    reason.to_lowercase().split(|ch: char| !ch.is_alphanumeric()).any(|w| !w.is_empty() && owners.contains(&w))
+    let joiners = defaults::text("dispatch_tier.owner_word_joiners");
+    reason.to_lowercase().split(|ch: char| !ch.is_alphanumeric() && !joiners.contains(ch)).any(|w| !w.is_empty() && owners.contains(&w))
 }
 
 /// The tasks the compliance and idle signals read for `a`: only the session kinds `nudges.compliance.kinds` watch, and only while one
