@@ -6520,7 +6520,8 @@ fn n962_child_workspace_still_stalls() {
 }
 // ---- GH #962 review round --------------------------------------------------------------------------------------------------
 
-/// Review P2: the stall check exempts only a Primary checkout, not the escalation's exempt kinds: a quiet teammate still stalls.
+/// Review P2: the stall check exempts only a Primary checkout, not the escalation's exempt kinds: with `teammate` added to
+/// exempt_kinds (so the escalation leaves teammates alone), a quiet teammate still stalls.
 #[test]
 fn n962r_a_quiet_teammate_still_stalls() {
     let n = now0();
@@ -6530,7 +6531,14 @@ fn n962r_a_quiet_teammate_still_stalls() {
     a.kind = "teammate".into();
     a.ws = None;
     a.parent = "lead".into();
+    let mut esc = escalate::cfg().to_json();
+    esc["exempt_kinds"] = json!(["main", "teammate"]);
+    defaults::set_overlay(&[("agent_tracker.escalate", esc)]);
+    let exempt = escalate::primary(&a);
+    let stalled = signals::stalled_for_tests(&e, &a, n).is_some();
+    defaults::set_overlay(&[]);
+    assert!(exempt, "the overlay makes teammates escalation-exempt");
     assert!(!escalate::primary_ws(&a));
-    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a quiet teammate is STALLED");
+    assert!(stalled, "a quiet teammate is STALLED whatever exempt_kinds says");
 }
 
