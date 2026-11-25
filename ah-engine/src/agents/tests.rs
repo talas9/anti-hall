@@ -6484,3 +6484,37 @@ fn n959_node_rejects_malformed_strings_and_never_reads_an_indented_value() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[false,false,false,false,false,true]");
 }
+
+// ---- GH #962: tracker misfires on stopped agents and valid waits -----------------------------------------------------------
+
+/// A running workspace-kind row quiet past quiet_ms: no call in flight, not hung (it spoke a minute ago), stall window long open.
+fn quiet_workspace(n: u64, primary: bool) -> Agent {
+    Agent {
+        id: "ws962".into(),
+        kind: "workspace".into(),
+        running: true,
+        last_output_ms: n - MIN,
+        stall_since: n - stall_cfg("quiet_ms") - 5 * MIN,
+        ws: Some(Ws { id: if primary { "primary-962".into() } else { "ws-962".into() }, armed: Some(true), step: String::new(), done: 0, primary }),
+        ..Agent::default()
+    }
+}
+
+/// GH #962 item 5: the owner's own session (a Primary read as a workspace-kind row) waited on its own scheduled check and was told it
+/// is STALLED and should be re-dispatched; a Primary is never STALLED.
+#[test]
+fn n962_primary_session_is_never_stalled() {
+    let n = now0();
+    let h = home("n962-primary-stall");
+    let e = env(&h, n);
+    assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, true), n).is_none(), "the Primary is the owner's session, nobody re-dispatches it");
+}
+
+/// The true positive stays: a quiet child workspace (not the Primary) is still STALLED.
+#[test]
+fn n962_child_workspace_still_stalls() {
+    let n = now0();
+    let h = home("n962-child-stall");
+    let e = env(&h, n);
+    assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, false), n).is_some(), "a dispatched workspace quiet past quiet_ms is STALLED");
+}

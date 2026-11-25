@@ -619,9 +619,16 @@ fn stall_sample(env: &Env, a: &mut Agent, root: (u32, bool), table: &mut Option<
 }
 
 /// A running child agent with no call in flight and not hung, whose observable state did not change for `quiet_ms`, or whose
-/// progress line repeated with no outcome for `repeat_ms`. Evidence: the seconds; text: the nudges.stall_words key.
+/// progress line repeated with no outcome for `repeat_ms`. Evidence: the seconds; text: the nudges.stall_words key. A Primary (the
+/// owner's own session, read as a workspace-kind row in a DevSwarm checkout) is no dispatched worker: nobody can re-dispatch it, so it
+/// is never STALLED (GH #962), as the nudge loop already leaves it alone (`escalate::primary`).
 fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
-    if !(super::is_child(a) || a.kind == kind_name("workspace")) || !env.switch("agent_tracker.stall_sw") || !running(a) || !a.pending.is_empty() {
+    if !(super::is_child(a) || a.kind == kind_name("workspace"))
+        || super::escalate::primary(a)
+        || !env.switch("agent_tracker.stall_sw")
+        || !running(a)
+        || !a.pending.is_empty()
+    {
         return None;
     }
     if a.stall_since == 0 || hung(a, now).is_some() {
@@ -1408,4 +1415,9 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         sweep_markers(env);
         trim_series(env);
     }
+}
+
+#[cfg(test)]
+pub(super) fn stalled_for_tests(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    stalled(env, a, now)
 }
