@@ -6379,3 +6379,101 @@ fn n959_node_reads_every_toml_value_layout_of_the_owner_values() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[[true,false],[true,false],[true,false]]");
 }
+
+// ---- GH #959 review round 3 (Codex P2s on db5fb8e8a) ----
+
+fn hold_cfg() -> (usize, String) {
+    let h = defaults::raw("nudges.hold");
+    (h.get("subject_min").and_then(V::as_integer).unwrap() as usize, h.str_field("subject_cut").to_string())
+}
+
+/// #959 r3 item 1: a task that cannot fit even at its shortest is skipped, and a later task that fits is still listed.
+#[test]
+fn n959_fit_skips_a_task_that_cannot_fit_and_lists_the_next() {
+    let cap = spam_cap();
+    let names = vec!["p".repeat(cap - 8), "c".repeat(30), "API".to_string()];
+    let (text, listed) = super::compliance::fit(&names, |shown| shown.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join("|"));
+    assert_eq!(listed, [0, 2], "{text}");
+    assert!(text.ends_with("|API"));
+}
+
+/// #959 r3 item 3: a shortened subject keeps at least subject_min visible characters after trimming.
+#[test]
+fn n959_a_cut_subject_keeps_subject_min_visible_chars_after_trimming() {
+    let cap = spam_cap();
+    let (min, cut) = hold_cfg();
+    let names = vec!["p".repeat(cap - 1 - (min + cut.chars().count())), format!("{} {}", "a".repeat(min - 1), "b".repeat(20))];
+    let (text, listed) = super::compliance::fit(&names, |shown| shown.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join("|"));
+    assert_eq!(listed, [0], "a cut with fewer than {min} visible chars was listed: {text}");
+}
+
+/// #959 r3 item 2: a whitespace-only subject is shown by its task id, and a subject holding a template placeholder is shown as written.
+#[test]
+fn n959_an_empty_or_placeholder_subject_is_shown_visibly_and_literally() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-subject-shapes");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "1", "subject": "   ", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 1"}}));
+    task_file(&h, SID, json!({"id": "2", "subject": "{held} later {tasks}", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 2"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let text = r[0]["text"].as_str().unwrap();
+    let by_id = defaults::render("msg.agent_hold_task_ref", &[("id", &"1")]);
+    assert!(text.contains(&by_id), "the empty subject is shown by its id ({by_id}): {text}");
+    assert!(text.contains("{held} later {tasks}"), "the subject's placeholders were expanded: {text}");
+    assert_eq!((counted(&st, "1"), counted(&st, "2")), (1, 1));
+}
+
+/// #959 r3 item 5: on the first tick after an upgrade, an old hold_owner notice time is carried into owner_noticed before any pruning,
+/// so a non-owner detour on that tick does not lead to a second owner notice within owner_notice_ms.
+#[test]
+fn n959_an_old_owner_notice_time_survives_a_detour_on_the_upgrade_tick() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-upgrade-detour");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    {
+        // state as an older engine left it: the last owner notice in hold_owner, no owner_noticed
+        let a = st.agents.get_mut(SID).unwrap();
+        a.owner_noticed.clear();
+        a.hold_owner.insert("1".into(), n + MIN);
+    }
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    ticks(&h, &mut st, &[n + 2 * MIN]);
+    task_file(&h, SID, task("owner: release ruleset change"));
+    ticks(&h, &mut st, &[n + max + 3 * MIN, n + max + 60 * MIN]);
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).count();
+    assert_eq!(notices, 0, "the owner was told again within owner_notice_ms of the old notice");
+}
+
+/// #959 r3 item 4: a raw newline inside a quoted string is malformed (no owner exemption), and an indented `value =` line parses.
+#[test]
+fn n959_node_rejects_a_string_across_lines_and_reads_an_indented_value() {
+    if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
+    let layouts = [
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"bad\n  more\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\n  value = [\"owner\"]\n",
+    ];
+    let script = format!(
+        "const DD=require({dd:?});const L={layouts};console.log(JSON.stringify(L.map((t)=>DD.isOwnerBlocked({{content:'t',blockedOn:'owner'}},t))))",
+        dd = dd.to_string_lossy(),
+        layouts = serde_json::to_string(&layouts).unwrap()
+    );
+    let h = home("n959-node-strict");
+    let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[false,true]");
+}

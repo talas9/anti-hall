@@ -271,14 +271,15 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
     let held_since = &a.held_since;
     a.hold_n.retain(|k, _| held_since.contains_key(k));
     a.hold_last.retain(|k, _| held_since.contains_key(k));
-    let owner_ids: Vec<&str> = open_held.iter().filter(|t| t.owner_held).map(|t| t.id.as_str()).collect();
-    a.hold_owner.retain(|id, _| owner_ids.contains(&id.as_str()));
-    // state from before `owner_noticed` kept the last notice in `hold_owner`
+    // state from before `owner_noticed` kept the last notice in `hold_owner`: carried over BEFORE any pruning, so a detour to a
+    // non-owner reason on the first tick after the upgrade cannot lose it (and send a second notice inside owner_notice_ms)
     for (id, last) in &a.hold_owner {
         if *last > 0 {
             a.owner_noticed.entry(id.clone()).or_insert(*last);
         }
     }
+    let owner_ids: Vec<&str> = open_held.iter().filter(|t| t.owner_held).map(|t| t.id.as_str()).collect();
+    a.hold_owner.retain(|id, _| owner_ids.contains(&id.as_str()));
     // kept per task until it closes or its blockedOn is cleared: a short detour to a non-owner reason must not restart the interval
     a.owner_noticed.retain(|id, _| ids.contains(&id.as_str()));
     owner_notice(env, a, tasks, now);
@@ -298,17 +299,29 @@ pub(super) fn hold_sent(a: &mut Agent, named: &[HoldDue], now: u64) {
     }
 }
 
-/// A subject as the reminder shows it: runs of whitespace collapsed, as the text cap ([`super::cap`]) collapses them.
+/// Text as the reminder shows it: runs of whitespace collapsed, as the text cap ([`super::cap`]) collapses them.
 fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// How a task is named in a hold reminder or owner notice: its subject (whitespace collapsed), or `msg.agent_hold_task_ref` with its
+/// id when the subject is empty, so a listed task is always visibly named.
+fn shown_name(id: &str, subject: &str) -> String {
+    let s = flat(subject);
+    if s.is_empty() { flat(&defaults::fill_once(defaults::text("msg.agent_hold_task_ref"), &[("id", &id)])) } else { s }
+}
+
+/// A `msg.*` text with its values inserted in one pass ([`defaults::fill_once`]): a subject holding `{held}` is shown as written.
+fn render1(key: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
+    defaults::fill_once(defaults::text(key), args)
+}
+
 /// Lay a list out into one message, item by item, under `agent_tracker.spam.max_text` (GH #959: the forward design; nothing is
 /// matched back out of the text). `render` renders the whole message from the items listed so far (index, shown name). Each item is
-/// tried whole, then shortened to the room left (at least `nudges.hold.subject_min` characters plus `nudges.hold.subject_cut`); the
-/// first that fits in neither form ends the list. Returns the text (whitespace collapsed, so the cap leaves it unchanged) and the
+/// tried whole, then shortened to the room left (at least `nudges.hold.subject_min` visible characters after trimming, plus
+/// `nudges.hold.subject_cut`); one that fits in neither form is skipped and the next is tried. Returns the text (whitespace collapsed, so the cap leaves it unchanged) and the
 /// indices listed, in order: only those may be counted, confirmed or noticed.
-fn fit(names: &[String], render: impl Fn(&[(usize, String)]) -> String) -> (String, Vec<usize>) {
+pub(super) fn fit(names: &[String], render: impl Fn(&[(usize, String)]) -> String) -> (String, Vec<usize>) {
     let max = defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap_or(0).max(0) as usize;
     let hold = defaults::raw("nudges.hold");
     let (min, cut) = (num(hold, "subject_min") as usize, hold.str_field("subject_cut"));
@@ -338,9 +351,10 @@ fn fit(names: &[String], render: impl Fn(&[(usize, String)]) -> String) -> (Stri
                 hi = mid - 1;
             }
         }
-        match best {
-            Some(n) => shown.push((i, short(name, n))),
-            None => break,
+        // a shorter prefix shows no more characters, so if the longest that fits keeps fewer than `min` after trimming, none does
+        let visible = |n: usize| name.chars().take(n).collect::<String>().trim_end().chars().count();
+        if let Some(n) = best.filter(|n| visible(*n) >= min) {
+            shown.push((i, short(name, n)));
         }
     }
     (flat(&render(&shown)), shown.into_iter().map(|(i, _)| i).collect())
@@ -373,11 +387,11 @@ fn owner_notice(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
         return;
     }
     let who: String = (if a.name.is_empty() { &a.id } else { &a.name }).chars().take(fmtn("name_max") as usize).collect();
-    let names: Vec<String> = due.iter().map(|(t, _, _)| flat(&t.subject)).collect();
+    let names: Vec<String> = due.iter().map(|(t, _, _)| shown_name(&t.id, &t.subject)).collect();
     let (text, listed) = fit(&names, |shown| {
         let longest = shown.iter().map(|(i, _)| due[*i].2).max().unwrap_or(0);
         let tasks = shown.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(c.str_field("joiner"));
-        defaults::render("msg.agent_hold_owner", &[("agent", &who), ("tasks", &tasks), ("held", &super::sinks::age(longest))])
+        render1("msg.agent_hold_owner", &[("agent", &who), ("tasks", &tasks), ("held", &super::sinks::age(longest))])
     });
     if listed.is_empty() {
         return;
@@ -464,18 +478,18 @@ pub(super) fn hold_render(a: &Agent, now: u64) -> (String, Vec<HoldDue>) {
     let hold = defaults::raw("nudges.hold");
     let c = defaults::raw("nudges.compliance");
     let count = |d: &HoldDue| a.hold_n.get(&d.key).copied().unwrap_or(0);
-    let names: Vec<String> = a.hold_due.iter().map(|d| flat(&d.subject)).collect();
+    let names: Vec<String> = a.hold_due.iter().map(|d| shown_name(&d.id, &d.subject)).collect();
     let (text, listed) = fit(&names, |shown| {
         let ds: Vec<(&HoldDue, &str)> = shown.iter().map(|(i, n)| (&a.hold_due[*i], n.as_str())).collect();
         let longest = ds.iter().filter_map(|(d, _)| a.held_since.get(&d.key)).map(|s| now.saturating_sub(*s)).max().unwrap_or(0);
         let n = longest / fmtn("ms_per_s");
         let held = super::sinks::age(n * fmtn("ms_per_s"));
         if ds.iter().any(|(d, _)| count(d) >= num(hold, "order_after")) {
-            let tasks: Vec<String> = ds.iter().map(|(d, name)| defaults::render("msg.agent_hold_task_count", &[("task", name), ("sent", &count(d))])).collect();
-            defaults::render("msg.agent_hold_expired_order", &[("tasks", &tasks.join(c.str_field("joiner"))), ("n", &n), ("held", &held)])
+            let tasks: Vec<String> = ds.iter().map(|(d, name)| render1("msg.agent_hold_task_count", &[("task", name), ("sent", &count(d))])).collect();
+            render1("msg.agent_hold_expired_order", &[("tasks", &tasks.join(c.str_field("joiner"))), ("n", &n), ("held", &held)])
         } else {
             let tasks = ds.iter().map(|(_, name)| *name).collect::<Vec<_>>().join(c.str_field("joiner"));
-            defaults::render("msg.agent_hold_expired", &[("tasks", &tasks), ("n", &n), ("held", &held)])
+            render1("msg.agent_hold_expired", &[("tasks", &tasks), ("n", &n), ("held", &held)])
         }
     });
     (text, listed.into_iter().map(|i| a.hold_due[i].clone()).collect())

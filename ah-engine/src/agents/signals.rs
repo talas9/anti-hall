@@ -1123,6 +1123,10 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
     } else {
         (text_for(a, sig, &flag, now), Vec::new())
     };
+    // a hold reminder that lists no task tells the session nothing: never sent, so it neither counts nor starts the cooldown
+    if sig == "hold_expired" && hold_listed.is_empty() {
+        return;
+    }
     loop {
         for t in &tg {
             // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session

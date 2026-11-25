@@ -619,6 +619,29 @@ pub fn fill(template: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
     out
 }
 
+/// Like [`fill`], in one pass: a value is inserted as written, so a `{name}` inside a value (a task subject) is never expanded.
+pub fn fill_once(template: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        let hit = tail.find('}').and_then(|close| args.iter().find(|(name, _)| tail[1..close] == **name).map(|(_, v)| (close, v)));
+        match hit {
+            Some((close, v)) => {
+                out.push_str(&v.to_string());
+                rest = &tail[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The environment variable that overrides the numeric setting `key`, if it has one.
 pub fn env_of(key: &str) -> Option<&'static str> {
     entry(key).env

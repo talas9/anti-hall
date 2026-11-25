@@ -313,6 +313,8 @@ function parseTomlValue(src) {
     const q = src[i++];
     let out = '';
     while (i < src.length && src[i] !== q) {
+      // a quoted string never spans a line: a raw newline in one is malformed
+      if (src[i] === '\n' || src[i] === '\r') throw new Error('newline in string');
       if (q === '"' && src[i] === '\\') {
         const e = src[i + 1];
         const map = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', b: '\b', f: '\f' };
@@ -368,8 +370,8 @@ function engineValue(key, text) {
     const src = own ? text : tomlText;
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(src);
-    // `value=`, `value = ` and a value that runs over several lines (a multiline array) all parse: the parser reads from the '='
-    const at = section && /^value[ \t]*=[ \t]*/m.exec(section[1]);
+    // `value=`, `value = `, an indented `  value = ` and a value that runs over several lines (a multiline array) all parse: the parser reads from the '='
+    const at = section && /^[ \t]*value[ \t]*=[ \t]*/m.exec(section[1]);
     return at ? parseTomlValue(section[1].slice(at.index + at[0].length)) : undefined;
   } catch (_) { return undefined; }
 }
