@@ -5468,6 +5468,50 @@ mod idle_rule_counters {
         let tracker: Vec<bool> = reasons.iter().map(|r| crate::agents::owner_named(r)).collect();
         assert_eq!(tracker, vec![true, true, true, false, false]);
     }
+
+    /// GH #959 item 3, pinned as it stands (a policy question for the owner, not changed here): an owner-word hold lapses in the Stop
+    /// like every bounded hold; the task then falls to the blocked_on exemption with a fresh clock, and only after a second
+    /// nudges.hold.hold_max_ms is it listed as idle. (The tracker instead routes a confirmed owner hold to the owner.)
+    #[test]
+    fn n959_an_owner_word_hold_lapses_in_the_stop_after_two_hold_max_spans() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ts = "2026-11-01T00:00:00.000Z";
+        let c = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "[P1] ruleset", "description": "", "metadata": {"blockedOn": "NEEDS OWNER: the release ruleset"}}}]}, "timestamp": ts});
+        let r = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: [P1] ruleset"}]}, "timestamp": ts});
+        let u = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress"}}]}, "timestamp": ts});
+        let body = format!("{c}\n{r}\n{u}\n{}", lines(&[(9, "[P1] idle one", "", "in_progress")]));
+        let h = home("n959-owner-lapse");
+        std::fs::write(format!("{h}/t.jsonl"), &body).unwrap();
+        let run = || {
+            let p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": "lapse-a", "cwd": h});
+            let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_IDLE_RULE".to_string(), "1".to_string())];
+            match super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs)) {
+                Some(Some(Verdict::Exact(x))) => x.out,
+                other => panic!("{other:?}"),
+            }
+        };
+        let file = format!("{h}/.anti-hall/{}lapse-a", defaults::text("task_guard.hold_state_prefix"));
+        let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+        let age = || {
+            let saved = std::fs::read_to_string(&file).expect("the hold clocks are saved");
+            let aged: serde_json::Map<String, Value> =
+                serde_json::from_str::<serde_json::Map<String, Value>>(&saved).unwrap().into_iter().map(|(k, v)| (k, json!(v.as_u64().unwrap() - max - 1000))).collect();
+            std::fs::write(&file, Value::Object(aged).to_string()).unwrap();
+            for f in std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten() {
+                if f.file_name().to_string_lossy().starts_with(&defaults::text("task_guard.state_prefix").to_string()) {
+                    std::fs::remove_file(f.path()).unwrap();
+                }
+            }
+        };
+        let first = run();
+        assert!(first.contains("#9") && !first.contains("#1 "), "inside the owner hold: {first}");
+        age();
+        let second = run();
+        assert!(second.contains("#9") && !second.contains("#1 "), "the owner hold lapsed, the blocked_on hold starts fresh: {second}");
+        age();
+        let third = run();
+        assert!(third.contains("#1 "), "past both spans the task is listed: {third}");
+    }
 }
 
 // ---- reply-length-guard R-style (guards.styleRule): its counters, the repeat marker and the message text ----
