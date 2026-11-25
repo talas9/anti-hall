@@ -6347,13 +6347,17 @@ fn n959_the_owner_notice_does_not_promise_the_session_is_never_reminded_again() 
     let at = n + max + MIN;
     ticks(&h, &mut st, &[n, at, at + MIN, at + 40 * MIN]);
     let before = hold_rows(&h).len();
-    assert_eq!(before, 1, "one reminder to confirm, then none while the reason names the owner (what the notice says)");
+    assert_eq!(before, 1, "the tracker reminds the session once to confirm, then not while the reason names the owner");
     task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
     ticks(&h, &mut st, &[at + 41 * MIN, at + 41 * MIN + max + MIN]);
     assert!(hold_rows(&h).len() > before, "the session is reminded again once the reason no longer names the owner");
     let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
     let notice = std::fs::read_to_string(d).unwrap_or_default().lines().find(|l| l.contains("hold_owner")).map(str::to_string).expect("owner notice");
     assert!(!notice.contains("will not be reminded again"), "{notice}");
+    // GH #964: confirm-once is the tracker's only; the Stop check still lists the task each time the hold runs out (one rule for both
+    // is later work), so the notice must not promise the session goes quiet
+    assert!(!notice.contains("then none while"), "the notice promises silence the Stop check does not keep: {notice}");
+    assert!(notice.contains("Stop check"), "the notice says what the Stop check still does: {notice}");
 }
 
 /// #959 P2-5: the Node fallback reads `value=[...]` without spaces, a multiline array (trailing comma, comments) and a trailing comment;
@@ -6554,4 +6558,72 @@ fn n962r_a_child_with_a_legacy_primary_id_still_stalls() {
         w.id = "primary-abc".into();
     }
     assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a primary- prefix alone does not exempt");
+}
+
+// ---- GH #964: a deleted declared step ends the step ----
+
+/// A workspace whose transcript started task 30 ("UA ladder for the gauge") and then sent `then` (more transcript lines) before going
+/// idle 30 minutes; its DevSwarm plan has no open step, so the declared step comes from the task list calls only.
+fn ws_step_then(h: &Path, n: u64, then: &[String]) {
+    devswarm(h, n, Some(n));
+    std::fs::write(
+        h.join(".anti-hall/devswarm/plans/primary-1.json"),
+        r#"{"worktreePath":"/wt/x","steps":[{"n":1,"text":"Add the gauge","status":"done"}]}"#,
+    )
+    .unwrap();
+    let start = json!({"taskId": "30", "subject": "UA ladder for the gauge", "status": "in_progress"});
+    let mut lines = vec![prompt(n - 80 * MIN, "/wt/x"), tool(n - 70 * MIN, "s1", 5, "t1", "TaskUpdate", start), result(n - 70 * MIN + 1000, "t1", "ok", false)];
+    lines.extend_from_slice(then);
+    lines.push(asst(n - 30 * MIN, "s9", 5, 5, json!([{"type": "text", "text": "waiting on the lanes"}]), Some("end_turn")));
+    write(&h.join(".claude/projects/p/sessW.jsonl"), &lines);
+}
+
+fn idle_rows(h: &Path, sid: &str) -> Vec<Value> {
+    wake_rows(h, sid).into_iter().chain(queue(h, sid)).filter(|r| r["signal"] == "idle_open_task").collect()
+}
+
+/// #964 (live: "idle ... with its task still open (<task>)" named a task deleted 10 minutes earlier): a TaskUpdate that deletes the
+/// declared step task ends the step as completing it does, so the idle workspace is not reported with that task open. True positives:
+/// the same step still open fires naming it, and deleting ANOTHER task leaves the step open and the signal firing.
+#[test]
+fn n964_a_deleted_declared_step_is_never_reported_open_a_live_step_still_is() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let del = |id: &str| [tool(n - 60 * MIN, "s2", 5, "t2", "TaskUpdate", json!({"taskId": id, "status": "deleted"})), result(n - 60 * MIN + 1000, "t2", "ok", false)];
+    let h = home("n964-deleted-step");
+    ws_step_then(&h, n, &del("30"));
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(!a.open && a.step.is_empty() && a.step_task.is_empty(), "open={} step={:?} task={:?}", a.open, a.step, a.step_task);
+    assert!(!a.flags.contains_key("idle_open_task") && idle_rows(&h, "sessW").is_empty(), "{:?}", idle_rows(&h, "sessW"));
+    assert_eq!(a.steps_done, 0, "a deleted task is no finished step");
+    for (tag, then) in [("n964-live-step", Vec::new()), ("n964-other-deleted", del("31").to_vec())] {
+        let h = home(tag);
+        ws_step_then(&h, n, &then);
+        let mut st = State::default();
+        ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+        let t = idle_rows(&h, "sessW").first().and_then(|r| r["text"].as_str().map(str::to_string)).unwrap_or_default();
+        assert!(t.contains("UA ladder for the gauge"), "{tag}: the open idle step still fires: {t:?}");
+    }
+}
+
+/// #964 (Codex P1 on the minimal fix): completion is the transcript's own word, never a member of nudges.idle_wake.closed_statuses;
+/// with that list emptied by an override, completing the declared step still counts the step and ends it.
+#[test]
+fn n964_completing_the_step_counts_and_ends_it_even_with_closed_statuses_emptied() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n964-closed-empty");
+    let done = [tool(n - 60 * MIN, "s2", 5, "t2", "TaskUpdate", json!({"taskId": "30", "status": "completed"})), result(n - 60 * MIN + 1000, "t2", "ok", false)];
+    ws_step_then(&h, n, &done);
+    let mut iw = defaults::raw("nudges.idle_wake").to_json();
+    iw["closed_statuses"] = json!([]);
+    defaults::set_overlay(&[("nudges.idle_wake", iw)]);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN]);
+    let (steps, open, step) = { let a = agent(&st, "sessW"); (a.steps_done, a.open, a.step.clone()) };
+    defaults::set_overlay(&[]);
+    assert_eq!(steps, 1, "the completion counted");
+    assert!(!open && step.is_empty(), "the completed step ended: open={open} step={step:?}");
 }

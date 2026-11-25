@@ -637,11 +637,14 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
                 a.progress += weight("step");
                 a.open = false;
                 // the finished task was the declared step: nothing is being done now until another starts
-                if !task.is_empty() && a.step_task == task {
-                    a.step.clear();
-                    a.step_task.clear();
-                    a.step_events = 0;
-                    a.work.clear();
+                end_step(a, &task);
+            }
+            // any other closed status (nudges.idle_wake.closed_statuses, the list the task-list readers use) ends the declared step the
+            // same way (GH #964: a deleted step stayed the step, still open, and idle_open_task kept naming a task gone from the list);
+            // it is no progress, and closing another task leaves the step alone. Completion above never depends on this list.
+            s if closed_statuses().iter().any(|c| *c == s) => {
+                if end_step(a, &task) {
+                    a.open = false;
                 }
             }
             s if s == tr("in_progress") => {
@@ -665,6 +668,23 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             a.pending.remove(&k);
         }
     }
+}
+
+/// The task statuses that close a task (`nudges.idle_wake.closed_statuses`).
+fn closed_statuses() -> Vec<&'static str> {
+    defaults::raw("nudges.idle_wake").get("closed_statuses").map(V::strings).unwrap_or_default()
+}
+
+/// The task `task` ended: when it was the declared step, nothing is being done now until another starts. Whether it was.
+fn end_step(a: &mut Agent, task: &str) -> bool {
+    if task.is_empty() || a.step_task != task {
+        return false;
+    }
+    a.step.clear();
+    a.step_task.clear();
+    a.step_events = 0;
+    a.work.clear();
+    true
 }
 
 fn remember_task(a: &mut Agent, id: &str, subject: &str) {
