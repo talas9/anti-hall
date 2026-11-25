@@ -20,6 +20,11 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.25 (local integration build)
+
+- The agent tracker ends a session's declared step when its task is deleted, not only when it is completed, so the idle alert no longer names a deleted task; the owner hold notice now says the Stop check still lists the task each time its hold runs out (#964).
+- The cache-TTL wait guard no longer tells sessions to split the engine's own wake watcher (the re-arm text asked for a 30 min Monitor); only the exact configured engine command is exempt. The DevSwarm wake hints name the full engine path (#965).
+
 ## Engine 0.3.24 (local integration build)
 
 - The agent tracker no longer flags the owner's own Primary session as STALLED, a worker nobody can re-dispatch. Only the watcher's Primary classification exempts it; a child with a legacy primary- id still stalls (#962).
