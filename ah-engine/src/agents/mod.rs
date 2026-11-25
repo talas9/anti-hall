@@ -23,6 +23,7 @@ mod facts;
 mod lead_wait;
 mod live;
 mod lockwatch;
+pub(crate) mod owner_holds;
 pub(crate) mod native_wake;
 pub mod nudge;
 mod procs;
@@ -31,7 +32,9 @@ mod signals;
 mod sinks;
 mod sources;
 mod status;
-pub(crate) use compliance::{note_task_list, owner_holds_rel, owner_named};
+pub(crate) use compliance::{note_task_list, owner_named};
+#[cfg(test)]
+pub(crate) use owner_holds::rel as owner_holds_rel;
 pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
@@ -269,6 +272,26 @@ pub struct Ws {
     /// The workspace is the Primary checkout of its project (judged by the checkout, whatever id the app registered it under).
     #[serde(default)]
     pub primary: bool,
+}
+
+/// One hold a hold_expired reminder names (GH #959): its clock key, the task, whether it names the owner, and its reason hash.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HoldDue {
+    /// The hold clock key (task id and reason hash).
+    #[serde(default)]
+    pub key: String,
+    /// The task id.
+    #[serde(default)]
+    pub id: String,
+    /// The task subject the reminder names.
+    #[serde(default)]
+    pub subject: String,
+    /// The reason names the owner: a delivered reminder confirms it.
+    #[serde(default)]
+    pub owner: bool,
+    /// The reason hash a confirmation is tied to.
+    #[serde(default)]
+    pub rh: String,
 }
 
 /// Everything the tracker keeps about one agent.
@@ -563,10 +586,14 @@ pub struct Agent {
     /// reason or closing the task drops it): the total blocked time of the owner notice (GH #959).
     #[serde(default)]
     pub blocked_since: BTreeMap<String, u64>,
-    /// Held-task keys whose hold is past `hold_max_ms` and that a hold_expired reminder speaks about, as of the last tick: the only
-    /// counts the reminder reads and bumps (GH #959: another task's count leaked into "N reminders unanswered").
+    /// Task id -> the reason hash its `hold_owner` confirmation is for: a rewritten reason drops the confirmation (GH #959 P1.4). A
+    /// confirmation with no entry here (state from before it) is kept for the reason the task has now.
     #[serde(default)]
-    pub hold_due: Vec<String>,
+    pub hold_owner_reason: BTreeMap<String, String>,
+    /// The holds past `hold_max_ms` that the next hold_expired reminder names (at most `tasks_shown`), as of the last tick: the only
+    /// counts it reads, bumps and confirms (GH #959: another task's count leaked into "N reminders unanswered").
+    #[serde(default)]
+    pub hold_due: Vec<HoldDue>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,

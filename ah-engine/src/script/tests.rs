@@ -5478,12 +5478,15 @@ mod idle_rule_counters {
 
     impl HoldWorld {
         fn new(tag: &str, sid: &'static str, reason: &str) -> HoldWorld {
+            HoldWorld::with_status(tag, sid, reason, "in_progress")
+        }
+        fn with_status(tag: &str, sid: &'static str, reason: &str, status: &str) -> HoldWorld {
             let ts = "2026-11-01T00:00:00.000Z";
             let c = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "[P1] ruleset", "description": "", "metadata": {"blockedOn": reason}}}]}, "timestamp": ts});
             let r = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: [P1] ruleset"}]}, "timestamp": ts});
-            let u = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress"}}]}, "timestamp": ts});
+            let u = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": status}}]}, "timestamp": ts});
             let h = home(tag);
-            std::fs::write(format!("{h}/t.jsonl"), format!("{c}\n{r}\n{u}\n{}", lines(&[(9, "[P1] idle one", "", "in_progress")]))).unwrap();
+            std::fs::write(format!("{h}/t.jsonl"), format!("{c}\n{r}\n{u}\n{}", lines(&[(9, "[P1] idle one", "", status)]))).unwrap();
             HoldWorld { h, sid }
         }
         fn stop(&self) -> String {
@@ -5509,6 +5512,20 @@ mod idle_rule_counters {
         }
         fn confirmed(&self) -> Option<Value> {
             std::fs::read_to_string(format!("{}/{}", self.h, crate::agents::owner_holds_rel(self.sid))).ok().map(|t| serde_json::from_str(&t).unwrap())
+        }
+        /// Move every time in the shared owner-hold file back past `by` ms, whatever its entry shape (a bare time or an entry's times).
+        fn age_confirmations(&self, by: u64) {
+            let f = format!("{}/{}", self.h, crate::agents::owner_holds_rel(self.sid));
+            let Ok(t) = std::fs::read_to_string(&f) else { return };
+            fn back(v: Value, by: u64) -> Value {
+                match v {
+                    Value::Number(n) => json!(n.as_u64().unwrap_or(0).saturating_sub(by)),
+                    Value::Object(m) => Value::Object(m.into_iter().map(|(k, v)| if k == "r" { (k, v) } else { (k, back(v, by)) }).collect()),
+                    other => other,
+                }
+            }
+            let v: Value = serde_json::from_str(&t).unwrap();
+            std::fs::write(&f, back(v, by).to_string()).unwrap();
         }
     }
 
@@ -5539,15 +5556,61 @@ mod idle_rule_counters {
     fn n959_a_hold_the_tracker_confirmed_is_not_asked_again_by_the_stop() {
         let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
         let w = HoldWorld::new("n959-owner-tracker", "owner-tracker", "NEEDS OWNER: the release ruleset");
-        let f = format!("{}/{}", w.h, crate::agents::owner_holds_rel(w.sid));
-        std::fs::create_dir_all(std::path::Path::new(&f).parent().unwrap()).unwrap();
-        std::fs::write(&f, r#"{"1":1}"#).unwrap();
+        assert!(crate::agents::owner_holds::confirm(std::path::Path::new(&w.h), w.sid, &[("1".into(), "NEEDS OWNER: the release ruleset".into())], crate::checks::replykit::io::now_ms() as u64));
         w.stop();
         for i in 0..2 {
             w.age();
             let later = w.stop();
             assert!(later.contains("#9") && !later.contains("#1 "), "past {} hold_max spans: {later}", i + 1);
         }
+    }
+
+    /// GH #959 P1.1: a confirmation the tracker never refreshes with an owner notice (an unwatched session kind, reminders off) bounds
+    /// itself: past one hold_max the Stop asks again instead of exempting the task for ever.
+    #[test]
+    fn n959_a_confirmation_no_owner_notice_refreshes_expires_and_the_stop_asks_again() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let w = HoldWorld::new("n959-owner-expire", "owner-expire", "owner: deferred by owner order until the release");
+        let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+        w.stop();
+        w.age();
+        assert!(w.stop().contains("#1 "), "asked at the lapse");
+        assert!(w.confirmed().is_some());
+        w.age();
+        assert!(!w.stop().contains("#1 "), "confirmed: held");
+        w.age();
+        w.age_confirmations(max + 1000);
+        let again = w.stop();
+        assert!(again.contains("#1 "), "past its bound with no owner notice the confirmation lapses: {again}");
+    }
+
+    /// GH #959 P2.2: a block the repeat breaker releases was never shown, so it confirms nothing.
+    #[test]
+    fn n959_a_released_repeat_block_records_no_confirmation() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let w = HoldWorld::with_status("n959-owner-release", "owner-release", "NEEDS OWNER: the release ruleset", "pending");
+        w.stop();
+        w.age();
+        let p = json!({"transcript_path": format!("{}/t.jsonl", w.h), "session_id": w.sid, "cwd": w.h, "stop_hook_active": true});
+        let pairs = vec![("HOME".to_string(), w.h.clone()), ("ANTIHALL_IDLE_RULE".to_string(), "1".to_string()), ("ANTIHALL_STOP_REBLOCK_MAX".to_string(), "0".to_string())];
+        let mut released = false;
+        for _ in 0..4 {
+            // the block state is cleared each time so the guard blocks again on unchanged state; the repeat breaker counts repeats
+            for f in std::fs::read_dir(format!("{}/.anti-hall", w.h)).unwrap().flatten() {
+                if f.file_name().to_string_lossy().starts_with(&defaults::text("task_guard.state_prefix").to_string()) {
+                    std::fs::remove_file(f.path()).unwrap();
+                }
+            }
+            crate::discard::harmless(std::fs::remove_file(format!("{}/{}", w.h, crate::agents::owner_holds_rel(w.sid))));
+            let v = super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs.clone()));
+            let out = match v { Some(Some(Verdict::Exact(x))) => x.out, Some(Some(Verdict::Allow)) | Some(None) => String::new(), other => panic!("{other:?}") };
+            if !out.contains("\"decision\":\"block\"") {
+                released = true;
+                assert!(w.confirmed().is_none(), "the released block recorded a confirmation: {:?}", w.confirmed());
+                break;
+            }
+        }
+        assert!(released, "the repeat breaker never released the block");
     }
 
     /// GH #959 item 3, the other way: an agent-held reason keeps the plain lapse and re-nag (listed after its hold, again and again).

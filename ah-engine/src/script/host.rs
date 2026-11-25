@@ -43,7 +43,8 @@
 //! | `cfgLive(key)` | the effective value of a defaults key through the owner's editable layers (`settings.json`, `config.toml`, shipped): see [`cfg_live`] |
 //! | `sha1(text)` | lowercase hex SHA-1 of the UTF-8 text |
 //! | `ownerNamed(text)` | whether a `blockedOn` reason names the owner or a human (a word of `dispatch_tier.owner_values`): the one matcher the tracker uses too, see [`crate::agents::owner_named`] |
-//! | `ownerHoldsRel(sessionId)` | the home-relative path of the session's confirmed owner-hold file (task id -> confirmed at), the one state the tracker and task-guard share: see [`crate::agents::owner_holds_rel`] |
+//! | `ownerHoldConfirmed(sessionId, taskId, reason)` | whether the shared owner-hold file holds a confirmation of exactly this reason that is still within its bound: see [`owner_hold_confirmed`] |
+//! | `ownerHoldsConfirm(sessionId, askedJson)` | record `[[taskId, reason], ...]` confirmed, a locked read-modify-write run only once the reply is delivered: see [`owner_holds_confirm`] |
 //! | `tailLines(path, windowBytes, lineMax)` | the last lines of a file with their byte offsets, bounded: see [`tail_lines`] |
 //! | `tailEntries(path, windowBytes, lineMax, keep, maxLines)` | the newest lines parsed by the engine, cut down to the paths `keep` names: see [`tail_entries`] |
 //! | `rangeEntries(path, from, windowBytes, lineMax, keep, maxLines)` | an incremental forward read from a saved offset, bounded per call and per line: see [`range_entries`] |
@@ -731,6 +732,31 @@ pub fn tracked_agents(session: &str, transcript: &str, cwd: &str) -> rquickjs::R
         act: false,
     };
     Ok(serde_json::to_string(&crate::agents::guard_rows(&env, session, transcript, cwd)).unwrap_or_default())
+}
+
+/// `ownerHoldConfirmed(sid, id, reason)`: the Stop's read of the confirmed owner holds the tracker shares (GH #959). No home: `false`.
+pub fn owner_hold_confirmed(sid: &str, id: &str, reason: &str) -> rquickjs::Result<bool> {
+    let home = with_settings(|st| st.home.clone())?;
+    if home.is_empty() || sid.is_empty() {
+        return Ok(false);
+    }
+    let entries = crate::agents::owner_holds::read(std::path::Path::new(&home), sid);
+    Ok(crate::agents::owner_holds::confirmed(&entries, id, reason, now_ms() as u64))
+}
+
+/// `ownerHoldsConfirm(sid, askedJson)`: the Stop asked about these lapsed owner holds in the block it returns; once that reply is
+/// delivered in time they are recorded confirmed (a reply that is dropped records nothing). `false`: nothing to record.
+pub fn owner_holds_confirm(sid: &str, asked: &str) -> rquickjs::Result<bool> {
+    let home = with_settings(|st| st.home.clone())?;
+    let list: Vec<(String, String)> = serde_json::from_str(asked).unwrap_or_default();
+    if home.is_empty() || sid.is_empty() || list.is_empty() {
+        return Ok(false);
+    }
+    let sid = sid.to_string();
+    crate::deadline::stage_run(move || {
+        crate::agents::owner_holds::confirm(std::path::Path::new(&home), &sid, &list, now_ms() as u64);
+    });
+    Ok(true)
 }
 
 /// `agentsWindow(path)`: the agents a transcript shows as running in its default window only, the way the Node `runningAgents` reads
@@ -1514,7 +1540,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
     h.set("ownerNamed", Function::new(c.clone(), |t: String| crate::agents::owner_named(&t))?)?;
-    h.set("ownerHoldsRel", Function::new(c.clone(), |sid: String| crate::agents::owner_holds_rel(&sid))?)?;
+    h.set("ownerHoldConfirmed", Function::new(c.clone(), |sid: String, id: String, reason: String| owner_hold_confirmed(&sid, &id, &reason))?)?;
+    h.set("ownerHoldsConfirm", Function::new(c.clone(), |sid: String, asked: String| owner_holds_confirm(&sid, &asked))?)?;
     h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| unless_cut(tail_lines(&p, w, l)))?)?;
     h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
     h.set("rangeEntries", Function::new(c.clone(), |p: String, from: f64, w: f64, l: f64, k: String, m: f64| range_entries(&p, from, w, l, &k, m))?)?;

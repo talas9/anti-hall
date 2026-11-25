@@ -27,14 +27,8 @@ function tgHoldsOpen(home, safeSession, now, sid) {
     if (r.unsure) ah.unable('task-guard:hold_state_unsure');
     else if (!r.invalid && r.v !== null && typeof r.v === 'object' && !Array.isArray(r.v)) prior = r.v;
   }
-  // the confirmed owner holds the agent tracker and this Stop share (GH #959): keyed by the real session id, as the tracker keys it
-  var crel = sid ? ah.ownerHoldsRel(sid) : null, confirmed = {}, craw = crel === null ? null : ah.state.readText(crel);
-  if (craw !== null) {
-    var c = jx.parse(craw);
-    if (c.unsure) ah.unable('task-guard:owner_holds_unsure');
-    else if (!c.invalid && c.v !== null && typeof c.v === 'object' && !Array.isArray(c.v)) confirmed = c.v;
-  }
-  tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms, crel: crel, confirmed: confirmed, asked: {} };
+  // `sid`: the real session id, as the agent tracker keys the confirmed owner holds both share (GH #959); none: nothing is confirmed
+  tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms, sid: sid || '', asked: {} };
 }
 
 // Whether the `kind` exemption of task `t` (marker text `marker`) is still in force.
@@ -62,31 +56,38 @@ function tgHoldsClose() {
 }
 
 // `isOwnerBlocked` of lib/dispatch-demand.js. An owner-named blockedOn past its hold follows the tracker's confirm-once rule (GH #959):
-// confirmed in the shared owner-hold file, it is the owner's and stays held (the tracker's daily owner notice bounds it); not yet
-// confirmed, it is released for this Stop to ask once (tgConfirmAsked records it when the block naming it is delivered). Any other
-// owner marker keeps the plain lapse.
+// confirmed in the shared owner-hold file for exactly this reason and within its bound (the tracker's owner notices move the bound;
+// without them it ends one hold_max after the confirmation), it is the owner's and stays held; otherwise it is released for this Stop
+// to ask about (tgConfirmAsked records it once the block naming it is delivered). Any other owner marker keeps the plain lapse.
 function tgOwnerBlocked(t) {
   if (!tgOwnerMarked(t)) return false;
   if (tgHeld(t, ah.cfg('idle_rule.reason_owner'), tgIrText(t) + '\n' + tk.blockedOnText(t))) return true;
   if (tgHolds === null || !tk.ownerHeld(t)) return false;
-  if (Object.prototype.hasOwnProperty.call(tgHolds.confirmed, t.id)) return true;
+  if (tgHolds.sid !== '' && ah.ownerHold.confirmed(tgHolds.sid, t.id, tgReason(t))) return true;
   tgHolds.asked[t.id] = true;
   return false;
 }
 
+// The raw blockedOn reason (trimmed only): the text a confirmation is tied to, hashed alike by the tracker and Node.
+function tgReason(t) { return typeof t.blockedOn === 'string' ? t.blockedOn.trim() : ''; }
+
 // An owner-named blockedOn under the owner rule (switch on): its hold is tgOwnerBlocked's, never the plain blocked_on one.
 function tgOwnerNamedHold(t) { return tgOwnerMarked(t) && tk.ownerHeld(t); }
 
-// The Stop asked about these lapsed owner holds in the block it is delivering: record them confirmed in the shared file (after the reply).
-function tgConfirmAsked(home, listed) {
+// The Stop asked about these lapsed owner holds in the block it returns: only the tasks its text names (the list caps of the block
+// shape in use) are recorded confirmed, and only once that reply is delivered (ah.ownerHold.confirm stages it).
+function tgConfirmAsked(named) {
   var h = tgHolds;
-  if (h === null || h.crel === null) return;
-  var ids = listed.map(function (t) { return t.id; }).filter(function (id) { return h.asked[id] === true; });
-  if (ids.length === 0) return;
-  var merged = {};
-  Object.keys(h.confirmed).forEach(function (k) { merged[k] = h.confirmed[k]; });
-  ids.forEach(function (id) { merged[id] = h.now; });
-  ah.state.op(home, 'after_reply', h.crel, JSON.stringify(merged));
+  if (h === null || h.sid === '') return;
+  var asked = named.filter(function (t) { return h.asked[t.id] === true; }).map(function (t) { return [t.id, tgReason(t)]; });
+  if (asked.length > 0) ah.ownerHold.confirm(h.sid, asked);
+}
+
+// The tasks a block names: every one in the R-idle details list, else the head the list cap of the idle or generic block keeps.
+function tgNamed(rule, idle, demand, nudge) {
+  var listed = idle ? demand.dispatch : nudge;
+  if (rule) return listed;
+  return listed.slice(0, ah.cfgNum(idle ? 'task_guard.dispatch_list_max' : 'task_guard.list_max'));
 }
 
 function tgOwnerMarked(t) {
@@ -607,13 +608,14 @@ function tgDecideCore(p) {
   if (budget.rel !== undefined && !ah.state.op(guard.home, 'after_reply', budget.rel, budget.body)) return tgExact(out);
   var state = cap.blocked(); state[ah.cfg('task_guard.state_hash_key')] = hash; state[ah.cfg('task_guard.state_blocks_key')] = prior.blocks + 1;
   if (!ah.state.op(home, 'after_reply', stateRel, JSON.stringify(state))) return tgExact(out);
-  tgConfirmAsked(home, idle ? demand.dispatch : nudge);
   if (metrics !== null) { try { ah.state.writeAtomic(metrics.rel, metrics.body); } catch (e) { /* fail-open, as Node's writeMetrics */ } }
   if (rule) tgIdleRuleCount(idle, idle ? demand.dispatch : nudge, skips, now);
   var note = plan.write();
   if (note) reason += '\n' + note;
   var blocked = tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
-  return idle ? stopReblock.finish(ah.cfg('task_guard.guard_name'), p, blocked, tasks.map(function (t) { return [t.id, t.status, t.owner, t.content, t.description, t.blockedBy]; }).sort()) : blocked;
+  var res = idle ? stopReblock.finish(ah.cfg('task_guard.guard_name'), p, blocked, tasks.map(function (t) { return [t.id, t.status, t.owner, t.content, t.description, t.blockedBy]; }).sort()) : blocked;
+  if (res === blocked) tgConfirmAsked(tgNamed(rule, idle, demand, nudge)); // a block the repeat breaker released asked nobody
+  return res;
 }
 
 // R-idle counters, written only for a block that is delivered: fired by kind, the tasks it listed, the tasks the filter kept out by reason,

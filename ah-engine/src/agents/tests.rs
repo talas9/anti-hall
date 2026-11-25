@@ -5657,7 +5657,9 @@ fn a_rewritten_blocked_on_resets_the_unanswered_count_per_task() {
     assert!(!all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
 }
 
-/// A blocker that names the owner: the session is asked to confirm it once, then never again; the owner gets one notice per day per task.
+/// A blocker that names the owner: the session is asked to confirm it once, then never again while the reason stands; the owner gets one
+/// notice per day per task. A rewritten reason is a new blocker (GH #959 P1.4): its hold restarts and, once it lapses, the session is
+/// asked to confirm it again.
 #[test]
 fn an_owner_held_blocker_notifies_the_owner_once_a_day_and_never_renags_the_session() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -5682,10 +5684,9 @@ fn an_owner_held_blocker_notifies_the_owner_once_a_day_and_never_renags_the_sess
     ticks(&h, &mut st, &[n, n + max + MIN]);
     assert_eq!(agent_rows(&h).len(), 1, "the session confirms it once: {:?}", agent_rows(&h));
     let mut at = n + max + MIN;
-    // 20 more hours of ticks with the reason rewritten each time (fresh text): the session hears nothing, the owner one notice
-    for i in 0..20 {
+    // 20 more hours of ticks with the reason unchanged: the session hears nothing, the owner one notice
+    for _ in 0..20 {
         at += 61 * MIN;
-        task_file(&h, SID, task(&format!("owner: GitHub release ruleset change only the owner can make (checked {i})")));
         ticks(&h, &mut st, &[at]);
     }
     assert_eq!(agent_rows(&h).len(), 1, "no re-nag: {:?}", agent_rows(&h));
@@ -5695,6 +5696,15 @@ fn an_owner_held_blocker_notifies_the_owner_once_a_day_and_never_renags_the_sess
     ticks(&h, &mut st, &[at]);
     assert_eq!(owner_rows(&h).len(), 2, "the next day: another owner notice");
     assert_eq!(agent_rows(&h).len(), 1);
+    // the reason is rewritten: a new blocker, silent through its own hold, then confirmed with the session again
+    task_file(&h, SID, task("owner: GitHub release ruleset change, owner asked again on the release thread"));
+    at += MIN;
+    ticks(&h, &mut st, &[at]);
+    assert!(!agent(&st, SID).hold_owner.contains_key("1"), "the old confirmation is gone with its reason");
+    ticks(&h, &mut st, &[at + max - MIN]);
+    assert_eq!(agent_rows(&h).len(), 1, "silent inside the new hold");
+    ticks(&h, &mut st, &[at + max + MIN]);
+    assert_eq!(agent_rows(&h).len(), 2, "the rewritten blocker is confirmed once: {:?}", agent_rows(&h));
 }
 
 /// A task held by a blockedOn reason is silent until nudges.hold.hold_max_ms, then told to confirm or clear it, and the reminder turns
@@ -5862,13 +5872,12 @@ fn n959_another_tasks_reminders_never_leak_into_a_fresh_tasks_unanswered_count()
     let k2: u64 = agent(&st, SID).hold_n.iter().filter(|(k, _)| k.starts_with("2#")).map(|(_, c)| *c).sum();
     assert_eq!(k2, rows(&h).len() as u64 - 1, "task 2 counts exactly its own reminders");
     let last = rows(&h).last().unwrap()["text"].as_str().unwrap().to_string();
-    assert!(last.contains(&format!("{} reminders unanswered", k2 - 1)), "the order names task 2's own count: {last}");
+    assert!(last.contains(&format!("Task 2 ({} reminders unanswered)", k2 - 1)), "the order names task 2's own count: {last}");
 }
 
-/// #959 item 1, several tasks due in ONE reminder: each key counts that reminder once, and the text shows the most any of THOSE tasks
-/// has had (never a task outside the reminder).
+/// #959 P1.3, several tasks named in ONE order: each carries its OWN unanswered count (one shared number misreported all but one).
 #[test]
-fn n959_tasks_due_together_each_count_the_shared_reminder_and_the_text_shows_their_max() {
+fn n959_tasks_named_together_each_show_their_own_unanswered_count() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let n = now0();
     let h = home("n959-together");
@@ -5877,18 +5886,40 @@ fn n959_tasks_due_together_each_count_the_shared_reminder_and_the_text_shows_the
     task_file(&h, SID, task("1", "waiting on the CI run one"));
     main_session(&h, SID, n, 15, "waiting");
     let mut st = State::default();
-    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN]);
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN, n + max + 63 * MIN]);
     task_file(&h, SID, task("2", "waiting on the CI run two"));
-    let mut at = n + max + 33 * MIN;
+    let mut at = n + max + 64 * MIN;
     ticks(&h, &mut st, &[at]);
     at += max + MIN;
     ticks(&h, &mut st, &[at]);
     let a = agent(&st, SID);
     let c = |p: &str| a.hold_n.iter().filter(|(k, _)| k.starts_with(p)).map(|(_, c)| *c).sum::<u64>();
-    assert!(c("1#") > c("2#") && c("2#") == 1, "{:?}", a.hold_n);
+    assert!(c("1#") >= 3 && c("2#") == 1, "{:?}", a.hold_n);
     assert_eq!(a.hold_due.len(), 2, "{:?}", a.hold_due);
     let shown = super::compliance::hold_text(a, 1, "x");
-    assert!(shown.contains(&format!("{} reminders unanswered", c("1#"))), "{shown}");
+    assert!(shown.contains(&format!("Task 1 ({} reminders unanswered)", c("1#"))) && shown.contains("Task 2 (1 reminders unanswered)"), "{shown}");
+}
+
+/// #959 P1.2: a reminder names at most nudges.compliance.tasks_shown tasks, and only those are counted (the rest are not advanced
+/// for a reminder they never saw); the least reminded go first, so the next reminder names the others.
+#[test]
+fn n959_only_the_tasks_a_reminder_names_are_counted_and_the_rest_rotate_in() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-cap");
+    let max = hold_max();
+    let shown = defaults::raw("nudges.compliance").get("tasks_shown").and_then(V::as_integer).unwrap() as usize;
+    let total = shown + 2;
+    for i in 1..=total {
+        task_file(&h, SID, json!({"id": i.to_string(), "subject": format!("Task {i}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {i}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let counted = |st: &State| agent(st, SID).hold_n.values().filter(|c| **c > 0).count();
+    assert_eq!(counted(&st), shown, "only the named tasks count the reminder: {:?}", agent(&st, SID).hold_n);
+    ticks(&h, &mut st, &[n + max + 32 * MIN]);
+    assert_eq!(counted(&st), total, "the next reminder names the ones left out: {:?}", agent(&st, SID).hold_n);
 }
 
 /// #959 item 2: a workspace idle on an open task whose blockedOn sits inside a live bounded hold is waiting, not idle: idle_open_task
@@ -5947,7 +5978,8 @@ fn n959_the_owner_matcher_takes_an_owner_word_anywhere_and_nothing_else() {
     }
 }
 
-/// #959 item 4: the owner notice says how long the task has been blocked in total, not since the latest rewrite ("blocked 0s").
+/// #959 item 4: the owner notice says how long the task has been blocked in total, from the first blockedOn on it, not since the
+/// latest rewrite ("blocked 0s").
 #[test]
 fn n959_the_owner_notice_shows_the_total_blocked_time_after_a_rewrite() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -5955,50 +5987,191 @@ fn n959_the_owner_notice_shows_the_total_blocked_time_after_a_rewrite() {
     let h = home("n959-owner-total");
     let max = hold_max();
     let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
-    task_file(&h, SID, task("owner: GitHub release ruleset change"));
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
     main_session(&h, SID, n, 15, "waiting on the owner");
     let mut st = State::default();
-    ticks(&h, &mut st, &[n, n + max + MIN]);
-    task_file(&h, SID, task("owner: GitHub release ruleset change (checked again)"));
-    let at = n + max + 2 * MIN;
+    ticks(&h, &mut st, &[n, n + 30 * MIN]);
+    task_file(&h, SID, task("owner: GitHub release ruleset change"));
+    let r = n + 31 * MIN;
+    ticks(&h, &mut st, &[r, r + max + MIN]);
+    let at = r + max + 2 * MIN;
     ticks(&h, &mut st, &[at]);
     let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
     let notices: Vec<String> = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect();
     assert_eq!(notices.len(), 1, "{notices:?}");
     let want = format!("(blocked {})", super::sinks::age(at - n));
-    assert!(notices[0].contains(&want) && !notices[0].contains("(blocked 0s)"), "want {want}: {}", notices[0]);
+    assert!(notices[0].contains(&want), "want {want}: {}", notices[0]);
 }
 
-/// #959 item 3, the tracker's side of the shared confirmed-owner-hold file: a confirmation the tracker records reaches the file (the
-/// Stop reads it), and a confirmation the Stop wrote there makes the tracker treat the hold as the owner's (no session reminder, the
-/// owner notice instead).
+/// #959 item 3, the tracker's side of the shared confirmed-owner-hold file: a confirmation the tracker records reaches the file with
+/// its reason and the owner notice (the Stop and Node read it), and a fresh confirmation the Stop wrote there for the same reason makes
+/// the tracker treat the hold as the owner's (no session reminder, the owner notice instead).
 #[test]
 fn n959_the_tracker_and_the_stop_share_one_confirmed_owner_hold_file() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let n = now0();
     let max = hold_max();
-    let task = json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "owner: deferred by owner order"}});
-    let file = |h: &Path| h.join(super::owner_holds_rel(SID));
+    let reason = "owner: deferred by owner order";
+    let task = json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": reason}});
     let session_rows = |h: &Path| queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").count();
-    // tracker confirms (one reminder to the session) -> the file names the task
+    // tracker confirms (one reminder to the session) -> the file names the task, its reason and the notice
     let h = home("n959-shared-a");
     task_file(&h, SID, task.clone());
     main_session(&h, SID, n, 15, "waiting on the owner");
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + max + MIN, n + max + 2 * MIN]);
     assert!(session_rows(&h) >= 1);
-    let saved: Value = serde_json::from_str(&std::fs::read_to_string(file(&h)).expect("the confirmation is shared")).unwrap();
-    assert!(saved.get("1").is_some(), "{saved}");
+    let e = owner_holds::read(&h, SID).remove("1").expect("the confirmation is shared");
+    assert_eq!(e.r, owner_holds::reason_hash(reason));
+    assert!(e.n > 0 && e.u == owner_holds::until(e.c, e.n), "{e:?}");
     // the Stop confirmed first -> the tracker never reminds the session, and the owner is told
     let h2 = home("n959-shared-b");
     task_file(&h2, SID, task);
     main_session(&h2, SID, n, 15, "waiting on the owner");
-    std::fs::create_dir_all(file(&h2).parent().unwrap()).unwrap();
-    std::fs::write(file(&h2), r#"{"1":1}"#).unwrap();
+    assert!(owner_holds::confirm(&h2, SID, &[("1".into(), reason.into())], n + max));
     let mut st2 = State::default();
     ticks(&h2, &mut st2, &[n, n + max + MIN, n + max + 2 * MIN]);
     assert_eq!(session_rows(&h2), 0, "the Stop's confirmation holds for the tracker too");
     assert!(agent(&st2, SID).hold_owner.contains_key("1"));
     let d = env(&h2, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
     assert!(std::fs::read_to_string(d).unwrap_or_default().contains("hold_owner"), "the owner is told instead");
+    // a Stop confirmation of ANOTHER reason (or one past its bound) is no confirmation
+    for (tag, r, at) in [("n959-shared-c", "owner: an older reason", n + max), ("n959-shared-d", reason, n - 3 * max)] {
+        let h3 = home(tag);
+        task_file(&h3, SID, json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": reason}}));
+        main_session(&h3, SID, n, 15, "waiting on the owner");
+        owner_holds::confirm(&h3, SID, &[("1".into(), r.into())], at);
+        let mut st3 = State::default();
+        ticks(&h3, &mut st3, &[n, n + max + MIN]);
+        assert!(session_rows(&h3) >= 1, "{tag}: the session is asked");
+    }
+}
+
+/// #959 P1.4: a confirmation belongs to the reason it confirmed. Rewriting an owner-held reason drops the tracker's confirmation (and
+/// with it the owner notices), and the shared file follows.
+#[test]
+fn n959_a_rewritten_reason_drops_the_confirmation() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let max = hold_max();
+    let h = home("n959-reason-tie");
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: the ruleset"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 2 * MIN]);
+    assert!(agent(&st, SID).hold_owner.contains_key("1"));
+    task_file(&h, SID, task("owner: the ruleset and the branch protection"));
+    ticks(&h, &mut st, &[n + max + 3 * MIN]);
+    assert!(!agent(&st, SID).hold_owner.contains_key("1"), "{:?}", agent(&st, SID).hold_owner);
+    assert!(!owner_holds::read(&h, SID).contains_key("1"), "the shared file drops it too");
+}
+
+/// #959 P2.3: state from before blocked_since (a held_since clock but no blocked_since entry) starts the total at the oldest clock.
+#[test]
+fn n959_blocked_since_is_seeded_from_old_held_clocks() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-migrate");
+    task_file(&h, SID, json!({"id": "1", "subject": "T", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = st.agents.get_mut(SID).unwrap();
+    let key = a.held_since.keys().next().unwrap().clone();
+    a.held_since.insert(key, n - 50 * MIN);
+    a.blocked_since.clear();
+    ticks(&h, &mut st, &[n + MIN]);
+    assert_eq!(agent(&st, SID).blocked_since.get("1"), Some(&(n - 50 * MIN)));
+}
+
+/// #959 P1.5: the hold clocks run whatever the compliance switch says, so with compliance off the idle exemption still ends at hold_max.
+#[test]
+fn n959_with_compliance_off_the_idle_exemption_still_ends_at_hold_max() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("n959-idle-compliance-off");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/sessW.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/wt/x"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - 30 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    task_file(&h, "sessW", json!({"id": "1", "subject": "Port the gauge", "status": "in_progress", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run of the gauge PR"}}));
+    let mut st = State::default();
+    let off = |t: u64, st: &mut State| {
+        let e = nudge_env(&h, t, &[("ANTIHALL_NUDGES_COMPLIANCE", "false"), ("ANTIHALL_NUDGES_IDLE_WAKE", "true")]);
+        arm_wake(&e, "sessW");
+        tick(&e, st);
+    };
+    off(n, &mut st);
+    off(n + MIN, &mut st);
+    assert!(!agent(&st, "sessW").flags.contains_key("idle_open_task"), "inside the hold");
+    assert!(!agent(&st, "sessW").held_since.is_empty(), "the clock runs with compliance off");
+    for v in st.agents.get_mut("sessW").unwrap().held_since.values_mut() {
+        *v = n + 2 * MIN - hold_max() - MIN;
+    }
+    off(n + 2 * MIN, &mut st);
+    assert!(agent(&st, "sessW").flags.contains_key("idle_open_task"), "{:?}", agent(&st, "sessW").flags.keys().collect::<Vec<_>>());
+}
+
+/// #959 P2.5: the file is named by a hash of the FULL session id: two ids that share a long prefix get two files.
+#[test]
+fn n959_the_owner_hold_file_is_named_by_the_full_session_id() {
+    let base = "x".repeat(200);
+    assert_ne!(owner_holds::rel(&format!("{base}a")), owner_holds::rel(&format!("{base}b")));
+}
+
+/// #959 P2.1: writes are a locked read-modify-write: concurrent writers lose no entry, and a writer that cannot take the lock in time
+/// writes nothing.
+#[test]
+fn n959_owner_hold_writes_are_locked_and_lose_nothing() {
+    let h = home("n959-lock");
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let h = h.clone();
+            std::thread::spawn(move || owner_holds::confirm(&h, SID, &[(i.to_string(), format!("owner: reason {i}"))], now0()))
+        })
+        .collect();
+    assert!(threads.into_iter().all(|t| t.join().unwrap()), "every writer got the lock in time");
+    assert_eq!(owner_holds::read(&h, SID).len(), 8, "no entry lost: {:?}", owner_holds::read(&h, SID).keys().collect::<Vec<_>>());
+    let p = h.join(owner_holds::rel(SID));
+    let lock = std::fs::OpenOptions::new().read(true).write(true).open(crate::paths::lock_for(&p)).unwrap();
+    assert!(crate::health::flock(&lock, libc::LOCK_EX));
+    assert!(!owner_holds::confirm(&h, SID, &[("9".into(), "owner: late".into())], now0()), "a held lock: the write is skipped");
+    crate::health::flock(&lock, libc::LOCK_UN);
+    assert!(!owner_holds::read(&h, SID).contains_key("9"));
+}
+
+/// #959 P1.6: Node never exempts an owner-word reason on its own: only a fresh confirmation of exactly that reason in the shared file
+/// (written here by the engine's writer, so file name, format and hash are proven to agree) makes Node treat it as owner-blocked; a
+/// bare owner value keeps Node's old answer, and "user-facing" names nobody.
+#[test]
+fn n959_node_reads_the_engines_confirmation_and_is_never_weaker() {
+    let Ok(node) = which_node() else { return };
+    let h = home("n959-node");
+    let sid = "a1b2c3d4-0000-4000-8000-00000000abcd";
+    let n = now0();
+    owner_holds::confirm(&h, sid, &[("1".into(), "NEEDS OWNER: the ruleset".into())], n);
+    owner_holds::confirm(&h, sid, &[("2".into(), "owner: an older reason".into())], n);
+    owner_holds::confirm(&h, sid, &[("3".into(), "NEEDS OWNER: stale".into())], n - 3 * hold_max());
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
+    let script = format!(
+        "const DD=require({dd:?});DD.setOwnerSession({sid:?});const q=(id,r)=>DD.isOwnerBlocked({{id,blockedOn:r,content:'t'}});\
+         console.log(JSON.stringify([q('1','NEEDS OWNER: the ruleset'),q('2','owner: the new reason'),q('3','NEEDS OWNER: stale'),q('4','owner'),q('5','waiting on user-facing release build'),q('6','NEEDS OWNER: never asked')]))",
+        dd = dd.to_string_lossy()
+    );
+    let out = std::process::Command::new(node).arg("-e").arg(script).env("HOME", &h).env("USERPROFILE", &h).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[true,false,false,true,false,false]");
+}
+
+fn which_node() -> Result<String, ()> {
+    let ok = std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success());
+    if ok { Ok("node".into()) } else { Err(()) }
 }

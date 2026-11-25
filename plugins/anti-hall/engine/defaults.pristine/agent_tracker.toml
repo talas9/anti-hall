@@ -579,8 +579,8 @@ doc = "Reminder of the lead_waiting_on_done signal once earlier reminders were i
 value = "agent tracker: Do now, {sent} reminders unanswered: {agents} finished {idle} ago. Read their results (or TaskStop them), update or close the tasks they own, and continue the work."
 
 [nudges.hold]
-doc = "Time-bounded task holds (owner principle: no exemption lasts for ever). hold_max_ms: how long a task whose metadata.blockedOn carries a stated reason is exempt from the negligence signals; the clock starts when the engine first sees that reason on the task and restarts when the reason text changes (a confirmed blocker). After it the session gets the hold_expired reminder every cooldown (agent_tracker.cooldowns) until the blocker is cleared, changed or the task closed. order_after: reminders already sent about the same blockedOn text (counted per task, reset when the text is rewritten) before the text turns from advice into an order. owner_notice_ms: a blocker that names the owner or a human (a word of dispatch_tier.owner_values) is confirmed with the session once; after that only the owner is told, at most once per task per this interval, and the session hears nothing further."
-value = { hold_max_ms = 7200000, order_after = 2, owner_notice_ms = 86400000 }
+doc = "Time-bounded task holds (owner principle: no exemption lasts for ever). hold_max_ms: how long a task whose metadata.blockedOn carries a stated reason is exempt from the negligence signals; the clock starts when the engine first sees that reason on the task and restarts when the reason text changes (a confirmed blocker). After it the session gets the hold_expired reminder every cooldown (agent_tracker.cooldowns) until the blocker is cleared, changed or the task closed. order_after: reminders already sent about the same blockedOn text (counted per task, reset when the text is rewritten) before the text turns from advice into an order. owner_notice_ms: a blocker that names the owner or a human (a word of dispatch_tier.owner_values) is confirmed with the session once; after that only the owner is told, at most once per task per this interval, and the session hears nothing further. A confirmed owner hold lives in the shared file of agent_tracker.paths.owner_holds (the tracker and the Stop task-guard read and write it, the Node fallback reads it): it is tied to its reason (a rewritten reason is a new blocker that must be confirmed again) and good until hold_max_ms past the later of its confirmation and its last owner notice plus owner_notice_ms. lock_wait_ms: the longest a writer waits for the lock of that file (a write that cannot take it is skipped: the Stop asks again, the tracker retries next tick); lock_step_ms: the pause between tries. order_after counts each named task on its own (msg.agent_hold_task_count), and a reminder names at most nudges.compliance.tasks_shown tasks, the least reminded first; only the named tasks are counted, confirmed or noticed."
+value = { hold_max_ms = 7200000, order_after = 2, owner_notice_ms = 86400000, lock_wait_ms = 200, lock_step_ms = 5 }
 
 [agent_tracker.compliance_signals]
 doc = "The signals whose reminders, suppressions and outcomes the compliance counter (`compliance{signal,outcome}`) records."
@@ -603,8 +603,12 @@ doc = "Owner notice of the hold_owner signal: a task held by a blockedOn reason 
 value = "agent tracker: {agent} is waiting on you for {tasks} (blocked {held}); it will not be reminded again."
 
 [msg.agent_hold_expired_order]
-doc = "Reminder of the hold_expired signal once earlier reminders were ignored (order). Placeholders: {tasks}, {n}, {held}, {sent}."
-value = "agent tracker: Do now, {sent} reminders unanswered: the blocker on {tasks} has stood {held}. Verify it still holds, then rewrite blockedOn with the current reason and its owner; if it does not hold, clear blockedOn and dispatch the task."
+doc = "Reminder of the hold_expired signal once a named task's reminders were ignored order_after times (order). Placeholders: {tasks} (each named task as msg.agent_hold_task_count renders it, with its own count), {n}, {held}."
+value = "agent tracker: Do now, reminders unanswered: the blockers on {tasks} have stood up to {held}. Verify each still holds, then rewrite blockedOn with the current reason and its owner; if it does not hold, clear blockedOn and dispatch the task."
+
+[msg.agent_hold_task_count]
+doc = "One task of the hold_expired order with its own unanswered count (GH #959). Placeholders: {task}, {sent}."
+value = "{task} ({sent} reminders unanswered)"
 
 [msg.agent_stale_list]
 doc = "Reminder of the stale_list signal (GH #958): work tool calls with no TaskCreate/TaskUpdate while tasks are open. Placeholders: {n}, {tasks}."
