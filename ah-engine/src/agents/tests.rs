@@ -6484,3 +6484,74 @@ fn n959_node_rejects_malformed_strings_and_never_reads_an_indented_value() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[false,false,false,false,false,true]");
 }
+
+// ---- GH #962: tracker misfires on stopped agents and valid waits -----------------------------------------------------------
+
+/// A running workspace-kind row quiet past quiet_ms: no call in flight, not hung (it spoke a minute ago), stall window long open.
+fn quiet_workspace(n: u64, primary: bool) -> Agent {
+    Agent {
+        id: "ws962".into(),
+        kind: "workspace".into(),
+        running: true,
+        last_output_ms: n - MIN,
+        stall_since: n - stall_cfg("quiet_ms") - 5 * MIN,
+        ws: Some(Ws { id: if primary { "primary-962".into() } else { "ws-962".into() }, armed: Some(true), step: String::new(), done: 0, primary }),
+        ..Agent::default()
+    }
+}
+
+/// GH #962 item 5: the owner's own session (a Primary read as a workspace-kind row) waited on its own scheduled check and was told it
+/// is STALLED and should be re-dispatched; a Primary is never STALLED.
+#[test]
+fn n962_primary_session_is_never_stalled() {
+    let n = now0();
+    let h = home("n962-primary-stall");
+    let e = env(&h, n);
+    assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, true), n).is_none(), "the Primary is the owner's session, nobody re-dispatches it");
+}
+
+/// The true positive stays: a quiet child workspace (not the Primary) is still STALLED.
+#[test]
+fn n962_child_workspace_still_stalls() {
+    let n = now0();
+    let h = home("n962-child-stall");
+    let e = env(&h, n);
+    assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, false), n).is_some(), "a dispatched workspace quiet past quiet_ms is STALLED");
+}
+// ---- GH #962 review round --------------------------------------------------------------------------------------------------
+
+/// Review P2: the stall check exempts only a Primary checkout, not the escalation's exempt kinds: with `teammate` added to
+/// exempt_kinds (so the escalation leaves teammates alone), a quiet teammate still stalls.
+#[test]
+fn n962r_a_quiet_teammate_still_stalls() {
+    let n = now0();
+    let h = home("n962r-mate-stall");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    a.kind = "teammate".into();
+    a.ws = None;
+    a.parent = "lead".into();
+    let mut esc = escalate::cfg().to_json();
+    esc["exempt_kinds"] = json!(["main", "teammate"]);
+    defaults::set_overlay(&[("agent_tracker.escalate", esc)]);
+    let exempt = escalate::primary(&a);
+    let stalled = signals::stalled_for_tests(&e, &a, n).is_some();
+    defaults::set_overlay(&[]);
+    assert!(exempt, "the overlay makes teammates escalation-exempt");
+    assert!(stalled, "a quiet teammate is STALLED whatever exempt_kinds says");
+}
+
+/// GH #962 review: a child that kept a legacy `primary-<hash>` id after migration, but which the watcher classifies as no Primary
+/// (ws.primary = false), still stalls; only the classification exempts (n962_primary_session_is_never_stalled keeps the real Primary
+/// exempt).
+#[test]
+fn n962r_a_child_with_a_legacy_primary_id_still_stalls() {
+    let n = now0();
+    let h = home("n962r-legacy-id");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    if let Some(w) = a.ws.as_mut() {
+        w.id = "primary-abc".into();
+    }
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a primary- prefix alone does not exempt");
+}
