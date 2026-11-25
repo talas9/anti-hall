@@ -318,7 +318,13 @@ function parseTomlValue(src) {
       if (q === '"' && src[i] === '\\') {
         const e = src[i + 1];
         const map = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', b: '\b', f: '\f' };
-        if (e === 'u' || e === 'U') { const len = e === 'u' ? 4 : 8; out += String.fromCodePoint(parseInt(src.substr(i + 2, len), 16)); i += 2 + len; continue; }
+        if (e === 'u' || e === 'U') {
+          // exactly 4 (\u) or 8 (\U) hex digits; anything else, a raw newline included, is malformed
+          const len = e === 'u' ? 4 : 8;
+          const hex = src.substr(i + 2, len);
+          if (!new RegExp('^[0-9A-Fa-f]{' + len + '}$').test(hex)) throw new Error('bad unicode escape');
+          out += String.fromCodePoint(parseInt(hex, 16)); i += 2 + len; continue;
+        }
         if (map[e] === undefined) throw new Error('bad escape');
         out += map[e]; i += 2; continue;
       }
@@ -370,8 +376,9 @@ function engineValue(key, text) {
     const src = own ? text : tomlText;
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(src);
-    // `value=`, `value = `, an indented `  value = ` and a value that runs over several lines (a multiline array) all parse: the parser reads from the '='
-    const at = section && /^[ \t]*value[ \t]*=[ \t]*/m.exec(section[1]);
+    // `value=`, `value = ` and a value that runs over several lines (a multiline array) all parse: the parser reads from the '='. Only a
+    // column-0 line counts: an indented `value =` may be an example inside a multiline doc string (it reads as no value, never an exemption)
+    const at = section && /^value[ \t]*=[ \t]*/m.exec(section[1]);
     return at ? parseTomlValue(section[1].slice(at.index + at[0].length)) : undefined;
   } catch (_) { return undefined; }
 }

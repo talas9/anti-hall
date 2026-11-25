@@ -6456,16 +6456,23 @@ fn n959_an_old_owner_notice_time_survives_a_detour_on_the_upgrade_tick() {
     assert_eq!(notices, 0, "the owner was told again within owner_notice_ms of the old notice");
 }
 
-/// #959 r3 item 4: a raw newline inside a quoted string is malformed (no owner exemption), and an indented `value =` line parses.
+/// #959 r3 item 4 / r4: a raw newline inside a quoted string (escapes included) or a malformed \\u escape is malformed (no owner
+/// exemption); only a column-0 `value =` line is the key's value, so an indented example inside a doc string is never read.
 #[test]
-fn n959_node_rejects_a_string_across_lines_and_reads_an_indented_value() {
+fn n959_node_rejects_malformed_strings_and_never_reads_an_indented_value() {
     if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
         return;
     }
     let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
     let layouts = [
         "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"bad\n  more\"]\n",
+        // an example `value =` inside a multiline doc string is not the key's own value (indented lines are not read)
+        "[dispatch_tier.owner_values]\ndoc = \"\"\"x\n  value = [\"owner\"]\n\"\"\"\nvalue = [\"user\"]\n",
         "[dispatch_tier.owner_values]\ndoc = \"x\"\n  value = [\"owner\"]\n",
+        // a \\u escape that runs over a raw newline, and one whose digits are not hex
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"\\u12\n34\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"\\u4x41\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"\\u0041\"]\n",
     ];
     let script = format!(
         "const DD=require({dd:?});const L={layouts};console.log(JSON.stringify(L.map((t)=>DD.isOwnerBlocked({{content:'t',blockedOn:'owner'}},t))))",
@@ -6475,5 +6482,5 @@ fn n959_node_rejects_a_string_across_lines_and_reads_an_indented_value() {
     let h = home("n959-node-strict");
     let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[false,true]");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[false,false,false,false,false,true]");
 }
