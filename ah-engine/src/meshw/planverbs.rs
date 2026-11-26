@@ -678,4 +678,19 @@ mod tests {
             }
         }
     }
+
+    /// #965 item 7, the true negative: only a real newline ends a step. A step that mentions a two-character backslash-n (passed
+    /// through ANSI-C quoting as `\\n`) stays one step with the backslash-n in its text; the parser never splits on it.
+    #[test]
+    fn a_step_that_mentions_a_backslash_n_is_never_split_on_it() {
+        let inv = scratch_inv("literal-bsn");
+        let out = std::process::Command::new("bash").arg("-c").arg(r"printf %s $'1. print a\\nb\n2. done'").output().expect("bash runs");
+        let steps = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(steps, "1. print a\\nb\n2. done", "bash gives one real newline and one literal backslash-n");
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &steps]);
+        assert_eq!(code, 0, "{out}");
+        let plan: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plan_path(&inv, "w1")).unwrap()).expect("JSON");
+        let texts: Vec<&str> = plan["steps"].as_array().expect("steps").iter().map(|s| s["text"].as_str().expect("text")).collect();
+        assert_eq!(texts, ["print a\\nb", "done"], "{plan}");
+    }
 }
