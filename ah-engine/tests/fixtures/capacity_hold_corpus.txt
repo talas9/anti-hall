@@ -491,3 +491,18 @@ H sh -c "ah-engine config set daemon.nice 0"
 H eval "ah-engine agents stop x"
 P echo 'ah-engine agents stop x'
 P grep -rn "ah-engine config set" .
+#
+# #969 review 3: the value of a split option (`env -S '..'`) is a command line whose commands count, and a script's engine calls
+# are held as the command line's own are (the whole body read-only passes); the engine verbs that write are no local verbs
+H env -S 'ah-engine agents stop x'
+H env -S'ah-engine config set daemon.nice 0'
+H sudo env -S 'ah-engine agents stop x'
+P env -u 'ah-engine x' ls
+H bash {fix}/engstop.sh
+H {fix}/engstop.sh
+P bash {fix}/engread.sh
+H ah-engine telemetry rollup
+H ah-engine telemetry actions --mistake f a t k
+H ah-engine telemetry actions
+P ah-engine telemetry summary
+P ah-engine telemetry events

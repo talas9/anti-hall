@@ -1179,7 +1179,8 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     // every hook call reaches the daemon as a dispatch request, so the launcher's build version rides in its environment
     sh.note_hook_version(&meta.env);
     // #969: the load factor the client passed down, before the window: the event's ceiling is scaled by it
-    crate::deadline::set_load_factor(meta.load_permille);
+    // #969 review: fitted again to the event's outer bound, so a request that skipped the launcher can not stretch the ceiling
+    crate::deadline::set_load_factor(crate::deadline::fit_passed(meta.load_permille, &meta.host, &meta.event));
     if let Some(ms) = meta.deadline_ms {
         crate::deadline::client_window(ms);
     }

@@ -1125,6 +1125,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         for seg in starts.map(|s| &group[s..]) {
             let mut splits = Vec::new();
             let at_cmd = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &cfg.wrapper_split_opts, &mut more.opt_skips, &mut splits);
+            // #969 review: a split option's value (`env -S '..'`) is a command line the call runs: its commands count too
+            more.shell_code.extend(splits.iter().cloned());
             nested.extend(splits);
             let Some((cmd, at)) = at_cmd else { continue };
             merge(&mut more.cmds, vec![cmd.to_string()]);
@@ -1582,6 +1584,28 @@ mod tests {
         let mut off = c.clone();
         off.wrapper_split_opts.clear();
         assert!(normalise("env -S ./x.sh", &off).unwrap().scripts.is_empty());
+    }
+
+    /// #969 review: the commands of a split option's value (`env -S '..'`) are the call's own (engine-unlisted reads them), as a
+    /// shell's code is; a quoted argument with a space is still text.
+    #[test]
+    fn issue_969_a_split_string_value_keeps_its_commands() {
+        let mut c = cfg();
+        c.wrapper_opts = vec![("env".into(), vec!["-u".into(), "-S".into()])];
+        c.wrapper_split_opts = vec![("env".into(), vec!["-S".into()])];
+        let cmds_in = |t: &str, c: &Cfg| normalise(t, c).map(|n| n.cmds).unwrap();
+        assert_eq!(cmds_in("env --split-string='FOO=1 ah-engine agents stop x'", &c), Vec::<String>::new(), "--split-string is no split option here");
+        c.wrapper_split_opts = vec![("env".into(), vec!["-S".into(), "--split-string".into()])];
+        assert_eq!(cmds_in("env --split-string='FOO=1 ah-engine agents stop x'", &c), ["ah-engine"]);
+        let cmds = |t: &str| cmds_in(t, &c);
+        assert_eq!(cmds("env -S 'ah-engine agents stop x'"), ["ah-engine"]);
+        assert_eq!(cmds("env -S'ah-engine agents stop x'"), ["ah-engine"], "the value attached");
+        // true negatives: a quoted mention is no command, and an option that is no split option only skips its value
+        assert_eq!(cmds("pgrep -f 'ah-engine serve'"), ["pgrep"]);
+        assert_eq!(cmds("env -u 'ah-engine x' ls"), ["ls"]);
+        let mut off = c.clone();
+        off.wrapper_split_opts.clear();
+        assert!(!normalise("env -S 'ah-engine agents stop x'", &off).unwrap().cmds.contains(&"ah-engine".to_string()));
     }
 
     #[test]

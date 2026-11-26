@@ -962,6 +962,52 @@ fn engine_timed_logs_the_wall_time() {
     assert!((400..4000).contains(&wall), "{line}");
 }
 
+/// #969 review: a late wait longer than what is left of the call's outer bound (here 3 s) is shortened to that rest less both kill
+/// graces and the wall margin, so the engine is cut and the fallback runs inside the bound (before: the wait ran to the bound itself
+/// and the backstop fired first); a late wait that fits is untouched.
+#[test]
+fn a_late_wait_past_the_outer_bound_is_shortened_so_the_fallback_runs_inside_it() {
+    let wall_of = |env: &Env| -> u128 {
+        let log = env.log();
+        let line = log
+            .lines()
+            .find(|l| l.contains("engine_timed"))
+            .unwrap_or_else(|| panic!("no engine_timed line: {log}"));
+        line.split("wall_ms=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no wall_ms in {line}"))
+    };
+    let run = |tag: &str, slow: &str| {
+        let env = Env::new(tag);
+        let e = engine(&env, ": >\"$AH_ENGINE_WAIT_FILE\"\nexec sleep 60");
+        let o = env.run(
+            "SessionStart",
+            PAYLOAD,
+            Some(&e),
+            &[
+                ("AH_HOOK_TIMEOUT_S", "3"),
+                ("AH_HOOK_TIMEOUT_MS", "400"),
+                ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", slow),
+            ],
+        );
+        (env, o)
+    };
+    // 9000 ms asked in a 3000 ms bound: cut by 3000 - 400 (two graces) - 500 (the wall margin), never at the bound
+    let (env, o) = run("late-cut", "9000");
+    assert_eq!(o.code, 0, "{}", o.err);
+    assert!(!o.err.contains("time limit"), "the fallback ran, not the backstop: {}", o.err);
+    let wall = wall_of(&env);
+    // the cut (the late wait, both kill graces) is logged before the 3000 ms bound; before #969 review it came at the bound or later
+    assert!(wall < 3000, "the late wait ends with room for the fallback: wall_ms={wall}");
+    // true negative: a 1200 ms late wait fits and is kept whole
+    let (env, o) = run("late-fits", "1200");
+    assert_eq!(o.code, 0, "{}", o.err);
+    let wall = wall_of(&env);
+    assert!(wall >= 1200, "a late wait that fits is not shortened: wall_ms={wall}");
+}
+
 /// `launcher.wall_soft_ms` is a per-event table: an event with an entry is judged against it, an event without one against the
 /// `default` (0 = the fail-fast formula), and the soft_limit line carries the wall time.
 #[test]
