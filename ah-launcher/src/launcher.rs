@@ -9,6 +9,7 @@ use crate::blog::Log;
 use crate::cfg::Settings;
 use crate::gate::{self, Right, Sock};
 use crate::limits::{self, Ctr};
+use crate::loadscale;
 use crate::proc::{self, Feed, Opts, Retry, Run};
 use crate::util::{
     env_nonempty, fill, is_exec, json_str_field, json_true_field, now_ms, positive, say, uid,
@@ -68,6 +69,8 @@ struct L {
     ev_s: Option<u64>,
     t0: Instant,
     ignored_knobs: Vec<String>,
+    /// #969: the load factor (permille) fitted once for this call, passed to the hook client (`daemon.load_scale_env`).
+    load: u64,
 }
 
 impl L {
@@ -607,6 +610,7 @@ impl L {
         let (mut raw_only_hit, mut via_norm) = (false, false);
         let mut rule = None;
         let mut via: Option<Ctr> = None; // #920: the class the hold falls in beyond its rule (counted)
+        let mut engine_call = false; // #969: held as an engine call off the local list (its own message)
         if listed {
             for (name, pat) in rules {
                 let Some(pat) = pat.as_str() else { continue };
@@ -637,6 +641,27 @@ impl L {
                     Err(e) => {
                         self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
                     }
+                }
+            }
+            // #969: an engine call the parsed exemption did not pass; only a command word counts, as the engine's
+            // dispatch::capacity_decide
+            if rule.is_none()
+                && let (Some(n), Some(nc)) = (&norm, &ncfg)
+                && let Some(r) = cfg
+                    .get("parsed")
+                    .and_then(|p| p.get("unlisted_rule"))
+                    .and_then(|v| v.as_str())
+                    .filter(|r| !r.is_empty())
+            {
+                let home = Some(nc.ro_home.as_str())
+                    .filter(|h| !h.is_empty())
+                    .and_then(std::env::var_os);
+                if n.cmds
+                    .iter()
+                    .any(|c| shellwords::is_engine_program(c, nc, home.as_deref()))
+                {
+                    rule = Some(r.to_string());
+                    engine_call = true;
                 }
             }
             // a git subcommand that is no known one (an alias, an external command) is held under its own rule
@@ -744,10 +769,12 @@ impl L {
         }
         limits::bump(Ctr::CapacityHold);
         self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
-        let msg = self.s.msg(
-            "dispatch.msg_capacity_hold",
-            &[("tool", tool), ("rule", &rule)],
-        );
+        let key = if engine_call {
+            "dispatch.msg_capacity_hold_engine"
+        } else {
+            "dispatch.msg_capacity_hold"
+        };
+        let msg = self.s.msg(key, &[("tool", tool), ("rule", &rule)]);
         write_out(b"", format!("{msg}\n").as_bytes());
         true
     }
@@ -1018,6 +1045,7 @@ impl L {
             ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
             ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
             ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
+            ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
         })
     }
 
@@ -1046,10 +1074,31 @@ impl L {
             })
     }
 
+    /// #969: the load factor (permille) sampled for this event: the load per core clamped to [1000, `daemon.load_scale_max_permille`]
+    /// and stepped, only for an event in `daemon.load_scale_events`. Sampled once per call, here only; [`Self::load`] is what fits.
+    fn sampled_factor(&self) -> u64 {
+        if self.event.is_empty()
+            || !self
+                .s
+                .list("daemon.load_scale_events")
+                .contains(&self.event)
+        {
+            return 1000;
+        }
+        loadscale::factor_permille(
+            loadscale::per_core(),
+            self.s.num("daemon.load_scale_max_permille"),
+            self.s.num("daemon.load_scale_step_permille"),
+        )
+    }
+
     /// #969: whether an unknown command name is held: always, unless `unknown.risky_only` is 1, then only when the command matches
     /// `script.risky` (as the engine's dispatch::capacity_decide).
     fn capacity_unknown_risky(cfg: &toml::Value, u: Option<&toml::Value>, text: &str) -> bool {
-        if u.and_then(|u| u.get("risky_only")).and_then(|v| v.as_integer()) != Some(1) {
+        if u.and_then(|u| u.get("risky_only"))
+            .and_then(|v| v.as_integer())
+            != Some(1)
+        {
             return true;
         }
         let pat = cfg
@@ -1155,10 +1204,17 @@ impl L {
         ) {
             envs.push((name, p.display().to_string()));
         }
-        let mut slow_max = self.s.num_event(
-            "client.slow_fallback_max_ms",
-            "client.slow_fallback_event_ms",
-            &self.event,
+        // always set (1000 = none), so a value inherited from the parent environment never stands in for this call's own
+        if let Some(name) = Some(self.s.text("daemon.load_scale_env")).filter(|n| !n.is_empty()) {
+            envs.push((name, self.load.to_string()));
+        }
+        let mut slow_max = loadscale::scale(
+            self.s.num_event(
+                "client.slow_fallback_max_ms",
+                "client.slow_fallback_event_ms",
+                &self.event,
+            ),
+            self.load,
         );
         slow_max = slow_max.min(
             self.event_timeout_s()
@@ -1802,6 +1858,7 @@ pub fn run() -> i32 {
         ev_s: None,
         t0,
         ignored_knobs,
+        load: 1000,
     };
     l.guard = l.s.list("dispatch.guard_events").contains(&l.event);
     l.list = l
@@ -1893,14 +1950,26 @@ pub fn run() -> i32 {
     } else {
         0
     };
-    let slow_ms =
-        l.s.num_event(
-            "client.slow_fallback_max_ms",
-            "client.slow_fallback_event_ms",
-            &l.event,
-        )
-        .min(ev_ms);
     let grace_ms = l.grace.as_millis() as u64;
+    // #969: the load factor, sampled once and fitted so the whole plan (cold wait, late wait, both kill graces, the wall margin)
+    // stays inside the event's outer bound; the client and the daemon use this one and never sample themselves
+    let slow_base = l.s.num_event(
+        "client.slow_fallback_max_ms",
+        "client.slow_fallback_event_ms",
+        &l.event,
+    );
+    let avail = ev_ms.saturating_sub(
+        cold_ms
+            .saturating_add(grace_ms.saturating_mul(2))
+            .saturating_add(l.s.num("launcher.wall_hard_margin_ms")),
+    );
+    l.load = loadscale::fit_permille(
+        l.sampled_factor(),
+        slow_base,
+        avail,
+        l.s.num("daemon.load_scale_step_permille"),
+    );
+    let slow_ms = loadscale::scale(slow_base, l.load).min(ev_ms);
     // the soft wall is a per-event setting; 0 (or no entry) keeps the fail-fast formula
     let soft_ms =
         l.s.num_for("launcher.wall_soft_ms", &l.event)

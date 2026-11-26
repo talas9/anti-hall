@@ -94,6 +94,9 @@ pub struct Cfg {
     /// The engine's local, reversible verbs: per entry, its leading words (`*` = any one word) and the flags (words that start
     /// with `-`) that must stand as a whole word somewhere after the program (`config set --check`).
     pub ro_verbs: Vec<String>,
+    /// #969: the shells whose code argument (`bash -c '..'`, and `eval ..`'s words) runs as a command: its command words count as
+    /// the call's own ([`Normalised::cmds`]); a quoted argument of any other program never does.
+    pub ro_shells: Vec<String>,
 }
 
 /// What the parsed read exemption ([`read_only_parts`]) made of one pipeline of a command list.
@@ -262,6 +265,11 @@ pub struct Normalised {
     pub cds: Vec<String>,
     /// #928: how many wrapper-option values were skipped to find a command (`sudo -u bob cmd`).
     pub opt_skips: usize,
+    /// #969: the command words the top level runs (wrappers, assignments and redirections skipped), as written: what is called, never
+    /// an argument that only names a program (`pgrep -f 'ah-engine serve'`).
+    pub cmds: Vec<String>,
+    /// #969: the code a shell named in `ro_shells` runs (`bash -c '..'`, `eval ..`), read again by [`normalise`] for its commands.
+    pub shell_code: Vec<String>,
 }
 
 enum Tok {
@@ -1031,12 +1039,29 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
         }
         nested = next;
     }
+    // #969: the commands of a shell's code (`bash -c '..'`, `eval ..`) are the call's own, `passes` levels deep
+    let mut codes = std::mem::take(&mut n.shell_code);
+    for _ in 0..cfg.passes {
+        let mut next = Vec::new();
+        for c in codes.drain(..) {
+            if let Some((m, _)) = once(unwrap_sub(&c), cfg, 1) {
+                merge(&mut n.cmds, m.cmds);
+                next.extend(m.shell_code);
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        codes = next;
+    }
     Some(n)
 }
 
 /// What one reading of a command found besides its text (see the fields of [`Normalised`]).
 #[derive(Default)]
 struct Found {
+    cmds: Vec<String>,
+    shell_code: Vec<String>,
     gh_unknown: Option<String>,
     unknown_cmds: Vec<String>,
     scripts: Vec<String>,
@@ -1102,6 +1127,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             let at_cmd = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &cfg.wrapper_split_opts, &mut more.opt_skips, &mut splits);
             nested.extend(splits);
             let Some((cmd, at)) = at_cmd else { continue };
+            merge(&mut more.cmds, vec![cmd.to_string()]);
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
@@ -1115,6 +1141,25 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             }
             // a script run by path: the first non-option word after an interpreter (one named by its path too: /bin/sh x), or the
             // command word itself
+            // #969: the code a shell runs is a command line of the call's own (its commands count for engine-unlisted)
+            if cfg.ro_shells.iter().any(|sh| sh == base(cmd)) {
+                let rest = &seg[at + 1..];
+                let code = if cfg.script_inline_flags.is_empty() || base(cmd) == "eval" {
+                    Some(rest.iter().map(|(_, _, r)| r.as_str()).collect::<Vec<_>>().join(" "))
+                } else {
+                    rest.iter().position(|(w, ..)| cfg.script_inline_flags.iter().any(|f| f == w)).and_then(|f| rest.get(f + 1)).map(|(_, _, r)| r.clone())
+                };
+                if let Some(c) = code.filter(|c| !c.trim().is_empty()) {
+                    more.shell_code.push(c);
+                }
+            }
+            // `eval` read as a wrapper (its next word taken for the command): its words are the code it runs
+            if let Some(k) = seg[..at].iter().position(|(w, ..)| base(w) == "eval" && cfg.ro_shells.iter().any(|sh| sh == "eval")) {
+                let c = seg[k + 1..].iter().map(|(_, _, r)| r.as_str()).collect::<Vec<_>>().join(" ");
+                if !c.trim().is_empty() {
+                    more.shell_code.push(c);
+                }
+            }
             if cfg.script_interps.iter().any(|i| i == base(cmd)) {
                 let rest = &seg[at + 1..];
                 let flag = rest.iter().position(|(w, ..)| cfg.script_inline_flags.iter().any(|f| f == w));
@@ -1187,8 +1232,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         }
     }
     emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
-    let Found { gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
-    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips }, nested))
+    let Found { cmds, shell_code, gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips, cmds, shell_code }, nested))
 }
 
 #[cfg(test)]
@@ -1297,6 +1342,16 @@ mod tests {
         assert_eq!(n("sudo -u root ls").unknown_cmds, ["root"], "a wrapper option value is read as the command (a false hold, never a pass)");
         assert!(n("ls -la; cd x; export A=1").unknown_cmds.is_empty());
         assert!(n("\"$x\" a; ./run.sh; foo() { ls; }; >out ls").unknown_cmds.is_empty(), "dynamic words, paths, definitions, redirections");
+        assert_eq!(n("pgrep -fl 'ah-engine serve' && sudo ah-engine status").cmds, ["pgrep", "ah-engine"], "a quoted mention is no command");
+        let sh = Cfg { ro_shells: vec!["bash".into(), "sh".into(), "eval".into()], ..cfg() };
+        let wrapped = Cfg { cmd_wrappers: vec!["eval".into(), "sudo".into()], ..sh.clone() };
+        assert!(normalise("sudo eval \"ah-engine agents stop x\"", &wrapped).unwrap().cmds.contains(&"ah-engine".to_string()), "eval as a wrapper");
+        let cmds = |c: &str| normalise(c, &sh).unwrap().cmds;
+        assert_eq!(cmds("bash -c 'ah-engine agents stop x'"), ["bash", "ah-engine"], "a shell's code is the call's own");
+        assert_eq!(cmds("eval \"ah-engine agents stop x\""), ["eval", "ah-engine"]);
+        assert_eq!(cmds("sh -c \"bash -c 'ah-engine status'\""), ["sh", "bash", "ah-engine"], "nested shells");
+        assert_eq!(cmds("echo 'ah-engine agents stop x'"), ["echo"], "an echo argument is no command");
+        assert_eq!(cmds("grep -r 'bash -c ah-engine' ."), ["grep"]);
         assert!(n("git commit -m \"fix the bug\"").unknown_cmds.is_empty(), "a quoted argument is text, not a command");
         assert_eq!(n("bash x.sh a").scripts, ["x.sh"]);
         assert_eq!(n("sudo ./d.sh").scripts, ["./d.sh"]);

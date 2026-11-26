@@ -42,6 +42,8 @@ thread_local! {
     static REQ: Cell<Option<Req>> = const { Cell::new(None) };
     /// The hook event of the request being served (set by the dispatch, empty outside one).
     static EVENT: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// #969: the load factor (permille) the client passed down for this request; none = unchanged.
+    static LOAD: Cell<Option<u64>> = const { Cell::new(None) };
     /// The state writes the current request staged, in order.
     static STAGED: RefCell<Vec<Staged>> = const { RefCell::new(Vec::new()) };
     /// The grace (ms past the request's hard deadline) after which the script call in progress on this thread may be cut; `None`
@@ -275,10 +277,39 @@ pub fn client_deadline(ms: u64) {
 /// The wall ceiling of a request for `event` (`daemon.request_hard_ms`, or its `daemon.request_hard_event_ms` row), in ms; an
 /// empty event gets the plain ceiling.
 pub fn ceiling_ms(event: &str) -> u64 {
-    crate::defaults::raw("daemon.request_hard_event_ms")
+    let base = crate::defaults::raw("daemon.request_hard_event_ms")
         .get(event)
         .and_then(crate::defaults::V::as_integer)
-        .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v.max(0) as u64)
+        .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v.max(0) as u64);
+    crate::loadscale::scale(base, load_factor(event))
+}
+
+/// #969: the factor (permille, 1000 = unchanged) `event`'s hard ceiling is stretched by: the one the client passed down in the
+/// request ([`set_load_factor`]), for an event in `daemon.load_scale_events` only. The daemon never samples the load itself, so its
+/// cut and the client's wait always use the same factor.
+pub fn load_factor(event: &str) -> u64 {
+    if event.is_empty() || !crate::defaults::list("daemon.load_scale_events").contains(&event) {
+        return 1000;
+    }
+    crate::loadscale::passed_permille(LOAD.with(Cell::get), crate::defaults::num("daemon.load_scale_max_permille"))
+}
+
+/// #969: the load factor the request carries (`Meta::load_permille`, fitted once by the outermost process), clamped to
+/// [1000, `daemon.load_scale_max_permille`]; none = 1000. Reset when the request ends.
+pub fn set_load_factor(v: Option<u64>) {
+    LOAD.with(|c| c.set(v));
+}
+
+/// #969: the load factor of the hook client's own call: the one the ah-hook launcher fitted and passed in `daemon.load_scale_env`
+/// (clamped like a request's), for an event in `daemon.load_scale_events`; none (no launcher, or a launcher that found no room) =
+/// 1000. The client never samples the load itself.
+pub fn client_load_factor(event: &str) -> u64 {
+    if event.is_empty() || !crate::defaults::list("daemon.load_scale_events").contains(&event) {
+        return 1000;
+    }
+    let name = crate::defaults::text("daemon.load_scale_env");
+    let v = Some(name).filter(|n| !n.is_empty()).and_then(|n| std::env::var(n).ok()).and_then(|v| v.trim().parse::<u64>().ok());
+    crate::loadscale::passed_permille(v, crate::defaults::num("daemon.load_scale_max_permille"))
 }
 
 /// The client's fail-fast wait is `soft_ms` (a warning past it); the request is cut at the event's wall ceiling
@@ -301,6 +332,7 @@ fn set_window(soft_ms: u64, hard_ms: u64) {
 /// The request is answered: no deadline on this thread any more. A staged write not committed by now is dropped.
 pub fn end() {
     discard_staged();
+    LOAD.with(|c| c.set(None));
     EVENT.with(|e| *e.borrow_mut() = None);
     REQ.with(|r| r.set(None));
     CHECK_CAP.with(|c| c.set(None));
@@ -311,6 +343,9 @@ pub fn end() {
 /// The request being served on this thread is a dispatch of hook event `event`.
 pub fn set_event(event: &str) {
     EVENT.with(|e| *e.borrow_mut() = Some(event.to_string()));
+    if load_factor(event) > 1000 {
+        crate::metrics::bump("deadline_load_scaled", &[("event", event)]);
+    }
     // the window was set before the event was known: its ceiling is the event's own now (a request cut at its soft wait stays so)
     REQ.with(|r| {
         if let Some(req) = r.get()
@@ -396,6 +431,78 @@ pub fn share(budget: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #969: a load at or under one per core moves no deadline; above it a guard event's ceiling scales (clamped to the max), any
+    /// other event's does not; the daemon uses only the factor the request carries; at the max factor, as the launcher fits it, a cold
+    /// call of every scaled event (Stop under the 10 s wrapper cap, PermissionRequest under its 10 s hook timeout) stays inside its
+    /// outer bound and keeps hard + grace within the client's late wait.
+    #[test]
+    fn load_scales_guard_ceilings_within_the_invariant_and_the_hook_timeout() {
+        let base = |ev: &str| {
+            crate::defaults::raw("daemon.request_hard_event_ms")
+                .get(ev)
+                .and_then(crate::defaults::V::as_integer)
+                .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v as u64)
+        };
+        let max = crate::defaults::num("daemon.load_scale_max_permille");
+        assert!(max > 1000, "shipped on");
+        for f in [None, Some(0), Some(1000)] {
+            set_load_factor(f);
+            assert_eq!(ceiling_ms("PreToolUse"), base("PreToolUse"), "{f:?}: no factor passed, no change");
+            assert_eq!(load_factor("Stop"), 1000);
+        }
+        // the daemon uses only the factor the request carries: a loaded machine with no factor passed changes nothing
+        crate::loadscale::set_test_load(Some(50.0));
+        set_load_factor(None);
+        assert_eq!(ceiling_ms("PreToolUse"), base("PreToolUse"), "the daemon never samples the load itself");
+        set_load_factor(Some(50_000));
+        assert_eq!(load_factor("PreToolUse"), max, "a passed factor is clamped to the max");
+        assert_eq!(ceiling_ms("PreToolUse"), crate::loadscale::scale(base("PreToolUse"), max));
+        assert_eq!(ceiling_ms("Stop"), crate::loadscale::scale(base("Stop"), max));
+        assert_eq!(ceiling_ms("SessionEnd"), base("SessionEnd"), "an event not listed keeps its ceiling");
+        assert_eq!(load_factor(""), 1000);
+        let hooks: serde_json::Value =
+            serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall/hooks/hooks.json"))).unwrap();
+        let num = crate::defaults::num;
+        let (grace, margin) = (num("diagnostics.deadline_grace_cap_ms"), num("client.slow_wait_margin_ms"));
+        // what the ah-hook launcher fits the factor into: the event's outer bound, min(hooks.json timeout, the wrapper cap), less the
+        // cold-start wait, both kill graces and the wall margin (launcher.rs, the wall-clock backstop)
+        let (cap_ms, cold, kill, wall) =
+            (num("client.wrapper_default_timeout_s") * 1000, num("client.cold_guard_wait_ms"), num("client.wrapper_kill_grace_ms"), num("launcher.wall_hard_margin_ms"));
+        for ev in crate::defaults::list("daemon.load_scale_events") {
+            let slow_base = crate::defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", ev);
+            let timeout_ms = hooks["hooks"][ev]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|g| g["hooks"].as_array().into_iter().flatten())
+                .filter_map(|h| h["timeout"].as_u64())
+                .min()
+                .map_or(cap_ms, |s| (s * 1000).min(cap_ms));
+            let avail = timeout_ms.saturating_sub(cold + 2 * kill + wall);
+            let f = crate::loadscale::fit_permille(max, slow_base, avail, num("daemon.load_scale_step_permille"));
+            let slow = crate::loadscale::scale(slow_base, f);
+            // a factor above 1000 is only ever chosen when the whole cold plan fits; with no room the plan stays the unscaled one
+            let plan = cold + slow + 2 * kill + wall;
+            assert!(f == 1000 || plan <= timeout_ms, "{ev}: a cold call at the max factor ({f}) plans {plan} ms of {timeout_ms}");
+            match ev {
+                "PermissionRequest" | "PreToolUse" => assert!(f > 1000 && plan <= timeout_ms, "{ev}: scales and fits ({f}, {plan} of {timeout_ms})"),
+                "Stop" => assert_eq!(f, 1000, "Stop's 9000 ms late wait has no room under the 10 s wrapper cap"),
+                _ => {}
+            }
+            set_load_factor(Some(f));
+            assert!(ceiling_ms(ev) + grace <= slow.saturating_sub(margin), "{ev}: hard {} + grace {grace} within {slow} - {margin}", ceiling_ms(ev));
+        }
+        crate::loadscale::set_test_load(None);
+        end();
+        assert_eq!(load_factor("PreToolUse"), 1000, "the factor ends with the request");
+    }
+
+    /// The two copies of the load-scale module (the engine's and the launcher's) are one file.
+    #[test]
+    fn the_launcher_carries_the_same_loadscale_module() {
+        assert_eq!(include_str!("loadscale.rs"), include_str!("../../ah-launcher/src/loadscale.rs"));
+    }
 
     /// live20.1: `deadline_soft` named the next check to start (ship-it-guard, 0.7 ms mean) for time earlier checks spent. The line now
     /// names the check that was running when the wait ended, with how long it ran and how old the request was.

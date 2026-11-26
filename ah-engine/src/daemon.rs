@@ -1178,6 +1178,8 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     }
     // every hook call reaches the daemon as a dispatch request, so the launcher's build version rides in its environment
     sh.note_hook_version(&meta.env);
+    // #969: the load factor the client passed down, before the window: the event's ceiling is scaled by it
+    crate::deadline::set_load_factor(meta.load_permille);
     if let Some(ms) = meta.deadline_ms {
         crate::deadline::client_window(ms);
     }
@@ -3114,6 +3116,7 @@ mod tests {
                     cfg: String::new(),
                     payload_sha1: None,
                     deadline_ms: None,
+                    load_permille: None,
                     notice: None,
                 };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
@@ -3144,6 +3147,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         };
         let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
