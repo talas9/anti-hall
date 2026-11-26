@@ -171,7 +171,7 @@ fn the_capacity_hold_corpus_is_held_and_passed_by_the_launcher_too() {
         if want == 2 { held += 1 } else { passed += 1 }
     }
     assert!(
-        held >= 272 && passed >= 140,
+        held >= 285 && passed >= 141,
         "corpus read: {held} held, {passed} pass"
     );
 }

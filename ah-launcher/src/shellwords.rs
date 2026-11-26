@@ -169,8 +169,8 @@ fn ro_verb(words: &[String], verbs: &[String]) -> bool {
 }
 
 /// The parsed read exemption of `dispatch.capacity_hold` (`parsed`): the pipelines of a command list the caller's read pattern
-/// must pass, `None` when the list can not be read this way (the exemption then exempts nothing and the rules decide). A `cd` alone
-/// in its pipeline (`ro_skip`) is dropped; an assignment alone (`E=<the engine binary>`, `ro_programs`) is dropped and its variable
+/// must pass, `None` when the list can not be read this way (the exemption then exempts nothing and the rules decide). A bare
+/// `cd <dir>` alone in its pipeline (`ro_skip`, no redirection) is dropped; an assignment alone (`E=<the engine binary>`, `ro_programs`) is dropped and its variable
 /// may stand in a later command word (`"$E" mesh send ..`); an allowed variable in an argument is read as `ro_placeholder`; the
 /// engine's own program with a local verb (`ro_verbs`, no redirection) is a [`Part::Local`]. A heredoc, a substitution, an
 /// assignment in front of a command, a separator outside `ro_seps` and `|`, or any other expansion exempts nothing. `home` is the
@@ -214,7 +214,8 @@ pub fn read_only_parts(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> 
             }
             continue;
         }
-        if pipe.len() == 1 && cfg.ro_skip.iter().any(|s| *s == first[0]) {
+        // only a bare `cd <dir>` is dropped: one with a redirection or more words is left for the read pattern (and so the rules)
+        if pipe.len() == 1 && first.len() <= 2 && !first.iter().any(|w| is_redir(w)) && cfg.ro_skip.iter().any(|s| *s == first[0]) {
             for w in &first[1..] {
                 ro_expand(w, &vars, cfg, home, false)?;
             }
@@ -1248,6 +1249,8 @@ mod tests {
         assert_eq!(parts("ah-engine config set daemon.nice 0 --check"), Some(vec![local("")]));
         assert_eq!(parts("ah-engine agents nudge abc msg hi"), Some(vec![local("")]), "* is any one word");
         assert_eq!(parts("cd x; ls -la"), Some(vec![read("ls -la")]), "the caller's read pattern judges what is left");
+        assert_eq!(parts("cd /tmp > f && ls"), Some(vec![read("cd /tmp > f"), read("ls")]), "a cd with a redirection is not dropped");
+        assert_eq!(parts("cd -P /tmp && ls"), Some(vec![read("cd -P /tmp"), read("ls")]), "only a bare cd <dir> is dropped");
         assert_eq!(parts("A=1 grep x"), Some(vec![read("A=1 grep x")]), "an assignment in front of a command is left for the read pattern to refuse");
         for (cmd, why) in [
             ("ah-engine config set daemon.nice 0", "config set without --check writes"),

@@ -827,8 +827,8 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 }
 
 /// The parsed read exemption (`dispatch.capacity_hold` `parsed`): `command` read as a list of pipelines ([`shellwords::read_only_parts`])
-/// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does or
-/// matches no hold rule (`| python3 -c ..` reading its output). Fails
+/// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does or is a
+/// `parsed.tail_ok` filter (`| jq ..`). Fails
 /// closed: a list that can not be read, or no pipeline at all, exempts nothing.
 pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> bool {
     let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
@@ -836,18 +836,15 @@ pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shel
     !parts.is_empty()
         && parts.iter().all(|p| match p {
             shellwords::Part::Read(t) => capacity_read_only(cfg, t),
-            shellwords::Part::Local(tail) => tail.is_empty() || capacity_read_only(cfg, tail) || !capacity_rule_hit(cfg, &format!("| {tail}")),
+            shellwords::Part::Local(tail) => tail.is_empty() || capacity_read_only(cfg, tail) || capacity_tail_ok(cfg, tail),
         })
 }
 
-/// Whether any hold rule of `dispatch.capacity_hold` matches `text` (a rule that does not compile matches nothing; it is logged
-/// where the rules are matched for the call itself).
-fn capacity_rule_hit(cfg: &defaults::V, text: &str) -> bool {
-    cfg.get("rules").and_then(|v| v.as_table()).is_some_and(|rules| {
-        rules
-            .iter()
-            .any(|(_, pat)| pat.as_str().and_then(|p| regex::RegexBuilder::new(p).case_insensitive(true).build().ok()).is_some_and(|re| re.is_match(text)))
-    })
+/// Whether the pipe tail of an engine-local verb is one of the filters `parsed.tail_ok` names (`jq`, `python3 -m json.tool`), the
+/// whole of it; empty or uncompilable = none (only `read_only` passes a tail then). Code a tail would run (`python3 -c`) is no filter.
+fn capacity_tail_ok(cfg: &defaults::V, tail: &str) -> bool {
+    let pat = cfg.get("parsed").and_then(|p| p.get("tail_ok")).and_then(|v| v.as_str()).unwrap_or_default();
+    !pat.is_empty() && regex::RegexBuilder::new(pat).case_insensitive(true).build().is_ok_and(|re| re.is_match(tail))
 }
 
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
@@ -1735,7 +1732,7 @@ mod tests {
             if want { held += 1 } else { passed += 1 }
         }
         assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
-        assert!(held >= 272 && passed >= 140, "corpus read: {held} held, {passed} pass");
+        assert!(held >= 285 && passed >= 141, "corpus read: {held} held, {passed} pass");
     }
 
     /// #928: the exemptions that kept a false hold away are counted (wrapper_opt, local_tool, trusted_script) and the commands pass.
@@ -1839,9 +1836,12 @@ mod tests {
         assert_eq!(got("gh co 12"), want("gh-unknown-subcommand", "gh_unknown"));
         assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
         assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
-        // #969: the engine's own binary named by its path is no script to read (it is far over the read cap)
+        // #969: an engine call the exemption can not pass (here a redirection) is held as engine-unlisted, never as an unread script
         let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null");
-        assert_eq!((e.rule, e.exempt.contains(&"engine_program")), (None, true));
+        assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
+        // a script that calls the engine is read for what else it does (engine-unlisted is in script.body_skip)
+        std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
+        assert_eq!(got("bash eng.sh"), (None, None));
         assert_eq!(got("ls -la && cd /tmp"), (None, None));
         assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
         std::fs::remove_dir_all(&dir).unwrap();
