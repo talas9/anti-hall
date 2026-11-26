@@ -102,11 +102,12 @@ pub enum Exch {
 /// The longest one exchange waits for its reply: the deadline, extended to the event's `client.slow_fallback_max_ms` less `client.slow_wait_margin_ms` (a daemon
 /// that is alive answers late rather than never; the wrapper's watchdog waits for the whole `client.slow_fallback_max_ms`).
 fn wait_window(deadline: Duration) -> Duration {
-    // #969: a loaded machine stretches a guard event's late wait by the same factor the daemon stretches its ceiling by
+    // #969: a loaded machine stretches a guard event's late wait by the factor the launcher fitted; the request carries the same one
+    // to the daemon, so its ceiling moves with it
     let max = CALL_EVENT.with(|e| {
         let e = e.borrow();
         let ms = defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", &e);
-        Duration::from_millis(crate::loadscale::scale(ms, crate::deadline::load_factor(&e)))
+        Duration::from_millis(crate::loadscale::scale(ms, crate::deadline::client_load_factor(&e)))
     });
     let ends = if max.is_zero() { Duration::ZERO } else { max.saturating_sub(defaults::millis("client.slow_wait_margin_ms")) };
     deadline.max(ends)

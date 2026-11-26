@@ -358,6 +358,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a thread-local slot initialised empty (which code path and cause the probe reads of this thread are attributed to): state, not a tunable",
     ),
     ("src/deadline.rs", "static REQ", "a thread-local slot initialised empty (the request being served): state, not a tunable"),
+    ("src/deadline.rs", "static LOAD", "a thread-local slot initialised empty (#969: the load factor the request carries): state, not a tunable"),
     ("src/deadline.rs", "static EVENT", "a thread-local slot initialised empty (the hook event of the request being served): state, not a tunable"),
     ("src/deadline.rs", "static STAGED", "a thread-local list initialised empty (the state writes a request staged): state, not a tunable"),
     ("src/deadline.rs", "static PEER", "a thread-local slot initialised empty (the connection of the request being served): state, not a tunable"),

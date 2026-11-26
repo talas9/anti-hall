@@ -69,6 +69,8 @@ struct L {
     ev_s: Option<u64>,
     t0: Instant,
     ignored_knobs: Vec<String>,
+    /// #969: the load factor (permille) fitted once for this call, passed to the hook client (`daemon.load_scale_env`).
+    load: u64,
 }
 
 impl L {
@@ -1043,6 +1045,7 @@ impl L {
             ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
             ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
             ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
+            ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
         })
     }
 
@@ -1071,9 +1074,9 @@ impl L {
             })
     }
 
-    /// #969: the factor (permille) a loaded machine stretches this event's late-reply wait by, as the engine's
-    /// deadline::load_factor: only for an event in `daemon.load_scale_events`.
-    fn load_factor(&self) -> u64 {
+    /// #969: the load factor (permille) sampled for this event: the load per core clamped to [1000, `daemon.load_scale_max_permille`]
+    /// and stepped, only for an event in `daemon.load_scale_events`. Sampled once per call, here only; [`Self::load`] is what fits.
+    fn sampled_factor(&self) -> u64 {
         if self.event.is_empty()
             || !self
                 .s
@@ -1201,13 +1204,17 @@ impl L {
         ) {
             envs.push((name, p.display().to_string()));
         }
+        // always set (1000 = none), so a value inherited from the parent environment never stands in for this call's own
+        if let Some(name) = Some(self.s.text("daemon.load_scale_env")).filter(|n| !n.is_empty()) {
+            envs.push((name, self.load.to_string()));
+        }
         let mut slow_max = loadscale::scale(
             self.s.num_event(
                 "client.slow_fallback_max_ms",
                 "client.slow_fallback_event_ms",
                 &self.event,
             ),
-            self.load_factor(),
+            self.load,
         );
         slow_max = slow_max.min(
             self.event_timeout_s()
@@ -1851,6 +1858,7 @@ pub fn run() -> i32 {
         ev_s: None,
         t0,
         ignored_knobs,
+        load: 1000,
     };
     l.guard = l.s.list("dispatch.guard_events").contains(&l.event);
     l.list = l
@@ -1942,16 +1950,26 @@ pub fn run() -> i32 {
     } else {
         0
     };
-    let slow_ms = loadscale::scale(
-        l.s.num_event(
-            "client.slow_fallback_max_ms",
-            "client.slow_fallback_event_ms",
-            &l.event,
-        ),
-        l.load_factor(),
-    )
-    .min(ev_ms);
     let grace_ms = l.grace.as_millis() as u64;
+    // #969: the load factor, sampled once and fitted so the whole plan (cold wait, late wait, both kill graces, the wall margin)
+    // stays inside the event's outer bound; the client and the daemon use this one and never sample themselves
+    let slow_base = l.s.num_event(
+        "client.slow_fallback_max_ms",
+        "client.slow_fallback_event_ms",
+        &l.event,
+    );
+    let avail = ev_ms.saturating_sub(
+        cold_ms
+            .saturating_add(grace_ms.saturating_mul(2))
+            .saturating_add(l.s.num("launcher.wall_hard_margin_ms")),
+    );
+    l.load = loadscale::fit_permille(
+        l.sampled_factor(),
+        slow_base,
+        avail,
+        l.s.num("daemon.load_scale_step_permille"),
+    );
+    let slow_ms = loadscale::scale(slow_base, l.load).min(ev_ms);
     // the soft wall is a per-event setting; 0 (or no entry) keeps the fail-fast formula
     let soft_ms =
         l.s.num_for("launcher.wall_soft_ms", &l.event)

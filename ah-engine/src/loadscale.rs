@@ -47,9 +47,24 @@ pub fn factor_permille(load_per_core: Option<f64>, max: u64, step: u64) -> u64 {
     1000 + if step == 0 { over } else { over - over % step }
 }
 
-/// `ms` scaled by `factor` permille.
+/// `ms` scaled by `factor` permille (the product in 128 bits, so it never saturates before the divide).
 pub fn scale(ms: u64, factor: u64) -> u64 {
-    ms.saturating_mul(factor) / 1000
+    u64::try_from(u128::from(ms) * u128::from(factor) / 1000).unwrap_or(u64::MAX)
+}
+
+/// `factor` lowered until `base_ms` scaled by it fits in `avail_ms` (the outer bound of the call less everything else it plans:
+/// the cold-start wait, the kill graces, the wall margin), never below 1000, rounded down to `step` above 1000 (0 = no rounding).
+/// The outermost process fits the factor once and passes it down, so no inner process waits past the outer one.
+pub fn fit_permille(factor: u64, base_ms: u64, avail_ms: u64, step: u64) -> u64 {
+    let cap = if base_ms == 0 { factor } else { u64::try_from(u128::from(avail_ms) * 1000 / u128::from(base_ms)).unwrap_or(u64::MAX) };
+    let over = factor.min(cap).max(1000) - 1000;
+    1000 + if step == 0 { over } else { over - over % step }
+}
+
+/// A factor passed down by the outer process (a request field, an environment value): clamped to [1000, `max`]; none = 1000. An
+/// inner process never samples the load itself, so it can not disagree with the outer one across a step.
+pub fn passed_permille(v: Option<u64>, max: u64) -> u64 {
+    v.map_or(1000, |f| f.clamp(1000, max.max(1000)))
 }
 
 #[cfg(test)]
@@ -70,7 +85,19 @@ mod tests {
         assert_eq!(factor_permille(Some(3.5), 1000, 250), 1000, "max 1000 = off");
         assert_eq!(factor_permille(Some(3.5), 0, 250), 1000, "max 0 = off");
         assert_eq!(scale(3000, 1500), 4500);
-        assert_eq!(scale(u64::MAX, 2000), u64::MAX / 1000, "saturates");
+        assert_eq!(scale(u64::MAX, 2000), u64::MAX, "saturates only past u64, never in the multiply");
+        assert_eq!(scale(u64::MAX / 1000, 1000), u64::MAX / 1000, "no overflow before the divide");
+        // fitting: Stop's 9000 ms late wait in a 10 s wrapper with a 2000 ms cold wait can not grow at all
+        assert_eq!(fit_permille(2000, 9000, 10_000 - 2000 - 500, 250), 1000);
+        // a 3000 ms wait in 7000 ms of room: at most 2333, stepped down to 2250, and never past the sampled factor
+        assert_eq!(fit_permille(3000, 3000, 7000, 250), 2250);
+        assert_eq!(fit_permille(1500, 3000, 7000, 250), 1500);
+        assert_eq!(fit_permille(2000, 3000, 0, 250), 1000, "no room: unchanged");
+        assert!(scale(3000, fit_permille(2000, 3000, 7000, 250)) <= 7000);
+        assert_eq!(passed_permille(None, 2000), 1000);
+        assert_eq!(passed_permille(Some(5000), 2000), 2000, "clamped to the max");
+        assert_eq!(passed_permille(Some(10), 2000), 1000);
+        assert_eq!(passed_permille(Some(1500), 0), 1000, "max off");
         set_test_load(Some(2.0));
         assert_eq!(per_core(), Some(2.0));
         set_test_load(None);

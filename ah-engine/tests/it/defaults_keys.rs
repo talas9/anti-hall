@@ -280,6 +280,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
             || k.starts_with("web.") // the Command Center server (ah-web) reads its own file; the engine reads only the start-up keys
             || k.starts_with("launcher.") // the hook launcher (ah-launcher, binary ah-hook) reads these; the engine does not
+            || k == "daemon.load_scale_step_permille" // #969: the launcher samples and fits the load factor; the engine only takes the one passed down
             || k.starts_with("files.launcher_") // the launcher's own log, drop counter, spawn lock and spawn log
             || k.starts_with("msg.launcher_") // the launcher's texts
             || k.starts_with("client.wrapper_") // the shell wrapper (`hooks/ah-hook.sh`) reads these before Rust starts

@@ -45,6 +45,10 @@ pub struct Meta {
     /// budgets that could outlast it ([`crate::deadline`]). Absent from an older client: the daemon's own default applies.
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    /// #969: the load factor (permille) the outermost process fitted for this call: the daemon scales the event's hard ceiling by it
+    /// and never samples the load itself. Absent = 1000 (no load, an older client, or no room).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_permille: Option<u64>,
     /// The notice turn the client's plan found (`context.injectGateNoticeTurns`): the daemon counts it, because the plan is made in the
     /// hook client, whose own counters are never read. Absent for a prompt typed by the owner and from an older client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,6 +349,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         }
     }
@@ -429,6 +434,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         };
         crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_secs(60));
@@ -753,6 +759,7 @@ mod tests {
                 cfg: String::new(),
                 payload_sha1: None,
                 deadline_ms: None,
+                load_permille: None,
                 notice: None,
             };
             // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
@@ -787,6 +794,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         };
         let answers = evaluate(&meta, &p, &|_| false, &|_, _, _| {});

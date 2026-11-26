@@ -486,3 +486,8 @@ P ah-engine mesh unread
 H sudo ah-engine config set daemon.nice 0
 H ah-engine doctor --fix
 H ah-engine devswarm ledger
+H bash -c 'ah-engine agents stop x'
+H sh -c "ah-engine config set daemon.nice 0"
+H eval "ah-engine agents stop x"
+P echo 'ah-engine agents stop x'
+P grep -rn "ah-engine config set" .

@@ -509,6 +509,7 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
         ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
         ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
+        ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
     })
 }
 
@@ -1160,6 +1161,7 @@ fn cold_start_kick(args: &Args) -> Option<Outcome> {
         cfg: String::new(),
         payload_sha1: None,
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        load_permille: Some(crate::deadline::client_load_factor(&args.event)).filter(|f| *f > 1000),
         notice: None,
     };
     ask_daemon(&meta, "{}", false); // keep: the answer is empty by construction; the call is for the daemon start
@@ -1280,6 +1282,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         },
         // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        load_permille: Some(crate::deadline::client_load_factor(&args.event)).filter(|f| *f > 1000),
         notice: tele.notice.clone(),
     };
     let session_id = parsed.as_ref().and_then(|p| p.get("session_id")).and_then(Value::as_str).unwrap_or_default().to_string();
