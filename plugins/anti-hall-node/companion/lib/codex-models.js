@@ -27,21 +27,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ROLE_PATTERNS = {
-  frontier: /\bfrontier\b/i,
-  workhorse: /\bworkhorse\b/i,
-  cheap: /\bfast and (?:affordable|efficient)\b/i,
-};
-
-// Aliases so callers can use either the role name or a task-shape synonym.
-const ROLE_ALIASES = {
-  frontier: 'frontier',
-  critic: 'frontier',
-  workhorse: 'workhorse',
-  implement: 'workhorse',
-  cheap: 'cheap',
-  fast: 'cheap',
-};
+// Role patterns and aliases live in codex-model-roles.json (plugin config, no
+// hardcoded phrases here); read per call so an edit takes effect without a restart.
+function loadRoles(opts) {
+  const file = (opts && opts.rolesPath) || path.join(__dirname, 'codex-model-roles.json');
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return { roles: cfg.roles || {}, aliases: cfg.aliases || {} };
+}
 
 function defaultCachePath() {
   return path.join(os.homedir(), '.codex', 'models_cache.json');
@@ -52,15 +44,17 @@ function defaultCachePath() {
  * | 'fast') to a live model slug, or null if it cannot be resolved safely.
  *
  * @param {string} role
- * @param {{cachePath?: string}} [opts] - cachePath override, for tests.
+ * @param {{cachePath?: string, rolesPath?: string}} [opts] - overrides, for tests.
  * @returns {string|null}
  */
 function resolveCodexModel(role, opts) {
   try {
-    const canonicalRole = ROLE_ALIASES[String(role || '').toLowerCase()];
+    const cfg = loadRoles(opts);
+    const canonicalRole = cfg.aliases[String(role || '').toLowerCase()];
     if (!canonicalRole) return null;
-    const pattern = ROLE_PATTERNS[canonicalRole];
-    if (!pattern) return null;
+    const alts = cfg.roles[canonicalRole];
+    if (!Array.isArray(alts) || alts.length === 0) return null;
+    const patterns = alts.map((a) => new RegExp(a, 'i'));
 
     const cachePath = (opts && opts.cachePath) || defaultCachePath();
     if (!fs.existsSync(cachePath)) return null;
@@ -74,7 +68,7 @@ function resolveCodexModel(role, opts) {
       if (!m || typeof m.slug !== 'string') return false;
       if (m.visibility !== 'list') return false; // never select a hidden/experimental model
       const desc = typeof m.description === 'string' ? m.description : '';
-      return pattern.test(desc);
+      return patterns.some((p) => p.test(desc));
     });
     if (candidates.length === 0) return null;
 

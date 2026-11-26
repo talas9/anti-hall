@@ -7,6 +7,16 @@
 > pass against OpenAI's own developer docs, and a local check of the installed
 > Codex CLI on this machine.
 
+> **[UPDATE 2026-11-26 - GPT-6.2.]** Codex CLI 0.171.0 catalog (`~/.codex/models_cache.json`, fetched
+> 2026-11-26) lists, by priority: `gpt-6.2-sol` (1, 500k ctx, "Fast, go-to model for coding and everyday
+> work"), `gpt-6.2-astra` (2, 272k, "Our most capable model for complex coding and professional work"),
+> `gpt-6.1-terra` (3, "Efficient model that excels at visual understanding and computer use"),
+> `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol` (previous/legacy), `gpt-6-luna` ("Fast and affordable model for
+> easier tasks"), `gpt-5.6-sol/terra/luna` (legacy); hidden: `gpt-reserve`, `codex-auto-review`. The wording
+> no longer says "frontier"/"workhorse", so `codex-models.js` role patterns moved to
+> `codex-model-roles.json`. API prices (secondary sources, official page
+> https://learn.chatgpt.com/docs/whats-new/gpt-62-astra-sol not machine-read): Astra $8/$40, Sol $2/$10 per 1M.
+>
 > **[UPDATE 2026-11-04 - GPT-5.6 is no longer the newest Codex generation.]** The local Codex CLI
 > (v0.166.0) catalog `~/.codex/models_cache.json`, fetched 2026-11-04, lists: `gpt-6.1-sol` (priority 1,
 > "latest workhorse model for coding and everyday work"), `gpt-6-astra` ("frontier intelligence for the
