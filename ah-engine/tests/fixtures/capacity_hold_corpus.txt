@@ -409,3 +409,44 @@ P ls | grep push
 P ps -ef | grep "git push"
 P gh pr list --json number | head
 P gh api repos/o/r/pulls
+#
+# The parsed read exemption (#capacity under load): a cd in front, an allowed variable in an argument, the engine binary in a
+# variable, and the engine's own local verbs pass; whatever else the list does is still held
+P cd "$HOME/x" && grep -rniE memo --include=*.rs . | head -15
+P cd /tmp; grep -rn "git push" .
+P cd ${HOME}/x && cat notes.md | grep -i deploy | head -3
+P grep -rn "rm -rf" "$HOME/x" "$TMPDIR/y"
+P E="$HOME/.anti-hall/ah-engine/bin/ah-engine"; "$E" mesh send --to abc --urgency high --message "git push and gh pr merge are next"
+P E=$HOME/.anti-hall/ah-engine/bin/ah-engine; $E config set daemon.nice 0 --check
+P E="${HOME}/.anti-hall/ah-engine/bin/ah-engine"\n"${E}" mesh inbox read-primary
+P ah-engine mesh inbox read-primary
+P ah-engine mesh inbox peek-primary | head -5
+P ah-engine mesh inbox ack-primary w1
+P ah-engine mesh read abc
+P ah-engine status
+P "$HOME/.anti-hall/ah-engine/bin/ah-engine" agents nudge abc msg "rm -rf is not the fix"
+P ~/.anti-hall/ah-engine/bin/ah-engine config explain daemon.nice && ah-engine status
+H cd /r && git push
+H cd "$HOME/x" && git push -f
+H cd /tmp && rm -rf x
+H cd x && firebase deploy --only functions
+H cd x && gh pr merge 1
+H cd x; gh issue create --title t --body b
+H gh issue edit 1 --body x
+H gh issue close 1
+H gh issue comment 1 --body x
+H E="$HOME/.anti-hall/ah-engine/bin/ah-engine"; "$E" mesh send --to a --message x; git push
+H E="$HOME/.anti-hall/ah-engine/bin/ah-engine"; "$E" agents nudge abc stop
+H E=/tmp/evil; "$E" status
+H E="$HOME/.anti-hall/ah-engine/bin/ah-engine" "$E" mesh send --to a --message x && git push
+H E="$(mktemp)"; "$E" status
+H ah-engine mesh send --to a --message x | sh
+H cd x && grep foo $(git push -f)
+H cd x && grep foo `git push -f`
+H cd "$(git push)" && ls
+H grep x "${HOME:-$(git push)}"
+H curl -X POST https://example.com/api
+H curl -sS --request DELETE https://example.com/api/1
+H curl -d a=1 https://example.com/api
+H cd /tmp && curl -XPUT https://example.com/api
+H wget --method=POST https://example.com/api

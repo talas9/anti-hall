@@ -75,6 +75,163 @@ pub struct Cfg {
     /// `--opt=VALUE` / `-oVALUE`) whose value is itself a command line (`env -S './x.sh'`): the value is read again as a command,
     /// so a script it names is resolved like a top-level one.
     pub wrapper_split_opts: Vec<(String, Vec<String>)>,
+    /// The parsed read exemption ([`read_only_parts`]): the separators that end one command of a list (`&&`, `;`, a newline ...;
+    /// empty = the exemption is off). A pipe `|` joins the commands of one pipeline; any other separator exempts nothing.
+    pub ro_seps: Vec<String>,
+    /// The commands that only change the directory (`cd`, `pushd`), dropped from the list when alone in their pipeline.
+    pub ro_skip: Vec<String>,
+    /// The variables whose `$NAME` / `${NAME}` may stand in an argument (`HOME`, `PWD`, `TMPDIR`): set by the environment, a path
+    /// or a name, never a flag. Any other expansion exempts nothing.
+    pub ro_vars: Vec<String>,
+    /// The word an allowed variable is read as (the read exemption's pattern then sees no `$`).
+    pub ro_placeholder: String,
+    /// The variable that holds the home directory (`HOME`): a leading `$HOME/`, `${HOME}/` or the home path itself reads as `~/`
+    /// in a command word and an assignment's value.
+    pub ro_home: String,
+    /// The engine's own binary, as a command word or an assignment's value may spell it (`ah-engine`, `~/.anti-hall/...`). Only a
+    /// variable assigned one of these (`E=<path>; "$E" status`) may stand in a command word.
+    pub ro_programs: Vec<String>,
+    /// The engine's local, reversible verbs: per entry, its leading words (`*` = any one word) and the flags (words that start
+    /// with `-`) that must stand as a whole word somewhere after the program (`config set --check`).
+    pub ro_verbs: Vec<String>,
+}
+
+/// What the parsed read exemption ([`read_only_parts`]) made of one pipeline of a command list.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Part {
+    /// A pipeline as text, its expansions resolved: the caller's read pattern must match all of it.
+    Read(String),
+    /// An engine verb of `ro_verbs` and the rest of its pipeline (`head -5 | grep x`, empty = none), which the caller's read
+    /// pattern must match.
+    Local(String),
+}
+
+/// `word` with its expansions resolved for the parsed read exemption, `None` when one is not allowed: a variable assigned earlier
+/// in the list (`vars`) reads as its value, an allowed variable (`ro_vars`) as `ro_placeholder` (in a command word only the home
+/// variable at its start, read as `~`); `${..}` with an operator, `${!x}`, a positional or special parameter, `$(..)`, a backtick
+/// and `<(..)`/`>(..)` exempt nothing.
+fn ro_expand(word: &str, vars: &[(String, String)], cfg: &Cfg, home: Option<&std::ffi::OsStr>, command: bool) -> Option<String> {
+    if word.contains('`') || word.contains("<(") || word.contains(">(") {
+        return None;
+    }
+    let name_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let cs: Vec<char> = word.chars().collect();
+    let (mut out, mut i) = (String::new(), 0);
+    while i < cs.len() {
+        if cs[i] != '$' {
+            out.push(cs[i]);
+            i += 1;
+            continue;
+        }
+        let (name, next): (String, usize) = if cs.get(i + 1) == Some(&'{') {
+            let close = cs[i + 2..].iter().position(|c| *c == '}')? + i + 2;
+            (cs[i + 2..close].iter().collect(), close + 1)
+        } else {
+            let len = cs[i + 1..].iter().take_while(|c| name_char(**c)).count();
+            (cs[i + 1..i + 1 + len].iter().collect(), i + 1 + len)
+        };
+        if name.is_empty() || !name.chars().all(name_char) || name.starts_with(|c: char| c.is_ascii_digit()) {
+            return None;
+        }
+        if let Some((_, v)) = vars.iter().find(|(k, _)| *k == name) {
+            out.push_str(v);
+        } else if command {
+            if i != 0 || cfg.ro_home.is_empty() || name != cfg.ro_home {
+                return None;
+            }
+            out.push('~');
+        } else if cfg.ro_vars.iter().any(|v| *v == name) {
+            out.push_str(&cfg.ro_placeholder);
+        } else {
+            return None;
+        }
+        i = next;
+    }
+    let under_home = home.and_then(|h| h.to_str()).filter(|h| command && !h.is_empty()).and_then(|h| out.strip_prefix(h)).filter(|r| r.starts_with('/'));
+    Some(under_home.map_or_else(|| out.clone(), |rest| format!("~{rest}")))
+}
+
+/// Whether the words after the engine program are one of its local verbs (`ro_verbs`).
+fn ro_verb(words: &[String], verbs: &[String]) -> bool {
+    verbs.iter().any(|v| {
+        let (flags, lead): (Vec<&str>, Vec<&str>) = v.split_whitespace().partition(|w| w.starts_with('-'));
+        !lead.is_empty()
+            && lead.len() <= words.len()
+            && lead.iter().zip(words).all(|(p, w)| *p == "*" || *p == w.as_str())
+            && flags.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
+    })
+}
+
+/// The parsed read exemption of `dispatch.capacity_hold` (`parsed`): the pipelines of a command list the caller's read pattern
+/// must pass, `None` when the list can not be read this way (the exemption then exempts nothing and the rules decide). A `cd` alone
+/// in its pipeline (`ro_skip`) is dropped; an assignment alone (`E=<the engine binary>`, `ro_programs`) is dropped and its variable
+/// may stand in a later command word (`"$E" mesh send ..`); an allowed variable in an argument is read as `ro_placeholder`; the
+/// engine's own program with a local verb (`ro_verbs`, no redirection) is a [`Part::Local`]. A heredoc, a substitution, an
+/// assignment in front of a command, a separator outside `ro_seps` and `|`, or any other expansion exempts nothing. `home` is the
+/// home directory's path (a command word that starts with it reads as `~/`).
+pub fn read_only_parts(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> Option<Vec<Part>> {
+    if cfg.ro_seps.is_empty() {
+        return None;
+    }
+    let mut lists: Vec<Vec<Vec<String>>> = vec![vec![Vec::new()]];
+    for t in split(cmd, cfg)? {
+        match t {
+            Tok::Body(..) => return None,
+            Tok::Sep(s) if cfg.ro_seps.iter().any(|x| x == s) => lists.push(vec![Vec::new()]),
+            Tok::Sep("|") => lists.last_mut()?.push(Vec::new()),
+            Tok::Sep(_) => return None,
+            Tok::Word(w, ..) => lists.last_mut()?.last_mut()?.push(w),
+        }
+    }
+    let mut vars: Vec<(String, String)> = Vec::new();
+    let mut parts = Vec::new();
+    for pipe in lists {
+        if pipe.len() == 1 && pipe[0].is_empty() {
+            continue;
+        }
+        if pipe.iter().any(Vec::is_empty) {
+            return None;
+        }
+        let first = &pipe[0];
+        if first.iter().all(|w| is_assign(w)) {
+            if pipe.len() > 1 {
+                return None;
+            }
+            for w in first {
+                let (k, v) = w.split_once('=')?;
+                let v = ro_expand(v, &vars, cfg, home, true)?;
+                if !cfg.ro_programs.iter().any(|p| *p == v) {
+                    return None;
+                }
+                vars.retain(|(n, _)| n != k);
+                vars.push((k.to_string(), v));
+            }
+            continue;
+        }
+        if pipe.len() == 1 && cfg.ro_skip.iter().any(|s| *s == first[0]) {
+            for w in &first[1..] {
+                ro_expand(w, &vars, cfg, home, false)?;
+            }
+            continue;
+        }
+        let prog = ro_expand(&first[0], &vars, cfg, home, true)?;
+        let args = first[1..].iter().map(|w| ro_expand(w, &vars, cfg, home, false)).collect::<Option<Vec<_>>>()?;
+        let mut tail = Vec::new();
+        for el in &pipe[1..] {
+            tail.push(el.iter().map(|w| ro_expand(w, &vars, cfg, home, false)).collect::<Option<Vec<_>>>()?.join(" "));
+        }
+        let tail = tail.join(" | ");
+        if cfg.ro_programs.iter().any(|p| *p == prog) {
+            if args.iter().any(|w| is_redir(w)) || !ro_verb(&args, &cfg.ro_verbs) {
+                return None;
+            }
+            parts.push(Part::Local(tail));
+        } else {
+            let head = std::iter::once(prog).chain(args).collect::<Vec<_>>().join(" ");
+            parts.push(Part::Read(if tail.is_empty() { head } else { format!("{head} | {tail}") }));
+        }
+    }
+    Some(parts)
 }
 
 /// A command read the shell's way.
@@ -1055,6 +1212,64 @@ mod tests {
             ..Cfg::default()
         }
     }
+    fn ro_cfg() -> Cfg {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        Cfg {
+            ro_seps: v(&["&&", ";", "\n", "||", "&"]),
+            ro_skip: v(&["cd", "pushd"]),
+            ro_vars: v(&["HOME", "TMPDIR"]),
+            ro_placeholder: "_".into(),
+            ro_home: "HOME".into(),
+            ro_programs: v(&["ah-engine", "~/.anti-hall/ah-engine/bin/ah-engine"]),
+            ro_verbs: v(&["mesh send", "status", "config set --check", "agents nudge * msg"]),
+            ..cfg()
+        }
+    }
+
+    /// The parsed read exemption: a cd in front is dropped, an allowed variable reads as the placeholder, the engine binary in a
+    /// variable resolves, an engine-local verb is a Local part; anything it can not vouch for gives no parts at all.
+    #[test]
+    fn read_only_parts_reads_lists_variables_and_engine_verbs() {
+        let c = ro_cfg();
+        let home = Some(std::ffi::OsStr::new("/Users/me"));
+        let parts = |cmd: &str| read_only_parts(cmd, &c, home);
+        let read = |t: &str| Part::Read(t.to_string());
+        let local = |t: &str| Part::Local(t.to_string());
+        assert_eq!(parts("cd \"$HOME/x\" && grep -rn memo . | head -15"), Some(vec![read("grep -rn memo . | head -15")]));
+        assert_eq!(parts("grep x \"${TMPDIR}/y\" $HOME"), Some(vec![read("grep x _/y _")]));
+        assert_eq!(parts("E=\"$HOME/.anti-hall/ah-engine/bin/ah-engine\"; \"$E\" mesh send --to a --message \"git push\""), Some(vec![local("")]));
+        assert_eq!(parts("E=/Users/me/.anti-hall/ah-engine/bin/ah-engine; $E status | head -3"), Some(vec![local("head -3")]), "the home path reads as ~");
+        assert_eq!(parts("ah-engine config set daemon.nice 0 --check"), Some(vec![local("")]));
+        assert_eq!(parts("ah-engine agents nudge abc msg hi"), Some(vec![local("")]), "* is any one word");
+        assert_eq!(parts("cd x; ls -la"), Some(vec![read("ls -la")]), "the caller's read pattern judges what is left");
+        for (cmd, why) in [
+            ("ah-engine config set daemon.nice 0", "config set without --check writes"),
+            ("ah-engine config set daemon.nice 0 --check=x", "the flag must stand as a whole word"),
+            ("ah-engine agents nudge abc stop", "a verb not on the list"),
+            ("ah-engine --json status", "the verb words lead"),
+            ("ah-engine status >out", "a redirection"),
+            ("E=/tmp/evil; \"$E\" status", "an assignment of anything but the engine"),
+            ("E=ah-engine \"$E\" status", "a prefix assignment resolves nothing"),
+            ("$X status", "a variable in a command word not assigned earlier"),
+            ("$TMPDIR/ah-engine status", "only the home variable leads a command word"),
+            ("grep x \"$PAT\"", "a variable not on the list"),
+            ("grep x \"${HOME:-/tmp}\"", "an expansion with an operator"),
+            ("grep x \"${!HOME}\"", "an indirect expansion"),
+            ("grep x \"$1\" \"$@\"", "positional and special parameters"),
+            ("grep x \"$(git push)\"", "a substitution"),
+            ("grep x `date`", "a backtick"),
+            ("cat <(git push)", "a process substitution"),
+            ("cd \"$(git push)\" && ls", "a substitution in a cd"),
+            ("cat <<EOF\nx\nEOF", "a heredoc"),
+            ("grep x |& head", "a separator outside the list"),
+            ("A=1 grep x", "an assignment in front of a command"),
+            ("grep x | | head", "an empty pipeline element"),
+        ] {
+            assert_eq!(parts(cmd), None, "{why}: {cmd:?}");
+        }
+        assert_eq!(read_only_parts("cd x; ls", &cfg(), home), None, "no separators = off");
+    }
+
     fn n(c: &str) -> Normalised {
         normalise(c, &cfg()).unwrap_or_else(|| panic!("balanced: {c}"))
     }

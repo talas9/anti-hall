@@ -587,6 +587,16 @@ impl L {
         {
             return false;
         }
+        // the parsed read exemption: a list of plain reads and engine-local verbs read word by word, as
+        // dispatch::capacity_decide
+        if listed
+            && ncfg
+                .as_ref()
+                .is_some_and(|c| self.capacity_parsed_read(cfg, command, c))
+        {
+            limits::bump(Ctr::CapacityParsedRead);
+            return false;
+        }
         // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
         let mut texts: Vec<&str> = match &norm {
             Some(n) if n.stripped => vec![n.text.as_str()],
@@ -991,7 +1001,32 @@ impl L {
                         .collect()
                 })
                 .unwrap_or_default(),
+            ro_seps: strs(cfg.get("parsed").and_then(|p| p.get("seps"))),
+            ro_skip: strs(cfg.get("parsed").and_then(|p| p.get("skip"))),
+            ro_vars: strs(cfg.get("parsed").and_then(|p| p.get("vars"))),
+            ro_placeholder: one(cfg.get("parsed").and_then(|p| p.get("placeholder"))),
+            ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
+            ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
+            ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
         })
+    }
+
+    /// The parsed read exemption (`dispatch.capacity_hold` `parsed`), as the engine's dispatch::capacity_parsed_read: each pipeline
+    /// of the list is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does.
+    fn capacity_parsed_read(&self, cfg: &toml::Value, command: &str, ncfg: &shellwords::Cfg) -> bool {
+        let home = Some(ncfg.ro_home.as_str())
+            .filter(|h| !h.is_empty())
+            .and_then(std::env::var_os);
+        let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else {
+            return false;
+        };
+        !parts.is_empty()
+            && parts.iter().all(|p| match p {
+                shellwords::Part::Read(t) => self.capacity_read_only(cfg, t),
+                shellwords::Part::Local(tail) => {
+                    tail.is_empty() || self.capacity_read_only(cfg, tail)
+                }
+            })
     }
 
     /// #901/#904: whether `command` is a plain read that passes dispatch.capacity_hold whatever words it names: the whole command

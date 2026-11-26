@@ -502,6 +502,13 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
             .and_then(|t| t.as_table())
             .map(|t| t.iter().map(|(k, v)| (k.to_string(), strs(Some(v)))).collect())
             .unwrap_or_default(),
+        ro_seps: strs(cfg.get("parsed").and_then(|p| p.get("seps"))),
+        ro_skip: strs(cfg.get("parsed").and_then(|p| p.get("skip"))),
+        ro_vars: strs(cfg.get("parsed").and_then(|p| p.get("vars"))),
+        ro_placeholder: one(cfg.get("parsed").and_then(|p| p.get("placeholder"))),
+        ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
+        ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
+        ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
     })
 }
 
@@ -534,6 +541,12 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         exempt.push("wrapper_opt");
     }
     if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) {
+        return Decision { exempt, ..none };
+    }
+    // the parsed read exemption: a list of plain reads and engine-local verbs, read word by word (a `cd` in front, an allowed
+    // variable in an argument, `E=<the engine binary>; "$E" <local verb>`), each pipeline matched by the same read pattern
+    if ncfg.as_ref().is_some_and(|c| capacity_parsed_read(cfg, command, c)) {
+        exempt.push("parsed_read");
         return Decision { exempt, ..none };
     }
     // #918 review: a command the reading can not balance (a quote or a substitution left open) is matched quote-blind otherwise,
@@ -792,6 +805,19 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
         Some(Ok(unless)) => !unless.is_match(command),
         Some(Err(())) => false,
     }
+}
+
+/// The parsed read exemption (`dispatch.capacity_hold` `parsed`): `command` read as a list of pipelines ([`shellwords::read_only_parts`])
+/// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does. Fails
+/// closed: a list that can not be read, or no pipeline at all, exempts nothing.
+pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> bool {
+    let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+    let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else { return false };
+    !parts.is_empty()
+        && parts.iter().all(|p| match p {
+            shellwords::Part::Read(t) => capacity_read_only(cfg, t),
+            shellwords::Part::Local(tail) => tail.is_empty() || capacity_read_only(cfg, tail),
+        })
 }
 
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
