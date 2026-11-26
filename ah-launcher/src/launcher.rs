@@ -9,6 +9,7 @@ use crate::blog::Log;
 use crate::cfg::Settings;
 use crate::gate::{self, Right, Sock};
 use crate::limits::{self, Ctr};
+use crate::loadscale;
 use crate::proc::{self, Feed, Opts, Retry, Run};
 use crate::util::{
     env_nonempty, fill, is_exec, json_str_field, json_true_field, now_ms, positive, say, uid,
@@ -1046,10 +1047,31 @@ impl L {
             })
     }
 
+    /// #969: the factor (permille) a loaded machine stretches this event's late-reply wait by, as the engine's
+    /// deadline::load_factor: only for an event in `daemon.load_scale_events`.
+    fn load_factor(&self) -> u64 {
+        if self.event.is_empty()
+            || !self
+                .s
+                .list("daemon.load_scale_events")
+                .contains(&self.event)
+        {
+            return 1000;
+        }
+        loadscale::factor_permille(
+            loadscale::per_core(),
+            self.s.num("daemon.load_scale_max_permille"),
+            self.s.num("daemon.load_scale_step_permille"),
+        )
+    }
+
     /// #969: whether an unknown command name is held: always, unless `unknown.risky_only` is 1, then only when the command matches
     /// `script.risky` (as the engine's dispatch::capacity_decide).
     fn capacity_unknown_risky(cfg: &toml::Value, u: Option<&toml::Value>, text: &str) -> bool {
-        if u.and_then(|u| u.get("risky_only")).and_then(|v| v.as_integer()) != Some(1) {
+        if u.and_then(|u| u.get("risky_only"))
+            .and_then(|v| v.as_integer())
+            != Some(1)
+        {
             return true;
         }
         let pat = cfg
@@ -1155,10 +1177,13 @@ impl L {
         ) {
             envs.push((name, p.display().to_string()));
         }
-        let mut slow_max = self.s.num_event(
-            "client.slow_fallback_max_ms",
-            "client.slow_fallback_event_ms",
-            &self.event,
+        let mut slow_max = loadscale::scale(
+            self.s.num_event(
+                "client.slow_fallback_max_ms",
+                "client.slow_fallback_event_ms",
+                &self.event,
+            ),
+            self.load_factor(),
         );
         slow_max = slow_max.min(
             self.event_timeout_s()
@@ -1893,13 +1918,15 @@ pub fn run() -> i32 {
     } else {
         0
     };
-    let slow_ms =
+    let slow_ms = loadscale::scale(
         l.s.num_event(
             "client.slow_fallback_max_ms",
             "client.slow_fallback_event_ms",
             &l.event,
-        )
-        .min(ev_ms);
+        ),
+        l.load_factor(),
+    )
+    .min(ev_ms);
     let grace_ms = l.grace.as_millis() as u64;
     // the soft wall is a per-event setting; 0 (or no entry) keeps the fail-fast formula
     let soft_ms =

@@ -33,6 +33,11 @@ use std::path::{Path, PathBuf};
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
     (
+        "src/loadscale.rs",
+        "static TEST_LOAD",
+        "the test-only stand-in for the load average (cfg(test), none = no load) so a loaded test machine moves no deadline: test state, not a tunable",
+    ),
+    (
         "src/transcript/scan.rs",
         "static FREED",
         "the condition variable that wakes a request waiting for its turn at reading a transcript window: synchronisation state, not a tunable",

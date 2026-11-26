@@ -63,12 +63,8 @@ pub fn build(i: &Inputs<'_>) -> Value {
     let (now, cpu_us) = (crate::health::now_ms(), (i.cpu_s * 1_000_000.0) as u64);
     let (prev_at, prev_cpu) = (PREV_AT_MS.swap(now, Relaxed), PREV_CPU_US.swap(cpu_us, Relaxed));
     let cpu_permille = if prev_at == 0 || now <= prev_at { Value::Null } else { json!(cpu_us.saturating_sub(prev_cpu) / (now - prev_at)) };
-    let mut load = [0f64; 1];
-    // SAFETY: getloadavg fills at most the number of doubles asked for, and the array holds that many.
-    let got = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
     json!({"version": i.version, "plugin_version": i.plugin_version, "hook_version": i.hook_version, "build_sha": build_sha(), "pid": std::process::id(), "uptime_s": i.uptime_s, "rss_kb": i.rss_kb, "footprint_kb": i.footprint_kb, "cpu_s": i.cpu_s, "cpu_permille": cpu_permille,
         "requests": i.requests, "busy_replies": i.busy_replies, "slow_replies": i.slow_replies, "errors": i.errors, "panics": i.panics,
         "queue_depth": i.queue_depth, "workers": i.workers, "budget_mask": i.budget_mask, "restarts": i.restarts, "config_version": i.config_version,
-        "load_per_core": (got >= 1).then(|| load[0] / cores), "at_ms": now})
+        "load_per_core": crate::loadscale::per_core(), "at_ms": now})
 }

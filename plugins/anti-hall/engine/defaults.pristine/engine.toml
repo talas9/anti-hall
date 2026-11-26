@@ -554,6 +554,24 @@ value = "fds"
 doc = "Detail of the fds state line. {open} descriptors open, {limit} the soft limit, {watch} the descriptors the file watcher holds."
 value = "open={open} limit={limit} watch={watch}"
 
+[daemon.load_scale_max_permille]
+doc = "#969: the most a loaded machine stretches a guard's wall time, in permille (2000 = twice). Under load a guard check needs more wall time, not a hold: for an event in daemon.load_scale_events the request's hard ceiling (daemon.request_hard_ms or its daemon.request_hard_event_ms row) and the late-reply wait (client.slow_fallback_max_ms or its row; the client and the ah-hook watchdog alike) are multiplied by the 1-minute load average per core, clamped to [1000, this] and rounded down to daemon.load_scale_step_permille; client.deadline_ms (the fail-fast wait) never moves. Scaling both by one factor keeps hard + diagnostics.deadline_grace_cap_ms within slow_fallback - client.slow_wait_margin_ms. Bound: the worst-case late wait is slow_fallback x this, which must stay well under the event's hook timeout (hooks.json): at 2000, PreToolUse 3000 ms -> 6000 of 45 s, PermissionRequest 6000 of 10 s, Stop 9000 -> 18000 of 30 s (at most 60 %; a test holds every listed event to it). 1000 (or less) = off. Each request served with a factor above 1000 is counted (deadline_load_scaled)."
+value = 2000
+min = 0
+max = 3000
+unit = "permille"
+
+[daemon.load_scale_step_permille]
+doc = "#969: the step daemon.load_scale_max_permille's factor is rounded down to (250 = 1, 1.25, 1.5 ...), so the daemon, the client and the ah-hook watchdog, which each read the load average a moment apart, land on the same factor. 0 = no rounding."
+value = 250
+min = 0
+max = 1000
+unit = "permille"
+
+[daemon.load_scale_events]
+doc = "#969: the hook events whose deadlines scale with load (daemon.load_scale_max_permille): the guard events, whose late answer is worth waiting for; every other event keeps its deadlines: SubagentStop's late wait (9000 ms) is already 90 % of its 10 s hook timeout and SessionEnd's hook timeout is 5 s, so neither has room."
+value = ["PreToolUse", "PermissionRequest", "Stop"]
+
 [daemon.nice]
 doc = "`nice` increment applied to the daemon process. 0 (the default) = normal priority: the daemon is on the critical path of every tool call (each guard waits on its answer), so a positive value makes it lose the CPU to the very load it must stay ahead of, misses guard deadlines (deadline_cut shed and hard_deadline) and sends calls down the capacity path. Raise it only on a machine where the engine must yield to other work."
 value = 0
@@ -2914,3 +2932,7 @@ value = { kind = "counter", unit = "drains", labels = [] }
 [metric.daemon_exits]
 doc = "Daemon exits begun, by kind (health.exit_kinds): idle, rss, memory, handoff, sigterm, stall, and the rest. Counted when the drain begins."
 value = { kind = "counter", unit = "exits", labels = ["kind"] }
+
+[metric.deadline_load_scaled]
+doc = "#969: guard requests whose deadlines a loaded machine stretched (daemon.load_scale_max_permille), by hook event."
+value = { kind = "counter", unit = "requests", labels = ["event"] }

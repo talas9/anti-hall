@@ -275,10 +275,25 @@ pub fn client_deadline(ms: u64) {
 /// The wall ceiling of a request for `event` (`daemon.request_hard_ms`, or its `daemon.request_hard_event_ms` row), in ms; an
 /// empty event gets the plain ceiling.
 pub fn ceiling_ms(event: &str) -> u64 {
-    crate::defaults::raw("daemon.request_hard_event_ms")
+    let base = crate::defaults::raw("daemon.request_hard_event_ms")
         .get(event)
         .and_then(crate::defaults::V::as_integer)
-        .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v.max(0) as u64)
+        .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v.max(0) as u64);
+    crate::loadscale::scale(base, load_factor(event))
+}
+
+/// #969: the factor (permille, 1000 = unchanged) a loaded machine stretches `event`'s hard ceiling and late-reply wait by: the load
+/// average per core clamped to [1000, `daemon.load_scale_max_permille`] and stepped by `daemon.load_scale_step_permille`, for an
+/// event in `daemon.load_scale_events` only; the client and the ah-hook watchdog compute the same.
+pub fn load_factor(event: &str) -> u64 {
+    if event.is_empty() || !crate::defaults::list("daemon.load_scale_events").contains(&event) {
+        return 1000;
+    }
+    crate::loadscale::factor_permille(
+        crate::loadscale::per_core(),
+        crate::defaults::num("daemon.load_scale_max_permille"),
+        crate::defaults::num("daemon.load_scale_step_permille"),
+    )
 }
 
 /// The client's fail-fast wait is `soft_ms` (a warning past it); the request is cut at the event's wall ceiling
@@ -311,6 +326,9 @@ pub fn end() {
 /// The request being served on this thread is a dispatch of hook event `event`.
 pub fn set_event(event: &str) {
     EVENT.with(|e| *e.borrow_mut() = Some(event.to_string()));
+    if load_factor(event) > 1000 {
+        crate::metrics::bump("deadline_load_scaled", &[("event", event)]);
+    }
     // the window was set before the event was known: its ceiling is the event's own now (a request cut at its soft wait stays so)
     REQ.with(|r| {
         if let Some(req) = r.get()
@@ -396,6 +414,57 @@ pub fn share(budget: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #969: a load at or under one per core moves no deadline; above it a guard event's ceiling scales (clamped to the max), any
+    /// other event's does not; at the max factor every scaled event keeps hard + grace within the client's late wait, and that wait
+    /// stays at most 60 % of the event's hook timeout.
+    #[test]
+    fn load_scales_guard_ceilings_within_the_invariant_and_the_hook_timeout() {
+        let base = |ev: &str| {
+            crate::defaults::raw("daemon.request_hard_event_ms")
+                .get(ev)
+                .and_then(crate::defaults::V::as_integer)
+                .map_or_else(|| crate::defaults::num("daemon.request_hard_ms"), |v| v as u64)
+        };
+        let max = crate::defaults::num("daemon.load_scale_max_permille");
+        assert!(max > 1000, "shipped on");
+        for load in [None, Some(0.4), Some(1.0)] {
+            crate::loadscale::set_test_load(load);
+            assert_eq!(ceiling_ms("PreToolUse"), base("PreToolUse"), "{load:?}: no change at or under one per core");
+            assert_eq!(load_factor("Stop"), 1000);
+        }
+        crate::loadscale::set_test_load(Some(50.0));
+        assert_eq!(load_factor("PreToolUse"), max, "clamped to the max");
+        assert_eq!(ceiling_ms("PreToolUse"), crate::loadscale::scale(base("PreToolUse"), max));
+        assert_eq!(ceiling_ms("Stop"), crate::loadscale::scale(base("Stop"), max));
+        assert_eq!(ceiling_ms("SessionEnd"), base("SessionEnd"), "an event not listed keeps its ceiling");
+        assert_eq!(load_factor(""), 1000);
+        let hooks: serde_json::Value =
+            serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall/hooks/hooks.json"))).unwrap();
+        let (grace, margin) = (crate::defaults::num("diagnostics.deadline_grace_cap_ms"), crate::defaults::num("client.slow_wait_margin_ms"));
+        for ev in crate::defaults::list("daemon.load_scale_events") {
+            let slow = crate::loadscale::scale(crate::defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", ev), max);
+            assert!(ceiling_ms(ev) + grace <= slow.saturating_sub(margin), "{ev}: hard {} + grace {grace} within {slow} - {margin}", ceiling_ms(ev));
+            let timeout_ms = hooks["hooks"][ev]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|g| g["hooks"].as_array().into_iter().flatten())
+                .filter_map(|h| h["timeout"].as_u64())
+                .min()
+                .map(|s| s * 1000);
+            if let Some(t) = timeout_ms {
+                assert!(slow * 100 <= t * 60, "{ev}: the late wait {slow} ms stays at most 60 % of the {t} ms hook timeout");
+            }
+        }
+        crate::loadscale::set_test_load(None);
+    }
+
+    /// The two copies of the load-scale module (the engine's and the launcher's) are one file.
+    #[test]
+    fn the_launcher_carries_the_same_loadscale_module() {
+        assert_eq!(include_str!("loadscale.rs"), include_str!("../../ah-launcher/src/loadscale.rs"));
+    }
 
     /// live20.1: `deadline_soft` named the next check to start (ship-it-guard, 0.7 ms mean) for time earlier checks spent. The line now
     /// names the check that was running when the wait ended, with how long it ran and how old the request was.
