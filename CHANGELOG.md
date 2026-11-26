@@ -20,6 +20,10 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.27 (local integration build)
+
+- Capacity hold review fixes: a pipe after an engine verb passes only into a read-only tail (config `parsed.tail_ok`), so inline code such as `python3 -c` is held; a `cd` carrying a redirection is no longer dropped; any engine call outside the local-verb list (config set without --check, agents stop) is held by the new rule `engine-unlisted` (#969).
+
 ## Engine 0.3.26 (local integration build)
 
 - Under load the capacity hold no longer blocks safe calls: the engine binary is never read as a script, `cd X &&` and listed variable reads pass, engine-local verbs (mesh send/read/heartbeat, inbox, status, config explain/check) pass even when their message text names deploy or push, and unknown command names are held only when they look risky. Every irreversible class (push, reset, delete, deploy, publish, money, pipe-to-shell, inline code, heredocs) stays held. The daemon runs at nice 0, since it is on every tool call's critical path (#969).
