@@ -20,6 +20,11 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.29 (local integration build)
+
+- Guard deadlines: the launcher wall never exceeds the outer hook bound and shortens the late wait so the fallback always runs inside it; a caller deadline or load factor can only lower the configured ceiling; command words found in `env -S` values and script bodies count for engine-unlisted; `telemetry rollup` and `telemetry actions` are off the read-only list (#969).
+- DevSwarm and agent fixes: read-only routing no longer advises read-only agents for write work; mesh JSON keeps control characters valid; the Stop check pairs a pending task with its #id; plan hints print the ANSI-C `--steps` form that pastes into the shell (#965 items 4-7).
+
 ## Engine 0.3.28 (local integration build)
 
 - Load-aware guard deadlines: on a loaded machine the hook launcher samples load per core once, fits a factor (1x to `daemon.load_scale_max_permille`) that keeps the whole cold plan inside the event's hook timeout, and passes it to the client and daemon, so a check under load gets more time instead of falling into the capacity hold. Counter `deadline_load_scaled` (#969).
