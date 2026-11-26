@@ -643,4 +643,39 @@ mod tests {
         assert_eq!(msg(20), "ENOTDIR: not a directory, open '/x'");
         assert_eq!(msg(9999), "UNKNOWN: unknown error, open '/x'");
     }
+
+    /// #965 item 7: every `--steps` example the plugin prints (the child plan hint, the heartbeat hint, the usage line) works when a
+    /// shell runs it as printed. The double-quoted form it replaced passes a two-character backslash-n and finds no list.
+    #[test]
+    fn every_printed_steps_example_runs_verbatim_in_the_shell() {
+        fn shell_arg(sh: &str, arg: &str) -> Option<String> {
+            let out = std::process::Command::new(sh).arg("-c").arg(format!("printf %s {arg}")).output().ok()?;
+            out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        fn steps_arg(text: &str) -> String {
+            let at = text.find("--steps ").expect("the text shows --steps") + "--steps ".len();
+            let rest = &text[at..];
+            let end = rest.find(['|', '`']).unwrap_or(rest.len());
+            rest[..end].trim_end().to_string()
+        }
+        let plan_none = defaults::text("devswarm_prompt.plan_none").to_string();
+        let texts = [plan_none, defaults::text("mesh_write.hb_plan_hint").to_string(), defaults::text("devswarm_cli.msg_plan_usage").to_string()];
+        let inv = scratch_inv("verbatim");
+        let shells: Vec<&str> = ["bash", "zsh"].into_iter().filter(|sh| shell_arg(sh, "x").is_some()).collect();
+        assert!(shells.contains(&"bash"), "bash is needed for this test");
+        for text in &texts {
+            let arg = steps_arg(text);
+            for sh in &shells {
+                let steps = shell_arg(sh, &arg).expect("the shell runs the example");
+                let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &steps]);
+                assert_eq!(code, 0, "{sh}: {arg} from {text:?} must give a step list: {out}");
+                // the true positive: the double-quoted form passes a literal backslash-n and is still refused
+                let old = shell_arg(sh, "\"1. …\\n2. …\"").expect("the shell runs the old form");
+                let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &old]);
+                assert_eq!(code, 2, "{sh}: the double-quoted form finds no list: {out}");
+                let v: serde_json::Value = serde_json::from_str(out.trim()).expect("JSON");
+                assert_eq!(v["error"].as_str(), Some(defaults::text("devswarm_cli.msg_plan_no_steps")), "{out}");
+            }
+        }
+    }
 }

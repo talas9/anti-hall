@@ -1268,8 +1268,8 @@ doc = "Integers beyond this magnitude are not exact JavaScript numbers; node:sql
 value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
-doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id."
-value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-engine mesh plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
+doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id. The --steps example uses ANSI-C quoting ($'…', bash and zsh; not POSIX sh) so it runs as printed (#965)."
+value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-engine mesh plan set {id} --steps $'1. …\\n2. …'` first; the heartbeat itself was recorded"
 
 [mesh_write.hb_plan_no_plan]
 doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."

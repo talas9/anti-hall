@@ -2027,9 +2027,9 @@ doc = "Require a child step plan. The setting devswarm.planRequired (off by defa
 value = { section = "devswarm", key = "planRequired", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_REQUIRED", option = "devswarm_plan_required", default = false }
 
 [devswarm_prompt.plan_none]
-doc = "The plan segment of a child with no step plan when one is required. Placeholders: {cli}, {id}."
+doc = "The plan segment of a child with no step plan when one is required. Placeholders: {cli}, {id}. The --steps example uses ANSI-C quoting ($'…', bash and zsh; not POSIX sh) so it runs as printed (#965)."
 value = '''
-💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps "1. …\n2. …"` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
+💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps $'1. …\n2. …'` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
 
 [devswarm_prompt.plan_head]
 doc = "The first sentence of the plan segment. Placeholders: {done}, {total}, {n}, {blocked}, {text}."
