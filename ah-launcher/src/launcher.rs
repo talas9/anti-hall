@@ -820,6 +820,9 @@ impl L {
         let home = Some(text("home_env"))
             .filter(|k| !k.is_empty())
             .and_then(std::env::var_os);
+        let ro_home = Some(ncfg.ro_home.as_str())
+            .filter(|h| !h.is_empty())
+            .and_then(std::env::var_os);
         let dirs = shellwords::dirs(
             payload.get(text("cwd_field")).and_then(|v| v.as_str()),
             &n.cds,
@@ -933,6 +936,24 @@ impl L {
                         {
                             return held(name);
                         }
+                    }
+                    // #969 review: an engine call in the script is held as one at the top level is (engine-unlisted), unless the
+                    // whole body is a list the parsed read exemption passes; only a command word counts
+                    let unlisted = cfg
+                        .get("parsed")
+                        .and_then(|p| p.get("unlisted_rule"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    if !unlisted.is_empty()
+                        && !skip.contains(&unlisted)
+                        && norm.as_ref().is_some_and(|nb| {
+                            nb.cmds.iter().any(|c| {
+                                shellwords::is_engine_program(c, ncfg, ro_home.as_deref())
+                            })
+                        })
+                        && !self.capacity_parsed_read(cfg, &body, ncfg)
+                    {
+                        return held(unlisted);
                     }
                     // the scripts this one runs (`source ./lib.sh`, `sh other.sh`)
                     if depth < int("depth") {
@@ -1216,10 +1237,16 @@ impl L {
             ),
             self.load,
         );
-        slow_max = slow_max.min(
+        // #969 review: what is left of the outer bound at the engine start (the cold wait may have used some), less both kill graces
+        // and the wall margin, so the late wait ends with room for the fallback inside min(hooks.json timeout, the wrapper cap)
+        slow_max = loadscale::late_wait_ms(
+            slow_max,
             self.event_timeout_s()
                 .unwrap_or(self.timeout_s)
                 .saturating_mul(1000),
+            self.t0.elapsed().as_millis() as u64,
+            self.grace.as_millis() as u64,
+            self.s.num("launcher.wall_hard_margin_ms"),
         );
         let mut wait_file = None;
         match (
@@ -1978,9 +2005,9 @@ pub fn run() -> i32 {
     let planned = cold_ms
         .saturating_add(eng_ms.max(slow_ms))
         .saturating_add(grace_ms.saturating_mul(2));
-    let wall_ms = planned
-        .saturating_add(l.s.num("launcher.wall_hard_margin_ms"))
-        .min(ev_ms.max(planned));
+    // #969 review: never past the outer bound; run_engine shortens the late wait to what is left of it, so the fallback after an
+    // unanswered late wait runs before the backstop and the host
+    let wall_ms = loadscale::wall_ms(planned, l.s.num("launcher.wall_hard_margin_ms"), ev_ms);
     if !limits::arm_wall(
         wall_ms
             .saturating_sub(l.t0.elapsed().as_millis() as u64)

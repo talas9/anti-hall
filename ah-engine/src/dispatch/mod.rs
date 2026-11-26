@@ -672,6 +672,7 @@ fn capacity_script(
     let scan_rules: Vec<&str> = sc.get("scan_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let home = Some(text("home_env")).filter(|k| !k.is_empty()).and_then(std::env::var_os);
     let dirs = shellwords::dirs(payload.get(text("cwd_field")).and_then(Value::as_str), &n.cds, home.as_deref());
+    let ro_home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
     let compile = |pat: &str| regex::RegexBuilder::new(pat).case_insensitive(true).build().ok();
     let trusted: Vec<(&str, &str)> = sc
         .get("trusted")
@@ -737,6 +738,16 @@ fn capacity_script(
                     if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
                         return held(name);
                     }
+                }
+                // #969 review: an engine call in the script is held as one at the top level is (engine-unlisted): unless the whole body
+                // is a list the parsed read exemption passes (`ah-engine status` and plain reads); only a command word counts
+                let unlisted = cfg.get("parsed").and_then(|p| p.get("unlisted_rule")).and_then(|v| v.as_str()).unwrap_or_default();
+                if !unlisted.is_empty()
+                    && !skip.contains(&unlisted)
+                    && norm.as_ref().is_some_and(|nb| nb.cmds.iter().any(|c| shellwords::is_engine_program(c, ncfg, ro_home.as_deref())))
+                    && !capacity_parsed_read(cfg, &body, ncfg)
+                {
+                    return held(unlisted);
                 }
                 // the scripts this one runs (`source ./lib.sh`, `sh other.sh`), read from the same directories the shell reads them from
                 if depth < int("depth") {
@@ -1850,9 +1861,14 @@ mod tests {
         // #969: an engine call the exemption can not pass (here a redirection) is held as engine-unlisted, never as an unread script
         let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null");
         assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
-        // a script that calls the engine is read for what else it does (engine-unlisted is in script.body_skip)
+        // a script whose whole body the parsed read exemption passes (a local engine verb, a plain read) is no engine-unlisted call
         std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
         assert_eq!(got("bash eng.sh"), (None, None));
+        // #969 review: a script's engine call off the local list is held as engine-unlisted, as the same call at the top level is
+        std::fs::write(dir.join("engw.sh"), "ah-engine agents stop x\n").unwrap();
+        assert_eq!(got("bash engw.sh"), want("script:engine-unlisted", "script_read"));
+        std::fs::write(dir.join("engw2.sh"), "ls\nenv -S 'ah-engine config set daemon.nice 0'\n").unwrap();
+        assert_eq!(got("bash engw2.sh"), want("script:engine-unlisted", "script_read"), "through a split option too");
         assert_eq!(got("ls -la && cd /tmp"), (None, None));
         assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
         std::fs::remove_dir_all(&dir).unwrap();

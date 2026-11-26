@@ -35,6 +35,8 @@ struct Req {
     hard: Option<Instant>,
     /// Whether the soft overrun was already reported (once per request).
     noted: bool,
+    /// Whether the client cut the request at its own wait ([`client_deadline`]): naming the event then moves nothing.
+    cut: bool,
 }
 
 thread_local! {
@@ -265,13 +267,13 @@ pub fn discard_staged_since(mark: usize) {
 pub fn begin(arrived: Instant) {
     discard_staged(); // nothing a previous request left can belong to this one
     EVENT.with(|e| *e.borrow_mut() = None);
-    REQ.with(|r| r.set(Some(Req { arrived, soft: None, hard: None, noted: false })));
+    REQ.with(|r| r.set(Some(Req { arrived, soft: None, hard: None, noted: false, cut: false })));
     client_window(crate::defaults::num("client.deadline_ms"));
 }
 
 /// The client said it waits `ms` milliseconds from sending the request, and the request is cut there too (soft = hard).
 pub fn client_deadline(ms: u64) {
-    set_window(ms, ms);
+    set_window(ms, ms, true);
 }
 
 /// The wall ceiling of a request for `event` (`daemon.request_hard_ms`, or its `daemon.request_hard_event_ms` row), in ms; an
@@ -300,6 +302,23 @@ pub fn set_load_factor(v: Option<u64>) {
     LOAD.with(|c| c.set(v));
 }
 
+/// #969 review: a factor a request carries, fitted again to `event`'s outer bound on `host` the way the ah-hook launcher fits it:
+/// min(the event's hook timeout, `client.wrapper_default_timeout_s`) less `client.cold_guard_wait_ms`, both
+/// `client.wrapper_kill_grace_ms` and `launcher.wall_hard_margin_ms`, for the event's late wait (`client.slow_fallback_max_ms` or its
+/// row). A factor the launcher fitted stays as it is (the fit is idempotent); a request that skipped the launcher, or names a larger
+/// factor than fits, can never stretch the ceiling past the configured bound. Empty `host` = the wrapper cap alone.
+pub fn fit_passed(v: Option<u64>, host: &str, event: &str) -> Option<u64> {
+    let f = v.filter(|f| *f > 1000)?;
+    let num = crate::defaults::num;
+    let cap = num("client.wrapper_default_timeout_s").saturating_mul(1000);
+    let outer = if host.is_empty() { cap } else { crate::hooksgen::event_timeout(host, event).saturating_mul(1000).min(cap) };
+    let plan = num("client.cold_guard_wait_ms")
+        .saturating_add(num("client.wrapper_kill_grace_ms").saturating_mul(2))
+        .saturating_add(num("launcher.wall_hard_margin_ms"));
+    let slow_base = crate::defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", event);
+    Some(crate::loadscale::fit_permille(f, slow_base, outer.saturating_sub(plan), num("daemon.load_scale_step_permille")))
+}
+
 /// #969: the load factor of the hook client's own call: the one the ah-hook launcher fitted and passed in `daemon.load_scale_env`
 /// (clamped like a request's), for an event in `daemon.load_scale_events`; none (no launcher, or a launcher that found no room) =
 /// 1000. The client never samples the load itself.
@@ -309,22 +328,26 @@ pub fn client_load_factor(event: &str) -> u64 {
     }
     let name = crate::defaults::text("daemon.load_scale_env");
     let v = Some(name).filter(|n| !n.is_empty()).and_then(|n| std::env::var(n).ok()).and_then(|v| v.trim().parse::<u64>().ok());
-    crate::loadscale::passed_permille(v, crate::defaults::num("daemon.load_scale_max_permille"))
+    let f = crate::loadscale::passed_permille(v, crate::defaults::num("daemon.load_scale_max_permille"));
+    // #969 review: within the wrapper cap, as the daemon fits a request's (idempotent for a factor the launcher fitted)
+    fit_passed(Some(f), "", event).unwrap_or(f)
 }
 
 /// The client's fail-fast wait is `soft_ms` (a warning past it); the request is cut at the event's wall ceiling
-/// ([`ceiling_ms`]), or at `soft_ms` when that is larger.
+/// ([`ceiling_ms`]). #969 review: the caller's value only ever lowers the soft mark, never raises the ceiling: a request that
+/// names a long deadline is still cut at the configured per-event bound.
 pub fn client_window(soft_ms: u64) {
     let event = event().unwrap_or_default();
-    set_window(soft_ms, soft_ms.max(ceiling_ms(&event)));
+    let hard = ceiling_ms(&event);
+    set_window(soft_ms.min(hard), hard, false);
 }
 
-fn set_window(soft_ms: u64, hard_ms: u64) {
+fn set_window(soft_ms: u64, hard_ms: u64, cut: bool) {
     REQ.with(|r| {
         if let Some(req) = r.get() {
             let slack = crate::defaults::millis("daemon.reply_slack_ms");
             let at = |ms: u64| req.arrived + Duration::from_millis(ms).saturating_sub(slack);
-            r.set(Some(Req { soft: Some(at(soft_ms)), hard: Some(at(hard_ms)), ..req }));
+            r.set(Some(Req { soft: Some(at(soft_ms)), hard: Some(at(hard_ms)), cut, ..req }));
         }
     });
 }
@@ -349,11 +372,12 @@ pub fn set_event(event: &str) {
     // the window was set before the event was known: its ceiling is the event's own now (a request cut at its soft wait stays so)
     REQ.with(|r| {
         if let Some(req) = r.get()
-            && let (Some(soft), Some(hard)) = (req.soft, req.hard)
-            && hard > soft
+            && let (Some(soft), Some(_)) = (req.soft, req.hard)
+            && !req.cut
         {
             let at = req.arrived + Duration::from_millis(ceiling_ms(event)).saturating_sub(crate::defaults::millis("daemon.reply_slack_ms"));
-            r.set(Some(Req { hard: Some(at.max(soft)), ..req }));
+            // #969 review: the event's ceiling holds even below the soft mark the caller named (it never raises the ceiling)
+            r.set(Some(Req { soft: Some(soft.min(at)), hard: Some(at), ..req }));
         }
     });
 }
@@ -572,6 +596,48 @@ mod tests {
         end();
     }
 
+    /// #969 review: the caller's deadline only ever lowers the soft mark, never raises the ceiling past the configured per-event bound,
+    /// and a factor a request carries is fitted to the event's outer bound again (a direct request can not skip the launcher's fit).
+    #[test]
+    fn a_callers_deadline_and_factor_never_raise_the_configured_ceiling() {
+        let ms = |d: Option<Duration>| d.unwrap().as_millis() as u64;
+        let num = crate::defaults::num;
+        let (short, long) = (num("daemon.request_hard_ms"), ceiling_ms("Stop"));
+        // a request that names a deadline far past every ceiling is still cut at the event's bound
+        begin_now();
+        client_window(short * 20);
+        assert!(ms(remaining()) <= short, "the plain ceiling, not the caller's {}", short * 20);
+        set_event("Stop");
+        assert!(ms(remaining()) <= long && ms(remaining()) > short, "Stop: its own ceiling, never the caller's");
+        end();
+        // true negative: the normal fail-fast deadline keeps the soft mark and the event's whole ceiling
+        begin_now();
+        client_window(num("client.deadline_ms"));
+        set_event("Stop");
+        assert!(ms(remaining()) > short && ms(remaining()) <= long);
+        end();
+        // the factor: Stop's late wait has no room under the wrapper cap, so a direct request's max factor is fitted to none
+        let max = num("daemon.load_scale_max_permille");
+        crate::loadscale::set_test_load(None);
+        assert_eq!(fit_passed(Some(max), "claude", "Stop"), Some(1000), "a direct Stop request can not stretch the ceiling");
+        set_load_factor(fit_passed(Some(max), "claude", "Stop"));
+        assert_eq!(ceiling_ms("Stop"), long, "the configured Stop ceiling holds");
+        // true negative: a factor the launcher fitted for PreToolUse is kept as it is (the fit is idempotent)
+        let cap = num("client.wrapper_default_timeout_s") * 1000;
+        let avail = (crate::hooksgen::event_timeout("claude", "PreToolUse") * 1000).min(cap)
+            - num("client.cold_guard_wait_ms")
+            - 2 * num("client.wrapper_kill_grace_ms")
+            - num("launcher.wall_hard_margin_ms");
+        let base = crate::defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", "PreToolUse");
+        let fitted = crate::loadscale::fit_permille(max, base, avail, num("daemon.load_scale_step_permille"));
+        assert!(fitted > 1000, "PreToolUse scales under the shipped numbers ({fitted})");
+        assert_eq!(fit_passed(Some(fitted), "claude", "PreToolUse"), Some(fitted));
+        assert_eq!(fit_passed(Some(fitted), "", "PreToolUse"), Some(fitted), "the wrapper cap alone");
+        assert_eq!(fit_passed(None, "claude", "PreToolUse"), None);
+        assert_eq!(fit_passed(Some(1000), "claude", "PreToolUse"), None, "none to fit");
+        set_load_factor(None);
+    }
+
     /// #684 review of #690: one host call gets a share of the ceiling, never the rest of the request clock.
     #[test]
     fn one_host_call_gets_a_share_of_the_ceiling_not_the_rest_of_the_clock() {
@@ -598,12 +664,12 @@ mod tests {
         begin_now();
         assert!(!note_soft_overrun(), "inside the soft deadline");
         // soft passed, hard far away: the request goes on
-        set_window(0, 60_000);
+        set_window(0, 60_000, false);
         assert_eq!(soft_remaining(), Some(Duration::ZERO));
         assert!(in_time(), "past the soft deadline the client still waits");
         assert!(note_soft_overrun(), "reported the first time");
         assert!(!note_soft_overrun(), "and only once per request");
-        set_window(0, 0);
+        set_window(0, 0, true);
         assert!(!in_time(), "past the hard deadline it is cut");
         end();
     }
@@ -626,7 +692,7 @@ mod tests {
     #[test]
     fn a_check_cap_cuts_before_the_request_deadline_and_is_lifted_after() {
         begin_now();
-        set_window(60_000, 60_000);
+        set_window(60_000, 60_000, true);
         let w = cap_check(Duration::ZERO);
         assert!(remaining().is_some_and(|r| r == Duration::ZERO), "a host call is clamped to the cap");
         assert!(in_time(), "the request's client still waits");

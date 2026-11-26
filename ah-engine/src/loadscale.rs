@@ -61,6 +61,18 @@ pub fn fit_permille(factor: u64, base_ms: u64, avail_ms: u64, step: u64) -> u64 
     1000 + if step == 0 { over } else { over - over % step }
 }
 
+/// #969 review: the late-reply wait an outer process may still grant once `spent_ms` of the call's `outer_ms` bound are gone:
+/// `slow_ms`, shortened so the wait, both kill graces (`grace_ms` each) and the wall margin end inside the bound; the fallback that
+/// follows a late wait the engine did not answer in then always runs before the host gives up on the hook.
+pub fn late_wait_ms(slow_ms: u64, outer_ms: u64, spent_ms: u64, grace_ms: u64, margin_ms: u64) -> u64 {
+    slow_ms.min(outer_ms.saturating_sub(spent_ms.saturating_add(grace_ms.saturating_mul(2)).saturating_add(margin_ms)))
+}
+
+/// #969 review: the wall-clock backstop of a call: its planned path plus the margin, never past its outer bound.
+pub fn wall_ms(planned_ms: u64, margin_ms: u64, outer_ms: u64) -> u64 {
+    planned_ms.saturating_add(margin_ms).min(outer_ms)
+}
+
 /// A factor passed down by the outer process (a request field, an environment value): clamped to [1000, `max`]; none = 1000. An
 /// inner process never samples the load itself, so it can not disagree with the outer one across a step.
 pub fn passed_permille(v: Option<u64>, max: u64) -> u64 {
@@ -98,6 +110,17 @@ mod tests {
         assert_eq!(passed_permille(Some(5000), 2000), 2000, "clamped to the max");
         assert_eq!(passed_permille(Some(10), 2000), 1000);
         assert_eq!(passed_permille(Some(1500), 0), 1000, "max off");
+        // #969 review: Stop's 9000 ms late wait after a 2000 ms cold start in a 10 s bound is shortened to what still fits
+        assert_eq!(late_wait_ms(9000, 10_000, 2000, 200, 500), 7100);
+        assert_eq!(late_wait_ms(9000, 10_000, 300, 200, 500), 8800, "a warm call keeps more of it");
+        assert_eq!(late_wait_ms(3000, 10_000, 2000, 200, 500), 3000, "a wait that fits is untouched");
+        assert_eq!(late_wait_ms(9000, 10_000, 10_000, 200, 500), 0, "no room left");
+        assert_eq!(wall_ms(11_400, 500, 10_000), 10_000, "the backstop never passes the outer bound");
+        assert_eq!(wall_ms(5000, 500, 10_000), 5500);
+        for spent in [0, 300, 2000, 5000] {
+            let late = late_wait_ms(9000, 10_000, spent, 200, 500);
+            assert!(spent + late + 2 * 200 + 500 <= 10_000 || late == 0, "{spent}: the fallback runs inside the bound");
+        }
         set_test_load(Some(2.0));
         assert_eq!(per_core(), Some(2.0));
         set_test_load(None);
