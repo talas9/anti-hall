@@ -748,6 +748,14 @@ value = '''\bgh\s+(?:issue|label|pr|release|secret|repo|milestone)\s+(?:create|e
 doc = "Regex (case-insensitive, global) of a negated write instruction ('never commit', 'do not push', 'don't create files', 'no edits or commits'); removed from the brief before strong_write_re is tested."
 value = '''\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*)*'''
 
+[model_routing.negated_delete_re]
+doc = "Regex (case-insensitive, global) of a negated delete or write instruction ('never delete', 'do not delete, move or modify anything', 'no pause, resume, cancel or delete', 'delete/modify nothing', 'change nothing, delete nothing'); removed from the brief before delete_re is tested (#965), so a read-only brief that forbids deleting keeps the row-6 advisory."
+value = '''\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:(?:[\w-]+\s+){0,2}[\w-]+\s*,\s*){0,6}?(?:git\s+|gh\s+)?(?:delet|remov|purg|wip|prun|trash|clean|clear|commit|push|edit|writ|creat|modif|mov|chang)\w*(?:\s*(?:,|/|or|and|nor)\s*(?:git\s+|gh\s+)?(?:delet|remov|purg|wip|prun|trash|clean|clear|commit|push|edit|writ|creat|modif|mov|chang)\w*)*|\b(?:delet|remov|purg|wip|prun|trash|clean|clear|chang|modif|edit|writ|mov|push|commit)\w*(?:\s*(?:/|,|or|and)\s*\w+)*\s+(?:nothing|none)\b'''
+
+[model_routing.delete_re]
+doc = "Regex (case-insensitive) of a brief that asks to delete or clean up (#965): delete, remove, purge, wipe, prune, trash, clean up or clear as an instruction with an object (at the start of a line, sentence or clause, or after then/and/also/please), 'by deleting/removing/…', or a build tool's clean verb. Write work an Explore agent cannot do, so it suppresses the row-6 Explore advisory. A verb used as a noun, a list item or a description ('the remove button', '(download, delete, settings)', 'a sweep that deletes') is not an instruction. Negated forms are removed first (negated_delete_re), so 'do not delete anything' or 'delete nothing' in a read-only brief keeps the advisory."
+value = '''(?:^|[\n\r\u2028\u2029]|[.;:!?,]\s+|\b(?:then|and|also|please)\s+)(?:delete|remove|purge|wipe|prune|trash|clean\s+up|clear)\s+[^\s,;:.)/|]|\bby\s+(?:delet|remov|purg|wip|prun|trash|clean|clear)ing\b|\b(?:flutter|cargo|gradlew?|dart|xcodebuild|npm|pnpm|yarn|go)\s+clean\b'''
+
 [model_routing.session_model_families]
 doc = "Model families an omitted model can inherit, matched in order as a substring of the session's model id (the payload's parent model, else the newest transcript assistant entry); each must be a model_rank key. An omitted model whose inherited family ranks at or above the deploy floor gets no deploy-floor advisory."
 value = ["fable", "opus", "sonnet", "haiku"]
@@ -2019,9 +2027,9 @@ doc = "Require a child step plan. The setting devswarm.planRequired (off by defa
 value = { section = "devswarm", key = "planRequired", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_REQUIRED", option = "devswarm_plan_required", default = false }
 
 [devswarm_prompt.plan_none]
-doc = "The plan segment of a child with no step plan when one is required. Placeholders: {cli}, {id}."
+doc = "The plan segment of a child with no step plan when one is required. Placeholders: {cli}, {id}. The --steps example uses ANSI-C quoting ($'…', bash and zsh; not POSIX sh) so it runs as printed (#965)."
 value = '''
-💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps "1. …\n2. …"` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
+💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps $'1. …\n2. …'` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
 
 [devswarm_prompt.plan_head]
 doc = "The first sentence of the plan segment. Placeholders: {done}, {total}, {n}, {blocked}, {text}."

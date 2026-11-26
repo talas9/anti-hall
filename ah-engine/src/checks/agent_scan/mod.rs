@@ -1955,10 +1955,11 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         let (mut queued, mut pend, mut last_idle) = (f64::NAN, f64::NAN, f64::NAN);
         for e in &ordered {
             match e.kind {
+                // the spawn prompt is the teammate's first instruction: it is busy on it until its first idle report (#965)
                 "spawn" => {
                     state = St::Busy;
                     queued = f64::NAN;
-                    pend = f64::NAN;
+                    pend = e.ts;
                 }
                 "stop" => {
                     state = St::Stopped;

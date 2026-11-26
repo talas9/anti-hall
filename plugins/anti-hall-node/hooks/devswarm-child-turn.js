@@ -217,7 +217,7 @@ function buildPlanSegment(id, home, worktree, env) {
     if (!found || !found.plan.steps.length) {
       if (!planLib.planRequired(opts)) return null;
       return '💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `node ' + CLI
-        + ' plan set ' + id + ' --steps "1. …\\n2. …"` — then report each step with `heartbeat ' + id + ' --step N --status doing|done|blocked`.';
+        + ' plan set ' + id + ' --steps $\'1. …\\n2. …\'` — then report each step with `heartbeat ' + id + ' --step N --status doing|done|blocked`.';
     }
     const plan = found.plan;
     const cur = planLib.currentStep(plan);

@@ -59,6 +59,41 @@ fn a_review_seat_or_a_test_running_brief_gets_no_explore_hint() {
     assert!(out.contains("Explore"), "guards.exploreHintSkip off hints every research spawn: {out}");
 }
 
+#[test]
+fn a_brief_that_deletes_or_cleans_up_gets_no_explore_hint_and_a_read_only_one_that_forbids_it_keeps_it() {
+    // #965 item 4: the live misfire (redacted): a cache-cleanup brief whose only research word is "find"
+    let cleanup = "The disk is at 39 GB free. Free space by deleting ONLY regenerable build output.\n\nALLOWED to delete:\n1. Inside these archived \
+                   workspaces only: /w/a, /w/b. In each one, delete these folders if present (find them with `ls -d <ws>/*/app/<dir>`): app/build, \
+                   app/.dart_tool.\n\nNEVER delete: anything else in those worktrees. Don't scan the whole disk.";
+    let (code, out) = route(&spawn(Some("sonnet"), "Free disk: regenerable build caches", cleanup), &[]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("Explore"), "a brief that deletes is write work: no Explore hint: {out}");
+    for (d, pr) in [
+        ("Remove archived workspace worktrees", "Free disk by removing the git worktrees of three archived workspaces. Find each one first."),
+        ("Clear closed workspace worktrees", "Clear the worktrees of an archived workspace. Locate each dir and check it for unpushed commits."),
+        ("Free disk via cargo clean", "Find every Cargo.toml with a sibling target dir and run cargo clean on it."),
+    ] {
+        let (code, out) = route(&spawn(Some("sonnet"), d, pr), &[]);
+        assert_eq!(code, 0, "{d}");
+        assert!(!out.contains("Explore"), "{d} deletes: no Explore hint: {out}");
+    }
+    // true positives: read-only research that forbids deleting, or names delete only as a noun or a list item, keeps the hint
+    for (d, pr) in [
+        ("Find disk space consumers", "READ-ONLY investigation. Do NOT delete, move or modify anything. Find what is consuming space now."),
+        ("Find what consumed disk", "READ-ONLY disk audit. Delete nothing, move nothing. Find which directories grew."),
+        ("Housekeeping inventory", "Inventory dormant workspaces. Delete/modify NOTHING. Locate each worktree and its size."),
+        ("Audit error handling", "Investigate the error handling of user actions (download, delete, settings put). Find empty catch blocks."),
+        ("Trace a delete", "Investigate why the remove button does not work and locate the handler."),
+    ] {
+        let (code, out) = route(&spawn(Some("sonnet"), d, pr), &[]);
+        assert_eq!(code, 0, "{d}");
+        assert!(out.contains("Explore"), "{d} is read-only research: the hint stays: {out}");
+    }
+    // the verb list and its negations are plugin configuration, not compiled in
+    let toml = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults/small_guards.toml")).unwrap();
+    assert!(toml.contains("[model_routing.delete_re]") && toml.contains("[model_routing.negated_delete_re]"), "the delete verbs are plugin TOML");
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("fw1-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(d.join(".git/refs/heads")).unwrap();

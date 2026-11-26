@@ -343,6 +343,7 @@ function decide(p) {
   // Row 6: a research-shaped generic spawn that writes nothing is nudged toward Explore, which cannot recurse.
   var writeShaped = mrT('model_routing.write_phrase_re', corpus) || mrT('model_routing.commit_phrase_re', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ')) ||
     mrT('model_routing.strong_write_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) ||
+    mrT('model_routing.delete_re', corpus.replace(jx.re('model_routing.negated_delete_re', 'gi'), ' ')) || // #965: deleting or cleaning up is write work
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
   // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
   var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && (mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.build_exec_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.design_ask_re', corpus));
