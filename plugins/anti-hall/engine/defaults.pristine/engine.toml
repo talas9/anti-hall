@@ -555,8 +555,8 @@ doc = "Detail of the fds state line. {open} descriptors open, {limit} the soft l
 value = "open={open} limit={limit} watch={watch}"
 
 [daemon.nice]
-doc = "`nice` increment applied to the daemon process."
-value = 5
+doc = "`nice` increment applied to the daemon process. 0 (the default) = normal priority: the daemon is on the critical path of every tool call (each guard waits on its answer), so a positive value makes it lose the CPU to the very load it must stay ahead of, misses guard deadlines (deadline_cut shed and hard_deadline) and sends calls down the capacity path. Raise it only on a machine where the engine must yield to other work."
+value = 0
 env = "AH_ENGINE_NICE"
 min = 0
 max = 19
