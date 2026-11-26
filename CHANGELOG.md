@@ -20,6 +20,11 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.28 (local integration build)
+
+- Load-aware guard deadlines: on a loaded machine the hook launcher samples load per core once, fits a factor (1x to `daemon.load_scale_max_permille`) that keeps the whole cold plan inside the event's hook timeout, and passes it to the client and daemon, so a check under load gets more time instead of falling into the capacity hold. Counter `deadline_load_scaled` (#969).
+- The capacity hold counts only real command words as an engine call (a quoted mention such as `pgrep -fl 'ah-engine serve'` passes; `bash -c`/`eval` code still counts), lists more read-only engine verbs (version, telemetry summary, agents status, devswarm status, mesh unread) and has its own text for engine-unlisted (#969).
+
 ## Engine 0.3.27 (local integration build)
 
 - Capacity hold review fixes: a pipe after an engine verb passes only into a read-only tail (config `parsed.tail_ok`), so inline code such as `python3 -c` is held; a `cd` carrying a redirection is no longer dropped; any engine call outside the local-verb list (config set without --check, agents stop) is held by the new rule `engine-unlisted` (#969).
