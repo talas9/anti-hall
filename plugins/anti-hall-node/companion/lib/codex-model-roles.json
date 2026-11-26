@@ -1,0 +1,13 @@
+{
+  "_doc": "Role -> catalog-description regex (case-insensitive) used by codex-models.js against ~/.codex/models_cache.json. Edit here, not in code. Each role lists alternatives; a visible model matches if its description matches any. Catalog wording changes between Codex releases (0.166 said 'frontier'/'workhorse'; 0.171 says 'most capable'/'go-to model'), so add the new phrasing here when a role stops resolving.",
+  "roles": {
+    "frontier": ["\\bfrontier\\b", "\\bmost capable model\\b"],
+    "workhorse": ["\\bworkhorse\\b", "\\bgo-to model for coding\\b"],
+    "cheap": ["\\bfast and (?:affordable|efficient)\\b"]
+  },
+  "aliases": {
+    "frontier": "frontier", "critic": "frontier",
+    "workhorse": "workhorse", "implement": "workhorse",
+    "cheap": "cheap", "fast": "cheap"
+  }
+}
