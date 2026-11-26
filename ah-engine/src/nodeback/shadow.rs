@@ -146,11 +146,7 @@ fn load_too_high() -> bool {
     if max == 0 {
         return false;
     }
-    let mut avg = [0f64; 1];
-    // SAFETY: getloadavg writes at most `nelem` (1) doubles into the buffer, which holds one.
-    let got = unsafe { libc::getloadavg(avg.as_mut_ptr(), 1) };
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
-    got == 1 && avg[0] * 100.0 / cores >= max as f64
+    crate::loadscale::per_core().is_some_and(|l| l * 100.0 >= max as f64)
 }
 
 fn try_slot(i: u64) -> Option<std::fs::File> {

@@ -63,6 +63,7 @@ pub mod layers;
 pub mod learn;
 pub mod limits;
 pub mod load;
+pub mod loadscale;
 pub mod maintain;
 pub mod mem;
 pub mod memdiag;
