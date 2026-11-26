@@ -48,9 +48,10 @@ pub enum Ctr {
     CapacityLocalTool,
     CapacityWrapperOpt,
     CapacityParsedRead,
+    CapacityEngineProgram,
 }
 
-const NCTR: usize = 32;
+const NCTR: usize = 33;
 static COUNTERS: [AtomicU64; NCTR] = [const { AtomicU64::new(0) }; NCTR];
 
 impl Ctr {
@@ -89,6 +90,7 @@ impl Ctr {
             Ctr::CapacityLocalTool => "capacity_local_tool",
             Ctr::CapacityWrapperOpt => "capacity_wrapper_opt",
             Ctr::CapacityParsedRead => "capacity_parsed_read",
+            Ctr::CapacityEngineProgram => "capacity_engine_program",
         }
     }
     const ALL: [Ctr; NCTR] = [
@@ -124,6 +126,7 @@ impl Ctr {
         Ctr::CapacityLocalTool,
         Ctr::CapacityWrapperOpt,
         Ctr::CapacityParsedRead,
+        Ctr::CapacityEngineProgram,
     ];
 }
 

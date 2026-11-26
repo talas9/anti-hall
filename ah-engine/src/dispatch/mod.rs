@@ -603,7 +603,11 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         let rule = unknown.and_then(|u| u.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
         let lookup = unknown.and_then(|u| u.get("path_lookup")).and_then(|v| v.as_integer()) != Some(0);
         let path = std::env::var_os(unknown.and_then(|u| u.get("path_env")).and_then(|v| v.as_str()).unwrap_or_default());
-        let dirs = shellwords::dirs(payload.get(cfg.get("script").and_then(|s| s.get("cwd_field")).and_then(|v| v.as_str()).unwrap_or_default()).and_then(Value::as_str), &n.cds, None);
+        let dirs = shellwords::dirs(
+            payload.get(cfg.get("script").and_then(|s| s.get("cwd_field")).and_then(|v| v.as_str()).unwrap_or_default()).and_then(Value::as_str),
+            &n.cds,
+            None,
+        );
         let mut local: Vec<String> = Vec::new();
         let mut unresolved = false;
         for c in &n.unknown_cmds {
@@ -623,7 +627,13 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
             d.exempt = exempt;
             return d;
         }
-        if !rule.is_empty() && unresolved {
+        // #969: with `unknown.risky_only` 1 an unknown name is held only when the command also names something risky (`script.risky`)
+        let risky_only = unknown.and_then(|u| u.get("risky_only")).and_then(|v| v.as_integer()) == Some(1);
+        let risky = || {
+            let pat = cfg.get("script").and_then(|s| s.get("risky")).and_then(|v| v.as_str()).unwrap_or_default();
+            !pat.is_empty() && regex::RegexBuilder::new(pat).case_insensitive(true).build().is_ok_and(|re| re.is_match(&n.text))
+        };
+        if !rule.is_empty() && unresolved && (!risky_only || risky()) {
             return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command"), exempt };
         }
     }
@@ -669,7 +679,8 @@ fn capacity_script(
             exempt: Vec::new(),
         })
     };
-    let (mut unread, mut seen, mut queue) = (false, Vec::new(), n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
+    let (mut unread, mut seen, mut queue) =
+        (false, Vec::new(), n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
     while let Some((path, depth)) = queue.pop_front() {
         if seen.contains(&path) {
             continue;
@@ -678,6 +689,13 @@ fn capacity_script(
             break;
         }
         seen.push(path.clone());
+        // #969: the engine's own binary is no script (far over the read cap: it would be held as unread)
+        if shellwords::is_engine_program(&path, ncfg, home.as_deref()) {
+            if !exempt.contains(&"engine_program") {
+                exempt.push("engine_program");
+            }
+            continue;
+        }
         // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's) is
         // not matched; any edit changes the hash and the script is checked like any other
         if !trusted.is_empty() {
@@ -758,7 +776,8 @@ pub(crate) fn cmd_capacity_hashes(p: &crate::cli::Parsed) -> i32 {
     let sha = |bytes: &[u8]| crate::dssup::recon::view::sha256_hex(bytes);
     for e in cfg.get("script").and_then(|s| s.get("trusted")).and_then(|v| v.as_array()).into_iter().flatten() {
         let (Some(path), Some(want)) = (e.get("path").and_then(|v| v.as_str()), e.get("sha256").and_then(|v| v.as_str())) else { continue };
-        let found = root.as_ref().and_then(|r| shellwords::script_identity(&r.join(path).to_string_lossy(), &[], None, max, marker)).filter(|(rel, _)| rel == path);
+        let found =
+            root.as_ref().and_then(|r| shellwords::script_identity(&r.join(path).to_string_lossy(), &[], None, max, marker)).filter(|(rel, _)| rel == path);
         match found {
             Some((_, bytes)) => {
                 let now = sha(&bytes);
@@ -808,7 +827,8 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 }
 
 /// The parsed read exemption (`dispatch.capacity_hold` `parsed`): `command` read as a list of pipelines ([`shellwords::read_only_parts`])
-/// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does. Fails
+/// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does or
+/// matches no hold rule (`| python3 -c ..` reading its output). Fails
 /// closed: a list that can not be read, or no pipeline at all, exempts nothing.
 pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> bool {
     let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
@@ -816,8 +836,18 @@ pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shel
     !parts.is_empty()
         && parts.iter().all(|p| match p {
             shellwords::Part::Read(t) => capacity_read_only(cfg, t),
-            shellwords::Part::Local(tail) => tail.is_empty() || capacity_read_only(cfg, tail),
+            shellwords::Part::Local(tail) => tail.is_empty() || capacity_read_only(cfg, tail) || !capacity_rule_hit(cfg, &format!("| {tail}")),
         })
+}
+
+/// Whether any hold rule of `dispatch.capacity_hold` matches `text` (a rule that does not compile matches nothing; it is logged
+/// where the rules are matched for the call itself).
+fn capacity_rule_hit(cfg: &defaults::V, text: &str) -> bool {
+    cfg.get("rules").and_then(|v| v.as_table()).is_some_and(|rules| {
+        rules
+            .iter()
+            .any(|(_, pat)| pat.as_str().and_then(|p| regex::RegexBuilder::new(p).case_insensitive(true).build().ok()).is_some_and(|re| re.is_match(text)))
+    })
 }
 
 /// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
@@ -1696,7 +1726,7 @@ mod tests {
         for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
             let (want, cmd) = match line.split_once(' ') {
                 Some(("H", c)) => (true, c.replace("\\n", "\n").replace("{fix}", fix)),
-                Some(("P", c)) => (false, c.replace("\\n", "\n").replace("{fix}", fix)),
+                Some(("P" | "R", c)) => (false, c.replace("\\n", "\n").replace("{fix}", fix)),
                 _ => continue,
             };
             if class(&cmd).is_some() != want {
@@ -1705,7 +1735,7 @@ mod tests {
             if want { held += 1 } else { passed += 1 }
         }
         assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
-        assert!(held >= 247 && passed >= 113, "corpus read: {held} held, {passed} pass");
+        assert!(held >= 272 && passed >= 140, "corpus read: {held} held, {passed} pass");
     }
 
     /// #928: the exemptions that kept a false hold away are counted (wrapper_opt, local_tool, trusted_script) and the commands pass.
@@ -1723,8 +1753,10 @@ mod tests {
         let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
         let local = d("tool --ci", Some(fix));
         assert_eq!((local.rule, local.exempt), (None, vec!["local_tool"]));
-        // outside the repo's tool directories the same name is an unknown command
-        assert_eq!(d("tool --ci", Some("/")).rule.as_deref(), Some("unknown-command"));
+        // outside the repo's tool directories the same name is an unknown command: #969 holds it only when the command names
+        // something risky (unknown.risky_only)
+        assert_eq!(d("tool --ci", Some("/")).rule, None);
+        assert_eq!(d("tool --ci push", Some("/")).rule.as_deref(), Some("unknown-command"));
         // the cleanup of a variable is never exempt, whatever made it (the own-temp exemption is gone)
         let own = d(r#"t=$(mktemp -d); rm -rf "$t""#, None);
         assert_eq!((own.rule.as_deref(), own.exempt), (Some("recursive-delete"), Vec::<&str>::new()));
@@ -1736,7 +1768,9 @@ mod tests {
     fn capacity_hold_trusts_a_script_by_path_and_content_hash_only() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let real = std::fs::read(repo.join("ah-engine/test.sh")).unwrap();
-        let d = |c: &str, cwd: &std::path::Path| capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}, "cwd": cwd.to_str().unwrap()}));
+        let d = |c: &str, cwd: &std::path::Path| {
+            capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}, "cwd": cwd.to_str().unwrap()}))
+        };
         // the unchanged file, from the checkout and from a copy at the same relative path in another repo
         let at = d("bash ah-engine/test.sh", repo);
         assert_eq!((at.rule, at.exempt), (None, vec!["trusted_script"]), "the seeded test script is trusted at its current hash");
@@ -1804,6 +1838,10 @@ mod tests {
         assert_eq!(got("python3 -c \"print(1)\""), (None, None));
         assert_eq!(got("gh co 12"), want("gh-unknown-subcommand", "gh_unknown"));
         assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
+        assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
+        // #969: the engine's own binary named by its path is no script to read (it is far over the read cap)
+        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null");
+        assert_eq!((e.rule, e.exempt.contains(&"engine_program")), (None, true));
         assert_eq!(got("ls -la && cd /tmp"), (None, None));
         assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
         std::fs::remove_dir_all(&dir).unwrap();

@@ -704,6 +704,7 @@ impl L {
                         rule = Some(r);
                         via = Some(c);
                     } else if unresolved
+                        && Self::capacity_unknown_risky(cfg, u, &n.text)
                         && let Some(r) = u
                             .and_then(|u| u.get("rule"))
                             .and_then(|v| v.as_str())
@@ -822,8 +823,12 @@ impl L {
             .unwrap_or_default();
         let mut unread = false;
         let mut seen: Vec<String> = Vec::new();
-        let mut queue: std::collections::VecDeque<(String, usize)> =
-            n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect();
+        let mut queue: std::collections::VecDeque<(String, usize)> = n
+            .scripts
+            .iter()
+            .chain(local)
+            .map(|p| (p.clone(), 0))
+            .collect();
         while let Some((path, depth)) = queue.pop_front() {
             if seen.contains(&path) {
                 continue;
@@ -832,6 +837,11 @@ impl L {
                 break;
             }
             seen.push(path.clone());
+            // #969: the engine's own binary is no script (far over the read cap: it would be held as unread)
+            if shellwords::is_engine_program(&path, ncfg, home.as_deref()) {
+                limits::bump(Ctr::CapacityEngineProgram);
+                continue;
+            }
             // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's)
             // is not matched; any edit changes the hash and the script is checked like any other
             if !trusted.is_empty()
@@ -1013,7 +1023,12 @@ impl L {
 
     /// The parsed read exemption (`dispatch.capacity_hold` `parsed`), as the engine's dispatch::capacity_parsed_read: each pipeline
     /// of the list is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does.
-    fn capacity_parsed_read(&self, cfg: &toml::Value, command: &str, ncfg: &shellwords::Cfg) -> bool {
+    fn capacity_parsed_read(
+        &self,
+        cfg: &toml::Value,
+        command: &str,
+        ncfg: &shellwords::Cfg,
+    ) -> bool {
         let home = Some(ncfg.ro_home.as_str())
             .filter(|h| !h.is_empty())
             .and_then(std::env::var_os);
@@ -1024,8 +1039,48 @@ impl L {
             && parts.iter().all(|p| match p {
                 shellwords::Part::Read(t) => self.capacity_read_only(cfg, t),
                 shellwords::Part::Local(tail) => {
-                    tail.is_empty() || self.capacity_read_only(cfg, tail)
+                    tail.is_empty()
+                        || self.capacity_read_only(cfg, tail)
+                        || !Self::capacity_rule_hit(cfg, &format!("| {tail}"))
                 }
+            })
+    }
+
+    /// #969: whether an unknown command name is held: always, unless `unknown.risky_only` is 1, then only when the command matches
+    /// `script.risky` (as the engine's dispatch::capacity_decide).
+    fn capacity_unknown_risky(cfg: &toml::Value, u: Option<&toml::Value>, text: &str) -> bool {
+        if u.and_then(|u| u.get("risky_only")).and_then(|v| v.as_integer()) != Some(1) {
+            return true;
+        }
+        let pat = cfg
+            .get("script")
+            .and_then(|s| s.get("risky"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// Whether any hold rule of `dispatch.capacity_hold` matches `text`, as the engine's dispatch::capacity_rule_hit.
+    fn capacity_rule_hit(cfg: &toml::Value, text: &str) -> bool {
+        cfg.get("rules")
+            .and_then(|v| v.as_table())
+            .is_some_and(|rules| {
+                rules.values().any(|pat| {
+                    pat.as_str()
+                        .and_then(|p| {
+                            regex::bytes::RegexBuilder::new(p)
+                                .unicode(false)
+                                .case_insensitive(true)
+                                .build()
+                                .ok()
+                        })
+                        .is_some_and(|re| re.is_match(text.as_bytes()))
+                })
             })
     }
 

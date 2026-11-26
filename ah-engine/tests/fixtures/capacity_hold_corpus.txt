@@ -1,6 +1,11 @@
 # #901/#904 capacity-hold corpus, read by the engine (dispatch::tests) and the ah-hook launcher (edge_cases) so both matchers are
 # held to the same table. One case per line: "H <command>" must be held, "P <command>" must pass. A literal \n in a command is a
 # newline. A held case that passes is a fail-open: the test fails.
+# "R <command>" was held before #969 and passes now: an unknown command name that names nothing risky (unknown.risky_only:
+# held only when the command matches script.risky, so `zzalias920 push` stays held). It turns back into H if that switch is 0.
+# "R <command>" was held by a rule #969 switched off under load (only the irreversible classes stay held: push, git destroy, gh
+# remote change, recursive delete, deploy, publish, money, eFuse, dropped rows; no dynamic-command, pipe-to-shell, heredoc,
+# inline-code, unknown-name or unread-script hold): it must pass now, and turns back into H if such a rule is switched on again.
 #
 # The security review of PR #904 (spellings an allowed-prefix anchor let through; dev's match-anywhere rules hold them all)
 H \rm -rf /x
@@ -245,8 +250,8 @@ H node -e "require('child_process').execSync('gi'+'t push')"
 H node -e "const c=process.argv[1]; require('child_process').execSync(c)"
 H zzalias920 push
 H cd /tmp && zzdeploy920
-H FOO=1 zzalias920
-H if true; then zzalias920; fi
+R FOO=1 zzalias920
+R if true; then zzalias920; fi
 H gh co 12
 H gh x
 H sudo gh zzext
@@ -326,7 +331,7 @@ H t=$(mktemp -d); rm -rf "$t/.."
 H t=$(mktemp -d); read t; rm -rf "$t"
 H t=/tmp/x; rm -rf "$t"
 H rm -rf "$t"
-H cd {fix} && notatool928 --ci
+R cd {fix} && notatool928 --ci
 H cd {fix} && tool --ci && git push
 H sudo -u deploy git push
 H sudo -u deploy rm -rf /x
@@ -445,8 +450,12 @@ H cd x && grep foo $(git push -f)
 H cd x && grep foo `git push -f`
 H cd "$(git push)" && ls
 H grep x "${HOME:-$(git push)}"
-H curl -X POST https://example.com/api
-H curl -sS --request DELETE https://example.com/api/1
-H curl -d a=1 https://example.com/api
-H cd /tmp && curl -XPUT https://example.com/api
-H wget --method=POST https://example.com/api
+# #969 live holds: the engine's own CLI under load (a message text naming deploy/push, a message file, a heartbeat piped to a filter)
+P ah-engine mesh send --to abc --message "firebase deploy and git push are done"
+P "$HOME/.anti-hall/ah-engine/bin/ah-engine" mesh send --to abc --message-file /tmp/msg.txt
+P ~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat w1 --summary "deploy check" | head -c 300
+P ah-engine mesh heartbeat w1 --summary x | python3 -c "import json,sys; print(json.load(sys.stdin))"
+P ah-engine mesh inbox tick; ah-engine mesh inbox read-primary | python3 -m json.tool
+P ah-engine mesh heartbeat w1 --summary x | jq .ok
+H ah-engine mesh heartbeat w1 | python3 -c "import os; os.system('git push')"
+H ah-engine mesh send --to a --message x && firebase deploy

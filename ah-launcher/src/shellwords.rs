@@ -151,6 +151,12 @@ fn ro_expand(word: &str, vars: &[(String, String)], cfg: &Cfg, home: Option<&std
     Some(under_home.map_or_else(|| out.clone(), |rest| format!("~{rest}")))
 }
 
+/// Whether `word` (a command word as written, or a script path a command runs) is the engine's own binary (`ro_programs`, the home
+/// directory read as `~`): it is never read as a script (#969: it is far over any read cap and would be held as unread).
+pub fn is_engine_program(word: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> bool {
+    !cfg.ro_programs.is_empty() && ro_expand(word, &[], cfg, home, true).is_some_and(|w| cfg.ro_programs.iter().any(|p| *p == w))
+}
+
 /// Whether the words after the engine program are one of its local verbs (`ro_verbs`).
 fn ro_verb(words: &[String], verbs: &[String]) -> bool {
     verbs.iter().any(|v| {
@@ -1242,6 +1248,7 @@ mod tests {
         assert_eq!(parts("ah-engine config set daemon.nice 0 --check"), Some(vec![local("")]));
         assert_eq!(parts("ah-engine agents nudge abc msg hi"), Some(vec![local("")]), "* is any one word");
         assert_eq!(parts("cd x; ls -la"), Some(vec![read("ls -la")]), "the caller's read pattern judges what is left");
+        assert_eq!(parts("A=1 grep x"), Some(vec![read("A=1 grep x")]), "an assignment in front of a command is left for the read pattern to refuse");
         for (cmd, why) in [
             ("ah-engine config set daemon.nice 0", "config set without --check writes"),
             ("ah-engine config set daemon.nice 0 --check=x", "the flag must stand as a whole word"),
@@ -1262,7 +1269,6 @@ mod tests {
             ("cd \"$(git push)\" && ls", "a substitution in a cd"),
             ("cat <<EOF\nx\nEOF", "a heredoc"),
             ("grep x |& head", "a separator outside the list"),
-            ("A=1 grep x", "an assignment in front of a command"),
             ("grep x | | head", "an empty pipeline element"),
         ] {
             assert_eq!(parts(cmd), None, "{why}: {cmd:?}");
