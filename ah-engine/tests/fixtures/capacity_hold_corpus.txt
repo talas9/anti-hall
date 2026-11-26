@@ -454,8 +454,23 @@ H grep x "${HOME:-$(git push)}"
 P ah-engine mesh send --to abc --message "firebase deploy and git push are done"
 P "$HOME/.anti-hall/ah-engine/bin/ah-engine" mesh send --to abc --message-file /tmp/msg.txt
 P ~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat w1 --summary "deploy check" | head -c 300
-P ah-engine mesh heartbeat w1 --summary x | python3 -c "import json,sys; print(json.load(sys.stdin))"
+H ah-engine mesh heartbeat w1 --summary x | python3 -c "import json,sys; print(json.load(sys.stdin))"
 P ah-engine mesh inbox tick; ah-engine mesh inbox read-primary | python3 -m json.tool
 P ah-engine mesh heartbeat w1 --summary x | jq .ok
 H ah-engine mesh heartbeat w1 | python3 -c "import os; os.system('git push')"
 H ah-engine mesh send --to a --message x && firebase deploy
+# #969 review (Codex P1s): a code tail after an engine verb, an engine verb off the list, and lists the exemption must not read
+H ah-engine config set daemon.nice 0
+H "$HOME/.anti-hall/ah-engine/bin/ah-engine" config set daemon.nice 0
+H ah-engine agents stop abc
+H ah-engine agents nudge abc stop
+H ah-engine agents nudge abc msg hi; git push
+H ah-engine agents nudge abc msg hi\nrm -rf /tmp/x
+H ah-engine agents nudge abc msg hi || git push -f
+H E=$(command -v ah-engine); "$E" status
+H ah-engine mesh send --to a --message "$(git push -f)"
+H ah-engine mesh send --to a --message "$(date)"
+H ah-engine status; ah-engine config set daemon.nice 0
+H ah-engine mesh send --to a --message x; ah-engine agents stop abc
+P ah-engine mesh heartbeat w1 --summary x | jq .ok | head -3
+P ah-engine mesh inbox read-primary | python3 -m json.tool

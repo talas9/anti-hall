@@ -1041,7 +1041,7 @@ impl L {
                 shellwords::Part::Local(tail) => {
                     tail.is_empty()
                         || self.capacity_read_only(cfg, tail)
-                        || !Self::capacity_rule_hit(cfg, &format!("| {tail}"))
+                        || Self::capacity_tail_ok(cfg, tail)
                 }
             })
     }
@@ -1065,23 +1065,20 @@ impl L {
                 .is_ok_and(|re| re.is_match(text.as_bytes()))
     }
 
-    /// Whether any hold rule of `dispatch.capacity_hold` matches `text`, as the engine's dispatch::capacity_rule_hit.
-    fn capacity_rule_hit(cfg: &toml::Value, text: &str) -> bool {
-        cfg.get("rules")
-            .and_then(|v| v.as_table())
-            .is_some_and(|rules| {
-                rules.values().any(|pat| {
-                    pat.as_str()
-                        .and_then(|p| {
-                            regex::bytes::RegexBuilder::new(p)
-                                .unicode(false)
-                                .case_insensitive(true)
-                                .build()
-                                .ok()
-                        })
-                        .is_some_and(|re| re.is_match(text.as_bytes()))
-                })
-            })
+    /// Whether the pipe tail of an engine-local verb is one of the `parsed.tail_ok` filters, as the engine's
+    /// dispatch::capacity_tail_ok; empty or uncompilable = none.
+    fn capacity_tail_ok(cfg: &toml::Value, tail: &str) -> bool {
+        let pat = cfg
+            .get("parsed")
+            .and_then(|p| p.get("tail_ok"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(tail.as_bytes()))
     }
 
     /// #901/#904: whether `command` is a plain read that passes dispatch.capacity_hold whatever words it names: the whole command
