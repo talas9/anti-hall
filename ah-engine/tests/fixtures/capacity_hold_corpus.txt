@@ -474,3 +474,15 @@ H ah-engine status; ah-engine config set daemon.nice 0
 H ah-engine mesh send --to a --message x; ah-engine agents stop abc
 P ah-engine mesh heartbeat w1 --summary x | jq .ok | head -3
 P ah-engine mesh inbox read-primary | python3 -m json.tool
+# #969 after 0.3.27: a quoted mention of the engine is no engine call; the registry's read-only verbs pass
+P pgrep -fl 'ah-engine serve'
+P ps -Ao pid,command | grep "ah-engine.* serve"
+P pgrep -fl "ah-engine serve" && echo found
+P ah-engine version
+P ah-engine telemetry summary
+P ah-engine agents status
+P ah-engine devswarm status
+P ah-engine mesh unread
+H sudo ah-engine config set daemon.nice 0
+H ah-engine doctor --fix
+H ah-engine devswarm ledger

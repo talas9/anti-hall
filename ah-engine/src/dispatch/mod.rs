@@ -586,6 +586,13 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
         }
     }
     if let (Some(n), Some(ncfg)) = (&norm, &ncfg) {
+        // #969: an engine call the parsed exemption did not pass (a verb off the local list, or a list it can not read); only a
+        // command word counts, never an argument that names the engine
+        let unlisted = cfg.get("parsed").and_then(|p| p.get("unlisted_rule")).and_then(|v| v.as_str()).unwrap_or_default();
+        let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+        if !unlisted.is_empty() && n.cmds.iter().any(|c| shellwords::is_engine_program(c, ncfg, home.as_deref())) {
+            return Decision { rule: Some(unlisted.to_string()), normalised: false, text_exempt: false, via: Some("engine_unlisted"), exempt };
+        }
         if n.git_unknown.is_some() {
             let rule = cfg.get("git").and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
             if !rule.is_empty() {
@@ -868,7 +875,8 @@ pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity_hold", &format!("{event}: {rule}"));
     crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
     health::log_event("dispatch_capacity_hold", event, &rule);
-    let msg = defaults::render("dispatch.msg_capacity_hold", &[("tool", &tool), ("rule", &rule)]);
+    let key = if d.via == Some("engine_unlisted") { "dispatch.msg_capacity_hold_engine" } else { "dispatch.msg_capacity_hold" };
+    let msg = defaults::render(key, &[("tool", &tool), ("rule", &rule)]);
     Some(Outcome { out: String::new(), code: 2, err: format!("{msg}\n") })
 }
 
@@ -1732,7 +1740,7 @@ mod tests {
             if want { held += 1 } else { passed += 1 }
         }
         assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
-        assert!(held >= 285 && passed >= 141, "corpus read: {held} held, {passed} pass");
+        assert!(held >= 288 && passed >= 149, "corpus read: {held} held, {passed} pass");
     }
 
     /// #928: the exemptions that kept a false hold away are counted (wrapper_opt, local_tool, trusted_script) and the commands pass.

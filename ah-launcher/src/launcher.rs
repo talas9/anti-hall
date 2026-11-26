@@ -608,6 +608,7 @@ impl L {
         let (mut raw_only_hit, mut via_norm) = (false, false);
         let mut rule = None;
         let mut via: Option<Ctr> = None; // #920: the class the hold falls in beyond its rule (counted)
+        let mut engine_call = false; // #969: held as an engine call off the local list (its own message)
         if listed {
             for (name, pat) in rules {
                 let Some(pat) = pat.as_str() else { continue };
@@ -638,6 +639,27 @@ impl L {
                     Err(e) => {
                         self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
                     }
+                }
+            }
+            // #969: an engine call the parsed exemption did not pass; only a command word counts, as the engine's
+            // dispatch::capacity_decide
+            if rule.is_none()
+                && let (Some(n), Some(nc)) = (&norm, &ncfg)
+                && let Some(r) = cfg
+                    .get("parsed")
+                    .and_then(|p| p.get("unlisted_rule"))
+                    .and_then(|v| v.as_str())
+                    .filter(|r| !r.is_empty())
+            {
+                let home = Some(nc.ro_home.as_str())
+                    .filter(|h| !h.is_empty())
+                    .and_then(std::env::var_os);
+                if n.cmds
+                    .iter()
+                    .any(|c| shellwords::is_engine_program(c, nc, home.as_deref()))
+                {
+                    rule = Some(r.to_string());
+                    engine_call = true;
                 }
             }
             // a git subcommand that is no known one (an alias, an external command) is held under its own rule
@@ -745,10 +767,12 @@ impl L {
         }
         limits::bump(Ctr::CapacityHold);
         self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
-        let msg = self.s.msg(
-            "dispatch.msg_capacity_hold",
-            &[("tool", tool), ("rule", &rule)],
-        );
+        let key = if engine_call {
+            "dispatch.msg_capacity_hold_engine"
+        } else {
+            "dispatch.msg_capacity_hold"
+        };
+        let msg = self.s.msg(key, &[("tool", tool), ("rule", &rule)]);
         write_out(b"", format!("{msg}\n").as_bytes());
         true
     }

@@ -262,6 +262,9 @@ pub struct Normalised {
     pub cds: Vec<String>,
     /// #928: how many wrapper-option values were skipped to find a command (`sudo -u bob cmd`).
     pub opt_skips: usize,
+    /// #969: the command words the top level runs (wrappers, assignments and redirections skipped), as written: what is called, never
+    /// an argument that only names a program (`pgrep -f 'ah-engine serve'`).
+    pub cmds: Vec<String>,
 }
 
 enum Tok {
@@ -1037,6 +1040,7 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
 /// What one reading of a command found besides its text (see the fields of [`Normalised`]).
 #[derive(Default)]
 struct Found {
+    cmds: Vec<String>,
     gh_unknown: Option<String>,
     unknown_cmds: Vec<String>,
     scripts: Vec<String>,
@@ -1102,6 +1106,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             let at_cmd = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &cfg.wrapper_split_opts, &mut more.opt_skips, &mut splits);
             nested.extend(splits);
             let Some((cmd, at)) = at_cmd else { continue };
+            merge(&mut more.cmds, vec![cmd.to_string()]);
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
@@ -1187,8 +1192,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         }
     }
     emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
-    let Found { gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
-    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips }, nested))
+    let Found { cmds, gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips, cmds }, nested))
 }
 
 #[cfg(test)]
@@ -1297,6 +1302,7 @@ mod tests {
         assert_eq!(n("sudo -u root ls").unknown_cmds, ["root"], "a wrapper option value is read as the command (a false hold, never a pass)");
         assert!(n("ls -la; cd x; export A=1").unknown_cmds.is_empty());
         assert!(n("\"$x\" a; ./run.sh; foo() { ls; }; >out ls").unknown_cmds.is_empty(), "dynamic words, paths, definitions, redirections");
+        assert_eq!(n("pgrep -fl 'ah-engine serve' && sudo ah-engine status").cmds, ["pgrep", "ah-engine"], "a quoted mention is no command");
         assert!(n("git commit -m \"fix the bug\"").unknown_cmds.is_empty(), "a quoted argument is text, not a command");
         assert_eq!(n("bash x.sh a").scripts, ["x.sh"]);
         assert_eq!(n("sudo ./d.sh").scripts, ["./d.sh"]);
