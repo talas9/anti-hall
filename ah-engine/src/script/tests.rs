@@ -3191,6 +3191,34 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);
 }
 
+/// #844 item 3: the report duty is a recent heartbeat, not one per turn. A heartbeat this child wrote within
+/// devswarm_gates.cg_report_fresh_ms (without --summary, so no summary row) satisfies the Stop; an older one, or one under another
+/// id, does not.
+#[test]
+fn a_child_gate_honours_the_latest_heartbeat_of_this_child() {
+    let gate = |beat_id: &str, off_ms: i64| {
+        let case = golden::lay(&json!({
+            "env": {"HOME": "{HOME}", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "feat/x", "DEVSWARM_BUILDER_ID": "b-1", "DEVSWARM_AI_AGENT": "codex"},
+            "event": "Stop", "opts": {"payload_sha1": "hb-fresh"},
+            "payload": {"hook_event_name": "Stop", "session_id": "hb-stop", "cwd": "{HOME}"},
+            "files": {
+                ".anti-hall/devswarm/workspaces/b-1.json": "{}",
+                ".anti-hall/devswarm/heartbeats/b-1.json": format!("{{\"id\":\"{beat_id}\",\"ts\":{{MS:{off_ms}}},\"source\":\"heartbeat\"}}")
+            }
+        }));
+        match golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate") {
+            Some(Verdict::Exact(out)) => out.out,
+            _ => String::new(),
+        }
+    };
+    let fresh = gate("b-1", -300_000);
+    assert!(!fresh.contains("no heartbeat or report sent"), "a heartbeat 5 min old is a report: {fresh}");
+    let stale = gate("b-1", -1_000_000);
+    assert!(stale.contains("workspace duty unfinished: no heartbeat or report sent"), "older than cg_report_fresh_ms: {stale}");
+    let other = gate("b-2", -300_000);
+    assert!(other.contains("no heartbeat or report sent"), "a record under another id: {other}");
+}
+
 /// The engine's own wake prompts stay pending in the native queue (a `task` nothing accepts), so the strict native probe counts them
 /// for ever. The child's pull records how many of its pending messages are wake prompts in the fresh wake-tick marker, and the gate
 /// subtracts them: a child whose only pending natives are wake prompts is not blocked as having unread parent mail (GH wake-pings).

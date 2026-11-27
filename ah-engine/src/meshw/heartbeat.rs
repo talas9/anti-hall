@@ -940,7 +940,16 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let identity = match ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home) {
         Ok(c) => {
             let mut ident_obj = Obj::default();
-            ident_obj.put("id", s(&c.identity)).put("kind", s(&c.kind));
+            // a child at the root of its own checkout: its builder id, with the checkout's label beside it (#844 item 3)
+            let root_child = if c.kind == defaults::text("mesh_write.kind_resolved") {
+                soft(defaults::text("mesh_write.hb_site_identity"), ident::root_child_id(&inv.env, &inv.cwd, &inv.home))
+            } else {
+                None
+            };
+            match root_child {
+                Some(bid) => ident_obj.put("id", s(&bid)).put("kind", s(defaults::text("mesh_write.kind_child"))).put("label", s(&c.identity)),
+                None => ident_obj.put("id", s(&c.identity)).put("kind", s(&c.kind)),
+            };
             ident_obj.done()
         }
         Err(e) => {
@@ -1142,6 +1151,27 @@ mod tests {
         assert_eq!(code, 0);
         let mb = field(&v, "meshBroadcast");
         assert_eq!((field(mb, "ok"), field(mb, "sent")), (&OVal::Bool(true), &OVal::Bool(true)), "{}", v.stringify());
+    }
+
+    /// #844 item 3: a child at the root of its own checkout is reported by its builder id, its checkout label beside it (the label
+    /// alone read as the Primary's id); outside a registered child the resolved label stays the identity.
+    #[test]
+    fn a_child_at_its_checkout_root_reports_its_builder_id() {
+        let mut inv = scratch_inv("rootchild");
+        init_repo(&mut inv);
+        let label = ident::caller_identity_detailed(&inv.env, &inv.cwd).unwrap().identity;
+        let (_, v) = run_args(&inv, &["heartbeat", &label, "--session", "s1"]);
+        assert_eq!(field(field(&v, "identity"), "id"), &OVal::Str(label.clone()), "no builder: the label");
+        inv.env.insert("DEVSWARM_SOURCE_BRANCH".into(), "feature".into());
+        inv.env.insert("DEVSWARM_BUILDER_ID".into(), "child-1".into());
+        let dir = crate::meshw::idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("child-1.json"), format!("{{\"id\":\"child-1\",\"worktreePath\":{:?}}}", inv.cwd)).unwrap();
+        let (_, v) = run_args(&inv, &["heartbeat", "child-1", "--session", "s1"]);
+        let id = field(&v, "identity");
+        assert_eq!(field(id, "id"), &OVal::Str("child-1".into()), "{}", v.stringify());
+        assert_eq!(field(id, "kind"), &OVal::Str(defaults::text("mesh_write.kind_child").into()));
+        assert_eq!(field(id, "label"), &OVal::Str(label));
     }
 
     /// A child whose worktree is a plain subdirectory of the Primary's checkout (#767): its own id broadcasts.

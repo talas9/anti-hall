@@ -655,6 +655,20 @@ pub fn subdir_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<(String, S
     Ok((caller_root == root && under(&cwd_real, &sub)).then(|| (bid.to_string(), mesh_id_for_real_path(&sub))))
 }
 
+/// The builder id of a child registered at the ROOT of the checkout `cwd` stands in (`DEVSWARM_BUILDER_ID` whose descriptor's
+/// worktree path is that checkout), else `None`. Its worktree label (`primary-<hash>`) names the same workspace; a report shows
+/// the builder id so a child never reads its own label as the Primary's id (#844 item 3).
+pub fn root_child_id(env: &Env, cwd: &str, home: &Path) -> R<Option<String>> {
+    let Some(bid) = env_nonempty(env, defaults::text("mesh_write.env_builder_id")) else { return Ok(None) };
+    if !crate::meshw::idlock::is_safe_id(bid) {
+        return Ok(None);
+    }
+    let Some(desc) = read_descriptor(home, bid) else { return Ok(None) };
+    let Some(wp) = str_field(&desc, defaults::text("mesh_write.field_worktree_path")).filter(|w| w.starts_with('/')) else { return Ok(None) };
+    let Some(caller_root) = resolve_caller_worktree(cwd)? else { return Ok(None) };
+    Ok((worktree_real_path(&caller_root)? == worktree_real_path(&wp)?).then(|| bid.to_string()))
+}
+
 /// [`caller_identity_detailed`] that knows a child registered at a subdirectory of a checkout: it is the child, not the label of the
 /// root it stands in, which is the Primary's (#767). Every verb that decides ownership, reads a mailbox or heartbeats uses this.
 pub fn caller_identity_for(env: &Env, cwd: &str, home: &Path) -> R<Caller> {

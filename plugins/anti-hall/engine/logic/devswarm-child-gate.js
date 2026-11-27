@@ -263,6 +263,24 @@ function cgReported(ctx, since) {
   return recent.some(function (x) { return x && x.from === id && cgFinite(x.ts) && x.ts >= since; });
 }
 
+// #844 item 3: this child's latest heartbeat (devswarm heartbeats/<builder id>.json, written by `mesh heartbeat` with or without a
+// summary) or summary row at or after `since`. The duty is a recent report, not one per turn: a heartbeat from the previous turn counts
+// for devswarm_gates.cg_report_fresh_ms (0 = off, only this episode's report counts).
+function cgBeatSince(ctx, since) {
+  var id = cgBuilder();
+  if (!dgSafeId(id)) return false;
+  var r = jx.read(ctx.home + '/' + cgDirRel() + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + ah.cfg('mesh_write.json_suffix'));
+  if (r.big || r.text === undefined) return false;
+  var j = jx.parse(r.text.trim());
+  if (j.unsure || j.invalid || !j.v || typeof j.v !== 'object') return false;
+  return j.v.id === id && cgFinite(j.v.ts) && j.v.ts >= since && j.v.ts <= ctx.now + ah.cfgNum('devswarm_gates.cg_report_skew_ms');
+}
+function cgReportedFresh(ctx) {
+  var fresh = ah.cfgNum('devswarm_gates.cg_report_fresh_ms');
+  if (!(fresh > 0)) return false;
+  return cgBeatSince(ctx, ctx.now - fresh) || cgReported(ctx, ctx.now - fresh);
+}
+
 // `findRecentDropAttempt`: the freshest drop-attempt record of this project since `since` that this hook authenticates (its reader
 // nonce, or a session id of its own descriptor), and the mismatch diagnosis of an own-id record that authenticates against neither.
 function cgDrop(ctx, since, diag) {
@@ -566,7 +584,7 @@ function cgGate(p, root, l) {
   var prevCheckAt = state.lastCheckAt;
   state.lastCheckAt = ctx.now;
   var episodeSince = Math.max(state.lastBlockAt, prevCheckAt || (ctx.now - ah.cfgNum('devswarm_gates.cg_reset_ms')));
-  var reported = cgReported(ctx, episodeSince);
+  var reported = cgReported(ctx, episodeSince) || cgReportedFresh(ctx);
   var diag = {};
   var drop = reported ? null : cgDrop(ctx, episodeSince, diag);
   if (diag.mismatch && !state.mismatchLogged) {
