@@ -151,6 +151,33 @@ fn a_script_past_its_memory_ceiling_defers() {
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
+/// #969 hardening: a runaway script (the CPU limit, through the interrupt handler) and an allocation bomb (the heap ceiling,
+/// `set_memory_limit`) each end in the check's configured failure mode within the time bound, never a hang, and each is counted
+/// as a script failure (a telemetry check event with outcome error). Here the mode is closed, on a guard event: a block.
+#[test]
+fn a_runaway_or_an_allocation_bomb_takes_the_checks_failure_mode_and_is_counted() {
+    use crate::telemetry::event::Outcome;
+    let h = home("failmode");
+    let e = env(&h);
+    put_override(&h, "zz-spin", "function decide() { for (;;) {} }");
+    put_override(&h, "zz-bomb", "function decide() { var a = []; for (;;) a.push('z'.repeat(1 << 16) + a.length); }");
+    let closed = defaults::text("script.failure_mode_closed");
+    defaults::set_overlay(&[("script.failure_mode_by_check", json!({"zz-spin": closed, "zz-bomb": closed}))]);
+    crate::telemetry::emit::take_queued();
+    let bound = std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.time_hard_factor") * 3);
+    let push = json!({"tool_name": "Bash", "tool_input": {"command": "git push origin main"}});
+    for name in ["zz-spin", "zz-bomb"] {
+        let t = Instant::now();
+        let v = run_forced(name, &push, &e);
+        assert!(t.elapsed() < bound, "{name} took {:?}", t.elapsed());
+        assert!(matches!(v, Some(Some(Verdict::Block(_)))), "{name}: a closed check that cannot answer blocks: {v:?}");
+        let errors = crate::telemetry::emit::take_queued().into_iter().filter(|ev| ev.h.as_str() == name && ev.o == Outcome::Error).count();
+        assert_eq!(errors, 1, "{name}: counted once as a script failure");
+    }
+    defaults::set_overlay(&[]);
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
 /// The teardown assertion: a worker thread's runtime is freed when the thread exits, after normal calls, an interrupt, an
 /// out-of-memory failure, an exception and a reload. An object left alive would abort the whole test process here.
 #[test]

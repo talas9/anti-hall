@@ -254,6 +254,10 @@ value = "last-crash.json"
 doc = "Last panic of a non-daemon process (a CLI verb or the hook client). Kept apart from last-crash.json so it never counts as a daemon crash or restart."
 value = "cli-crash.json"
 
+[files.hung_kill]
+doc = "R0 (#969 hardening): the tombstone a client leaves just before it ends a hung daemon (client.heartbeat_stale_ms): that daemon's pid and the load per core at the kill. The next start's reap reads it once: a kill under load (health.load_exit_per_core_permille) is logged as health.hung_kill_kind, not as a crash."
+value = "daemon.hung-kill.json"
+
 [files.reaped_prefix]
 doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
 value = "daemon.run.reaped."
@@ -471,19 +475,19 @@ env = "AH_ENGINE_RSS_CHECK_MS"
 unit = "ms"
 
 [daemon.stuck_ms]
-doc = "A worker that makes no progress on its request for longer than this trips a drain and exit (a hung worker). Progress is a check starting or finishing and the script interpreter running, so a worker a loaded machine only slows down is not stuck; the time without progress is what a blocked host call (a lock, a child process, a disk sync) adds."
+doc = "A worker that makes no progress on its request for longer than this trips a drain and exit (a hung worker). Progress is a check starting or finishing and the script interpreter running, so a worker a loaded machine only slows down is not stuck; the time without progress is what a blocked host call (a lock, a child process, a disk sync) adds. R0: multiplied by the watchdog's load factor (daemon.watchdog_load_scale_max_permille); an exit taken under load (health.load_exit_per_core_permille) does not count toward the crash-loop rule."
 value = 8000
 env = "AH_ENGINE_STUCK_MS"
 unit = "ms"
 
 [daemon.stall_ms]
-doc = "An accept loop silent for longer than this trips a drain and exit."
+doc = "An accept loop silent for longer than this trips a drain and exit. R0: multiplied by the watchdog's load factor (daemon.watchdog_load_scale_max_permille), as daemon.stuck_ms is."
 value = 5000
 env = "AH_ENGINE_STALL_MS"
 unit = "ms"
 
 [daemon.start_stall_ms]
-doc = "How long a starting daemon may take from its start to the accept loop's first round (database open, spool drain, scheduler and wiring start) before the watchdog calls it stalled and restarts it. Longer than daemon.stall_ms because start-up work is not the accept loop and a loaded machine slows it; once the loop has run, daemon.stall_ms applies, and a loop that has returned (a clean drain) is never judged."
+doc = "How long a starting daemon may take from its start to the accept loop's first round (database open, spool drain, scheduler and wiring start) before the watchdog calls it stalled and restarts it. Longer than daemon.stall_ms because start-up work is not the accept loop and a loaded machine slows it; once the loop has run, daemon.stall_ms applies, and a loop that has returned (a clean drain) is never judged. R0: multiplied by the watchdog load factor (daemon.watchdog_load_scale_max_permille), as daemon.stall_ms is."
 value = 60000
 env = "AH_ENGINE_START_STALL_MS"
 unit = "ms"
@@ -579,6 +583,13 @@ doc = "#969: the most a loaded machine stretches a guard's wall time, in permill
 value = 2000
 min = 0
 max = 3000
+unit = "permille"
+
+[daemon.watchdog_load_scale_max_permille]
+doc = "R0 (#969 hardening): the most a loaded machine stretches the watchdog's daemon.stall_ms and daemon.stuck_ms, in permille (4000 = four times). The watchdog samples the 1-minute load average per core itself on every tick (it serves no request, so no launcher factor reaches it), clamps it to [1000, this] and rounds it down to daemon.load_scale_step_permille. A worker a starved machine only slows is then not called stuck: at load 80 on 16 cores a host call blocked for 8 s no longer drains the daemon. Not bounded by any hook timeout: a stuck worker's client has already failed open. 1000 (or less) = off."
+value = 4000
+min = 0
+max = 10000
 unit = "permille"
 
 [daemon.load_scale_step_permille]
@@ -830,6 +841,13 @@ env = "AH_ENGINE_DOWN_REQUIRES_GONE"
 min = 0
 max = 1
 
+[client.crashloop_hold_max_ms]
+doc = "R0 (#969 hardening review): for this long after a crash-loop trip (client.crash_n within client.crash_window_s), a hook call is treated as load, not as a daemon that is gone: a guard call in a dispatch.capacity_hold class (a push, merge, delete, deploy) is held and anything else passes. Past it the rest of the cooldown (client.crash_cooldown_s) passes everything, so a broken install never blocks every push for the whole cooldown. 0 = never hold (the cooldown passes everything)."
+value = 600000
+min = 0
+env = "AH_ENGINE_CRASHLOOP_HOLD_MAX_MS"
+unit = "ms"
+
 [client.load_hold_max_ms]
 doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there; and a daemon that answers late, client.slow_fallback_max_ms: every late reply, whether or not it trips client.slow_down_n, #910) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
 value = 300000
@@ -849,7 +867,7 @@ env = "AH_ENGINE_SLOW_WINDOW_MS"
 unit = "ms"
 
 [client.heartbeat_stale_ms]
-doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check."
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. R0: for the kill itself it is multiplied by the watchdog load factor (daemon.watchdog_load_scale_max_permille), and the kill leaves a tombstone (files.hung_kill). 0 disables the check."
 value = 1500
 env = "AH_ENGINE_HEARTBEAT_STALE_MS"
 min = 0
@@ -1058,6 +1076,24 @@ value = ["client_spawn_attempt", "supervised_start"]
 [health.judged_kinds]
 doc = "Event kinds that mark a crash-loop judgement (a trip, a reset by a new binary, an operator reset): crashes and daemon starts logged before the latest of them no longer count toward the next trip."
 value = ["crashloop", "crashloop_reset", "reset"]
+
+[health.load_exit_per_core_permille]
+doc = "R0 (#969 hardening): a watchdog stall or stuck exit taken while the 1-minute load average per core is above this (permille; 1500 = 1.5 runnable threads per core) is logged as health.load_exit_kind instead of watchdog. It is still a restart (the degraded summary shows it; metric watchdog_exits counts it by kind and code) but it never counts toward the crash-loop rule (client.crash_n): four such exits in ten minutes used to latch the engine off for client.crash_cooldown_s with every guard passing. The spawn-rate rule (client.spawn_n) still applies. No load reading = not a load exit."
+value = 1500
+min = 0
+unit = "permille"
+
+[health.load_exit_kind]
+doc = "R0 (#969 hardening): the event-log kind of a watchdog exit taken under load (health.load_exit_per_core_permille). It must not be listed in health.crashy_kinds."
+value = "watchdog_load"
+
+[health.hung_kill_kind]
+doc = "R0 (#969 hardening): the event-log kind the reap of a daemon a client ended as hung (files.hung_kill) logs when the load per core at the kill was above health.load_exit_per_core_permille. Not in health.crashy_kinds: a client ending a daemon a starved machine made look hung must not latch the crash-loop cooldown. On an idle machine the same kill is logged as a crash with this code, so a daemon that really wedges still latches."
+value = "hung_kill"
+
+[health.rss_load_kind]
+doc = "R0 (#969 hardening): the event-log kind of an rss-cap exit (daemon.rss_cap_kb) taken while the load per core is above health.load_exit_per_core_permille: more requests run at once under load and memory rises with them, so the trip is the load, not a leak. Not in health.crashy_kinds, so it can not latch the crash-loop cooldown; the degraded summary still names it. At or under the bar (or with no load reading) the trip stays the crash-loop kind rss."
+value = "rss_load"
 
 [health.crashy_kinds]
 doc = "Event kinds that count toward the crash-loop threshold."
@@ -2952,6 +2988,10 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.sigint_drains]
 doc = "Graceful drains started by SIGINT (the same drain as SIGTERM)."
 value = { kind = "counter", unit = "drains", labels = [] }
+
+[metric.watchdog_exits]
+doc = "R0 (#969 hardening): watchdog-forced exits by kind (watchdog = counts toward the crash-loop rule; health.load_exit_kind = taken under load, does not) and code (stall, stuck)."
+value = { kind = "counter", unit = "exits", labels = ["kind", "code"] }
 
 [metric.daemon_exits]
 doc = "Daemon exits begun, by kind (health.exit_kinds): idle, rss, memory, handoff, sigterm, stall, and the rest. Counted when the drain begins."

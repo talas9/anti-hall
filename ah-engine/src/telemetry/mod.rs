@@ -500,7 +500,7 @@ impl Telemetry {
             self.rec.mirror_into(&mut m);
             crate::jev::shared::drain_stats(&mut m);
             crate::metrics::drain_pending(&mut m);
-            m.export()
+            m.export_persisted()
         };
         let now = now_ms();
         let kept = self.store.save_metrics(now, &body);
