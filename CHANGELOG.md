@@ -24,6 +24,7 @@ the update.
 
 - #972 tracker classes: wake-watch coverage, stale/stopped/snoozed rows, hold confirm-once, 0-outcomes per segment and in reports, STALLED drift.
 - #972 guard classes: idle-tasks lapsed vs missing plus blockedOn refresh, stale-agent-stop-note reports, git-guard script scan, `git pull --ff-only`.
+- #972 review rounds: Codex review fixes for both lanes (drift dedupe keys on the step's current subject, and the other round 2 and 3 findings).
 
 ## Engine 0.3.29 (local integration build)
 
