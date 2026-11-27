@@ -4438,6 +4438,7 @@ fn a_build_exempts_only_while_its_background_task_is_outstanding() {
                     writes: Vec::new(),
                     amp: false,
                     cwd: String::new(),
+                    blocker_task: String::new(),
                 },
             );
         }),
@@ -7120,4 +7121,68 @@ fn n972r_a_renamed_step_is_a_new_step_for_the_drift_dedupe() {
     task_file(&h, SID, task("T-53 tracker guard misfires on waits"));
     ticks(&h, &mut st, &[n + 70 * MIN, n + 71 * MIN]);
     assert_eq!(drifts(&h), 2, "the renamed step is a new step: reminded again after the cooldown");
+}
+
+// ---- #972 round 3 (Codex #839) ----------------------------------------------------------------------------------------
+
+/// A teammate stopped by name (answered TaskStop at n-50, still in the parent's tail) with `extra` appended to its transcript.
+fn stopped_mate(h: &Path, n: u64, extra: &[String]) {
+    write(&sess(h, "parent"), &[prompt(n - 80 * MIN, "/w")]);
+    append(&sess(h, "parent"), &[
+        json!({"type": "user", "timestamp": iso(n - 60 * MIN), "toolUseResult": {"status": "teammate_spawned", "name": "ax", "agent_id": "ax-1"},
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_a", "content": "Spawned successfully."}]}}).to_string(),
+        tool(n - 50 * MIN, "p3", 5, "toolu_s", "TaskStop", json!({"task_id": "ax"})),
+        result(n - 50 * MIN + 1000, "toolu_s", "{\"message\":\"Successfully stopped task: t1 (x)\",\"task_id\":\"t1\"}", false),
+    ]);
+    let mut lines = vec![prompt(n - 70 * MIN, "/w"), asst(n - 46 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "working"}]), None)];
+    lines.extend_from_slice(extra);
+    mate(h, "ax-1", "ax", "team-e", &lines);
+    roster(h, "team-e", &["ax"]);
+    register(h, std::process::id(), "parent", "busy", n);
+}
+
+/// Codex #839 P1.1: a teammate the lead resumes after an answered TaskStop (a new inbound message after the stop opens a new turn) is
+/// running again on every tick; the killed turn's late tail (output with no inbound message after the stop) stays done.
+#[test]
+fn n972r3_a_teammate_resumed_by_a_new_message_after_its_stop_is_running_again() {
+    let n = now0();
+    let h = home("n972r3-mate-resume");
+    stopped_mate(&h, n, &[
+        json!({"type": "user", "timestamp": iso(n - 10 * MIN), "message": {"role": "user", "content": "<teammate-message teammate_id=\"team-lead\">continue with item 2</teammate-message>"}}).to_string(),
+        tool(n - 9 * MIN, "s2", 5, "r1", "Read", json!({"file_path": "/w/a"})),
+    ]);
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        ticks(&h, &mut st, &[t]);
+        let a = agent(&st, "ax-1");
+        assert!(!a.finished && signals::state_of(a) == "running", "resumed by the lead's message after the stop: {} finished={}", signals::state_of(a), a.finished);
+    }
+    // the killed turn's tail (no inbound message after the stop) stays done
+    let h2 = home("n972r3-mate-tail");
+    stopped_mate(&h2, n, &[asst(n - 45 * MIN, "s3", 5, 5, json!([{"type": "text", "text": "late line"}]), None)]);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(signals::state_of(agent(&st2, "ax-1")), "done");
+}
+
+/// Codex #839 P1.2: a TaskUpdate of the blocker whose result is an error did not write anything and confirms nothing.
+#[test]
+fn n972r3_a_failed_blocker_update_does_not_confirm_the_hold() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972r3-failed-update");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "81", "subject": "Task 81", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1);
+    let at = n + max + 5 * MIN;
+    append(&sess(&h, SID), &[
+        tool(at, "mf", 5, "tuf", "TaskUpdate", json!({"taskId": "81", "metadata": {"blockedOn": "waiting on the store review"}})),
+        result(at + 500, "tuf", "Error: task list is locked", true),
+    ]);
+    ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
+    assert!(agent(&st, SID).hold_confirmed.get("81").is_none(), "an errored update confirms nothing");
+    assert_eq!(n972_hold_rows(&h).len(), 2, "still unanswered: reminded again after the cooldown");
 }

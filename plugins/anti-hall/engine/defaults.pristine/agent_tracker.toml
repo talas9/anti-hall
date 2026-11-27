@@ -129,7 +129,7 @@ doc = "Tracker signals held back by a standing exemption (#972), by signal and r
 value = { kind = "counter", unit = "ticks", labels = ["signal", "reason"] }
 
 [metric.agent_stop_sticky]
-doc = "Stops of child agents the tracker keeps (#972 class 1), by how: recorded (a stop was first seen and kept), held (a tick where the discovery pass called a stopped child unfinished and the kept stop overrode it), resumed (the child wrote again past limits.stop_resume_ms, so the kept stop was dropped), stale_notice (a dated stop notice the child has since written past by more than limits.stop_resume_ms was not taken as a stop: it never re-latches a resumed child)."
+doc = "Stops of child agents the tracker keeps (#972 class 1), by how: recorded (a stop was first seen and kept), held (a tick where the discovery pass called a stopped child unfinished and the kept stop overrode it), resumed (the child wrote again past limits.stop_resume_ms, so the kept stop was dropped), stale_notice (a dated stop notice the child has resumed past was not taken as a stop: a teammate resumes only by a new turn, a message to it after the stop; a subagent by a new turn or by output more than limits.stop_resume_ms after it)."
 value = { kind = "counter", unit = "decisions", labels = ["how"] }
 
 [metric.agent_report_repeat]
