@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn a_send_records_each_stage_under_its_configured_label_and_sums_repeats() {
-        begin("send");
+        begin();
         assert!(armed());
         add("summary", 1500);
         add("insert", 200);
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn finish_returns_milliseconds_and_disarms() {
-        begin("send");
+        begin();
         add("total", 4_000_000);
         add("readback", 1234);
         let v = finish("send").expect("stages");

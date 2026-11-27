@@ -23,17 +23,24 @@ pub enum Audience {
 /// A `--question` broadcast whose mention prefixes several workspaces: refused at send (the token and the ids it matched).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ambiguous {
+    /// The mention token, lower-cased.
     pub token: String,
+    /// The registry ids it prefixes.
     pub ids: Vec<String>,
 }
 
 /// The broadcast fields the audience rule reads.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bc<'a> {
+    /// The sender's mesh id.
     pub sender: Option<&'a str>,
+    /// The urgency word.
     pub urgency: Option<&'a str>,
+    /// `--question` (needs_reply).
     pub question: bool,
+    /// A heartbeat row (never wakes).
     pub heartbeat: bool,
+    /// The message body.
     pub body: &'a str,
 }
 
@@ -135,6 +142,7 @@ pub struct Mode {
 }
 
 impl Mode {
+    /// The switches as the plugin configures them.
     pub fn load() -> Mode {
         Mode {
             addressed: defaults::text("mesh_wake.addressed_mode") == defaults::text("mesh_wake.mode_on"),
