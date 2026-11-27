@@ -1,0 +1,32 @@
+   Compiling ah-engine v0.3.30 (/Users/talas9/.anti-hall/work/lane-busy/ah-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 23s
+────────────
+ Nextest run ID 8e6e81cd-e86f-4a4d-a651-0051ced362ba with nextest profile: soak
+    Starting 2 tests across 1 binary (2441 tests skipped)
+        PASS [   0.033s] (1/2) ah-engine dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass
+        SLOW [>300.000s] (───) ah-engine dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads
+        FAIL [ 330.296s] (2/2) ah-engine dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads
+  stdout ───
+
+    running 1 test
+    test dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads has been running for over 60 seconds
+    test dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads ... FAILED
+
+    failures:
+
+    failures:
+        dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2442 filtered out; finished in 330.27s
+
+  stderr ───
+
+    thread 'dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads' (420691722) panicked at src/dispatch/mod.rs:1842:9:
+    1 of the corpus cases are wrong:
+    must pass: "E=\"$HOME/.anti-hall/ah-engine/bin/ah-engine\"; F=/tmp/x/inbox.json; \"$E\" mesh inbox read-primary abc > $F 2>&1; python3 -c 'import json,sys; print(json.load(open(sys.argv[1])))' $F" (rule Some("dynamic-command"))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [ 330.313s] 2 tests run: 1 passed, 1 failed, 2441 skipped
+        FAIL [ 330.296s] (2/2) ah-engine dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads
+error: test run failed

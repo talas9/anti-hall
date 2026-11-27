@@ -1110,7 +1110,47 @@ impl L {
         let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else {
             return false;
         };
-        !parts.is_empty() && parts.iter().all(|p| self.capacity_part_ok(cfg, p))
+        if parts.is_empty() || !parts.iter().all(|p| self.capacity_part_ok(cfg, p)) {
+            return false;
+        }
+        // #971 review: an engine call that writes a file passes only beside parts that can not run or load what it wrote, as the
+        // engine's dispatch::capacity_parsed_read
+        let writers = parts
+            .iter()
+            .filter(|p| Self::capacity_writes(cfg, p))
+            .count();
+        writers == 0
+            || writers == 1
+                && parts
+                    .iter()
+                    .filter(|p| !Self::capacity_writes(cfg, p))
+                    .all(|p| match p {
+                        shellwords::Part::Read(t) => Self::capacity_parsed_regex(cfg, "after_write", t),
+                        shellwords::Part::Local(..) => true,
+                    })
+    }
+
+    /// #971 review: whether `text` matches the `parsed.<key>` regular expression (ASCII, case-insensitive, on bytes), as the
+    /// engine's dispatch::capacity_parsed_regex; an empty or uncompilable one matches nothing.
+    fn capacity_parsed_regex(cfg: &toml::Value, key: &str, text: &str) -> bool {
+        let pat = cfg
+            .get("parsed")
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// #971 review: whether an engine-local call writes a file (a redirection off `parsed.redirs_inert`); never masked, as the
+    /// engine's dispatch::capacity_writes.
+    fn capacity_writes(cfg: &toml::Value, part: &shellwords::Part) -> bool {
+        matches!(part, shellwords::Part::Local(_, redirs)
+            if redirs.iter().any(|r| !Self::capacity_parsed_regex(cfg, "redirs_inert", r)))
     }
 
     /// Whether one part of the parsed read exemption passes, as the engine's dispatch::capacity_part_ok.
@@ -1127,7 +1167,7 @@ impl L {
     }
 
     /// #971: `command` with each engine-local call that passes replaced by `parsed.mask`, `None` when there is none (or `mask`
-    /// is empty: off); a call whose redirection writes a file the rest of the command names again is not masked. As the engine's
+    /// is empty: off); a call that writes a file is never masked. As the engine's
     /// dispatch::capacity_mask.
     fn capacity_mask(
         &self,
@@ -1145,10 +1185,7 @@ impl L {
             .and_then(std::env::var_os);
         let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
             .into_iter()
-            .filter(|(range, p)| {
-                self.capacity_part_ok(cfg, p)
-                    && !Self::capacity_writes_what_runs(command, range.end, p)
-            })
+            .filter(|(_, p)| self.capacity_part_ok(cfg, p) && !Self::capacity_writes(cfg, p))
             .collect();
         if spans.is_empty() {
             return None;
@@ -1198,19 +1235,6 @@ impl L {
                 .case_insensitive(true)
                 .build()
                 .is_ok_and(|re| re.is_match(text.as_bytes()))
-    }
-
-    /// #971: whether an engine-local call's redirection writes a file (a target that starts with `/`) the command names again after
-    /// it, as the engine's dispatch::capacity_writes_what_runs.
-    fn capacity_writes_what_runs(command: &str, end: usize, part: &shellwords::Part) -> bool {
-        let shellwords::Part::Local(_, redirs) = part else {
-            return false;
-        };
-        let after = command.get(end..).unwrap_or_default();
-        redirs
-            .iter()
-            .map(|r| shellwords::redir_target(r))
-            .any(|t| t.starts_with('/') && after.contains(t))
     }
 
     /// #971: whether a redirection of an engine-local verb is harmless (`parsed.redirs`, not `parsed.redirs_unless`), as the

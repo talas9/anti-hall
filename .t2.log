@@ -1,0 +1,60 @@
+   Compiling ah-engine v0.3.30 (/Users/talas9/.anti-hall/work/lane-busy/ah-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 55s
+────────────
+ Nextest run ID 7e67e056-98d5-4bee-a27f-b94d9950cd02 with nextest profile: ci
+    Starting 31 tests across 1 binary (2412 tests skipped)
+        PASS [   0.031s] ( 1/31) ah-engine devswarm_rt::reconcile::tests::shrink_and_recycle_release_recoverable_container_capacity
+        PASS [   0.036s] ( 2/31) ah-engine dispatch::shellwords::tests::a_quoted_separator_is_data_and_an_unquoted_one_splits
+        PASS [   0.036s] ( 3/31) ah-engine dispatch::shellwords::tests::a_relative_script_is_read_from_cwd_or_a_cd_target_and_tilde_is_home
+        PASS [   0.036s] ( 4/31) ah-engine dispatch::shellwords::tests::a_git_subcommand_outside_the_known_ones_is_found
+        PASS [   0.021s] ( 5/31) ah-engine dispatch::shellwords::tests::arguments_are_no_command_and_scripts_are_found_behind_paths_and_markers
+        PASS [   0.024s] ( 6/31) ah-engine dispatch::shellwords::tests::aliases_unknown_names_and_scripts_are_found
+        PASS [   0.026s] ( 7/31) ah-engine dispatch::shellwords::tests::an_open_quote_is_not_normalised
+        PASS [   0.093s] ( 8/31) ah-engine dispatch::shellwords::tests::a_script_is_read_up_to_the_cap_and_a_binary_on_path_is_no_alias
+        PASS [   0.091s] ( 9/31) ah-engine dispatch::shellwords::tests::issue_928_a_split_string_value_is_read_as_a_command_line
+        PASS [   0.110s] (10/31) ah-engine dispatch::shellwords::tests::gh_text_values_are_blanked_but_the_command_words_stay
+        PASS [   0.139s] (11/31) ah-engine dispatch::shellwords::tests::issue_928_a_script_is_identified_by_its_repo_relative_path_and_bytes
+        PASS [   0.122s] (12/31) ah-engine dispatch::shellwords::tests::issue_928_a_tool_in_a_project_local_dir_inside_the_repo_is_known
+        PASS [   0.046s] (13/31) ah-engine dispatch::shellwords::tests::issue_928_glob_match_reads_star_as_one_component_and_double_star_as_any
+        PASS [   0.068s] (14/31) ah-engine dispatch::shellwords::tests::issue_928_a_wrapper_options_value_is_no_command
+        PASS [   0.058s] (15/31) ah-engine dispatch::shellwords::tests::issue_969_a_split_string_value_keeps_its_commands
+        PASS [   0.050s] (16/31) ah-engine dispatch::shellwords::tests::local_spans_find_the_engine_local_calls_of_any_list
+        PASS [   0.043s] (17/31) ah-engine dispatch::shellwords::tests::quotes_and_backslashes_inside_a_word_are_dropped
+        PASS [   0.058s] (18/31) ah-engine dispatch::shellwords::tests::read_only_parts_reads_lists_variables_and_engine_verbs
+        PASS [   0.042s] (19/31) ah-engine dispatch::shellwords::tests::review_918_second_pass
+        PASS [   0.044s] (20/31) ah-engine dispatch::shellwords::tests::review_907_what_the_shell_does_that_a_word_list_misses
+        PASS [   0.048s] (21/31) ah-engine dispatch::shellwords::tests::read_only_parts_reads_redirections_literals_and_assignments
+        FAIL [   0.032s] (22/31) ah-engine dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass
+  stdout ───
+
+    running 1 test
+    test dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass ... FAILED
+
+    failures:
+
+    failures:
+        dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2442 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass' (418742618) panicked at src/dispatch/shellwords.rs:1778:13:
+    assertion `left == right` failed: X=1 | git push
+      left: Some([Read("X=1 | git push")])
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [  14.399s] (23/31) ah-engine dispatch::tests::capacity_hold_counts_the_false_hold_exemptions
+        PASS [  19.165s] (24/31) ah-engine dispatch::tests::capacity_hold_reads_the_command_the_way_the_shell_does
+        PASS [  11.136s] (25/31) ah-engine dispatch::tests::capacity_hold_trusts_a_script_by_path_and_content_hash_only
+        PASS [   0.014s] (26/31) ah-engine dispatch::tests::the_launcher_carries_the_same_shellwords_module
+        PASS [   6.380s] (27/31) ah-engine dispatch::tests::every_capacity_hold_rule_compiles_in_the_engine_and_the_launcher
+        PASS [   0.037s] (28/31) ah-engine tier::tests::retained_bytes_include_map_capacity_and_shrink_releases_it
+        PASS [   4.212s] (29/31) ah-engine jev::shared::tests::dropped_lanes_release_registry_capacity_from_the_memory_account
+        PASS [  32.701s] (30/31) ah-engine dispatch::tests::capacity_hold_catches_risky_spellings_and_passes_reads
+        PASS [  33.625s] (31/31) ah-engine dispatch::tests::capacity_hold_reads_scripts_inline_code_and_unknown_names_and_counts_the_class
+────────────
+     Summary [  34.123s] 31 tests run: 30 passed, 1 failed, 2412 skipped
+        FAIL [   0.032s] (22/31) ah-engine dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass
+error: test run failed

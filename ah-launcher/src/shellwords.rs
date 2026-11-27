@@ -178,6 +178,10 @@ fn ro_subst(word: &str, exp: Exp, vars: &[Var], cfg: &Cfg, at: At) -> Option<Str
         if name.is_empty() || !name.chars().all(name_char) || name.starts_with(|c: char| c.is_ascii_digit()) {
             return None;
         }
+        // #971 review: zsh reads an unbraced `$NAME[..]` as a subscript, evaluated as arithmetic (`x[$(..)]` runs a command)
+        if cs.get(i + 1) != Some(&'{') && cs.get(next) == Some(&'[') {
+            return None;
+        }
         if let Some(v) = vars.iter().find(|v| v.name == name) {
             let split = exp == Exp::Bare && v.value.contains([' ', '\t', '\n', '*', '?', '[']);
             if split || (at == At::Command && !v.program) {
@@ -214,6 +218,84 @@ fn ro_verb(words: &[String], verbs: &[String]) -> bool {
             && lead.iter().zip(words).all(|(p, w)| *p == "*" || *p == w.as_str())
             && flags.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
     })
+}
+
+/// #971 review: whether a double-quoted free-text value (`--message "..."`) holds only text and plain `$NAME` / `${NAME}`: no
+/// substitution (`$(..)`, a backtick, `<(..)`), no operator, flag, subscript or modifier (zsh `${(e)X}` and bash `${X@P}` run the
+/// value as code; `${Z[Y]}` and zsh `$Z[Y]` evaluate `Y` as arithmetic, which runs a `$(..)` inside it).
+fn ro_text(v: &str) -> bool {
+    if v.contains('`') || v.contains("<(") || v.contains(">(") {
+        return false;
+    }
+    let cs: Vec<char> = v.chars().collect();
+    let name_char = |c: &char| c.is_ascii_alphanumeric() || *c == '_';
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] != '$' {
+            i += 1;
+            continue;
+        }
+        let braced = cs.get(i + 1) == Some(&'{');
+        let start = i + 1 + usize::from(braced);
+        // a name, or a positional parameter (`$5`: digits only), both plain values
+        let digits = cs.get(start).is_some_and(char::is_ascii_digit);
+        let len = cs.get(start..).unwrap_or_default().iter().take_while(|c| if digits { c.is_ascii_digit() } else { name_char(c) }).count();
+        if len == 0 {
+            return false;
+        }
+        let mut j = start + len;
+        if braced {
+            if cs.get(j) != Some(&'}') {
+                return false;
+            }
+            j += 1;
+        } else if cs.get(j) == Some(&'[') || (cs.get(j) == Some(&':') && cs.get(j + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == '&')) {
+            return false;
+        }
+        i = j;
+    }
+    true
+}
+
+/// #971 review: whether a word as written (`raw`, quotes included) holds an unquoted `(` `)` `<` or `>` after its first `skip`
+/// chars (a redirection's operator): the shell reads one as a grouping, a function definition, a glob qualifier, a process
+/// substitution or a redirection, never as text. A quote it reads differently from the shell only ever leaves a char unquoted.
+fn bare_meta(raw: &[char], skip: usize) -> bool {
+    let (mut i, mut dollar) = (0, false);
+    while i < raw.len() {
+        let c = raw[i];
+        match c {
+            '\\' => i += 1,
+            '\'' => {
+                // `$'..'` honours backslash escapes, a plain single quote does not
+                let ansi = dollar;
+                i += 1;
+                while i < raw.len() && raw[i] != '\'' {
+                    i += if ansi && raw[i] == '\\' { 2 } else { 1 };
+                }
+            }
+            '"' => {
+                i += 1;
+                while i < raw.len() && raw[i] != '"' {
+                    i += if raw[i] == '\\' { 2 } else { 1 };
+                }
+            }
+            '(' | ')' | '<' | '>' if i >= skip => return true,
+            _ => {}
+        }
+        dollar = c == '$';
+        i += 1;
+    }
+    false
+}
+
+/// #971 review: an assignment the plain form misses (`NAME+=..`, `NAME[..]=..`): an append, or an element of an array or a hash
+/// (zsh `commands[x]=`, `functions[x]=`, `fpath+=`), can rebind the name a later command runs.
+fn assign_ext(word: &str) -> bool {
+    let Some((k, _)) = word.split_once('=') else { return false };
+    let (k, append) = k.strip_suffix('+').map_or((k, false), |k| (k, true));
+    let (name, sub) = k.strip_suffix(']').and_then(|k| k.split_once('[')).map_or((k, false), |(n, _)| (n, true));
+    (append || sub) && !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// The parsed read exemption of `dispatch.capacity_hold` (`parsed`): the pipelines of a command list the caller's read pattern
@@ -257,8 +339,10 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
         before: &'static str,
         after: &'static str,
         span: Option<Span>,
+        meta: bool,
     }
-    let fresh = |before: &'static str| Item { pipe: vec![Vec::new()], before, after: "", span: None };
+    let fresh = |before: &'static str| Item { pipe: vec![Vec::new()], before, after: "", span: None, meta: false };
+    let chars: Vec<char> = cmd.chars().collect();
     let mut lists: Vec<Item> = vec![fresh("")];
     let (toks, spans) = split_at(cmd, cfg)?;
     let mut spans = spans.into_iter();
@@ -275,6 +359,11 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
                 let (a, b) = spans.next()?;
                 let item = lists.last_mut()?;
                 item.span = Some(item.span.map_or((a, b), |(a0, _)| (a0, b)));
+                // a redirection's own operator is no stray metacharacter when the word starts with it as written
+                let raw = chars.get(a..b)?;
+                let op = if is_redir(&w) { redir_split(&w).0 } else { "" };
+                let skip = if raw.iter().copied().take(op.chars().count()).eq(op.chars()) { op.chars().count() } else { 0 };
+                item.meta |= bare_meta(raw, skip);
                 item.pipe.last_mut()?.push((w, exp));
             }
         }
@@ -287,7 +376,7 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
     let mut vars: Vec<Var> = Vec::new();
     let mut parts = Vec::new();
     let mut tainted = false;
-    for Item { pipe, before, after, span } in lists {
+    for Item { pipe, before, after, span, meta } in lists {
         if pipe.len() == 1 && pipe[0].is_empty() {
             continue;
         }
@@ -299,7 +388,11 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
         // a command word or behind wrapper words such as `then` or `sudo`) masks nothing from there on
         let rebinds = |el: &Vec<(String, Exp)>| {
             for (w, _) in el {
-                if w.ends_with("()") || cfg.ro_assigners.iter().any(|a| *a == base(w)) || w.split_once('=').is_some_and(|(k, _)| is_assign(w) && denied(k)) {
+                if w.ends_with("()")
+                    || cfg.ro_assigners.iter().any(|a| *a == base(w))
+                    || w.split_once('=').is_some_and(|(k, _)| is_assign(w) && denied(k))
+                    || assign_ext(w)
+                {
                     return true;
                 }
                 if !is_assign(w) && !cfg.cmd_wrappers.iter().any(|x| *x == base(w)) {
@@ -308,30 +401,47 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
             }
             false
         };
-        if lenient && pipe.iter().any(rebinds) {
+        // #971 review: an unquoted ( ) < > inside a word (a zsh multi-name function `a b () ..`, a glob qualifier `*(e:..:)`, a
+        // redirection joined to a word `x>f`) is shell syntax no word list reads: it exempts nothing and masks nothing from there
+        // on; nor does an expansion that assigns (`${E::=..}`, `$((E=1))`)
+        let assigns = |w: &str| w.find("${").is_some_and(|at| w[at..].contains('=')) || w.contains("((") || w.contains("$[");
+        let assigning = pipe.iter().flatten().any(|(w, e)| *e != Exp::Lit && assigns(w));
+        if meta && !lenient {
+            return None;
+        }
+        if lenient && (meta || assigning || pipe.iter().any(rebinds)) {
             tainted = true;
         }
         if lenient && tainted {
             continue;
         }
         let first = &pipe[0];
-        if first.iter().all(|(w, _)| is_assign(w)) {
+        // #971 review: only a pipeline of one element is an assignment (`X=1 | git push` runs the rest of its pipe)
+        if pipe.len() == 1 && first.iter().all(|(w, _)| is_assign(w)) {
             // an assignment that may not run, or runs in a subshell, leaves its variable unknown
-            let sure = pipe.len() == 1 && !matches!(before, "&&" | "||") && after != "&";
+            let sure = !matches!(before, "&&" | "||") && after != "&";
             for (w, exp) in first {
                 let (k, v) = w.split_once('=')?;
                 if denied(k) {
                     return None;
-                }
-                vars.retain(|x| x.name != k);
-                if !sure {
-                    continue;
                 }
                 let program = ro_expand(v, *exp, &vars, cfg, home, At::Command).filter(|p| cfg.ro_programs.contains(p));
                 let value = match program {
                     Some(p) => Some((p, true)),
                     None => ro_expand(v, *exp, &vars, cfg, home, At::Target).map(|v| (v, false)),
                 };
+                // #971 review: a value the reading can not resolve (a substitution, a backtick, `${x:=..}`) may run something,
+                // whether or not the assignment itself runs: it exempts nothing (lenient: masks nothing from here on)
+                if value.is_none() && ro_expand(v, *exp, &vars, cfg, home, At::Arg).is_none() {
+                    if !lenient {
+                        return None;
+                    }
+                    tainted = true;
+                }
+                vars.retain(|x| x.name != k);
+                if !sure {
+                    continue;
+                }
                 if let Some((value, program)) = value {
                     vars.push(Var { name: k.to_string(), value, program });
                 }
@@ -348,6 +458,8 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
             if !read && !lenient {
                 return None;
             }
+            // #971 review: an unreadable `cd` (`cd ${E::=/bin/sh}`) is not just dropped: it masks nothing from here on
+            tainted |= !read;
             continue;
         }
         // lenient: a pipeline every word of which resolves (no `$((E=1))` or `${E:=x}`) and every command of which never assigns
@@ -406,14 +518,17 @@ fn ro_pipeline(pipe: &[Vec<(String, Exp)>], vars: &[Var], cfg: &Cfg, home: Optio
         } else if let Some(text) = cfg.ro_text_opts.iter().find(|o| *o == w || w.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('='))) {
             // a free-text value is data when nothing in it runs or is split: read as the placeholder
             let joined = w.len() > text.len();
-            let value = if joined { Some((w.as_str(), *exp)) } else { first.get(k + 1).map(|(v, e)| (v.as_str(), *e)) };
-            match value {
-                Some((v, e)) if e == Exp::Lit || (e == Exp::Quoted && !v.contains('`') && !v.contains("$(")) => {
-                    args.push(text.clone());
-                    args.push(cfg.ro_placeholder.clone());
-                    k += usize::from(!joined);
-                }
-                _ => args.push(ro_expand(w, *exp, vars, cfg, home, At::Arg)?),
+            // #971 review: a missing value, or a redirection in its place (`--message >f`), exempts nothing
+            let (v, e) = if joined { (&w[text.len() + 1..], *exp) } else { first.get(k + 1).map(|(v, e)| (v.as_str(), *e))? };
+            if !joined && is_redir(v) {
+                return None;
+            }
+            if e == Exp::Lit || (e == Exp::Quoted && ro_text(v)) {
+                args.push(text.clone());
+                args.push(cfg.ro_placeholder.clone());
+                k += usize::from(!joined);
+            } else {
+                args.push(ro_expand(w, *exp, vars, cfg, home, At::Arg)?);
             }
         } else {
             args.push(ro_expand(w, *exp, vars, cfg, home, At::Arg)?);
@@ -1003,11 +1118,6 @@ fn is_redir(word: &str) -> bool {
     let w = word.trim_start_matches(|c: char| c.is_ascii_digit());
     let w = w.strip_prefix('&').filter(|r| r.starts_with('>')).unwrap_or(w);
     (w.starts_with('<') || w.starts_with('>')) && !w[1..].starts_with('(')
-}
-
-/// #971: the target of a redirection as [`Part::Local`] carries it (`/tmp/x` of `>>/tmp/x`, `1` of `2>&1`).
-pub fn redir_target(redir: &str) -> &str {
-    redir_split(redir).1
 }
 
 /// #971: the operator of a redirection word (`2>`, `>>`, `&>`, `>|`, `2>&`) and its target written in the same word (`/dev/null`,
@@ -1635,6 +1745,46 @@ mod tests {
         assert_eq!(spans("if true; then PATH=/tmp/e; fi; ah-engine status"), Some(vec![]), "a denied assignment behind a wrapper word");
         assert_eq!(spans("f() { :; }; ah-engine status"), Some(vec![]), "a function definition");
         assert_eq!(spans("ah-engine status; cat <<EOF\nx\nEOF"), None, "a heredoc voids the reading");
+        // #971 review: what may rebind a name or run code masks nothing from there on; calls before it stay masked
+        assert_eq!(spans("X=\"${PATH::=/tmp/e}\"; ah-engine status"), Some(vec![]), "an assignment value it can not resolve");
+        assert_eq!(spans("cd ${PATH::=/tmp/e}; ah-engine status"), Some(vec![]), "an unreadable cd");
+        assert_eq!(spans("echo ${PATH:=/tmp/e}; ah-engine status"), Some(vec![]), "an assigning expansion");
+        assert_eq!(spans("commands[ah-engine]=/tmp/e; ah-engine status"), Some(vec![]), "a zsh hash element");
+        assert_eq!(spans("ah-engine status; ah-engine status () git push"), Some(vec!["ah-engine status".to_string()]), "a zsh function");
+    }
+
+    /// #971 review: the fail-opens of the parsed read exemption: each list exempts nothing.
+    #[test]
+    fn review_971_what_the_read_exemption_must_not_pass() {
+        let c = Cfg { ro_text_opts: vec!["--message".into()], ro_assigners: vec!["setopt".into()], ..ro_cfg() };
+        let home = Some(std::ffi::OsStr::new("/Users/me"));
+        let parts = |cmd: &str| read_only_parts(cmd, &c, home);
+        for cmd in [
+            "OUT=\"$(git push)\"; echo done",
+            "ah-engine status && X=\"$(git push)\"",
+            "X=`git push`; ah-engine status",
+            "ah-engine mesh send --to a --message \"${(e)X}\"",
+            "ah-engine mesh send --to a --message \"${X@P}\"",
+            "Z=1; ah-engine mesh send --to a --message \"$Z[Y]\"",
+            "Z=1; echo \"$Z[Y]\"",
+            "ah-engine mesh send --to a --message",
+            "ah-engine status --message >~/.claude/settings.json",
+            "ah-engine status --message=>~/.claude/settings.json",
+            "ah-engine status x>~/.claude/settings.json",
+            "ah-engine status () git push",
+            "cd /tmp/*(e:'. /tmp/r':); ah-engine status",
+        ] {
+            assert_eq!(parts(cmd), None, "{cmd}");
+        }
+        // a pipeline that starts with an assignment is no assignment: the whole pipe is left for the read pattern
+        assert_eq!(parts("X=1 | git push; ls"), Some(vec![Part::Read("X=1 | git push".into()), Part::Read("ls".into())]));
+        // what stays data: a quoted ( > or $NAME, a positional, a redirection's own operator
+        let local = |r: &[&str]| Some(vec![Part::Local(String::new(), r.iter().map(|x| x.to_string()).collect())]);
+        assert_eq!(parts("ah-engine mesh send --to a --message \"fix (#1): a > b, $HOME ${USER} $5\""), local(&[]));
+        assert_eq!(parts("ah-engine status 2>&1 </dev/null"), local(&["2>&1", "</dev/null"]));
+        assert!(!bare_meta(&"'a(b)'\"<c>\"\\(".chars().collect::<Vec<_>>(), 0));
+        assert!(bare_meta(&"\\$'\\'>x".chars().collect::<Vec<_>>(), 0), "a backslashed $ opens no ANSI quote");
+        assert!(assign_ext("commands[x]=/tmp/e") && assign_ext("fpath+=x") && !assign_ext("X=a[1]") && !assign_ext("--x[1]=y"));
     }
 
     fn n(c: &str) -> Normalised {

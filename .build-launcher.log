@@ -1,0 +1,12 @@
+warning: ignoring --test-threads because --no-run is specified
+   Compiling ah-hook v0.3.1 (/Users/talas9/.anti-hall/work/lane-busy/ah-launcher)
+warning: function `passed_permille` is never used
+  --> src/loadscale.rs:78:8
+   |
+78 | pub fn passed_permille(v: Option<u64>, max: u64) -> u64 {
+   |        ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ah-hook` (bin "ah-hook") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.86s

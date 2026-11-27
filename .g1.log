@@ -1,0 +1,40 @@
+   Compiling ah-engine v0.3.30 (/Users/talas9/.anti-hall/work/lane-busy/ah-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13m 24s
+────────────
+ Nextest run ID 14715721-a561-43cb-a763-cd2c8257c946 with nextest profile: soak
+    Starting 32 tests across 1 binary (2411 tests skipped)
+        PASS [   0.027s] ( 1/32) ah-engine devswarm_rt::reconcile::tests::shrink_and_recycle_release_recoverable_container_capacity
+        PASS [   0.029s] ( 2/32) ah-engine dispatch::shellwords::tests::a_quoted_separator_is_data_and_an_unquoted_one_splits
+        PASS [   0.029s] ( 3/32) ah-engine dispatch::shellwords::tests::a_relative_script_is_read_from_cwd_or_a_cd_target_and_tilde_is_home
+        PASS [   0.031s] ( 4/32) ah-engine dispatch::shellwords::tests::a_git_subcommand_outside_the_known_ones_is_found
+        PASS [   0.027s] ( 5/32) ah-engine dispatch::shellwords::tests::aliases_unknown_names_and_scripts_are_found
+        PASS [   0.029s] ( 6/32) ah-engine dispatch::shellwords::tests::a_script_is_read_up_to_the_cap_and_a_binary_on_path_is_no_alias
+        PASS [   0.026s] ( 7/32) ah-engine dispatch::shellwords::tests::arguments_are_no_command_and_scripts_are_found_behind_paths_and_markers
+        PASS [   0.028s] ( 8/32) ah-engine dispatch::shellwords::tests::an_open_quote_is_not_normalised
+        PASS [   0.042s] ( 9/32) ah-engine dispatch::shellwords::tests::gh_text_values_are_blanked_but_the_command_words_stay
+        PASS [   0.041s] (10/32) ah-engine dispatch::shellwords::tests::issue_928_a_tool_in_a_project_local_dir_inside_the_repo_is_known
+        PASS [   0.043s] (11/32) ah-engine dispatch::shellwords::tests::issue_928_a_split_string_value_is_read_as_a_command_line
+        PASS [   0.045s] (12/32) ah-engine dispatch::shellwords::tests::issue_928_a_script_is_identified_by_its_repo_relative_path_and_bytes
+        PASS [   0.020s] (13/32) ah-engine dispatch::shellwords::tests::issue_928_a_wrapper_options_value_is_no_command
+        PASS [   0.019s] (14/32) ah-engine dispatch::shellwords::tests::issue_928_glob_match_reads_star_as_one_component_and_double_star_as_any
+        PASS [   0.020s] (15/32) ah-engine dispatch::shellwords::tests::issue_969_a_split_string_value_keeps_its_commands
+        PASS [   0.023s] (16/32) ah-engine dispatch::shellwords::tests::local_spans_find_the_engine_local_calls_of_any_list
+        PASS [   0.017s] (17/32) ah-engine dispatch::shellwords::tests::quotes_and_backslashes_inside_a_word_are_dropped
+        PASS [   0.016s] (18/32) ah-engine dispatch::shellwords::tests::read_only_parts_reads_lists_variables_and_engine_verbs
+        PASS [   0.022s] (19/32) ah-engine dispatch::shellwords::tests::read_only_parts_reads_redirections_literals_and_assignments
+        PASS [   0.029s] (20/32) ah-engine dispatch::shellwords::tests::review_907_what_the_shell_does_that_a_word_list_misses
+        PASS [   0.051s] (21/32) ah-engine dispatch::shellwords::tests::review_971_what_the_read_exemption_must_not_pass
+        PASS [   0.248s] (22/32) ah-engine dispatch::shellwords::tests::review_918_second_pass
+        PASS [  19.620s] (23/32) ah-engine dispatch::tests::capacity_hold_counts_the_false_hold_exemptions
+        PASS [  27.838s] (24/32) ah-engine dispatch::tests::capacity_hold_reads_the_command_the_way_the_shell_does
+        PASS [  56.132s] (25/32) ah-engine dispatch::tests::capacity_hold_catches_risky_spellings_and_passes_reads
+        PASS [  59.692s] (26/32) ah-engine dispatch::tests::capacity_hold_reads_scripts_inline_code_and_unknown_names_and_counts_the_class
+        PASS [   0.038s] (27/32) ah-engine dispatch::tests::the_launcher_carries_the_same_shellwords_module
+        PASS [  17.077s] (28/32) ah-engine dispatch::tests::capacity_hold_trusts_a_script_by_path_and_content_hash_only
+        PASS [   0.054s] (29/32) ah-engine tier::tests::retained_bytes_include_map_capacity_and_shrink_releases_it
+        PASS [   9.388s] (30/32) ah-engine dispatch::tests::every_capacity_hold_rule_compiles_in_the_engine_and_the_launcher
+        PASS [   7.288s] (31/32) ah-engine jev::shared::tests::dropped_lanes_release_registry_capacity_from_the_memory_account
+        SLOW [>300.000s] (─────) ah-engine dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads
+        PASS [ 509.312s] (32/32) ah-engine dispatch::tests::capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads
+────────────
+     Summary [ 509.511s] 32 tests run: 32 passed (1 slow), 2411 skipped

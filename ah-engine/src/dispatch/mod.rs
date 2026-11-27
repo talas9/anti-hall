@@ -868,7 +868,31 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> bool {
     let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
     let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else { return false };
-    !parts.is_empty() && parts.iter().all(|p| capacity_part_ok(cfg, p))
+    if parts.is_empty() || !parts.iter().all(|p| capacity_part_ok(cfg, p)) {
+        return false;
+    }
+    // #971 review: an engine call that writes a file passes only beside parts that can not run or load what it wrote: another
+    // engine-local call that writes nothing, or a read matching `parsed.after_write` (no git: a repo's config can run a pager)
+    let writers = parts.iter().filter(|p| capacity_writes(cfg, p)).count();
+    writers == 0
+        || writers == 1
+            && parts.iter().filter(|p| !capacity_writes(cfg, p)).all(|p| match p {
+                shellwords::Part::Read(t) => capacity_parsed_regex(cfg, "after_write", t),
+                shellwords::Part::Local(..) => true,
+            })
+}
+
+/// #971 review: whether `text` matches the `parsed.<key>` regular expression, read the way the ah-hook launcher reads it (ASCII,
+/// case-insensitive, on bytes). An empty or uncompilable one matches nothing.
+fn capacity_parsed_regex(cfg: &defaults::V, key: &str, text: &str) -> bool {
+    let pat = cfg.get("parsed").and_then(|p| p.get(key)).and_then(|v| v.as_str()).unwrap_or_default();
+    !pat.is_empty() && regex::bytes::RegexBuilder::new(pat).unicode(false).case_insensitive(true).build().is_ok_and(|re| re.is_match(text.as_bytes()))
+}
+
+/// #971 review: whether a redirection of an engine-local verb writes a file: it does not match `parsed.redirs_inert` (fd
+/// duplication, /dev/null, an input from /dev/null). Fails closed: an empty or uncompilable `redirs_inert` makes every one a write.
+fn capacity_redir_writes(cfg: &defaults::V, redir: &str) -> bool {
+    !capacity_parsed_regex(cfg, "redirs_inert", redir)
 }
 
 /// Whether one part of the parsed read exemption passes: a read the whole of which matches the read pattern, or an engine-local
@@ -883,15 +907,14 @@ fn capacity_part_ok(cfg: &defaults::V, part: &shellwords::Part) -> bool {
 }
 
 /// #971: `command` with each engine-local call that passes ([`shellwords::local_spans`], [`capacity_part_ok`]) replaced by
-/// `parsed.mask` (a no-op command), `None` when there is none (or `mask` is empty: off). A call whose redirection writes a file the
-/// rest of the command names again (`> /tmp/r.sh; bash /tmp/r.sh`) is not masked: what it writes may run. The ah-hook launcher applies
-/// the same keys.
+/// `parsed.mask` (a no-op command), `None` when there is none (or `mask` is empty: off). A call that writes a file
+/// ([`capacity_writes`]) is never masked: what it writes may run. The ah-hook launcher applies the same keys.
 fn capacity_mask(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> Option<String> {
     let mask = cfg.get("parsed").and_then(|p| p.get("mask")).and_then(|v| v.as_str()).filter(|m| !m.is_empty())?;
     let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
     let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
         .into_iter()
-        .filter(|(range, p)| capacity_part_ok(cfg, p) && !capacity_writes_what_runs(command, range.end, p))
+        .filter(|(_, p)| capacity_part_ok(cfg, p) && !capacity_writes(cfg, p))
         .collect();
     if spans.is_empty() {
         return None;
@@ -907,17 +930,19 @@ fn capacity_mask(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> Op
 /// it matches `parsed.redirs` and not `parsed.redirs_unless`. Fails closed: an empty or uncompilable `redirs`, or an uncompilable
 /// `redirs_unless`, passes none.
 fn capacity_redir_ok(cfg: &defaults::V, redir: &str) -> bool {
+    // #971 review: ASCII on bytes, as the ah-hook launcher reads it, so both sides pass the same redirections
     let pat = |k: &str| cfg.get("parsed").and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or_default();
-    let re = |p: &str| regex::RegexBuilder::new(p).case_insensitive(true).build();
+    let re = |p: &str| regex::bytes::RegexBuilder::new(p).unicode(false).case_insensitive(true).build();
     let (ok, unless) = (pat("redirs"), pat("redirs_unless"));
-    !ok.is_empty() && re(ok).is_ok_and(|r| r.is_match(redir)) && (unless.is_empty() || re(unless).is_ok_and(|r| !r.is_match(redir)))
+    !ok.is_empty()
+        && re(ok).is_ok_and(|r| r.is_match(redir.as_bytes()))
+        && (unless.is_empty() || re(unless).is_ok_and(|r| !r.is_match(redir.as_bytes())))
 }
 
-/// #971: whether an engine-local call's redirection writes a file (a target that starts with `/`) the command names again after it.
-fn capacity_writes_what_runs(command: &str, end: usize, part: &shellwords::Part) -> bool {
-    let shellwords::Part::Local(_, redirs) = part else { return false };
-    let after = command.get(end..).unwrap_or_default();
-    redirs.iter().map(|r| shellwords::redir_target(r)).any(|t| t.starts_with('/') && after.contains(t))
+/// #971 review: whether an engine-local call writes a file ([`capacity_redir_writes`]): it is never masked, since what it wrote
+/// may be run or loaded by the rest of the list (`> /tmp/x/r.sh; cd /tmp/x; sh < r.sh`), however that is spelled.
+fn capacity_writes(cfg: &defaults::V, part: &shellwords::Part) -> bool {
+    matches!(part, shellwords::Part::Local(_, redirs) if redirs.iter().any(|r| capacity_redir_writes(cfg, r)))
 }
 
 /// Whether the pipe tail of an engine-local verb is one of the filters `parsed.tail_ok` names (`jq`, `python3 -m json.tool`), the
@@ -1919,10 +1944,12 @@ mod tests {
         assert_eq!(got("gh co 12"), want("gh-unknown-subcommand", "gh_unknown"));
         assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
         assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
-        // #969: an engine call the exemption can not pass (here a redirection into a config file; #971: /dev/null passes) is held as
-        // engine-unlisted, never as an unread script
-        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ~/.claude/settings.json");
+        // #969: an engine call the exemption can not pass (here a redirection into a file outside /tmp; #971: /dev/null passes) is
+        // held as engine-unlisted, never as an unread script; #971 review: a write into a config file is held as config-write
+        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ./out.json");
         assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
+        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ~/.claude/settings.json");
+        assert_eq!(e.rule.as_deref(), Some("config-write"));
         assert_eq!(decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null").rule, None);
         // a script whose whole body the parsed read exemption passes (a local engine verb, a plain read) is no engine-unlisted call
         std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
