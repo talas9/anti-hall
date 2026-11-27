@@ -151,6 +151,7 @@ var tk = {
     var t = Array.isArray(tracked) ? tracked : [];
     var rows = (scan === null || scan === undefined || scan.unsure ? [] : scan.rows || []).map(function (r) {
       r.live = ah.transcript.trackedLiveness(r.id, t);
+      r.scanned = true; // the transcript itself shows it running (its liveness may still be unknown to the tracker)
       return r;
     });
     t.forEach(function (r) { rows.push({ id: r.id, description: r.name, kind: r.kind, live: ah.transcript.trackedLiveness(r.id, t) }); });
@@ -169,6 +170,10 @@ var tk = {
     });
   },
   liveOwner: function (owner, rows) { return tk.matchingOwners(owner, rows).some(function (r) { return r.live === true; }); },
+  // A row a Stop hold may treat as running: the tracker says live, or the transcript shows it running and the tracker does not say it
+  // ended (an in-process teammate the tracker has no row for). Holding a stop is only an order to keep working: unknown is covered.
+  runningOrUnknown: function (r) { return r.live === true || (r.scanned === true && r.live !== false); },
+  attendedOwner: function (owner, rows) { return tk.matchingOwners(owner, rows).some(tk.runningOrUnknown); },
   // A live background shell or Monitor among the rows (the transcript scan's shellKind; a tracker job row is kind
   // agent_tracker.guard_job_kind): the work an in-progress task waits on.
   bgLive: function (rows) {
@@ -181,7 +186,7 @@ var tk = {
     var b = tk.blockedOnText(t), min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
     if (b === '') return false;
     return (rows || []).some(function (r) {
-      if (r.live !== true) return false;
+      if (!tk.runningOrUnknown(r)) return false;
       var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
       return [String(r.id || '').toLowerCase(), nm, String(r.description || '').toLowerCase()].some(function (k) { return k.length >= min && b.indexOf(k) >= 0; });
     });

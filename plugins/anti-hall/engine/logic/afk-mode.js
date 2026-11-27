@@ -402,7 +402,7 @@ function afkNoStopCapture(p, now) {
   var test = function (r) { return ah.re.test(r, 'i', prompt); };
   var on = ah.cfg('afk.nostop_on_res').some(test), off = !on && ah.cfg('afk.nostop_off_res').some(test), cur = nostop.session(p);
   if (on) {
-    if (cur === null || cur.holds !== 0) {
+    if (cur === null || cur.holds !== 0 || typeof cur.quietUntil === 'number') { // an owner phrase also ends an escalation's quiet (#844)
       var since = cur !== null && typeof cur.since === 'number' ? cur.since : now;
       if (nostop.write(p, { on: true, since: since, holds: 0 }) && cur === null) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_set') });
     }

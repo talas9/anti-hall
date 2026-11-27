@@ -58,7 +58,7 @@ var nostop = {
     var inProg = ah.cfg('taskstate.in_progress_statuses');
     return open.filter(function (t) {
       var o = typeof t.owner === 'string' ? t.owner.trim() : '';
-      if (o !== '' && !coord.test(o) && (tk.liveOwner(o, rows) || tk.childAttended(o))) return false;
+      if (o !== '' && !coord.test(o) && (tk.attendedOwner(o, rows) || tk.childAttended(o))) return false;
       if (tk.ownerHeld(t) || tk.blockedOnLive(t, rows)) return false;
       if (bgLive && inProg.indexOf(tk.statusLc(t)) >= 0) return false;
       return true;

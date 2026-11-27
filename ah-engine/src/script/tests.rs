@@ -4431,6 +4431,26 @@ mod afk_mode {
         crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
     }
 
+    /// #844 item 1, the shape of the reported loop: the owner is an in-process teammate (a `teammate_spawned` launch, the team-mode
+    /// shape) that the transcript shows running and the tracker has no row for. Its task is covered; a free task still is not.
+    #[test]
+    fn no_stop_skips_a_task_owned_by_a_running_in_process_teammate() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-teammate");
+        drained();
+        let ts = "2999-01-01T00:00:00.000Z";
+        let call = json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "Agent", "input": {"description": "integrate", "prompt": "p", "name": "integ-0331"}}]}});
+        let res = json!({"type": "user", "timestamp": ts, "toolUseResult": {"status": "teammate_spawned", "name": "integ-0331", "agent_id": "ainteg-0331-4e73c1cee12244e6", "teammate_id": "integ-0331@s1"}, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "spawned"}]}});
+        std::fs::write(format!("{h}/t.jsonl"), format!("{call}\n{res}\n")).unwrap();
+        task_rec(&h, "1", json!({"subject": "[P0] release all", "status": "in_progress", "owner": "integ-0331"}));
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "the owner is a running teammate");
+        task_rec(&h, "2", json!({"subject": "[P1] free task", "status": "pending"}));
+        assert!(stop().contains("continue the work plan: [P1] free task"), "a free task is still held");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
     /// #844 item 1: plain holds within afk.nostop_burst_window_ms escalate once after afk.nostop_burst_max, then no-stop stays quiet for
     /// afk.nostop_quiet_ms; the quiet ends by itself, and an owner prompt that is no phrase does not reset the burst.
     #[test]
