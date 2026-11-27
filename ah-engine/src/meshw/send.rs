@@ -750,9 +750,15 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     let question = a.has(defaults::text("mesh_write.flag_question"));
     let answers = a.has(defaults::text("mesh_write.flag_answers"));
-    // GH #845: a broadcast question is stored with needs_reply and wakes every reader (mesh_wake.allow_broadcast_question)
+    // GH #845: a broadcast question (mesh_wake.allow_broadcast_question, off by default) is stored with needs_reply; its audience
+    // is resolved below
     if broadcast && question && defaults::num("mesh_wake.allow_broadcast_question") == 0 {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_question_broadcast")))]));
+    }
+    // GH #845 (contract §7): an explicit ack needs nothing back, so it never combines with a question or an answer
+    let ack_only = a.has(defaults::text("mesh_chat.flag_ack_only"));
+    if ack_only && (question || answers) {
+        return Ok(refused(&[("error", s(defaults::text("mesh_chat.msg_ack_only_conflict")))]));
     }
     if broadcast && answers {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_answers_broadcast")))]));
@@ -882,6 +888,21 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     crate::meshw::stages::since("resolve", t_resolve);
     // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
     crate::meshw::summary::check(&st, inv, partition.as_deref())?;
+    // GH #845 (contract §2): a broadcast's audience is resolved once, now, against the roster; a question whose mention matches
+    // several workspaces is refused (in the plan pass too, before anything is written)
+    let audience = if broadcast {
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        let b = crate::meshw::wakepolicy::Bc { sender: Some(&from), urgency: Some(&urgency), question, heartbeat: false, body: &message };
+        match crate::meshw::wakepolicy::resolve(&b, &ids) {
+            Ok(a) => Some(crate::meshw::wakepolicy::encode(&a)),
+            Err(e) => {
+                let msg = defaults::render("mesh_wake.msg_ambiguous_mention", &[("token", &e.token), ("ids", &e.ids.join(", "))]);
+                return Ok(refused(&[("reason", s(defaults::text("mesh_wake.reason_ambiguous_mention"))), ("error", s(&msg))]));
+            }
+        }
+    } else {
+        None
+    };
     if plan {
         let mut o = Obj::default();
         o.put("ok", OVal::Bool(true));
@@ -917,6 +938,8 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         rehomed,
         repo_key: &repo_key,
         cwd: &cwd,
+        ack_only,
+        audience,
     };
     if broadcast {
         return do_append(&ctx);
@@ -1038,6 +1061,10 @@ struct AppendCtx<'a> {
     rehomed: bool,
     repo_key: &'a str,
     cwd: &'a str,
+    /// `--ack-only` (GH #845): stored as `chat_kind = ack`.
+    ack_only: bool,
+    /// A broadcast's resolved audience, as its `wake_audience` text (GH #845); `None` for a direct.
+    audience: Option<String>,
 }
 
 /// `doAppend()`: append, read it back, build the result, write the receipt. A failed INSERT wrote nothing (SQLite
@@ -1050,18 +1077,17 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     let nonce = ident::reader_nonce(&c.inv.home);
     let row = store::mesh_message_row(Some(c.from), to_field, c.broadcast, c.message, c.now, c.urgency, &hash, c.question, nonce.as_deref());
     LAST_ACK.set(false);
-    let (inserted, seq) = match crate::meshw::stages::time("insert", || c.st.append_mesh_row(&row)) {
+    // GH #845 (contract §1): the explicit ack kind and the broadcast's audience are written in the INSERT's transaction
+    let kind = c.ack_only.then(|| defaults::text("mesh_chat.kind_ack"));
+    let (inserted, seq) = match crate::meshw::stages::time("insert", || c.st.append_mesh_row_with(&row, kind, c.audience.as_deref())) {
         Ok(r) => (r.inserted, r.seq),
         Err(e) => return ident::unavailable("mesh_write.what_append", &e),
     };
     crate::meshw::mark_committed();
-    // GH #845: an ack-only message is marked before the summary is derived, so it never raises the count a wake fires on
-    if inserted
-        && crate::meshw::wakepolicy::is_ack(c.message, c.question, c.answers)
-        && c.st.set_chat_kind(&hash, defaults::text("mesh_chat.kind_ack"))
-    {
-        LAST_ACK.set(true);
+    if inserted && c.ack_only {
         crate::metrics::bump_shared("mesh_chat_ack", &[]);
+        // the native wake that follows is skipped only while suppression is on (contract §7)
+        LAST_ACK.set(defaults::num("mesh_chat.ack_suppression") == 1);
     }
     // deriveSummary(s, {home, env, now}), in the same call as the append (the wake watcher reads it)
     if let Some(why) = crate::meshw::stages::time("summary", || crate::meshw::summary::derive_after_write(c.st, c.inv, c.repo_key)) {

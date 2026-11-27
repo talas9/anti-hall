@@ -600,15 +600,17 @@ know the current mesh state without touching anything. `workspaces list` and `in
 messages`/`read-primary` are id- or scope-specific reads; `mesh read` and `roster --ack`
 are the only surfaces that clear `broadcastUnread`. (Phase 5: `read-primary` / `messages --ack` are read-only — after handling the mail run the returned `ackCommand`, i.e. `inbox ack-primary <id> --receipt <rid>`.)
 
-**Who a broadcast wakes, and reading broadcasts (GH #845).** A broadcast wakes only the workspaces it addresses:
-an `@<id or id prefix>` mention (`@primary` for the Primary), a `--question` (allowed on `--broadcast` now; it wakes
-everyone), a `high`/`urgent` broadcast from the Primary, or `@all` from the Primary. Any other broadcast is stored and
-readable but wakes no one (`[@admin]` / `@admin` address no one). A Primary reader still wakes on every broadcast unless
-`mesh_wake.primary_reader = "addressed"`. A short ack-only reply (`here`, `ok`, `thanks`, an emoji) is stored with
-`chat_kind = ack` and never wakes its recipient. The drain verbs return broadcasts too: `inbox read <id>` lists the unread
-ones under `broadcasts` (each with `addressed`), `inbox ack <id>` acks them with the direct mail, and `read-primary` lists and
-acks them in the same call (`broadcastCursor` = where the cursor moved). No sqlite3 needed. Rules and texts:
-`engine/defaults/mesh_wake.toml`, `engine/defaults/mesh_chat.toml`.
+**Who a broadcast wakes, and reading broadcasts (GH #845).** Every broadcast stores its audience, resolved at send:
+`@<id or id prefix>` mentions name it (`@primary` = the Primary), even for a question or an urgent send; without a mention,
+a `--question`, a `high`/`urgent` broadcast from the Primary, or `@all` from the Primary reaches everyone; anything else
+reaches no one (`@admin` names no one). With `mesh_wake.addressed_mode = "on"` only the audience is woken (off by default:
+every broadcast wakes, as before); a Primary reader keeps the old rule unless `mesh_wake.primary_reader = "addressed"`. The
+wake fires on a per-reader watermark (`broadcastWakeSeq`), so mail arriving while you drain is never missed. Broadcast
+`--question` is behind `mesh_wake.allow_broadcast_question` (off); a question whose mention matches several workspaces is
+refused. `send --ack-only` marks an explicit ack (it wakes no one once `mesh_chat.ack_suppression` is on). The drain verbs
+list broadcasts, oldest first: `inbox read <id>` shows `broadcasts` (each with `addressed`) and `broadcastAckTarget`; ack them
+with `inbox ack <id> --broadcast-to <broadcastAckTarget>` (never further). `read-primary` lists them and its receipt acks exactly
+those (`broadcastCursor` in the ack result). No sqlite3 needed. Rules: `engine/defaults/mesh_wake.toml`, `mesh_chat.toml`.
 
 ### Addressing & identity — a plain how-to for BOTH roles
 

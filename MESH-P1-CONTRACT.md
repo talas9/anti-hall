@@ -77,7 +77,13 @@ Each tick, for the watched row, where `wake_watch.field_broadcast_seq` = `broadc
   - **Start-up or upgrade.** If there is no `lastBroadcastWakeSeq`, or the seen file's `seenVersion` is under 2:
     - if `broadcastWakePending > 0`, print ONE wake line (pending eligible mail is never seeded away) and set the watermark to `seq`;
     - else set the watermark to `seq` (or 0) silently.
-- **The row lacks the key** (an old writer): fall back to today's legacy count channel (`wake_watch.field_broadcast_fallback` = `broadcastUnreadFromOthers`, rising edge).
+- **The row lacks the key** (an old writer): fall back to today's legacy count channel (`wake_watch.field_broadcast` = `broadcastUnreadFromOthers`, rising edge, unchanged). A watcher that has the
+  watermark field keeps `lastBroadcastUnread` in step silently, so switching between writers never fires a spurious line.
+- `wake_watch.seen_version` = 2. `lastBroadcastWakeSeq` is written only once known (never a placeholder 0).
+- Ambiguous mention on a plain (non-question) broadcast: the audience is every id it prefixes (never fewer). A legacy-row question
+  with an ambiguous mention is read the same way.
+- `mesh_write.boolean_only_flags` gains `ack-only`. `inbox ack --broadcast-to` with a non-number is refused
+  (`mesh_wake.msg_broadcast_to_not_number`).
 
 The broadcast line text is unchanged (`wake_watch.line_wake`, label `wake_watch.label_broadcast`). Coalescing is unchanged.
 
