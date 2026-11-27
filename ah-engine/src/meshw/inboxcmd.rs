@@ -317,7 +317,12 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
         );
     }
     o.put("count", n(c.unread as f64)).put("cursor", n(c.nd_cursor)).put("storeCursor", n(c.store_cursor));
-    let result = o.done();
+    let mut result = o.done();
+    // GH #845: the unread broadcasts are listed beside the direct mail (read only; `inbox ack` acks them)
+    if c.unavail.is_none() {
+        let st = common::open_store(inv, &c.store_key)?;
+        crate::meshw::read::put_broadcasts(&mut result, &crate::meshw::read::unread_broadcasts(&st, inv, id)?);
+    }
     tick::emit_known_warning(defaults::text("mesh_write.action_read"), &result);
     Ok(Answer { code: 0, stdout: format!("{}\n", result.stringify()), effect: Effect::None })
 }
@@ -512,6 +517,7 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
         }
     };
     let mut failures: Vec<OVal> = Vec::new();
+    let mut bc_moved: Option<i64> = None;
     if let Some(st) = st.as_ref().filter(|_| owns_store && explicit.is_none()) {
         let max_index = c.store_rows.iter().filter_map(|r| r["index"].as_f64()).fold(None, |m: Option<f64>, i| Some(m.map_or(i, |x| x.max(i))));
         let to = max_index.map_or(c.store_cursor, |m| c.store_cursor.max(m));
@@ -571,6 +577,10 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
                 failures.push(f.done());
             }
         }
+        // GH #845: the broadcasts `inbox read` listed are acked with the direct mail (before the summary is derived, so the
+        // broadcast wake count drops with them)
+        let ub = crate::meshw::read::unread_broadcasts(st, inv, id)?;
+        bc_moved = crate::meshw::read::ack_broadcasts(st, id, &ub)?;
         if let Some(why) = crate::meshw::summary::derive_after_write(st, inv, &c.store_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_ack"), &why);
         }
@@ -608,6 +618,9 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     }
     if let Some(t) = &trunc {
         t.put(&mut out, defaults::text("mesh_write.truncated_hint_ack"));
+    }
+    if let Some(head) = bc_moved {
+        out.put(defaults::text("mesh_wake.key_broadcast_cursor"), n(head as f64));
     }
     let result = out.done();
     tick::emit_known_warning(defaults::text("mesh_write.verb_ack"), &result);

@@ -99,3 +99,23 @@ value = "ack"
 [metric.mesh_wake_suppressed]
 doc = "Native wakes (DevSwarm reactivate) a send skipped, by reason (GH #845)."
 value = { kind = "counter", unit = "wakes", labels = ["reason"] }
+
+# ---- phase 1: readable broadcasts -------------------------------------------------------------------------------------------
+
+[mesh_wake.inbox_broadcast_cap]
+doc = "Most unread broadcasts a drain verb (`inbox read`, `inbox ack`'s read, `read-primary`) lists, newest kept; the rest are counted in `broadcastsOmitted` and acked with them (`mesh read --peek --seq 0` lists every one)."
+value = 50
+min = 1
+max = 5000
+
+[mesh_wake.key_broadcasts]
+doc = "The member of a drain verb's result that lists the unread broadcasts (each with `addressed`: whether it addresses the reader)."
+value = "broadcasts"
+
+[mesh_wake.key_broadcasts_omitted]
+doc = "The member of a drain verb's result that counts the unread broadcasts the cap left out."
+value = "broadcastsOmitted"
+
+[mesh_wake.key_broadcast_cursor]
+doc = "The member of an acking drain verb's result that reports where the broadcast cursor moved (only when it moved)."
+value = "broadcastCursor"

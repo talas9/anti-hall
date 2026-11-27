@@ -316,6 +316,12 @@ impl MeshStore {
         Ok(head)
     }
 
+    /// Set workspace `id`'s broadcast cursor to `seq` (GH #845: a drain verb acks exactly the broadcasts it read, not the live head).
+    pub fn set_broadcast_cursor(&self, id: &str, seq: i64, now: i64) -> Res<()> {
+        retry_busy(|| self.conn().prepare_cached(sql::MESHW_SET_BROADCAST_CURSOR)?.execute(params![id, seq, now]))?;
+        Ok(())
+    }
+
     /// `readerCursorTxn`: write every record in ONE `BEGIN IMMEDIATE` transaction (retried whole on SQLITE_BUSY).
     pub fn reader_cursor_txn(&self, puts: &[CursorPut]) -> Res<()> {
         self.cursor_txn(|tx| {
