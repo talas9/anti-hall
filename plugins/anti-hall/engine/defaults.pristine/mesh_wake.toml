@@ -138,6 +138,8 @@ value = "broadcastWakePending"
 [mesh_wake.inbox_broadcast_cap]
 doc = "Most unread broadcasts one drain lists, oldest first; the rest stay unread (`broadcastsMore`) for the next drain, and the ack moves only through the last one listed."
 value = 50
+min = 1
+max = 5000
 
 [mesh_wake.inbox_broadcast_eligible_cap]
 doc = "Past `inbox_broadcast_cap`, a drain still lists up to this many unread broadcasts that wake the reader (the watcher woke for them, review P1-1). They stay unread until the ack reaches them, so the next drain lists them again; a watcher wakes again while eligible rows remain after an ack."

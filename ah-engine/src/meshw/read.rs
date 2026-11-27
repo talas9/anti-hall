@@ -585,6 +585,16 @@ mod tests {
         assert_eq!(len(1), long.len(), "the addressed row is whole");
     }
 
+    /// Re-review N-2: both caps keep their bounds (a cap of 0 would list and ack nothing, ever).
+    #[test]
+    fn both_broadcast_caps_are_bounded() {
+        defaults::init().unwrap();
+        for key in ["mesh_wake.inbox_broadcast_cap", "mesh_wake.inbox_broadcast_eligible_cap"] {
+            let e = defaults::get(key).unwrap();
+            assert!(e.min.is_some_and(|m| m >= 1) && e.max.is_some(), "{key} has no bounds");
+        }
+    }
+
     /// The receipt op carries exactly the delivered boundary, and none is made when nothing was listed.
     #[test]
     fn the_receipt_op_names_the_delivered_boundary() {
