@@ -132,6 +132,10 @@ value = { kind = "counter", unit = "ticks", labels = ["signal", "reason"] }
 doc = "Stops of child agents the tracker keeps (#972 class 1), by how: recorded (a stop was first seen and kept), held (a tick where the discovery pass called a stopped child unfinished and the kept stop overrode it), resumed (the child wrote again past limits.stop_resume_ms, so the kept stop was dropped), stale_notice (a dated stop notice the child has since written past by more than limits.stop_resume_ms was not taken as a stop: it never re-latches a resumed child)."
 value = { kind = "counter", unit = "decisions", labels = ["how"] }
 
+[metric.agent_report_repeat]
+doc = "A child's message to its lead that repeats a report text it already earned credit for, so it earned nothing (#972 round 2; agent_tracker.report_to.dedupe_max)."
+value = { kind = "counter", unit = "messages", labels = [] }
+
 [metric.agent_ws_coverage]
 doc = "How the tracker settled a DevSwarm session's workspace facts (#972), by how: archive_ignored (an archived twin was ignored because the descriptor has a live lock or is newer than the archive), unbound (a row no live descriptor bound this tick lost its stale workspace facts)."
 value = { kind = "counter", unit = "decisions", labels = ["how"] }
@@ -245,8 +249,12 @@ doc = "Tool names by role: edit (change a file), shell (run a command), agent (l
 value = { edit = ["Edit", "Write", "MultiEdit", "NotebookEdit"], shell = ["Bash"], agent = ["Agent", "Task"], todo = ["TodoWrite"], task_create = ["TaskCreate"], task_update = ["TaskUpdate"], task_read = ["TaskList", "TaskGet"], monitor = ["Monitor"], cron = ["CronCreate"], wakeup = ["ScheduleWakeup"], read = ["Read", "Grep", "Glob"], report = ["SendMessage"] }
 
 [agent_tracker.report_to]
-doc = "Who a child's message must be addressed to for it to count as a delivered report (an outcome, weight report; #972 class 3): the input field that names the recipient, the recipient names of a lead (compared case-insensitively), and the input field of the message text with the fewest characters a report carries (a shorter ping, \"still working\", is no outcome). A message to a peer is not a report."
-value = { field = "to", names = ["main", "team-lead", "lead"], body_field = "message", min_chars = 80 }
+doc = "Who a child's message must be addressed to for it to count as a delivered report (an outcome, weight report; #972 class 3): the input field that names the recipient, the recipient names of a lead (compared case-insensitively), and the input field of the message text with the fewest characters a report carries (a shorter ping, \"still working\", is no outcome). A message to a peer is not a report. dedupe_max: how many report texts (whitespace collapsed, hashed) a child keeps; a text it already earned credit for earns nothing again (a repeated status would reset the runtime and waste clocks; counted agent_report_repeat)."
+value = { field = "to", names = ["main", "team-lead", "lead"], body_field = "message", min_chars = 80, dedupe_max = 50 }
+
+[agent_tracker.ran_delims]
+doc = "Which shell delimiters (the engine shell splitter's) let a successful call prove that a merge or deploy segment ran and succeeded, so it earns shipping credit (#972 round 2): every delimiter before the segment must be one of before (each runs the next segment; never `||`, which may skip it) and every one after it one of after (each needs it to succeed, so the call's success implies its own). `true || gh pr merge 42`, `gh pr merge 42 ; true` and `gh pr merge 42 | tee x` earn nothing."
+value = { before = ["&&", ";", "\n"], after = ["&&"] }
 
 [agent_tracker.snooze_holds]
 doc = "The tracker reminders a parent's snooze of a child (`agents nudge <child> snooze`) holds while it runs (#972 class 1): the nag signals about a child. Safety and informational rows (burn_soft, burn_hard, watched_exit, no_work) are not held."

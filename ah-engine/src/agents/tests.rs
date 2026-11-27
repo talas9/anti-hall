@@ -7017,3 +7017,46 @@ fn n972r_a_lock_naming_the_session_under_another_checkout_does_not_cover_it() {
     ticks_bare(&h, &mut st, &[n + 2 * MIN]);
     assert_eq!(agent(&st, "sessW").ws.as_ref().and_then(|w| w.armed), Some(true));
 }
+
+/// Codex #838 P1.3: the same status message sent again earns nothing; only distinct reports are outcomes.
+#[test]
+fn n972r_a_repeated_report_earns_no_fresh_progress() {
+    let n = now0();
+    let h = home("n972r-repeat-report");
+    let status = "Status: still working on the hold bookkeeping, tests pending, ETA about thirty minutes from now, no blockers so far.";
+    let other = "Findings, round 4: P1 the stop notice re-latches; P2 the drift dedupe keys the old text; P2 an unrelated write confirms.";
+    sub_with_calls(
+        &h,
+        n,
+        &[
+            ("SendMessage", json!({"to": "main", "message": status})),
+            ("SendMessage", json!({"to": "main", "message": status})),
+            ("SendMessage", json!({"to": "main", "message": format!("  {status}  ")})),
+            ("SendMessage", json!({"to": "main", "message": other})),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.reports, a.progress), (2, 2 * weight("report")), "two distinct reports, the repeats earn nothing");
+}
+
+/// Codex #838 P1.3 (merge): a merge segment the shell may skip (after `||`), or whose failure the call's success does not rule out (a
+/// `;` or `|` after it), earns no shipping credit; one the whole call's success proves ran does.
+#[test]
+fn n972r_a_merge_credits_only_when_the_calls_success_proves_it_ran() {
+    let n = now0();
+    for (tag, cmd, want) in [
+        ("or", "true || gh pr merge 42", 0),
+        ("semi-after", "gh pr merge 42 ; true", 0),
+        ("pipe", "gh pr merge 42 | tee /dev/null", 0),
+        ("and", "cd /w/repo && gh pr merge 42 && echo merged", 1),
+        ("semi-before", "cd /w/repo ; gh pr merge 42", 1),
+    ] {
+        let h = home(&format!("n972r-merge-{tag}"));
+        sub_with_calls(&h, n, &[("Bash", json!({"command": cmd}))]);
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n]);
+        assert_eq!(agent(&st, "w1").shipped, want, "{tag}: {cmd}");
+    }
+}

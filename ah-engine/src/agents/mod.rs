@@ -602,6 +602,9 @@ pub struct Agent {
     /// `limits.stop_resume_ms`.
     #[serde(default)]
     pub stopped_at: u64,
+    /// Hashes of the reports (messages to its lead) this child already earned credit for, newest last (`report_to.dedupe_max`, #972).
+    #[serde(default)]
+    pub report_keys: Vec<String>,
     /// Task id -> the hold key the session confirmed by writing the task after a reminder named it, and when (#972, #961): that hold is
     /// silent for `nudges.hold.confirm_ms`, tied to the reason it confirmed (a later new reason without a reminder runs the plain clock).
     #[serde(default)]
