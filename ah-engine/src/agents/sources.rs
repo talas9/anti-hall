@@ -408,7 +408,8 @@ fn cli(env: &Env, st: &mut State, relist: bool) -> Listing {
 fn stopped_subagents(env: &Env, st: &mut State) {
     let opts = crate::checks::agent_scan::Opts { now_ms: env.now_ms as f64, ignore_unanswered_stops: true };
     let tail = defaults::num("agent_scan.tail_bytes");
-    let mut ended: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    // per launching transcript: the ids it shows ended, and when (ms, when the transcript dated it)
+    let mut ended: std::collections::HashMap<String, std::collections::HashMap<String, Option<u64>>> = std::collections::HashMap::new();
     let live: Vec<(String, String)> = st.agents.values().filter(|a| super::is_child(a) && a.running).map(|a| (a.id.clone(), a.path.clone())).collect();
     for (id, path) in live {
         // <projects>/<dir>/<parent session>/subagents/agent-<id>.jsonl: the launching session's transcript is <dir>/<parent session>.jsonl
@@ -418,17 +419,25 @@ fn stopped_subagents(env: &Env, st: &mut State) {
             crate::checks::agent_scan::scan_transcript(&parent, tail, &opts)
                 .ok()
                 .flatten()
-                .map(|s| s.terminal.into_iter().chain(s.stopped_agents).collect())
+                .map(|s| {
+                    let ts = |id: &String| s.ended_ts.get(id).filter(|t| t.is_finite() && **t >= 0.0).map(|t| *t as u64);
+                    s.terminal.iter().chain(s.stopped_agents.iter()).map(|id| (id.clone(), ts(id))).collect()
+                })
                 .unwrap_or_default()
         });
-        if set.contains(&id)
-            && let Some(a) = st.agents.get_mut(&id)
-        {
-            a.running = false;
-            if a.stopped_at == 0 {
-                a.stopped_at = env.now_ms;
-                crate::metrics::bump("agent_stop_sticky", &[("how", "recorded")]);
-            }
+        let Some(when) = set.get(&id).copied() else { continue };
+        let Some(a) = st.agents.get_mut(&id) else { continue };
+        // a stop the child has written past (by more than stop_resume_ms) is history: the child resumed, the old notice never re-latches
+        // it (#972 round 2, Codex #838 P1.1)
+        // (a subagent, which a message can resume; a stopped teammate's process is gone, its late lines are the tail of the killed turn)
+        if a.kind == kind_name("subagent") && when.is_some_and(|t| a.last_output_ms > t.saturating_add(lim("stop_resume_ms"))) {
+            crate::metrics::bump("agent_stop_sticky", &[("how", "stale_notice")]);
+            continue;
+        }
+        a.running = false;
+        if a.stopped_at == 0 {
+            a.stopped_at = when.unwrap_or(env.now_ms);
+            crate::metrics::bump("agent_stop_sticky", &[("how", "recorded")]);
         }
     }
 }

@@ -6979,3 +6979,22 @@ fn n972_a_session_whose_descriptor_is_gone_is_a_main_session_again_covered_by_it
     assert!(escalate::primary(a), "the main session is exempt from the runtime ladder");
     assert!(!a.flags.contains_key("monitor_unarmed"), "its own armed stamp covers it: {:?}", a.flags.keys().collect::<Vec<_>>());
 }
+
+/// Codex #838 P1.1: the old stop notice stays in the parent's tail while the resumed child keeps working; over several ticks the old
+/// notice must never re-latch the stop.
+#[test]
+fn n972r_a_resumed_child_is_not_re_latched_by_its_old_stop_notice_over_several_ticks() {
+    let h = home("n972r-relatch");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "the true positive: the answered stop ends it");
+    let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
+    for (i, t) in [5u64, 6, 7, 8].iter().enumerate() {
+        append(&child, &[tool(n + t * MIN, &format!("r{i}"), 5, &format!("rt{i}"), "Read", json!({"file_path": "/w/a"}))]);
+        ticks(&h, &mut st, &[n + t * MIN + 1000]);
+        let a = agent(&st, "abc");
+        assert!(a.stopped_at == 0 && !a.finished, "tick {i}: re-latched by the stop at n-30min: stopped_at={} finished={}", a.stopped_at, a.finished);
+    }
+}
