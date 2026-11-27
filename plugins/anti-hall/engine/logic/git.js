@@ -2555,6 +2555,19 @@ function pushPrepass(cmd, cwd) {
   return null;
 }
 
+// The script an interpreter call names: its first word that is not an option and not a redirection (`bash 2>/dev/null x.sh`, `bash 2> /dev/null x.sh`).
+function scriptArgOf(args) {
+  const redir = new RegExp(ah.cfg('git.script_redirect_re')), bare = new RegExp(ah.cfg('git.script_redirect_bare_re'));
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (t.text.startsWith('-')) continue;
+    if (bare.test(t.text)) { i++; continue; } // the operator stands alone: the next word is its target
+    if (redir.test(t.raw !== undefined ? t.raw : t.text)) continue;
+    return t;
+  }
+  return undefined;
+}
+
 // PR #469: a script a call runs by literal path (bash x.sh, ./x.sh, source x) is read and scanned like a commit message: a
 // credit line on any line is refused (naming the file and line), and so is a commit whose message layer 1 cannot read together
 // with a push in it, as in one call. A missing, oversized or non-literal path is let through with an advisory.
@@ -2564,10 +2577,21 @@ function scriptFileVerdict(tok, cdDir, byPath) {
   // a leading $HOME / ${HOME} is the user's home directory (as for a heredoc target): a path under it is literal
   const homeRe = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
   const raw = raw0.replace(homeRe, '~');
-  if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw0; return null; }
+  // a redirection (2>/dev/null) is no script path; a variable assignment / parameter expansion (d=${d%/}) is none either when it stands
+  // where a program is (byPath), but bash takes `release=nightly.sh` as the script name
+  if (new RegExp(ah.cfg('git.script_redirect_re')).test(raw0)) return null;
+  if (byPath && new RegExp(ah.cfg('git.script_assign_re')).test(raw0)) return null;
+  // a program run directly by a path that is not literal is named only when it looks like a script (an extension of git.script_ext_re): a
+  // binary behind a variable ($B/ah-engine) is no script; an interpreter (bash x.sh, source x) always names the script it runs
+  if (/[$`*?[]/.test(raw) || !tok.text) {
+    if (!byPath || new RegExp(ah.cfg('git.script_ext_re')).test(tok.text || raw0)) S.scriptUnchecked = tok.text || raw0;
+    return null;
+  }
   const path = scriptRealPath(tok.text.replace(homeRe, '~'), cdDir || S.procCwd);
-  if (path === null) { S.scriptUnchecked = tok.text; return null; }
+  if (path === null) { if (!byPath) S.scriptUnchecked = tok.text; return null; }
   const size = ah.fs.size(path);
+  // a path run directly that is not there is a script only when this very call writes it (cat > x.sh <<EOF ... ./x.sh)
+  if (size === null && byPath && !new RegExp(ah.cfg('git.script_written_prefix_re') + '(?:[^\\s\'"]*/)?' + tok.text.split('/').pop().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(S.raw)) return null;
   // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script
   const cap = Math.min(ah.cfgNum('git.script_scan_max_bytes'), ah.cfgNum('script.read_max_bytes'));
   const body = size === null || size > cap ? null : ah.fs.readText(path, cap);
@@ -3100,7 +3124,7 @@ function scanCommand(cmd, depth, baseCwd) {
           const sv = stdinScriptVerdict(cmd, d, lastCdDir);
           if (sv) return sv;
         } else {
-          const fv = scriptFileVerdict(ev.args.find((t) => !t.text.startsWith('-')), lastCdDir, false);
+          const fv = scriptFileVerdict(scriptArgOf(ev.args), lastCdDir, false);
           if (fv) return fv;
         }
       }
@@ -3108,7 +3132,7 @@ function scanCommand(cmd, depth, baseCwd) {
     }
 
     if (TB.scriptRunVerbs.has(ev.verb)) {
-      const fv = scriptFileVerdict(ev.args.find((t) => !t.text.startsWith('-')), lastCdDir, false);
+      const fv = scriptFileVerdict(scriptArgOf(ev.args), lastCdDir, false);
       if (fv) return fv;
       continue;
     }

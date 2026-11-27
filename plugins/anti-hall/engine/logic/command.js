@@ -1676,6 +1676,38 @@ function gitSubcommandIndex(tokens, gitIdx) {
   return -1;
 }
 
+// isSafeGitPull(segment) -> true for `git pull --ff-only ...`: it only fast-forwards the local branch (it refuses anything else), so like a
+// safe fetch it changes no shared remote; a forced or refspec-carrying one is not safe.
+function isSafeGitPull(segment) {
+  if (effectiveVerb(segment) !== 'git') return false;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return false;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  if (subIdx === -1 || (tokens[subIdx] || '').toLowerCase() !== 'pull') return false;
+  // a configuration given on the command line (git -c fetch.prune=true pull) can change what the pull does
+  for (let i = gitIdx + 1; i < subIdx; i++) {
+    if (tokens[i] === '-c' || tokens[i].startsWith('--config-env') || /^-c./.test(tokens[i])) return false;
+  }
+  // the last mode flag wins in git: the pull fast-forwards only when --ff-only is the effective one
+  let ffOnly = false;
+  for (let i = subIdx + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '--ff-only') { ffOnly = true; continue; }
+    if (T.fetchDangerous.has(t) || t.startsWith('--prune') || t.startsWith('--force')) return false;
+    if (t.startsWith('+') || t.includes(':')) return false;
+    if (/^--(?:ff|no-ff|squash|no-squash|rebase|no-rebase)(?:=|$)/.test(t)) { ffOnly = false; continue; }
+    // bundled short flags (-qp): r is --rebase, p and f are --prune and --force
+    if (/^-[A-Za-z]+$/.test(t)) {
+      for (const ch of t.slice(1)) {
+        if (ch === 'p' || ch === 'f') return false;
+        if (ch === 'r') ffOnly = false;
+      }
+    }
+  }
+  return ffOnly;
+}
+
 function isSafeGitFetch(segment) {
   if (effectiveVerb(segment) !== 'git') return false;
   const tokens = tokenizeQuoted(segment);
@@ -1714,7 +1746,8 @@ function isHeavyGitSegment(segment) {
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1) return false;
   const sub = tokens[subIdx].toLowerCase();
-  if (sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'pull') return !isSafeGitPull(segment);
+  if (sub === 'clone') return true;
   if (sub === 'fetch') return !isSafeGitFetch(segment);
   return false;
 }
@@ -2097,7 +2130,7 @@ function isHeavyGhSegment(segment, command, strict) {
 
 // Per-segment checks that need tokenized/positional logic (not a plain regex
 // substring match) — evaluated alongside lightList() in isHeavySegment.
-const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeSqliteReadonly, isReadOnlyCloudInspect];
+const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeGitPull, isSafeSqliteReadonly, isReadOnlyCloudInspect];
 
 // isFlaggedInterpreterScript(segment) -> true when the segment is
 // `python*|node <flag...> <script>.py|.js|.mjs|.cjs ...` — an interpreter
@@ -2318,7 +2351,8 @@ function classifyHeavy(command, depth) {
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg, command)) {
       if (remoteMatch(seg, 'command.remote_block')) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: true };
-      if (isHeavyGhSegment(seg) || isGitPushSegment(seg) || isGitPullFetchSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: remoteMatch(seg, 'command.remote_block') };
+      if (isGitPullFetchSegment(seg) && !isHeavyGhSegment(seg) && !isGitPushSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_pull'), risk: false };
+      if (isHeavyGhSegment(seg) || isGitPushSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: remoteMatch(seg, 'command.remote_block') };
       const verb = effectiveVerb(seg);
       if (verb && T.heavyVerbs.has(verb)) return { kind: 'verb', label: verb };
       return { kind: 'category', label: ah.cfg('command.heavy_pattern_label') };
@@ -4724,12 +4758,14 @@ function mainFlow(payload) {
   guarded(() => { tierText = devswarmPrimary && LIB['./lib/primary-tier.js'].primaryTierTextOn(guardEnv, (payload && payload.cwd) || process.cwd()); });
   const H = LIB['./lib/host-text.js'];
   const codexHost = H.isCodex(payload);
-  const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
+  // a remote kind is named as classified: a pull or fetch reads from the remote, only a push or a gh write changes it
+  const kindText = remote ? (cls && cls.kind === 'remote' && cls.label ? cls.label : ah.cfg('command.msg_heavy_remote')) : ah.cfg('command.msg_heavy_plain');
+  const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: kindText, detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
   const segNote = guarded(() => heavySegmentNote(command)) || '';
   // the visible block names the rule that fired (the generic brief headline names none): the verb or category label, or the shared remote
   const ruleLabel = cls && cls.label ? cls.label : ah.cfg('command.heavy_default_label');
-  const ruleNote = text.render(ah.cfg(remote ? 'command.msg_brief_rule_remote' : 'command.msg_brief_rule'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), label: ruleLabel });
+  const ruleNote = text.render(ah.cfg(remote ? 'command.msg_brief_rule_remote' : 'command.msg_brief_rule'), { kind: kindText, label: ruleLabel });
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
   // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
   const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));

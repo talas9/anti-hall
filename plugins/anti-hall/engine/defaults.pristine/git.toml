@@ -1061,6 +1061,26 @@ value = "^[ \\t]*(?:#|(?:(?:e|f)?grep|rg)\\b[^|<>;&`$]*$)"
 doc = "Block: a Bash call runs a script whose text carries an AI credit line. Placeholders: {file} (the script path), {line} (the first line with the credit)."
 value = { what = "this call runs {file}, whose line {line} carries an AI credit line.", why = "The script would commit or publish that line before any check could see the stored message.", instead = "remove the credit line from {file} and run it again; credit lines never go into commits, pushes or PR text." }
 
+[git.script_redirect_re]
+doc = "A word that is a redirection (2>/dev/null, >out, <in, 2>&1): never a script path. Matched against the word as written."
+value = "^[0-9]*[<>&]"
+
+[git.script_redirect_bare_re]
+doc = "A redirection operator written apart from its target (2>, >>, <): the word after it is the target, not the script."
+value = "^[0-9]*(?:>>?|<|&>>?)$"
+
+[git.script_assign_re]
+doc = "A variable assignment word (name=value, d=${d%/}). Where a program is expected (a command run by its path) it is no script path; after bash, sh or source it is a script name like any other."
+value = "^[A-Za-z_][A-Za-z0-9_]*\\+?="
+
+[git.script_ext_re]
+doc = "File name endings that mark a script: a program run by a path that cannot be resolved (a variable in it) is named in the unchecked advisory only when its name ends so."
+value = "\\.(?:sh|bash|zsh|ksh|py|rb|pl|js|mjs|cjs|ts)$"
+
+[git.script_written_prefix_re]
+doc = "What precedes a path in the same Bash call when the call writes that file (a redirection, tee, chmod, cp, mv or ln onto it); the escaped path is appended. A script run directly by a path that is not on disk is named in the unchecked advisory only when the call writes it first."
+value = "(?:>>?|\\btee\\b(?:\\s+-\\S+)*|\\bchmod\\b(?:\\s+\\S+)?|\\b(?:cp|mv|ln)\\b(?:\\s+-\\S+)*\\s+\\S+)\\s*['\"]?"
+
 [git.script_unchecked_advisory]
 doc = "Advisory when a script a Bash call runs by path could not be read (missing, over script_scan_max_bytes, or not a literal path): it is let through unchecked. Placeholder: {file}."
 value = "anti-hall: the script {file} was not checked for AI credit lines (missing, too large or not a literal path); check it yourself before it commits or pushes."

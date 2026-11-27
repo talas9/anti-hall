@@ -1521,7 +1521,7 @@ fn agent_scan_text_is_what_the_value_tree_printed() {
     let pending: Vec<Value> = scan
         .pending
         .iter()
-        .map(|(name, p)| json!({"name": name, "agentId": p.agent_id, "sentAtMs": fin(p.sent_at_ms), "lastIdleMs": fin(p.last_idle_ms), "lastSeenMs": fin(p.last_seen_ms), "live": p.live}))
+        .map(|(name, p)| json!({"name": name, "agentId": p.agent_id, "sentAtMs": fin(p.sent_at_ms), "lastIdleMs": fin(p.last_idle_ms), "lastSeenMs": fin(p.last_seen_ms), "live": p.live, "messaged": p.messaged}))
         .collect();
     let old = json!({"launched": launched, "terminal": terminal, "pending": pending}).to_string();
     assert!(launched_len(&old) == 3, "{old}");
