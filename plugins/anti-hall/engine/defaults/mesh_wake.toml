@@ -3,8 +3,9 @@
 #
 # Phase 0 times each stage of one `ah-engine mesh send` (the 4-20 s a send costs under load) and reports it as telemetry, so the
 # gain of later phases is measured against a baseline. Phase 1 wakes only the addressee of a broadcast: the summary carries
-# `broadcastWakeFromOthers`, the unread broadcasts of others that address this workspace, and the wake-watch's broadcast channel
-# (`wake_watch.field_broadcast`) reads it instead of every unread broadcast.
+# `broadcastWakeSeq` / `broadcastWakePending` (the unread broadcasts of others that wake this workspace), and the wake-watch's
+# broadcast channel (`wake_watch.field_broadcast_seq` / `field_broadcast_pending`) wakes on that watermark instead of every unread
+# broadcast (`wake_watch.field_broadcast`, the legacy count, is read only from a summary that lacks the new keys).
 
 # ---- phase 0: send stage timer ----------------------------------------------------------------------------------------------
 
@@ -189,3 +190,18 @@ value = ", wake {wake}"
 [mesh_wake.msg_tick_broadcast_unread]
 doc = "Debug note when `inbox tick` cannot read the broadcasts that wake a workspace (the tick then counts none); `{id}` and `{why}`."
 value = "inbox tick {id}: the broadcast wake count did not read: {why}"
+
+# ---- review P2-8 / P2-13 ---------------------------------------------------------------------------------------------------------
+
+[mesh_wake.key_broadcasts_error]
+doc = "Drain result key (inbox read, read-primary): why the broadcasts could not be read. The direct mail is still read; no broadcast is listed or acked."
+value = "broadcastsError"
+
+[metric.mesh_broadcast_read_failed]
+doc = "Drain reads (inbox read, read-primary) whose broadcast read failed and listed none, while the direct mail was still read."
+value = { kind = "counter", unit = "reads", labels = [] }
+
+[mesh_wake.read_primary_preview_chars]
+doc = "read-primary lists a broadcast that does not address the reader as a preview of at most this many characters (`preview: true`); an addressed one is listed in full. `inbox read` lists every body in full."
+value = 160
+

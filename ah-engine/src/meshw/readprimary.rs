@@ -2008,11 +2008,14 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         && !o.repo_key.is_empty()
         && let Ok(bst) = common::open_store(inv, &o.repo_key)
     {
-        let u = crate::meshw::read::unread_broadcasts(bst.reader(), inv, id)?;
-        if let Some(op) = crate::meshw::read::broadcast_op(id, &u) {
-            ops.push(op);
+        // review P2-8: a broadcast read that fails never fails the direct-mail drain: none listed, none acked, the reason noted
+        if let Some(mut u) = crate::meshw::read::unread_broadcasts_or_note(bst.reader(), inv, id, &mut out) {
+            crate::meshw::read::preview_unaddressed(&mut u);
+            if let Some(op) = crate::meshw::read::broadcast_op(id, &u) {
+                ops.push(op);
+            }
+            crate::meshw::read::put_broadcasts(&mut out, &u, false);
         }
-        crate::meshw::read::put_broadcasts(&mut out, &u, false);
     }
     if legacy {
         // `read-primary --legacy-ack-now`: the old same-call read-and-ack. The ops are applied here instead of filed, and the

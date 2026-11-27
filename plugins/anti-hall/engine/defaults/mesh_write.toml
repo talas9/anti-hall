@@ -1087,6 +1087,10 @@ value = "nd"
 doc = "The `k` of a read-receipt op that moves the reader's broadcast cursor to the seq of the last broadcast the read listed (GH #845; never back, never past it)."
 value = "bc"
 
+[mesh_write.op_broadcast_version]
+doc = "The `opv` of a broadcast read-receipt op (GH #845 contract §6): its format version, so a later format can be told apart."
+value = 1
+
 [mesh_write.flag_broadcast_to]
 doc = "The `inbox ack` flag naming the seq of the last broadcast `inbox read` listed (`broadcastAckTarget`): the broadcast cursor moves through it and no further; without it the broadcast cursor stays."
 value = "broadcast-to"

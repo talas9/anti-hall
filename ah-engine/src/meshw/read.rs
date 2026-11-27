@@ -253,6 +253,8 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
     let extras = r.extras_of(bpart, cursor).map_err(|e| store_err("broadcasts", e))?;
     let roster = ident::rows_of(&r.roster().map_err(|e| store_err("registry", e))?);
     let roster_ids: Vec<&str> = roster.iter().map(|r| r.id.as_str()).collect();
+    // review P2-6: the reader's whole identity family is "own", exactly as the summary counts it
+    let family = crate::meshw::tick::family_of(reader, &roster);
     let mode = crate::meshw::wakepolicy::Mode::load();
     let aliases = common::read_aliases(&inv.home, &inv.env);
     let cap = defaults::num("mesh_wake.inbox_broadcast_cap") as usize;
@@ -266,7 +268,7 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
     r.for_each_message(bpart, 0, |m| {
         let Some(q) = m["storeSeq"].as_f64().filter(|q| q.is_finite() && *q as i64 > cursor).map(|q| q as i64) else { return true };
         let sender = m["sender"].as_str();
-        if m["isHeartbeat"].as_bool().unwrap_or(false) || sender == Some(reader) {
+        if m["isHeartbeat"].as_bool().unwrap_or(false) || sender.is_some_and(|x| family.contains(x)) {
             // passed over with the listed rows when an ack moves through them
             return true;
         }
@@ -320,6 +322,37 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
     Ok(UnreadBroadcasts { rows, more, from: cursor, target, wake_pending, wake_seq })
 }
 
+/// Review P2-8: [`unread_broadcasts`] for a drain verb whose direct mail must not fail with it. A broadcast read that fails lists
+/// none (so nothing is acked), says why in the result (`mesh_wake.key_broadcasts_error`) and is counted (`mesh_broadcast_read_failed`).
+pub(crate) fn unread_broadcasts_or_note(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, o: &mut Obj) -> Option<UnreadBroadcasts> {
+    match unread_broadcasts(r, inv, reader) {
+        Ok(u) => Some(u),
+        Err(ident::Defer(reason)) => {
+            crate::metrics::bump_shared("mesh_broadcast_read_failed", &[]);
+            o.put(defaults::text("mesh_wake.key_broadcasts_error"), s(&reason));
+            None
+        }
+    }
+}
+
+/// Review P2-13: read-primary carries a broadcast that does not address the reader as a preview (`mesh_wake.read_primary_preview_chars`
+/// characters, `preview: true`), so a busy room does not fill every Primary read with full bodies; addressed rows stay whole.
+pub(crate) fn preview_unaddressed(u: &mut UnreadBroadcasts) {
+    let max = defaults::num("mesh_wake.read_primary_preview_chars") as usize;
+    for row in &mut u.rows {
+        if matches!(row.get("addressed"), Some(OVal::Bool(true))) {
+            continue;
+        }
+        if let Some(OVal::Str(body)) = row.get("message")
+            && body.chars().count() > max
+        {
+            let cut: String = body.chars().take(max).collect();
+            row.set("message", s(&cut));
+            row.set("preview", OVal::Bool(true));
+        }
+    }
+}
+
 /// Put the unread broadcasts into a drain verb's result: `broadcasts`, `broadcastsMore` when the cap held some back, and (for
 /// `inbox read`, whose ack is a separate call) `broadcastAckTarget`. Nothing is added when there are none, so a reader with no
 /// broadcasts sees the result it always did.
@@ -341,7 +374,7 @@ pub(crate) fn broadcast_op(reader: &str, u: &UnreadBroadcasts) -> Option<OVal> {
     let t = u.target?;
     let mut op = Obj::default();
     op.put("k", s(defaults::text("mesh_write.op_broadcast")))
-        .put("opv", n(1.0))
+        .put("opv", n(defaults::num("mesh_write.op_broadcast_version") as f64))
         .put("reader", s(reader))
         .put("from", n(u.from as f64))
         .put("target", n(t as f64))
@@ -353,14 +386,12 @@ pub(crate) fn broadcast_op(reader: &str, u: &UnreadBroadcasts) -> Option<OVal> {
 /// new cursor, or `None` when it did not move.
 pub(crate) fn ack_broadcasts(st: &crate::meshw::store::MeshStore, reader: &str, target: i64) -> R<Option<i64>> {
     let now = st.reader().broadcast_cursor(reader).map_err(|e| store_err("cursor", e))? as i64;
-    let head = st.broadcast_head().map_err(|e| store_err("broadcasts", e))?;
-    let to = target.min(head);
-    if to <= now {
+    if target <= now {
         return Ok(None);
     }
-    st.set_broadcast_cursor(reader, to, common::now_ms()).map_err(|e| store_err("advance", e))?;
+    let to = st.raise_broadcast_cursor(reader, target, common::now_ms()).map_err(|e| store_err("advance", e))?;
     crate::meshw::mark_committed();
-    Ok(Some(to))
+    Ok((to > now).then_some(to))
 }
 
 #[cfg(test)]
@@ -488,6 +519,67 @@ mod tests {
         assert_eq!(pending, 1);
         assert!(seq.is_some());
         assert_eq!(broadcast_wake(st.reader(), &inv, "w-c").unwrap(), (0, None), "a bystander is not woken");
+    }
+
+    /// Review P2-6: a broadcast from the reader's identity family (a row cross-linked to it) is its own, never listed or counted.
+    #[test]
+    fn the_readers_identity_family_is_never_listed() {
+        let (_d, st, inv) = scratch("family");
+        let twin = crate::meshw::store::RegistryRow {
+            id: "w-a2".into(),
+            worktree_path: None,
+            session_id: Some("w-a".into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
+        st.upsert_registry(&twin, 1, |a, b| a == b).unwrap();
+        broadcast_to(&st, "w-a2", "from my own twin", 1, defaults::text("mesh_wake.audience_all"));
+        broadcast_to(&st, "w-b", "from someone else", 2, defaults::text("mesh_wake.audience_all"));
+        let u = unread_broadcasts(st.reader(), &inv, "w-a").unwrap();
+        assert_eq!(u.rows.len(), 1, "{:?}", u.rows);
+        assert_eq!(u.wake_pending, 1);
+    }
+
+    /// Review P2-7: the cursor write itself never lowers the cursor and never passes the head, whatever target it is handed.
+    #[test]
+    fn the_cursor_write_is_max_guarded_and_head_capped() {
+        let (_d, st, _inv) = scratch("raise");
+        for i in 0..3 {
+            broadcast(&st, "w-b", &format!("m{i}"), i + 1);
+        }
+        let head = st.broadcast_head().unwrap();
+        assert_eq!(st.raise_broadcast_cursor("w-a", head, 1).unwrap(), head);
+        assert_eq!(st.raise_broadcast_cursor("w-a", 1, 2).unwrap(), head, "a lower target leaves it");
+        assert_eq!(st.raise_broadcast_cursor("w-a", head + 100, 3).unwrap(), head, "never past the head");
+    }
+
+    /// Review P2-8: a broadcast read that fails lists none and says why, instead of failing the drain.
+    #[test]
+    fn a_failed_broadcast_read_is_noted_not_fatal() {
+        let (_d, st, inv) = scratch("soft");
+        st.reader().conn().execute_batch("DROP TABLE broadcast_cursors").unwrap();
+        let mut o = Obj::default();
+        assert!(unread_broadcasts_or_note(st.reader(), &inv, "w-a", &mut o).is_none());
+        assert!(o.done().get(defaults::text("mesh_wake.key_broadcasts_error")).is_some());
+    }
+
+    /// Review P2-13: an unaddressed body past the preview length is cut and marked; an addressed one is kept whole.
+    #[test]
+    fn read_primary_previews_only_unaddressed_bodies() {
+        let (_d, st, inv) = scratch("preview");
+        let long = "x".repeat(defaults::num("mesh_wake.read_primary_preview_chars") as usize + 40);
+        broadcast_to(&st, "w-b", &long, 1, defaults::text("mesh_wake.audience_none"));
+        broadcast_to(&st, "w-b", &long, 2, r#"["w-a"]"#);
+        let mut u = unread_broadcasts(st.reader(), &inv, "w-a").unwrap();
+        preview_unaddressed(&mut u);
+        let len = |i: usize| match u.rows[i].get("message") {
+            Some(OVal::Str(b)) => b.chars().count(),
+            _ => 0,
+        };
+        assert_eq!(len(0), defaults::num("mesh_wake.read_primary_preview_chars") as usize);
+        assert_eq!(u.rows[0].get("preview"), Some(&OVal::Bool(true)));
+        assert_eq!(len(1), long.len(), "the addressed row is whole");
     }
 
     /// The receipt op carries exactly the delivered boundary, and none is made when nothing was listed.

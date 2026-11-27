@@ -319,9 +319,19 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
     o.put("count", n(c.unread as f64)).put("cursor", n(c.nd_cursor)).put("storeCursor", n(c.store_cursor));
     // GH #845 (contract §6): the unread broadcasts are listed beside the direct mail, read only, with the boundary
     // `inbox ack <id> --broadcast-to <seq>` acks through
+    // review P2-8: a broadcast read that fails never fails the direct-mail read: none listed, the reason noted
     if c.unavail.is_none() {
-        let st = common::open_store(inv, &c.store_key)?;
-        crate::meshw::read::put_broadcasts(&mut o, &crate::meshw::read::unread_broadcasts(st.reader(), inv, id)?, true);
+        match common::open_store(inv, &c.store_key) {
+            Ok(st) => {
+                if let Some(u) = crate::meshw::read::unread_broadcasts_or_note(st.reader(), inv, id, &mut o) {
+                    crate::meshw::read::put_broadcasts(&mut o, &u, true);
+                }
+            }
+            Err(ident::Defer(reason)) => {
+                crate::metrics::bump_shared("mesh_broadcast_read_failed", &[]);
+                o.put(defaults::text("mesh_wake.key_broadcasts_error"), s(&reason));
+            }
+        }
     }
     let result = o.done();
     tick::emit_known_warning(defaults::text("mesh_write.action_read"), &result);

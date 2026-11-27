@@ -354,6 +354,13 @@ impl MeshStore {
         Ok(())
     }
 
+    /// Raise `id`'s broadcast cursor to `target` (never past the broadcast head, never down) in one statement, so two readers that
+    /// ack at once cannot move it back (review P2-7). The cursor after the write.
+    pub fn raise_broadcast_cursor(&self, id: &str, target: i64, now: i64) -> Res<i64> {
+        self.conn().prepare_cached(sql::MESHW_RAISE_BROADCAST_CURSOR)?.execute(params![id, target, now])?;
+        Ok(self.reader().broadcast_cursor(id)? as i64)
+    }
+
     /// `advanceBroadcastCursor(id)`: move `id`'s broadcast cursor to the head of the broadcast partition; returns it.
     pub fn advance_broadcast_cursor(&self, id: &str, now: i64) -> Res<i64> {
         let head: Option<f64> = self.conn().prepare_cached(sql::MESHW_BROADCAST_HEAD)?.query_row([], |r| r.get::<_, Option<f64>>(0))?;
@@ -367,7 +374,6 @@ impl MeshStore {
         let head: Option<f64> = self.conn().prepare_cached(sql::MESHW_BROADCAST_HEAD)?.query_row([], |r| r.get::<_, Option<f64>>(0))?;
         Ok(head.filter(|f| f.is_finite()).map_or(0, |f| f as i64))
     }
-
 
     /// `readerCursorTxn`: write every record in ONE `BEGIN IMMEDIATE` transaction (retried whole on SQLITE_BUSY).
     pub fn reader_cursor_txn(&self, puts: &[CursorPut]) -> Res<()> {

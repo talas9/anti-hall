@@ -439,6 +439,8 @@ pub const MESHW_SET_GATE: &str = "INSERT INTO gates (workspace_id, gate_name, va
 pub const MESHW_SET_CURSOR: &str = "INSERT INTO cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
 /// `setBroadcastCursor` and the write half of `advanceBroadcastCursor`.
 pub const MESHW_SET_BROADCAST_CURSOR: &str = "INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
+/// GH #845 review P2-7: move a broadcast cursor up to `?2`, capped at the broadcast head, in one statement that never lowers it.
+pub const MESHW_RAISE_BROADCAST_CURSOR: &str = "INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?1, MAX(0, MIN(?2, COALESCE((SELECT MAX(seq) FROM messages WHERE mtype = 'broadcast'), 0))), ?3) ON CONFLICT(workspace_id) DO UPDATE SET value = MAX(value, excluded.value), updated_at = excluded.updated_at;";
 /// The head of the broadcast partition (`advanceBroadcastCursor`).
 pub const MESHW_BROADCAST_HEAD: &str = "SELECT MAX(seq) AS m FROM messages WHERE mtype = 'broadcast';";
 /// `readerCursorTxn`'s put: the value only ever rises; `retired_line` is replaced only when the record carries it.
