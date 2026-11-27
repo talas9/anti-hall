@@ -138,7 +138,9 @@ opt-level = 3
 inherits = "release"
 lto = "thin"
 codegen-units = 16
-incremental = false
+# incremental with thin LTO: a rebuild after a small change reuses the unchanged codegen units (a machine whose cargo config sets
+# build.incremental = false overrides this, as it does every profile)
+incremental = true
 
 [profile.release-fast.package.rquickjs-sys]
 opt-level = 3
