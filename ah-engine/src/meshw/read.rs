@@ -220,8 +220,8 @@ fn ack_listed(st: &crate::meshw::store::MeshStore, key: &str, listed: &[serde_js
 /// GH #845 (contract §6): the unread broadcasts a drain verb lists beside the direct mail, with the exact boundary an ack may move
 /// the broadcast cursor through. A read never samples the live head to ack.
 pub(crate) struct UnreadBroadcasts {
-    /// The OLDEST `mesh_wake.inbox_broadcast_cap` unread non-heartbeat broadcasts of others, in seq order, each with `addressed`;
-    /// past the cap, the unread rows that wake this reader (up to `mesh_wake.inbox_broadcast_eligible_cap`).
+    /// The unread non-heartbeat broadcasts of others, oldest first, each with `addressed`: up to `mesh_wake.inbox_broadcast_eligible_cap`
+    /// rows that wake this reader and up to `mesh_wake.inbox_broadcast_cap` rows that do not, each budget counted on its own.
     pub rows: Vec<OVal>,
     /// More unread broadcasts wait past the cap (they stay unread for the next drain).
     pub more: bool,
@@ -263,7 +263,7 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
     let mut more = false;
     let mut target: Option<i64> = None;
     let extra_cap = defaults::num("mesh_wake.inbox_broadcast_eligible_cap") as usize;
-    let mut extra = 0usize;
+    let (mut listed_other, mut listed_waking) = (0usize, 0usize);
     let mut contiguous = true;
     let (mut wake_pending, mut wake_seq) = (0usize, None::<i64>);
     r.for_each_message(bpart, 0, |m| {
@@ -288,16 +288,16 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
             wake_pending += 1;
             wake_seq = Some(q);
         }
-        // review P1-1: past the cap only the rows that wake this reader are still listed (the watcher woke for them), up to
-        // their own cap; the ack target stops at the last row before the first one held back, so nothing is acked unseen
-        if rows.len() >= cap {
+        // review P1-1 (re-review residual): the rows that wake this reader and the rest have separate budgets, so no number of
+        // rows that do not wake it can crowd out one that does; a row past its budget is held back, and the ack target stops at
+        // the last row before the first one held back, so nothing is acked unseen (the watcher wakes again for what is held)
+        let (used, budget) = if wakes { (&mut listed_waking, extra_cap) } else { (&mut listed_other, cap) };
+        if *used >= budget {
             more = true;
             contiguous = false;
-            if !wakes || extra >= extra_cap {
-                return true;
-            }
-            extra += 1;
+            return true;
         }
+        *used += 1;
         if !list {
             return true;
         }
@@ -593,6 +593,26 @@ mod tests {
             let e = defaults::get(key).unwrap();
             assert!(e.min.is_some_and(|m| m >= 1) && e.max.is_some(), "{key} has no bounds");
         }
+    }
+
+    /// Re-review P1-1 residual: more FYI rows than the cap, then more rows for the reader than the cap: every row for the reader
+    /// that fits its own budget is listed, however many FYI rows come first.
+    #[test]
+    fn rows_for_the_reader_are_never_crowded_out_by_fyi_rows() {
+        let (_d, st, inv) = scratch("crowd");
+        let cap = defaults::num("mesh_wake.inbox_broadcast_cap") as i64;
+        let waking = defaults::num("mesh_wake.inbox_broadcast_eligible_cap") as i64;
+        for i in 0..cap + 5 {
+            broadcast_to(&st, "w-b", &format!("fyi {i}"), i + 1, defaults::text("mesh_wake.audience_none"));
+        }
+        for i in 0..waking {
+            broadcast_to(&st, "w-b", &format!("for a {i}"), cap + 100 + i, r#"["w-a"]"#);
+        }
+        let u = unread_broadcasts(st.reader(), &inv, "w-a").unwrap();
+        let for_me = u.rows.iter().filter(|r| r.get("addressed") == Some(&OVal::Bool(true))).count() as i64;
+        assert_eq!(for_me, waking, "every row for the reader within its budget is listed");
+        assert!(u.more);
+        assert_eq!(u.target, Some(cap), "the ack stops before the first held-back FYI row");
     }
 
     /// The receipt op carries exactly the delivered boundary, and none is made when nothing was listed.

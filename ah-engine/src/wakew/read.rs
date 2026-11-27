@@ -122,6 +122,8 @@ pub struct Part {
     pub seq: Option<Option<f64>>,
     /// Broadcast channel only: `wake_watch.field_broadcast_pending`, when the row has it.
     pub pending: Option<f64>,
+    /// Broadcast channel only: `wake_watch.field_broadcast_cursor` (the reader's broadcast cursor), when the row has it.
+    pub cursor: Option<f64>,
 }
 
 fn unresolvable() -> Part {
@@ -180,7 +182,8 @@ pub fn read_broadcast(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
     // A row without the key (an older writer) keeps the legacy count channel.
     let seq = row.and_then(|w| w.get(text("wake_watch.field_broadcast_seq")).map(|v| finite(Some(v))));
     let pending = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast_pending"))));
-    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None, seq, pending }
+    let cursor = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast_cursor"))));
+    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None, seq, pending, cursor }
 }
 
 /// `attachBroadcastChannel`: fold the broadcast channel into a snapshot, failing closed with whatever the direct channels said.
@@ -189,6 +192,7 @@ pub fn attach_broadcast(mut snap: Snapshot, home: &Path, hashes: Option<&Hashes>
     snap.total3 = Some(b.total);
     snap.bc_seq = b.seq;
     snap.bc_pending = b.pending;
+    snap.bc_cursor = b.cursor;
     let base_ok = snap.ok;
     snap.ok = base_ok && b.ok;
     let b_err = b.error.unwrap_or_default();

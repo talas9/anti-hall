@@ -133,16 +133,20 @@ value = "broadcastWakeSeq"
 doc = "The summary member counting a workspace's unread broadcasts that wake it (display and the start-up reconcile only, never a wake edge)."
 value = "broadcastWakePending"
 
+[mesh_wake.summary_field_cursor]
+doc = "The summary member holding a workspace's broadcast cursor (the watcher wakes again when an ack moves it while wake-eligible broadcasts stay unread)."
+value = "broadcastWakeCursor"
+
 # ---- phase 1: readable broadcasts (contract §6) --------------------------------------------------------------------------------
 
 [mesh_wake.inbox_broadcast_cap]
-doc = "Most unread broadcasts one drain lists, oldest first; the rest stay unread (`broadcastsMore`) for the next drain, and the ack moves only through the last one listed."
+doc = "Most unread broadcasts that do NOT wake the reader one drain lists, oldest first; the rest stay unread (`broadcastsMore`) for the next drain, and the ack stops before the first row held back. Rows that wake the reader have their own budget (`inbox_broadcast_eligible_cap`), so these never crowd them out."
 value = 50
 min = 1
 max = 5000
 
 [mesh_wake.inbox_broadcast_eligible_cap]
-doc = "Past `inbox_broadcast_cap`, a drain still lists up to this many unread broadcasts that wake the reader (the watcher woke for them, review P1-1). They stay unread until the ack reaches them, so the next drain lists them again; a watcher wakes again while eligible rows remain after an ack."
+doc = "Most unread broadcasts that wake the reader one drain lists (their own budget, beside `inbox_broadcast_cap`). A row listed past a held-back row stays unread until the ack reaches it, and the watcher wakes again while such rows remain after an ack."
 value = 50
 min = 1
 max = 5000

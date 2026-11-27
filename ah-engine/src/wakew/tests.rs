@@ -492,3 +492,29 @@ fn a_failed_broadcast_print_does_not_advance_the_watermark() {
     let (_, lines) = tick(&undone, &bc(Some(20.0), 1.0));
     assert_eq!(lines.len(), 1, "the next tick prints it again");
 }
+
+/// Re-review N-3: an ack that moved the cursor over rows that do not wake the reader (so pending is unchanged) while wake-eligible
+/// rows stay unread past the drain's budget wakes again.
+#[test]
+fn an_ack_that_moves_the_cursor_with_eligible_rows_left_wakes_again() {
+    let at = |cursor: f64| Snapshot { bc_cursor: Some(cursor), ..bc(Some(200.0), 60.0) };
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 0.0, ..State::default() };
+    let (st, lines) = tick(&st, &at(0.0));
+    assert_eq!(lines.len(), 1);
+    let (st, lines) = tick(&st, &at(0.0));
+    assert!(lines.is_empty(), "nothing moved");
+    let (_, lines) = tick(&st, &at(50.0));
+    assert_eq!(lines.len(), 1, "the cursor moved, 60 eligible rows still unread: {lines:?}");
+}
+
+/// Re-review N-4: an arm whose first read fails (or lacks the watermark field) still owes its broadcast print, and pays it on the
+/// first read that has the field.
+#[test]
+fn the_arm_print_survives_a_failed_first_read() {
+    let st = State { last_total: 1.0, last_total2: 1.0, last_bc_seq: 50.0, ..State::default() };
+    let (st, _) = tick(&st, &Snapshot { ok: false, error: Some("x".into()), ..snap("child", None) });
+    assert!(st.bc_arm_due);
+    let (st, lines) = tick(&st, &bc(Some(50.0), 2.0));
+    assert_eq!((lines.len(), st.woke_broadcast), (1, 1), "the owed arm print: {lines:?}");
+    assert!(!st.bc_arm_due);
+}

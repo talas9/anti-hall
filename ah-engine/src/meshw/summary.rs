@@ -884,6 +884,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             ("broadcastUnreadFromOthers".into(), n(bc_from_others as f64)),
             (defaults::text("mesh_wake.summary_field_seq").into(), opt_num(wake_seq)),
             (defaults::text("mesh_wake.summary_field_pending").into(), n(wake_pending as f64)),
+            // re-review N-3: the reader's broadcast cursor, so a watcher sees an ack that left wake-eligible rows unread
+            (defaults::text("mesh_wake.summary_field_cursor").into(), n(bc_cursor)),
             ("urgencyMax".into(), urgency_max),
             ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().map(|(_, r)| *r))),
             ("working_on".into(), working_on),
