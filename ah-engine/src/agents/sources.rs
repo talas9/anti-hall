@@ -409,7 +409,7 @@ fn stopped_subagents(env: &Env, st: &mut State) {
         // a stop the child has written past (by more than stop_resume_ms) is history: the child resumed, the old notice never re-latches
         // it (#972 round 2, Codex #838 P1.1)
         // (a subagent, which a message can resume; a stopped teammate's process is gone, its late lines are the tail of the killed turn)
-        if a.kind == kind_name("subagent") && when.is_some_and(|t| a.last_output_ms > t.saturating_add(lim("stop_resume_ms"))) {
+        if resumed_after(a, when) {
             crate::metrics::bump("agent_stop_sticky", &[("how", "stale_notice")]);
             continue;
         }
@@ -424,9 +424,16 @@ fn stopped_subagents(env: &Env, st: &mut State) {
 /// A child once seen stopped stays stopped (#972 class 1): the stop shows only while it is inside the launching transcript's tail window,
 /// and the discovery pass resets `finished` every tick, so a stopped child came back as idle or "claims running work" once the window
 /// moved on, and its rows and nags with it. It is resumed only by output written past `limits.stop_resume_ms` after the stop.
+/// Whether a child has resumed since a stop dated `when`: a teammate by a new turn (a message to it after the stop; its later lines
+/// without one are the tail of the killed turn), a subagent by a new turn or by output past `limits.stop_resume_ms` (#972 rounds 2-3).
+/// An undated stop is never history.
+fn resumed_after(a: &Agent, when: Option<u64>) -> bool {
+    when.is_some_and(|t| a.inbound_ms > t || (a.kind == kind_name("subagent") && a.last_output_ms > t.saturating_add(lim("stop_resume_ms"))))
+}
+
 fn sticky_stops(st: &mut State) {
     for a in st.agents.values_mut().filter(|a| super::is_child(a) && a.stopped_at > 0) {
-        if a.last_output_ms > a.stopped_at.saturating_add(lim("stop_resume_ms")) {
+        if resumed_after(a, Some(a.stopped_at)) {
             a.stopped_at = 0;
             crate::metrics::bump("agent_stop_sticky", &[("how", "resumed")]);
             continue;
@@ -516,6 +523,10 @@ fn stopped_teammates(st: &mut State) {
         let stops = seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent));
         let started = mtime_ms(Path::new(&meta_file)).map_or(0, |m| m as u64);
         if let Some(t) = stops.get(&desc).filter(|t| **t >= started) {
+            if resumed_after(a, (*t != u64::MAX).then_some(*t)) {
+                crate::metrics::bump("agent_stop_sticky", &[("how", "stale_notice")]);
+                continue;
+            }
             a.finished = true;
             if a.stopped_at == 0 {
                 a.stopped_at = if *t == u64::MAX { a.last_output_ms } else { *t };

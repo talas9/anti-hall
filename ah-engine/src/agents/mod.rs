@@ -221,6 +221,9 @@ pub struct Pending {
     /// repository's state decides HARD credit).
     #[serde(default)]
     pub cwd: String,
+    /// A task update that writes this task's blocker fields: recorded in `Agent::blocker_writes` only when its result is no error.
+    #[serde(default)]
+    pub blocker_task: String,
 }
 
 /// A raised signal on one agent.
@@ -609,6 +612,10 @@ pub struct Agent {
     /// that confirms a hold reminder (#972 round 2).
     #[serde(default)]
     pub blocker_writes: BTreeMap<String, u64>,
+    /// When the agent last received a message that opened a turn (a user line that is not a tool result): a stopped teammate resumes
+    /// only by a new turn after its stop; its later lines without one are the tail of the killed turn (#972 round 3).
+    #[serde(default)]
+    pub inbound_ms: u64,
     /// Task id -> the hold key the session confirmed by writing the task after a reminder named it, and when (#972, #961): that hold is
     /// silent for `nudges.hold.confirm_ms`, tied to the reason it confirmed (a later new reason without a reminder runs the plain clock).
     #[serde(default)]

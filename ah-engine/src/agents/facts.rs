@@ -182,6 +182,10 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
         a.last_output_ms = a.last_output_ms.max(ts);
         a.running = true;
         let content = msg.and_then(|m| m.get(tr("content")));
+        // a message to the agent (not a tool result) opens a new turn: for a stopped child, the resume (#972 round 3)
+        if !blocks.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) {
+            a.inbound_ms = a.inbound_ms.max(ts);
+        }
         if !super::is_child(a) && a.kind != super::kind_name("codex") && owner_turn(v, content) {
             a.owner_ms = a.owner_ms.max(ts);
             a.ask_open = true;
@@ -533,6 +537,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let mut push = false;
     let mut amp = false;
     let mut call_dir = if cwd.is_empty() { a.cwd.clone() } else { cwd.to_string() };
+    let mut blocker_task = String::new();
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -665,12 +670,9 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         let blocker = input.get(iw.str_field("f_metadata")).is_some_and(|m| m.get(iw.str_field("f_blocked_on")).is_some())
             || input.get(iw.str_field("f_owner")).is_some()
             || input.get(iw.str_field("f_status")).is_some();
+        // recorded on the call's successful result only (#972 round 3, Codex #839 P1.2: an errored update wrote nothing)
         if blocker && !task.is_empty() {
-            a.blocker_writes.insert(task.clone(), ts);
-            while a.blocker_writes.len() > lim("task_names_max") as usize {
-                let Some(k) = a.blocker_writes.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
-                a.blocker_writes.remove(&k);
-            }
+            blocker_task.clone_from(&task);
         }
         let text = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
         let subject = str_of(&input, tr("subject"));
@@ -708,7 +710,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: call_dir });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: call_dir, blocker_task });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -805,6 +807,13 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if pat("guard_fire").is_some_and(|r| r.is_match(&text)) {
         a.guard_fires += 1;
+    }
+    if !failed && !p.blocker_task.is_empty() {
+        a.blocker_writes.insert(p.blocker_task.clone(), ts);
+        while a.blocker_writes.len() > lim("task_names_max") as usize {
+            let Some(k) = a.blocker_writes.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
+            a.blocker_writes.remove(&k);
+        }
     }
     if !failed && p.class == "report" {
         a.reports += 1;
