@@ -244,12 +244,18 @@ fn devswarm(env: &Env, st: &mut State) {
     unbind(st, &bound);
 }
 
-/// Drop the workspace facts of every row no live descriptor bound this tick (its descriptor was archived or removed): stale facts
-/// would keep a re-arm order (or an exemption) alive for a watcher nobody judges any more. Counted per dropped row.
+/// Drop the workspace facts of every row no live descriptor bound this tick (its descriptor was archived or removed), and make such a
+/// session a main session again: stale facts would keep a re-arm order (or an exemption) alive for a watcher nobody judges any more.
+/// Counted per dropped row.
 fn unbind(st: &mut State, bound: &std::collections::BTreeSet<String>) {
     for (k, a) in st.agents.iter_mut() {
         if a.ws.is_some() && !bound.contains(k) {
             a.ws = None;
+            // a session no descriptor names is a plain main session again: its own wake stamp decides its coverage, and the escalation's
+            // exempt kinds see it as the Primary it is
+            if !super::is_child(a) && a.kind == kind_name("workspace") {
+                a.kind = kind_name("main").into();
+            }
             crate::metrics::bump("agent_ws_coverage", &[("how", "unbound")]);
         }
     }

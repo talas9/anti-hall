@@ -503,11 +503,15 @@ fn note_call(a: &mut Agent, name: &str) {
     }
 }
 
-/// Whether a message tool's input names one of `agent_tracker.report_to.names` as its recipient (field `agent_tracker.report_to.field`).
+/// Whether a message tool's input names one of `agent_tracker.report_to.names` as its recipient (field `agent_tracker.report_to.field`) and
+/// carries at least `min_chars` characters (field `body_field`).
 fn report_to(input: &Value) -> bool {
     let r = defaults::raw("agent_tracker.report_to");
     let to = str_of(input, r.str_field("field")).trim().to_lowercase();
-    !to.is_empty() && r.get("names").map(V::strings).unwrap_or_default().iter().any(|n| n.to_lowercase() == to)
+    let body = str_of(input, r.str_field("body_field")).trim().chars().count() as u64;
+    let min = r.get("min_chars").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    // a short ping ("still working") is no report: it would reset the runtime ladder and the waste window every time
+    !to.is_empty() && body >= min && r.get("names").map(V::strings).unwrap_or_default().iter().any(|n| n.to_lowercase() == to)
 }
 
 fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {

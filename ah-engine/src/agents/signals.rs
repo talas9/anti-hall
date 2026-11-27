@@ -353,7 +353,9 @@ fn drift(a: &Agent, st: &State, tasks: &[Task]) -> Option<Raised> {
     let task = (!a.step_task.is_empty()).then(|| tasks.iter().find(|t| t.id == a.step_task)).flatten();
     if let Some(t) = task
         && !t.owner.is_empty()
-        && st.agents.values().any(|o| o.id != a.id && (o.name == t.owner || o.id == t.owner))
+        && st.agents.values().any(|o| {
+            super::is_child(o) && o.parent == a.id && !o.gone && !o.dead && !o.finished && (o.name == t.owner || o.id == t.owner)
+        })
     {
         crate::metrics::bump("agent_signal_exempt", &[("signal", "drift"), ("reason", "step_owned_elsewhere")]);
         return None;
@@ -671,10 +673,6 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
         Some("ci_wait")
     } else if a.stall_cpu_at > 0 && now.checked_sub(a.stall_cpu_at).is_some_and(|d| d < num(c, "quiet_ms")) {
         Some("cpu")
-    } else if a.armed_until > now {
-        // a Monitor, cron or wakeup it armed will wake it: a stated, bounded wait (#972 class 27: STALLED while the session waited on its
-        // own scheduled check). A bare background shell still exempts nothing (only a build or CI watch does, above).
-        Some("wake_armed")
     } else {
         None
     };
@@ -1100,9 +1098,10 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         return;
     }
     let now = env.now_ms;
-    // a snooze its parent gave this child (`agents nudge <child> snooze`) holds every reminder about the child, not only the nudge
-    // loop's own (#972 class 1: a snoozed teammate's false_claim fired again within the hour)
-    if super::is_child(a) && super::nudge::snoozed(env, st, a, now) {
+    // a snooze its parent gave this child (`agents nudge <child> snooze`) holds the nag reminders about the child (agent_tracker.snooze_holds),
+    // not only the nudge loop's own (#972 class 1: a snoozed teammate's false_claim fired again within the hour); safety and
+    // informational rows (burn, an ended background task, no work) still flow
+    if super::is_child(a) && defaults::list("agent_tracker.snooze_holds").contains(&sig) && super::nudge::snoozed(env, st, a, now) {
         compliance::suppressed_any(sig, "snoozed");
         return;
     }

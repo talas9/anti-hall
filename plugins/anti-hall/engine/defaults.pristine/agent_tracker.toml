@@ -245,8 +245,12 @@ doc = "Tool names by role: edit (change a file), shell (run a command), agent (l
 value = { edit = ["Edit", "Write", "MultiEdit", "NotebookEdit"], shell = ["Bash"], agent = ["Agent", "Task"], todo = ["TodoWrite"], task_create = ["TaskCreate"], task_update = ["TaskUpdate"], task_read = ["TaskList", "TaskGet"], monitor = ["Monitor"], cron = ["CronCreate"], wakeup = ["ScheduleWakeup"], read = ["Read", "Grep", "Glob"], report = ["SendMessage"] }
 
 [agent_tracker.report_to]
-doc = "Who a child's message must be addressed to for it to count as a delivered report (an outcome, weight report; #972 class 3): the input field that names the recipient, and the recipient names of a lead (compared case-insensitively). A message to a peer is not a report."
-value = { field = "to", names = ["main", "team-lead", "lead"] }
+doc = "Who a child's message must be addressed to for it to count as a delivered report (an outcome, weight report; #972 class 3): the input field that names the recipient, the recipient names of a lead (compared case-insensitively), and the input field of the message text with the fewest characters a report carries (a shorter ping, \"still working\", is no outcome). A message to a peer is not a report."
+value = { field = "to", names = ["main", "team-lead", "lead"], body_field = "message", min_chars = 80 }
+
+[agent_tracker.snooze_holds]
+doc = "The tracker reminders a parent's snooze of a child (`agents nudge <child> snooze`) holds while it runs (#972 class 1): the nag signals about a child. Safety and informational rows (burn_soft, burn_hard, watched_exit, no_work) are not held."
+value = ["hung", "looping", "token_waste", "agent_waste", "drift", "heartbeat_stale", "idle_open_task", "stalled", "false_claim"]
 
 [agent_tracker.wake]
 doc = "How long each kind of wake path keeps the session reachable, in milliseconds: monitor (a Monitor without persistent: true, which ends at its own cap), persistent (a persistent Monitor), cron (a CronCreate job), wakeup_slack (added to a ScheduleWakeup's own delay)."

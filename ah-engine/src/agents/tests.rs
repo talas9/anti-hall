@@ -6709,17 +6709,16 @@ fn n972_a_sessionless_app_row_never_displaces_the_sessions_own_descriptor() {
 
 // ---- #972 class 27: STALLED, drift and idle-open on waiting or Primary rows ------------------------------------------------
 
+/// Every compliant workspace keeps a wake-watch Monitor armed (owner rule), so an armed wake is no evidence of a stated wait: a quiet
+/// child workspace with its Monitor armed still stalls (the Primary is exempt by n962_primary_session_is_never_stalled).
 #[test]
-fn n972_a_quiet_workspace_with_an_armed_wake_is_waiting_not_stalled() {
+fn n972_an_armed_wake_watch_does_not_exempt_a_quiet_child_workspace_from_stalled() {
     let n = now0();
-    let h = home("n972-stall-covered");
+    let h = home("n972-stall-armed");
     let e = env(&h, n);
     let mut a = quiet_workspace(n, false);
-    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "the true positive: quiet, nothing armed");
-    a.armed_until = n + 10 * MIN;
-    assert!(signals::stalled_for_tests(&e, &a, n).is_none(), "its own scheduled wake is a stated wait");
-    a.armed_until = n - MIN;
-    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a wake that ran out exempts nothing");
+    a.armed_until = n + 20 * MIN;
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some());
 }
 
 fn drifting(n: u64) -> Agent {
@@ -6944,9 +6943,39 @@ fn n972_a_merge_after_a_cd_is_an_outcome() {
 fn n972_a_childs_report_to_its_lead_is_an_outcome_a_message_to_a_peer_is_not() {
     let n = now0();
     let h = home("n972-report");
-    sub_with_calls(&h, n, &[("SendMessage", json!({"to": "main", "message": "Findings: 3 P1 ..."})), ("SendMessage", json!({"to": "lane-x", "message": "hi"}))]);
+    let report = "Findings, round 3: P1 the hold clock restarts on a same-text save; P2 the owner notice shows 0s; P2 drift quotes old text.";
+    sub_with_calls(
+        &h,
+        n,
+        &[
+            ("SendMessage", json!({"to": "main", "message": report})),
+            ("SendMessage", json!({"to": "lane-x", "message": report})),
+            ("SendMessage", json!({"to": "main", "message": "still working"})),
+        ],
+    );
     let mut st = State::default();
     ticks(&h, &mut st, &[n]);
     let a = agent(&st, "w1");
-    assert_eq!((a.reports, a.progress), (1, weight("report")), "one report to the lead; the peer message is no outcome");
+    assert_eq!((a.reports, a.progress), (1, weight("report")), "one report to the lead; the peer message and the short ping are no outcome");
+}
+
+#[test]
+fn n972_a_session_whose_descriptor_is_gone_is_a_main_session_again_covered_by_its_own_stamp() {
+    let h = home("n972-unbind");
+    let n = now0();
+    sky_layout(&h, n, true);
+    std::fs::remove_file(h.join(".anti-hall/devswarm/archived/primary-p1.json")).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessP").kind, kind_name("workspace"));
+    // the app archived both rows: the session is no workspace any more; its own session wake stamp is armed and a child runs
+    let d = h.join(".anti-hall/devswarm/workspaces");
+    std::fs::remove_file(d.join("primary-p1.json")).unwrap();
+    std::fs::remove_file(d.join("app-row.json")).unwrap();
+    running_sub(&h, "sessP", n + 5 * MIN, 1);
+    ticks(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN, n + 7 * MIN]);
+    let a = agent(&st, "sessP");
+    assert!(a.ws.is_none() && a.kind == kind_name("main"), "kind={} ws={:?}", a.kind, a.ws);
+    assert!(escalate::primary(a), "the main session is exempt from the runtime ladder");
+    assert!(!a.flags.contains_key("monitor_unarmed"), "its own armed stamp covers it: {:?}", a.flags.keys().collect::<Vec<_>>());
 }
