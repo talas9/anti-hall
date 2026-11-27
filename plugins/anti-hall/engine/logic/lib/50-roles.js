@@ -89,6 +89,27 @@ var roles = {
     var words = head.slice(cut + 1).split(/\s+/), shells = shellScan.shellVerbs(), extra = ah.cfg('roles.script_words');
     return words.some(function (w) { var b = shellScan.basename(w.replace(/^["']+|["']+$/g, '')); return shells.has(b) || extra.indexOf(b) >= 0; });
   },
+  // The words of an engine call's argument text the way the shell splits them (#844 item 9): a quoted run is one word with its
+  // quotes removed (so `--text "a rule"` gives the word `a rule`, never a bare `rule`), a backslash escapes the next character, and
+  // the call ends at the first unquoted ; & | newline ) or backtick.
+  argWords: function (rest) {
+    var words = [], cur = '', has = false, i = 0, n = rest.length;
+    while (i < n) {
+      var c = rest.charAt(i);
+      if (c === '\\' && i + 1 < n) { cur += rest.charAt(i + 1); has = true; i += 2; continue; }
+      if (c === "'" || c === '"') {
+        var j = i + 1;
+        while (j < n && rest.charAt(j) !== c) { if (c === '"' && rest.charAt(j) === '\\' && j + 1 < n) j++; j++; }
+        var body = rest.slice(i + 1, j);
+        cur += c === '"' ? body.replace(/\\(.)/g, '$1') : body; has = true; i = j + 1; continue;
+      }
+      if (/[;&|\n)`]/.test(c)) break;
+      if (/\s/.test(c)) { if (has) words.push(cur); cur = ''; has = false; i++; continue; }
+      cur += c; has = true; i++;
+    }
+    if (has) words.push(cur);
+    return words.filter(function (w) { return w !== ''; });
+  },
   // Every engine invocation in a Bash command as { verb, args }, leading flags such as --json skipped. An engine name inside
   // quoted text counts only where the shell would run it (quotedRuns).
   invocations: function (cmd) {
@@ -99,11 +120,10 @@ var roles = {
       var q = null;
       for (var si = 0; si < spans.length; si++) { var x = spans[si]; if (at > x.s && at < x.e && (q === null || x.s >= q.s)) q = x; }
       if (q && !roles.quotedRuns(cmd, q, at)) continue;
-      var rest = cmd.slice(hits[i][1]);
-      var cut = rest.search(/[;&|\n)`]/);
-      if (cut >= 0) rest = rest.slice(0, cut);
-      // a word that closes the quote it ran in (`sh -c "ah-engine stop"`) loses that quote
-      var toks = rest.split(/\s+/).map(function (t) { return t.replace(/^["']+|["']+$/g, ''); }).filter(function (t) { return t !== ''; });
+      // an engine call inside the quote it ran in (`sh -c "ah-engine stop"`) ends at that quote's closing mark
+      var end = cmd.length;
+      if (q && q.kind !== 'h') end = cmd.charAt(q.e - 1) === q.kind && q.e - 1 >= hits[i][1] ? q.e - 1 : q.e;
+      var toks = roles.argWords(cmd.slice(hits[i][1], end));
       while (toks.length > 0 && toks[0].charAt(0) === '-') toks.shift();
       if (toks.length > 0) out.push({ verb: toks[0], args: toks.slice(1) });
     }
