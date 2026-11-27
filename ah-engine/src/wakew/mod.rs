@@ -335,6 +335,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         recheck: archived_recheck(p),
         bin: (defaults::num("wake_watch.rebin_enabled") != 0).then(rebin::watched_path).flatten().and_then(|path| rebin::ident(&path).map(|i| (path, i))),
         coalesce: p.coalesce_ms(a.id.role()),
+        quiet_arm: defaults::num("wake_watch.rebin_quiet") != 0 && p.env.contains_key(text("wake_watch.env_rebin")),
     };
     let code = run.run_loop(&watcher);
     cleanup(&cell, false);
@@ -384,6 +385,9 @@ struct Run<'a> {
     bin: Option<(PathBuf, rebin::Ident)>,
     /// Wake coalescing for this watcher (GH #884), read once at arm: see [`Proc::coalesce_ms`].
     coalesce: Option<f64>,
+    /// #968: this process is the successor a binary replace started (`wake_watch.env_rebin` set) and `wake_watch.rebin_quiet` is on:
+    /// its arm line goes to the engine log, not the stream, so a redeploy wakes no idle session.
+    quiet_arm: bool,
 }
 
 /// What one tick decided.
@@ -480,11 +484,18 @@ impl Run<'_> {
         snap.now_ms = now_ms();
         snap.coalesce_ms = self.coalesce;
         let snap = read::attach_broadcast(snap, &p.home, a.hashes.as_ref(), &a.id.id);
-        let (state, lines) = {
+        let (state, lines, arming) = {
             let s = locked(self.cell);
-            edge::tick(&s.state, &snap)
+            let (st, lines) = edge::tick(&s.state, &snap);
+            (st, lines, !s.state.armed)
         };
-        for l in &lines {
+        for (i, l) in lines.iter().enumerate() {
+            // #968: a successor of a binary replace re-arms silently (its arm line is the first line of its first tick)
+            if self.quiet_arm && arming && i == 0 {
+                crate::health::log_event("wake_watch", "rebin_rearmed", l);
+                crate::metrics::bump_by_shared("wake_watch_rebin", &[("line", "arm_quiet")], 1);
+                continue;
+            }
             emit(l);
             count_row();
         }
@@ -541,7 +552,14 @@ impl Run<'_> {
             l.release();
         }
         cleanup(self.cell, true);
-        emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
+        let line = defaults::render("wake_watch.line_rebin", &[("path", &path.display())]);
+        if defaults::num("wake_watch.rebin_quiet") != 0 {
+            // #968: nothing to act on for the session: the engine log keeps the line, the stream (which wakes the session) does not
+            crate::health::log_event("wake_watch", "rebin", &line);
+            crate::metrics::bump_by_shared("wake_watch_rebin", &[("line", "restart_quiet")], 1);
+        } else {
+            emit(&line);
+        }
         let err =
             std::process::Command::new(&path).args(std::env::args().skip(1)).env(text("wake_watch.env_rebin"), ((now_ms() / 1000.0) as u64).to_string()).exec(); // only returns on failure
         diag(&defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));

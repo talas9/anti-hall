@@ -354,3 +354,49 @@ fn a_missing_build_manifest_is_no_handoff_target() {
     c.wait().unwrap();
     std::fs::remove_dir_all(&s.root).ok();
 }
+
+/// #968: a watcher restart caused by a binary replace (a redeploy) re-arms SILENTLY: neither the restart notice nor the successor's
+/// arm line reaches the Monitor stream (each line wakes an idle session with nothing to act on); both go to the engine log, and real
+/// mail still wakes the restarted watcher.
+#[test]
+fn a_binary_replace_restart_re_arms_silently_and_mail_still_wakes() {
+    let s = scratch("rebin", &Setup { own: "9.9.9", live_newer: None, other_newer: None, enabled: Some(LIVE_ON) });
+    let bin_dir = s.root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bin = bin_dir.join("ah-engine");
+    std::fs::copy(env!("CARGO_BIN_EXE_ah-engine"), &bin).unwrap();
+    let mut c = Command::new(&bin);
+    c.args(["agents", "wake-watch", "--auto"])
+        .env_clear()
+        .env("PATH", &s.nopath)
+        .env("HOME", &s.home)
+        .env("AH_ENGINE_PLUGIN_ROOT", &s.own_root)
+        .env("ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS", "250")
+        .env("DEVSWARM_SOURCE_BRANCH", "main")
+        .env("DEVSWARM_BUILDER_ID", ID)
+        .env("ANTIHALL_SESSION_ID", "sessM")
+        .current_dir(&s.cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut c = c.spawn().unwrap();
+    let rx = lines(&mut c);
+    let mut seen = Vec::new();
+    assert!(wait_for(&rx, "armed: watching child w1", 20, &mut seen), "{seen:?}");
+    // a deploy: a new file (new inode) renamed over the one the watcher started from
+    let next = bin_dir.join("next");
+    std::fs::copy(env!("CARGO_BIN_EXE_ah-engine"), &next).unwrap();
+    std::fs::rename(&next, &bin).unwrap();
+    let log = s.home.join(".anti-hall/ah-engine/ah-engine.log");
+    let end = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < end && !std::fs::read_to_string(&log).unwrap_or_default().contains("rebin_rearmed") {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(logged.contains("\trebin\t") && logged.contains("rebin_rearmed"), "the restart and the re-arm went to the engine log: {logged}");
+    std::fs::write(s.home.join(format!(".anti-hall/devswarm/inbox/{ID}.ndjson")), "{\"m\":1}\n").unwrap();
+    assert!(wait_for(&rx, "new mesh mail for child w1", 20, &mut seen), "the restarted watcher still wakes on mail: {seen:?}");
+    let noisy: Vec<&String> = seen.iter().filter(|l| l.contains("binary replaced") || l.contains("armed: watching")).collect();
+    assert_eq!(noisy.len(), 1, "only the first arm line reached the stream: {seen:?}");
+    reap(&mut c);
+    std::fs::remove_dir_all(&s.root).ok();
+}

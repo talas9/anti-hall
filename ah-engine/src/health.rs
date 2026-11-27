@@ -510,6 +510,37 @@ pub fn heartbeat(progress_ms: Option<u64>) {
     }
 }
 
+/// The last body [`heartbeat_peers`] wrote, so an unchanged one (an idle daemon) is not rewritten every tick.
+static PEERS_LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// #969: the per-request progress next to the heartbeat (`files.heartbeat_peers`): one line `<client pid> <ms since the worker's
+/// last progress on that client's request>` per busy worker. Rewritten on each watchdog tick it changed; written before the
+/// heartbeat's own touch of the next tick, so its age is at most one tick more than the heartbeat's.
+pub fn heartbeat_peers(peers: &[(u64, u64)]) {
+    let body: String = peers.iter().map(|(pid, ms)| format!("{pid} {ms}\n")).collect();
+    let mut last = PEERS_LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_deref() == Some(body.as_str()) {
+        return;
+    }
+    if std::fs::write(state_file("heartbeat_peers"), &body).is_ok() {
+        *last = Some(body);
+    }
+}
+
+/// #969: the progress age of the worker serving the request of client `pid`: its silence when the daemon last wrote
+/// `files.heartbeat_peers`, plus that file's own age. `None` = no worker names this client (not picked up yet, a daemon from before
+/// the file, a torn read): the caller keeps the daemon-wide figure.
+pub(crate) fn peer_progress(pid: u32) -> Option<Duration> {
+    let p = state_file("heartbeat_peers");
+    let raw = std::fs::read_to_string(&p).ok()?;
+    let age = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?.elapsed().unwrap_or_default();
+    raw.lines().find_map(|l| {
+        let (who, ms) = l.split_once(' ')?;
+        (who.trim().parse::<u32>().ok()? == pid).then(|| ms.trim().parse::<u64>().ok()).flatten()
+    })
+    .map(|ms| Duration::from_millis(ms) + age)
+}
+
 /// One reading of the daemon's heartbeat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Heartbeat {

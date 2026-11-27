@@ -445,6 +445,27 @@ fn watcher_session(a: &Agent) -> bool {
     (a.kind == kind_name("main") || a.kind == kind_name("workspace")) && !a.gone
 }
 
+/// #968: the cooldown of a reminder nobody answers grows. For hold_expired (the only signal with a per-reason unanswered count), the
+/// cooldown doubles with each reminder every listed hold has already had about its unchanged reason (the least reminded counts: a new
+/// or rewritten blocker starts again at the plain cooldown), up to `cap` (`backoff_cap_ms` of the signal's `agent_tracker.cooldowns`
+/// row; 0 or absent = no backoff). An idle session waiting on its owner then hears an unchanged blocker a bounded number of times a
+/// day instead of every cooldown; the owner notice stays the hard bound.
+fn backed_off(a: &Agent, sig: &str, cool: u64, cap: u64) -> u64 {
+    if cap == 0 || sig != "hold_expired" || a.hold_due.is_empty() {
+        return cool;
+    }
+    let n = a.hold_due.iter().map(|d| a.hold_n.get(&d.key).copied().unwrap_or(0)).min().unwrap_or(0);
+    if n == 0 {
+        return cool;
+    }
+    let grown = cool.saturating_mul(1u64.checked_shl(u32::try_from(n).unwrap_or(u32::MAX)).unwrap_or(u64::MAX));
+    let out = grown.min(cap).max(cool);
+    if out > cool {
+        crate::metrics::bump("agent_reminder_backoff", &[("signal", sig)]);
+    }
+    out
+}
+
 /// The wake watcher is switched off (agents.wakeWatch=false): said once per session, never silently (signal `monitor_off`).
 fn monitor_off(env: &Env, a: &Agent) -> Option<Raised> {
     (watcher_session(a) && !wake_switch(env, a)).then(|| (0, String::new()))
@@ -471,6 +492,14 @@ fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised>
         return None;
     }
     if let Some(Some(armed)) = a.ws.as_ref().map(|w| w.armed) {
+        // #969: the merged watcher (`agents wake-watch --auto`) is ONE process; its agent half's fresh stamp proves it runs even when
+        // the DevSwarm half's lock reads stale on a loaded machine, and a second watcher would only be refused as held
+        if !armed && !a.gone && sinks::wake_armed(env, &a.id) {
+            if env.act {
+                crate::metrics::bump("agent_ws_coverage", &[("how", "stamp")]);
+            }
+            return None;
+        }
         return (!armed && !a.gone).then(|| (0, a.ws.as_ref().map(|w| w.id.clone()).unwrap_or_default()));
     }
     if (a.kind == kind_name("main") || a.ws.is_some()) && sinks::wake_armed(env, &a.id) {
@@ -1106,7 +1135,8 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         return;
     }
     let cd = defaults::raw("agent_tracker.cooldowns").get(sig);
-    let cool = cd.and_then(|c| c.get("cooldown_ms")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    let base_cool = cd.and_then(|c| c.get("cooldown_ms")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    let cool = backed_off(a, sig, base_cool, cd.and_then(|c| c.get("backoff_cap_ms")).and_then(V::as_integer).unwrap_or(0).max(0) as u64);
     let per_day = cd.and_then(|c| c.get("max_per_day")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let spam = |k: &str| defaults::raw("agent_tracker.spam").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let day = fmtn("day_ms");

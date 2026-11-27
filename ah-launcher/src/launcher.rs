@@ -1894,6 +1894,15 @@ pub fn run() -> i32 {
         .unwrap_or_else(|| l.hooks_dir.join(l.key(&host_key("fallback_list"))));
 
     l.stale_engine_notice();
+    // #969: the call waits on the engine's answer; on a loaded machine it runs in the daemon's QoS class (daemon.qos), not behind
+    // every other process at the same priority
+    let qos = l.s.text("daemon.qos");
+    limits::apply_qos(
+        l.s.shipped("daemon.qos_classes")
+            .and_then(|t| t.get(qos.as_str()))
+            .and_then(toml::Value::as_integer)
+            .and_then(|n| u32::try_from(n).ok()),
+    );
 
     // budgets: the test knobs, else the shipped client deadline + slack + wrapper margin
     let knob_s = l.knob("launcher.knob_timeout_s");

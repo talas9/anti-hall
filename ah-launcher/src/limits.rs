@@ -359,3 +359,28 @@ mod tests {
         assert!(!mem_ok(usize::MAX));
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// #969: the QoS class of the launcher's wait (macOS; no-op elsewhere)
+// ---------------------------------------------------------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    // `qos_class_t` is an unsigned int in the C ABI; the class value comes from config (`daemon.qos_classes`).
+    fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: libc::c_int) -> libc::c_int;
+}
+
+/// Put the calling thread in `class` (`None` = leave it). Returns whether the class was set.
+pub fn apply_qos(class: Option<u32>) -> bool {
+    let Some(c) = class else { return false };
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: plain integer arguments; the call only changes the calling thread's scheduling class.
+        unsafe { pthread_set_qos_class_self_np(c, 0) == 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = c;
+        false
+    }
+}

@@ -230,6 +230,10 @@ value = "daemon.loadhold.since"
 doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, or the idle marker (ten `i` characters, not a number) when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not. A call fails open on an idle marker only when a beat NEWER than the first idle one it saw is still idle (an idle beat can predate the worker picking the request up); with no newer beat the stale-heartbeat bound applies."
 value = "daemon.heartbeat"
 
+[files.heartbeat_peers]
+doc = "#969: per-request progress beside files.heartbeat: one line per busy worker, the pid of the client whose request it serves and the ms since that worker's last progress on it, rewritten by the watchdog on each daemon.watchdog_tick_ms tick it changed. A client past its deadline judges the worker on ITS request by this (plus the file's age) against client.progress_stale_ms; a client not listed (its request not picked up yet) keeps the daemon-wide figure of files.heartbeat. Before it, one worker silent in a long check failed every waiting client open."
+value = "daemon.heartbeat.peers"
+
 [files.heartbeat_suspect]
 doc = "Client suspicion carried between hook calls: when a stale heartbeat (client.heartbeat_stale_ms) was first seen (monotonic clock), and which heartbeat (modification time and generation). A later call confirms the hang only when that same heartbeat is still unchanged client.heartbeat_confirm_ms later."
 value = "daemon.heartbeat.suspect"
@@ -554,6 +558,22 @@ value = "fds"
 doc = "Detail of the fds state line. {open} descriptors open, {limit} the soft limit, {watch} the descriptors the file watcher holds."
 value = "open={open} limit={limit} watch={watch}"
 
+[daemon.qos]
+doc = "#969: the macOS quality-of-service class of the threads every tool call waits on: the request workers, the accept loop, the watchdog that writes the heartbeat a waiting client reads, and the hook client while it waits. A name from daemon.qos_classes (user-interactive, the shipped default: the daemon is on the critical path of every tool call and lost the CPU at nice 0 among about 1,250 other processes on a machine at load 50-100), or any other word (off) to leave the threads as the system starts them. Set without root (pthread_set_qos_class_self_np); a thread a request thread starts inherits it. No effect on other systems. Read when a thread starts: a change applies at the next daemon start."
+value = "user-interactive"
+
+[daemon.qos_classes]
+doc = "#969: the class names daemon.qos may take, with the value of the system's qos_class_t for each (sys/qos.h). A name not listed means no class (the threads keep the one they were started with)."
+value = { "user-interactive" = 33, "user-initiated" = 25, "default" = 21, "utility" = 17 }
+
+[daemon.qos_refused_msg]
+doc = "#969: logged (kind qos) when the system refuses the class of daemon.qos for a thread. Placeholder: {rc}, the error number."
+value = "the system refused the configured QoS class (error {rc}); the thread keeps its class"
+
+[metric.qos_threads]
+doc = "#969: request threads (workers, the accept loop, the watchdog) that asked for the daemon.qos class at start, by outcome: set, off (no class configured, or not macOS), refused (the system said no; logged as qos)."
+value = { kind = "counter", unit = "threads", labels = ["outcome"] }
+
 [daemon.load_scale_max_permille]
 doc = "#969: the most a loaded machine stretches a guard's wall time, in permille (2000 = twice). Under load a guard check needs more wall time, not a hold: for an event in daemon.load_scale_events the request's hard ceiling (daemon.request_hard_ms or its daemon.request_hard_event_ms row) and the late-reply wait (client.slow_fallback_max_ms or its row; the client and the ah-hook watchdog alike) are multiplied by the 1-minute load average per core, clamped to [1000, this] and rounded down to daemon.load_scale_step_permille; client.deadline_ms (the fail-fast wait) never moves. Scaling both by one factor keeps hard + diagnostics.deadline_grace_cap_ms within slow_fallback - client.slow_wait_margin_ms. Bound: the launcher lowers the factor per call until the whole plan fits the outer bound (daemon.load_scale_env), so no wait outlives the hook: with the shipped numbers PreToolUse and PermissionRequest (3000 ms) grow to at most 2x within their 10 s wrapper cap even on a cold start, and Stop (9000 ms in the same 10 s cap) does not grow at all; a test holds every listed event to it. A wait that still does not fit (Stop's 9000 ms after a cold start) is shortened by the launcher to what is left of the bound less both kill graces and launcher.wall_hard_margin_ms, and the daemon fits a request's factor to the same bound again, so a request that skipped the launcher can not stretch its ceiling either. 1000 (or less) = off. Each request served with a factor above 1000 is counted (deadline_load_scaled)."
 value = 2000
@@ -777,7 +797,7 @@ value = { Stop = 9000, SubagentStop = 9000 }
 unit = "ms"
 
 [client.progress_stale_ms]
-doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress: the age of its longest-silent busy worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress on its request (#969: the worker serving that request, from files.heartbeat_peers; for a request no worker has picked up, the longest-silent busy worker; the bound is multiplied by the launcher's load factor for an event in daemon.load_scale_events, as the late wait is): the age of that worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
 value = 1000
 min = 0
 unit = "ms"
