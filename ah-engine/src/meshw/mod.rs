@@ -57,14 +57,17 @@ pub mod roster;
 pub mod rosterrows;
 pub mod rostertail;
 pub mod send;
+pub mod senders;
 pub mod simple;
 pub mod spawnverb;
+pub mod stages;
 pub mod store;
 mod subdir;
 pub mod summary;
 pub mod tick;
 pub mod tickarm;
 pub mod union;
+pub mod wakepolicy;
 pub mod watcher;
 pub mod wsverbs;
 
@@ -558,9 +561,17 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             return answer.code;
         }
     };
-    let r = std::panic::catch_unwind(|| run_native(&inv, &a));
+    // GH #845 phase 0: a send times its stages (telemetry events plus the shadow-log line)
+    if matches!(verb_of(&a), Some(Verb::Send)) {
+        stages::begin();
+    }
+    let r = std::panic::catch_unwind(|| stages::time("total", || run_native(&inv, &a)));
     let (step, result, reason) = next_step(r, committed());
-    shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}));
+    let mut rec = serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0});
+    if let Some(st) = stages::finish(&verb) {
+        rec[defaults::text("mesh_wake.stage_log_field")] = st;
+    }
+    shadow_log(&rec);
     match step {
         Next::Print(ans) => {
             emit(ans.stdout.as_bytes());

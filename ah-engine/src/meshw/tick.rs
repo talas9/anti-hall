@@ -418,6 +418,50 @@ pub(crate) struct Counted {
     pub unavail: Option<Unavail>,
     /// `meshGroupError`: the mesh group could not be resolved or one of its partitions read.
     pub mesh_error: Option<String>,
+    /// Review P1-4: the explicit acks (`send --ack-only`) among the unread mail, which wake no one while `mesh_chat.ack_suppression`
+    /// is on (0 when it is off).
+    pub ack_unread: usize,
+    /// Review P1-4: the unread broadcasts that wake this workspace and the highest seq of them (`None`: none, or unreadable).
+    pub bc_wake: usize,
+    /// See `bc_wake`.
+    pub bc_wake_seq: Option<i64>,
+}
+
+/// Review P1-4: how many of the unread rows counted as mail are explicit acks from outside the reader's identity family. A row is an
+/// ack by its store seq (`acks`) or, for an NDJSON line, by the hash its store twin carries (`ack_hashes`).
+pub(crate) fn count_acks<'a>(
+    nd_lines: &[String],
+    provenance: bool,
+    rows: impl Iterator<Item = &'a Value>,
+    acks: &std::collections::HashSet<i64>,
+    ack_hashes: &std::collections::HashSet<String>,
+    family: &std::collections::HashSet<String>,
+) -> usize {
+    let outside = |sender: Option<&str>| sender.is_none_or(|x| !family.contains(x));
+    let lines = nd_lines
+        .iter()
+        .filter(|l| !union::is_wake_line(l, provenance))
+        .filter(|l| union::embedded_hash(l).ok().flatten().is_some_and(|h| ack_hashes.contains(&h)))
+        .filter(|l| outside(union::line_sender(l).as_deref()))
+        .count();
+    let stored =
+        rows.filter(|r| r["storeSeq"].as_f64().is_some_and(|q| q.is_finite() && acks.contains(&(q as i64)))).filter(|r| outside(r["sender"].as_str())).count();
+    lines + stored
+}
+
+/// The explicit acks of partitions `pids` (seqs and hashes), read once per tick.
+fn ack_rows(o: &Opened, pids: &[&str]) -> (std::collections::HashSet<i64>, std::collections::HashSet<String>) {
+    let (mut seqs, mut hashes) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let kind = defaults::text("mesh_chat.kind_ack");
+    for pid in pids {
+        for (q, h) in o.reader.rows_of_kind(pid, kind).unwrap_or_default() {
+            seqs.extend(q);
+            if let Some(h) = h {
+                hashes.insert(h);
+            }
+        }
+    }
+    (seqs, hashes)
 }
 
 /// The mesh group's other partitions as a read of `id` sees them (`cmdInbox`'s count widening): the siblings, their unread count,
@@ -640,7 +684,31 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         nd_target: if nd_known { nd_target } else { nd_cursor },
         unavail,
         mesh_error,
+        ack_unread: 0,
+        bc_wake: 0,
+        bc_wake_seq: None,
     })
+}
+
+/// Review P1-4 (contract §7 on Codex): the tick's wake count leaves explicit acks out and adds the broadcasts that wake this
+/// workspace; `unreadTotal` still counts every row, so reading is never hidden. Only `inbox tick` pays for these reads (a store that
+/// does not open leaves them 0).
+fn add_wake(inv: &Inv, id: &str, desc: &OVal, c: &mut Counted) {
+    // after the tick's writes: a read that fails here leaves the wake fields 0, it never fails the tick
+    let Ok(PartitionOpen::Open(o)) = open_partition_ex(inv, id, desc) else { return };
+    if defaults::num("mesh_chat.ack_suppression") == 1 {
+        let pids: Vec<&str> = std::iter::once(id).chain(c.siblings.iter().map(|s| s.id.as_str())).collect();
+        let (acks, ack_hashes) = ack_rows(&o, &pids);
+        if !acks.is_empty() || !ack_hashes.is_empty() {
+            let family = family_of(id, &o.rows);
+            let rows = c.store_rows.iter().chain(c.siblings.iter().flat_map(|s| s.delivered.iter()));
+            c.ack_unread = count_acks(&c.nd_lines, c.provenance, rows, &acks, &ack_hashes, &family).min(c.unread);
+        }
+    }
+    match crate::meshw::read::broadcast_wake(&o.reader, inv, &crate::meshw::read::reader_key(&o.reader, inv, id)) {
+        Ok((p, q)) => (c.bc_wake, c.bc_wake_seq) = (p, q),
+        Err(Defer(why)) => crate::debug::violated("meshw", &defaults::render("mesh_wake.msg_tick_broadcast_unread", &[("id", &id), ("why", &why)])),
+    }
 }
 
 /// `pidIsAlive(pid)` without a start-time check: `Some(false)` only when the process is gone.
@@ -879,6 +947,17 @@ pub(crate) fn count_obj(inv: &Inv, id: &str, c: &Counted, action: &str, resolved
     o
 }
 
+/// Review P1-4: what wakes a polling (Codex) workspace, beside the unread count it reads: `wakeDirect` (the unread mail without the
+/// explicit acks), the summary's broadcast wake fields, and `wake`, their sum. A poll loop acts on `wake`; `unreadTotal` stays the
+/// full count, so nothing is hidden from a read.
+pub(crate) fn put_wake(o: &mut Obj, c: &Counted) {
+    let direct = c.unread.saturating_sub(c.ack_unread);
+    o.put(defaults::text("mesh_wake.tick_field_wake_direct"), n(direct as f64))
+        .put(defaults::text("mesh_wake.summary_field_pending"), n(c.bc_wake as f64))
+        .put(defaults::text("mesh_wake.summary_field_seq"), c.bc_wake_seq.map_or(OVal::Null, |q| n(q as f64)))
+        .put(defaults::text("mesh_wake.tick_field_wake"), n((direct + c.bc_wake) as f64));
+}
+
 /// Add a tick's fields to a result object, in Node's order (`Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed })`).
 pub(crate) fn with_tail(mut o: Obj, tail: &TickTail) -> Obj {
     if let Some(err) = &tail.wal_blocked {
@@ -1056,9 +1135,15 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     tickarm::record_rearm_cue(inv, id, armed);
     // ---- the result: `count`'s (or its refusal) with the tick's fields after it ----
+    let mut counted = counted;
+    if let (Target::Count { id: rid, desc, .. }, Some(c)) = (&target, counted.as_mut()) {
+        add_wake(inv, rid, desc, c);
+    }
     let (code, obj) = match (&target, &counted) {
         (Target::Count { id: rid, resolved_from, redirected_from, .. }, Some(c)) => {
-            (0, count_obj(inv, rid, c, verb, resolved_from.as_deref(), redirected_from.as_deref()))
+            let mut o = count_obj(inv, rid, c, verb, resolved_from.as_deref(), redirected_from.as_deref());
+            put_wake(&mut o, c);
+            (0, o)
         }
         (Target::Refused(r), _) => {
             let mut obj = Obj::default();
@@ -1109,10 +1194,16 @@ fn line_of(result: &OVal, roster: Option<&str>) -> String {
         Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
         _ => defaults::text("mesh_write.js_null").to_string(),
     };
-    let line = defaults::render(
+    let mut line = defaults::render(
         "mesh_write.tick_line",
         &[("id", &id), ("unread", &unread), ("known", &flag("known")), ("gap", &flag("meshGapWithheld")), ("armed", &word)],
     );
+    // review P1-4: the wake count is shown only when it differs from the unread count, so the usual line is unchanged
+    if let (Some(OVal::Num(w)), Some(OVal::Num(u))) = (result.get(defaults::text("mesh_wake.tick_field_wake")), result.get("unreadTotal"))
+        && w != u
+    {
+        line.push_str(&defaults::render("mesh_wake.tick_line_wake", &[("wake", &crate::checks::jsport::num::to_js_string(*w))]));
+    }
     match roster {
         Some(r) if !r.is_empty() => format!("{line}\n{r}"),
         _ => line,
@@ -1125,4 +1216,42 @@ fn rendered_refusal_line(result: &OVal) -> String {
         _ => None,
     });
     defaults::render("mesh_write.tick_refused_line", &[("error", &why.unwrap_or_else(|| defaults::text("mesh_write.tick_failed").to_string()))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Review P1-4: an explicit ack is left out of the tick's wake count by its seq (a store row) or its hash (an NDJSON line);
+    /// the reader's own family's rows (already out of the unread count) are never subtracted again.
+    #[test]
+    fn explicit_acks_are_counted_by_seq_and_by_hash() {
+        let line = |h: &str, from: &str| {
+            OVal::Obj(vec![(defaults::text("mesh_write.ndjson_hash_field").into(), s(h)), (defaults::text("mesh_write.ndjson_sender_field").into(), s(from))])
+                .stringify()
+        };
+        let lines = vec![line("h-ack", "w-b"), line("h-mail", "w-b"), line("h-own", "w-a")];
+        let rows = [serde_json::json!({"storeSeq": 7, "sender": "w-b"}), serde_json::json!({"storeSeq": 8, "sender": "w-b"})];
+        let acks: HashSet<i64> = [7, 9].into_iter().collect();
+        let hashes: HashSet<String> = ["h-ack".to_string(), "h-own".to_string()].into_iter().collect();
+        let family: HashSet<String> = ["w-a".to_string()].into_iter().collect();
+        assert_eq!(count_acks(&lines, false, rows.iter(), &acks, &hashes, &family), 2, "one line by hash, one row by seq");
+    }
+
+    /// Review P1-4: the quiet line names the wake count only when it differs from the unread count.
+    #[test]
+    fn the_quiet_line_shows_the_wake_count_when_it_differs() {
+        let result = |unread: f64, wake: f64| {
+            OVal::Obj(vec![
+                ("ok".into(), OVal::Bool(true)),
+                ("id".into(), s("w-a")),
+                ("unreadTotal".into(), n(unread)),
+                (defaults::text("mesh_wake.tick_field_wake").into(), n(wake)),
+            ])
+        };
+        assert!(!line_of(&result(2.0, 2.0), None).contains(defaults::text("mesh_wake.tick_field_wake")));
+        let woken = line_of(&result(0.0, 1.0), None);
+        assert!(woken.ends_with(&defaults::render("mesh_wake.tick_line_wake", &[("wake", &"1")])), "{woken}");
+    }
 }

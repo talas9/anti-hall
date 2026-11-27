@@ -1461,7 +1461,8 @@ mod tests {
     fn a_native_wake_task_is_counted_as_a_wake_prompt_and_other_mail_is_not() {
         let wake = defaults::text("agent_tracker.wake_prefix");
         let primary = format!("{}aaaa1111", defaults::text("mesh_write.primary_prefix"));
-        let msg = |text: &str| OVal::parse(&serde_json::json!({"fromBranch": "main", "kind": "task", "status": "unread", "message": text}).to_string()).unwrap();
+        let msg =
+            |text: &str| OVal::parse(&serde_json::json!({"fromBranch": "main", "kind": "task", "status": "unread", "message": text}).to_string()).unwrap();
         let registry: Vec<(String, String)> = Vec::new();
         let wake_msg = msg(&format!("{wake} a mesh message is waiting for workspace w1."));
         assert!(is_wake_message(&wake_msg, &[], Some(&primary), true), "the Primary's wake task");

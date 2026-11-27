@@ -410,7 +410,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return run_multi(inv, a, &recipients);
     }
     let a = &norm;
-    let heal = common::self_heal(inv)?;
+    let heal = crate::meshw::stages::time("heal", || common::self_heal(inv))?;
     let to = a.one(to_key);
     if !a.has(defaults::text("mesh_write.flag_cc_primary")) {
         let mut out = finish_send(inv, defaults::text("mesh_write.action_send"), to, cmd_send_mode(inv, a, false)?, &heal)?;
@@ -473,7 +473,12 @@ fn wake_target(inv: &Inv, out: &mut Obj) {
         return;
     }
     let Some(OVal::Str(to)) = out.0.iter().find(|(k, _)| k == "toId").map(|(_, v)| v.clone()) else { return };
-    if let Some(w) = crate::agents::native_wake::wake(&inv.home, &to, "", &inv.env, Some(&inv.cwd))
+    // GH #845: an ack-only message never wakes its recipient
+    if LAST_ACK.take() {
+        crate::metrics::bump_shared("mesh_wake_suppressed", &[("reason", defaults::text("mesh_wake.suppressed_ack"))]);
+        return;
+    }
+    if let Some(w) = crate::meshw::stages::time("wake", || crate::agents::native_wake::wake(&inv.home, &to, "", &inv.env, Some(&inv.cwd)))
         && let Some(v) = OVal::parse(&w.to_string())
     {
         out.put("nativeWake", v);
@@ -540,7 +545,7 @@ fn run_multi(inv: &Inv, a: &Args, recipients: &[String]) -> R<Answer> {
         per.flags.remove(defaults::text("mesh_write.flag_message_file"));
         per.flags.insert(defaults::text("mesh_write.flag_message_stdin").to_string(), vec![crate::meshw::args::FlagVal::True]);
     }
-    let heal = common::self_heal(inv)?;
+    let heal = crate::meshw::stages::time("heal", || common::self_heal(inv))?;
     let mut args_for: Vec<Args> = Vec::new();
     for to in recipients {
         let mut x = per.clone();
@@ -713,13 +718,24 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         ]));
     };
     // registrySnapshot opens the store as a writer; the engine opens it once, below, and refuses what Node would create
-    let st = common::open_store(inv, &repo_key)?;
+    let st = crate::meshw::stages::time("open", || common::open_store(inv, &repo_key))?;
+    let t_ident = std::time::Instant::now();
     let rows = ident::rows_of(&st.reader().roster().or_else(|e| ident::unavailable("mesh_write.what_registry", &e))?);
     let from_d = ident::sender_identity_detailed(&inv.env, &cwd, &rows, home)?;
-    let from = from_d.identity.clone();
+    crate::meshw::stages::since("ident", t_ident);
+    let t_resolve = std::time::Instant::now();
+    // GH #845 (owner 2026-11-28): a declared sender (`--as admin`, or the `mesh_identity.sender_env` variable) sends as itself, never
+    // as the workspace it runs in (the owner is never stamped as the Primary)
+    // (operator use only: an agent caller is refused, and ah-engine is never selectable from the CLI)
+    let declared = match crate::meshw::senders::cli_declared(&inv.env, a) {
+        Ok(d) => d,
+        Err(msg) => return Ok(refused(&[("error", s(&msg))])),
+    };
+    let from = declared.map_or_else(|| from_d.identity.clone(), |d| d.id.to_string());
+    let id_kind: &str = declared.map_or(from_d.kind.as_str(), |d| d.kind);
     if let Some(ff) = a.one(defaults::text("mesh_write.flag_from"))
         && ff != from
-        && Some(ff) != from_d.mesh_id.as_deref()
+        && (declared.is_some() || Some(ff) != from_d.mesh_id.as_deref())
     {
         let msg = defaults::render("devswarm_cli.msg_send_from_mismatch", &[("from_flag", &quote(ff)), ("from", &quote(&from))]);
         return Ok(refused(&[("error", s(&msg))]));
@@ -742,8 +758,19 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     let question = a.has(defaults::text("mesh_write.flag_question"));
     let answers = a.has(defaults::text("mesh_write.flag_answers"));
-    if broadcast && question {
+    // GH #845: a broadcast question (mesh_wake.allow_broadcast_question, on by default) is stored with needs_reply; its audience
+    // is resolved below
+    if broadcast && question && defaults::num("mesh_wake.allow_broadcast_question") == 0 {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_question_broadcast")))]));
+    }
+    // GH #845 (contract §7): an explicit ack needs nothing back, so it never combines with a question or an answer
+    let ack_only = a.has(defaults::text("mesh_chat.flag_ack_only"));
+    if ack_only && (question || answers) {
+        return Ok(refused(&[("error", s(defaults::text("mesh_chat.msg_ack_only_conflict")))]));
+    }
+    // review P2-16: an ack answers one sender, so it is a direct message only
+    if ack_only && broadcast {
+        return Ok(refused(&[("error", s(defaults::text("mesh_chat.msg_ack_only_broadcast")))]));
     }
     if broadcast && answers {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_answers_broadcast")))]));
@@ -797,7 +824,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     if !broadcast {
         let self_target = if to_primary { primary_mesh.clone() } else { to_flag.map(str::to_string) };
-        if self_target.as_deref() == Some(from.as_str()) || (from_d.mesh_id.is_some() && self_target == from_d.mesh_id) {
+        if self_target.as_deref() == Some(from.as_str()) || (declared.is_none() && from_d.mesh_id.is_some() && self_target == from_d.mesh_id) {
             let suffix = if to_primary { defaults::text("devswarm_cli.send_self_primary_suffix") } else { "" };
             return Ok(refused(&[("error", s(&defaults::render("devswarm_cli.msg_send_self", &[("suffix", &suffix)])))]));
         }
@@ -870,8 +897,31 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     };
     let partition = target.as_ref().map(|t| t.id.clone());
     let no_reader = !broadcast && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
+    crate::meshw::stages::since("resolve", t_resolve);
     // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
     crate::meshw::summary::check(&st, inv, partition.as_deref())?;
+    // GH #845 (contract §2): a broadcast's audience is resolved once, now, against the roster; a question whose mention matches
+    // several workspaces is refused (in the plan pass too, before anything is written)
+    let audience = if broadcast {
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        let b = crate::meshw::wakepolicy::Bc {
+            sender: Some(&from),
+            urgency: Some(&urgency),
+            question,
+            heartbeat: false,
+            body: &message,
+            kind: declared.map(|d| d.kind),
+        };
+        match crate::meshw::wakepolicy::resolve(&b, &ids) {
+            Ok(a) => Some(crate::meshw::wakepolicy::encode(&a)),
+            Err(e) => {
+                let msg = defaults::render("mesh_wake.msg_ambiguous_mention", &[("token", &e.token), ("ids", &e.ids.join(", "))]);
+                return Ok(refused(&[("reason", s(defaults::text("mesh_wake.reason_ambiguous_mention"))), ("error", s(&msg))]));
+            }
+        }
+    } else {
+        None
+    };
     if plan {
         let mut o = Obj::default();
         o.put("ok", OVal::Bool(true));
@@ -879,7 +929,9 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     // ---- commit: everything below writes ----
     // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so; only once the target is validated (#767)
-    common::ensure_alias(inv, &from_d, &cwd);
+    if declared.is_none() {
+        common::ensure_alias(inv, &from_d, &cwd);
+    }
     let to_out: Option<String> = if broadcast {
         None
     } else if to_primary {
@@ -891,7 +943,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         inv,
         st: &st,
         from: &from,
-        kind: &from_d.kind,
+        kind: id_kind,
         to_out: to_out.as_deref(),
         partition: partition.as_deref(),
         broadcast,
@@ -907,14 +959,19 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         rehomed,
         repo_key: &repo_key,
         cwd: &cwd,
+        ack_only,
+        audience,
+        sender_kind: crate::meshw::senders::stored_kind(declared),
     };
     if broadcast {
         return do_append(&ctx);
     }
     let pid = partition.clone().unwrap_or_default();
     let attempts = defaults::num("mesh_write.send_lock_attempts").max(1);
+    let t_lock = std::time::Instant::now();
     for attempt in 0..attempts {
         if let Some(lock) = crate::meshw::idlock::acquire(&inv.write_home, &pid) {
+            crate::meshw::stages::since("lock", t_lock);
             let still = st.reader().roster().map(|r| ident::rows_of(&r).iter().any(|x| x.id == pid)).unwrap_or(false);
             let r = if still {
                 do_append(&ctx)
@@ -940,6 +997,11 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         .put("error", s(&defaults::render("devswarm_cli.msg_lock_busy", &[("id", &quote(&pid))])))
         .put(keys[2], n(attempts as f64));
     Ok(o)
+}
+
+thread_local! {
+    /// The last append on this thread stored an ack-only message (GH #845): the wake that follows it is skipped.
+    static LAST_ACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Set by a plan pass that re-homed the Primary, taken by the real pass that reports it (`rehomedFromHashBucket`): a send with
@@ -1021,6 +1083,12 @@ struct AppendCtx<'a> {
     rehomed: bool,
     repo_key: &'a str,
     cwd: &'a str,
+    /// `--ack-only` (GH #845): stored as `chat_kind = ack`.
+    ack_only: bool,
+    /// A broadcast's resolved audience, as its `wake_audience` text (GH #845); `None` for a direct.
+    audience: Option<String>,
+    /// The `sender_kind` the row stores (GH #845 identities).
+    sender_kind: &'static str,
 }
 
 /// `doAppend()`: append, read it back, build the result, write the receipt. A failed INSERT wrote nothing (SQLite
@@ -1032,15 +1100,24 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     let hash = store::mesh_message_hash(Some(c.from), to_field, mtype, c.urgency, c.message, &ts, c.question);
     let nonce = ident::reader_nonce(&c.inv.home);
     let row = store::mesh_message_row(Some(c.from), to_field, c.broadcast, c.message, c.now, c.urgency, &hash, c.question, nonce.as_deref());
-    let (inserted, seq) = match c.st.append_mesh_row(&row) {
+    LAST_ACK.set(false);
+    // GH #845 (contract §1): the explicit ack kind and the broadcast's audience are written in the INSERT's transaction
+    let kind = c.ack_only.then(|| defaults::text("mesh_chat.kind_ack"));
+    let (inserted, seq) = match crate::meshw::stages::time("insert", || c.st.append_mesh_row_with(&row, kind, c.audience.as_deref(), Some(c.sender_kind))) {
         Ok(r) => (r.inserted, r.seq),
         Err(e) => return ident::unavailable("mesh_write.what_append", &e),
     };
     crate::meshw::mark_committed();
+    if inserted && c.ack_only {
+        crate::metrics::bump_shared("mesh_chat_ack", &[]);
+        // the native wake that follows is skipped only while suppression is on (contract §7)
+        LAST_ACK.set(defaults::num("mesh_chat.ack_suppression") == 1);
+    }
     // deriveSummary(s, {home, env, now}), in the same call as the append (the wake watcher reads it)
-    if let Some(why) = crate::meshw::summary::derive_after_write(c.st, c.inv, c.repo_key) {
+    if let Some(why) = crate::meshw::stages::time("summary", || crate::meshw::summary::derive_after_write(c.st, c.inv, c.repo_key)) {
         crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_send"), &why);
     }
+    let t_readback = std::time::Instant::now();
     let verify_partition = if c.broadcast { defaults::text("mesh_write.broadcast_partition").to_string() } else { c.partition.unwrap_or_default().to_string() };
     let mut verified = false;
     let mut verify_error: Option<String> = None;
@@ -1060,6 +1137,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
             Err(e) => verify_error = Some(e.to_string()),
         }
     }
+    crate::meshw::stages::since("readback", t_readback);
     let ok = verified || verify_error.is_some();
     let bytes = c.message.len() as f64;
     let mut out = Obj::default();
@@ -1109,6 +1187,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
         ("cwd".into(), s(c.cwd)),
     ])
     .done();
+    let t_receipt = std::time::Instant::now();
     common::write_send_receipt(&c.inv.write_home, c.now, &hash, &receipt);
     // LABEL AT ARRIVAL: a freshly inserted un-flagged direct message is queued for Jev triage (see `jev_enqueue_arrival`)
     if inserted && !c.broadcast && !c.question && common::jev_maybe_enabled(c.inv) {
@@ -1118,6 +1197,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     if inserted {
         common::note_sender_activity(c.inv, c.from, c.message, c.now as f64);
     }
+    crate::meshw::stages::since("receipt", t_receipt);
     if let Some(e) = verify_error {
         out.put("verifyError", s(&e));
     }

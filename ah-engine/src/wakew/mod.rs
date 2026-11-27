@@ -54,12 +54,12 @@ fn text(key: &str) -> &'static str {
     defaults::text(key)
 }
 
-/// A line on stdout, the watcher's event channel. A closed pipe is not an error here: the loop keeps going.
-fn emit(line: &str) {
+/// A line on stdout, the watcher's event channel. A closed pipe is not an error here: the loop keeps going. Answers whether the
+/// line was written, so a wake that never reached the workspace does not move its watermark (review P1-2).
+fn emit(line: &str) -> bool {
     let mut out = std::io::stdout().lock();
     let line = if line.ends_with('\n') { line.to_string() } else { format!("{line}\n") };
-    crate::discard::harmless(out.write_all(line.as_bytes())); // keep: Node swallows an output error too, "never let it kill the loop"
-    crate::discard::harmless(out.flush()); // keep: same
+    out.write_all(line.as_bytes()).and_then(|()| out.flush()).is_ok()
 }
 
 /// One line printed by the DevSwarm half of the merged watcher, counted by source (`merged_watch_rows`).
@@ -326,7 +326,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         own_version,
         start_ppid,
         poll,
-        saved: (state.last_total, state.last_total2, state.last_broadcast),
+        saved: saved_key(&state),
         notified_update: None,
         archived_checked: None,
         own_archived: false,
@@ -374,7 +374,7 @@ struct Run<'a> {
     start_ppid: i32,
     poll: Duration,
     /// The cursors as last written, so an idle watcher writes nothing.
-    saved: (f64, f64, f64),
+    saved: (f64, f64, f64, f64),
     notified_update: Option<String>,
     archived_checked: Option<Instant>,
     own_archived: bool,
@@ -484,11 +484,11 @@ impl Run<'_> {
         snap.now_ms = now_ms();
         snap.coalesce_ms = self.coalesce;
         let snap = read::attach_broadcast(snap, &p.home, a.hashes.as_ref(), &a.id.id);
-        let (state, lines, arming) = {
+        let (before, (state, lines), arming) = {
             let s = locked(self.cell);
-            let (st, lines) = edge::tick(&s.state, &snap);
-            (st, lines, !s.state.armed)
+            (s.state.clone(), edge::tick(&s.state, &snap), !s.state.armed)
         };
+        let mut printed = true;
         for (i, l) in lines.iter().enumerate() {
             // #968: a successor of a binary replace re-arms silently (its arm line is the first line of its first tick)
             if self.quiet_arm && arming && i == 0 {
@@ -496,16 +496,21 @@ impl Run<'_> {
                 crate::metrics::bump_by_shared("wake_watch_rebin", &[("line", "arm_quiet")], 1);
                 continue;
             }
-            emit(l);
+            printed &= emit(l);
             count_row();
         }
+        let state = edge::undo_unprinted(&before, state, printed);
         if state.held > 0 {
             crate::metrics::bump_by_shared("wake_watch_coalesced", &[("role", a.id.role())], u64::from(state.held));
         }
-        let changed = (state.last_total, state.last_total2, state.last_broadcast) != self.saved;
+        // GH #845 baseline: the woken turns per channel
+        for (key, by) in [("mesh_wake.channel_mail", state.woke_mail), ("mesh_wake.channel_broadcast", state.woke_broadcast)] {
+            crate::metrics::bump_by_shared("mesh_wake_lines", &[("channel", defaults::text(key)), ("role", a.id.role())], u64::from(by));
+        }
+        let changed = saved_key(&state) != self.saved;
         locked(self.cell).state = state.clone();
         if changed && read::save_seen(&p.home, &a.id.id, &state, a.id.primary) {
-            self.saved = (state.last_total, state.last_total2, state.last_broadcast);
+            self.saved = saved_key(&state);
         }
         Flow::Next
     }
@@ -623,3 +628,9 @@ pub fn run(rest: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests;
+
+/// The state whose change makes the cursor file worth rewriting: the three counters and the GH #845 broadcast watermark (`-1` while it is
+/// still unknown, so learning it is a change).
+fn saved_key(st: &edge::State) -> (f64, f64, f64, f64) {
+    (st.last_total, st.last_total2, st.last_broadcast, if st.bc_seq_missing { -1.0 } else { st.last_bc_seq })
+}

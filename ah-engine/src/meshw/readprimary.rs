@@ -125,6 +125,8 @@ fn store_msg(r: &Value, origin: bool) -> Msg {
     ] {
         o.put(k, jv(&r[src]));
     }
+    // GH #845: a declared sender (admin, ah-engine) is shown with its kind and rank
+    crate::meshw::senders::put_from(&mut o, r);
     Msg {
         sort_ts: r["ts"].as_f64().filter(|t| t.is_finite()).unwrap_or(f64::INFINITY),
         index: r["index"].as_f64(),
@@ -2000,6 +2002,24 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
             receipt_error: None,
             legacy: false,
         });
+    }
+    // GH #845 (contract §6): an acking read lists the reader's unread broadcasts and files a `bc` op that acks exactly through the
+    // last one listed, with the direct mail. A text rendering does not show them, so it lists and acks none.
+    if !hist
+        && !(format_text && !json_flag)
+        && !o.repo_key.is_empty()
+        && let Ok(bst) = common::open_store(inv, &o.repo_key)
+    {
+        // review P2-8: a broadcast read that fails never fails the direct-mail drain: none listed, none acked, the reason noted
+        // re-review N-5: the cursor key is the registry id the summary reads
+        let key = crate::meshw::read::reader_key(bst.reader(), inv, id);
+        if let Some(mut u) = crate::meshw::read::unread_broadcasts_or_note(bst.reader(), inv, &key, &mut out) {
+            crate::meshw::read::preview_unaddressed(&mut u);
+            if let Some(op) = crate::meshw::read::broadcast_op(&key, &u) {
+                ops.push(op);
+            }
+            crate::meshw::read::put_broadcasts(&mut out, &u, false);
+        }
     }
     if legacy {
         // `read-primary --legacy-ack-now`: the old same-call read-and-ack. The ops are applied here instead of filed, and the

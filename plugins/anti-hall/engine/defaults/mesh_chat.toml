@@ -1,0 +1,32 @@
+# ah-engine shipped defaults for mesh chat kinds (GH #845 phase 1, contract MESH-P1-CONTRACT.md §7). Format: see the header of
+# engine.toml.
+#
+# An explicit ack (`mesh send --to X --ack-only --message "here"`) is stored with `chat_kind = ack`. While
+# mesh_chat.ack_suppression is on it wakes no one and is left out of every wake count; off, it is ordinary mail. Nothing is
+# classified from the body: a short reply that is not flagged stays wake-eligible.
+
+[mesh_chat.kind_ack]
+doc = "The chat_kind stored on an explicit ack."
+value = "ack"
+
+[mesh_chat.flag_ack_only]
+doc = "The `mesh send` flag that marks a message as an explicit ack (refused with --question or --answers)."
+value = "ack-only"
+
+[mesh_chat.msg_ack_only_conflict]
+doc = "The refusal text of --ack-only combined with --question or --answers."
+value = "--ack-only marks a message that needs nothing back; it does not combine with --question or --answers."
+
+[mesh_chat.msg_ack_only_broadcast]
+doc = "The refusal text of --ack-only combined with --broadcast (an ack answers one sender: send it with --to)."
+value = "--ack-only answers one sender; send it with --to <id>, not --broadcast."
+
+[mesh_chat.ack_suppression]
+doc = "1 = an explicit ack wakes no one (left out of the direct wake count, inbox tick's wake count and the native wake); 0 = it is ordinary mail."
+value = 1
+min = 0
+max = 1
+
+[metric.mesh_chat_ack]
+doc = "Sends stored as an explicit ack (chat_kind = ack)."
+value = { kind = "counter", unit = "messages", labels = [] }

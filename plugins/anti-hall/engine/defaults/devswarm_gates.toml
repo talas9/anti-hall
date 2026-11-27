@@ -297,7 +297,7 @@ value = "Heartbeat: before you stop, emit a heartbeat / self-report to your pare
 
 [devswarm_gates.cg_inbox_pending]
 doc = "The inbound line for known unread parent mail: {cli}, {id}."
-value = "Inbox: you have unpulled/unread parent message(s): run `{cli} inbox pull {id}` (or `inbox read` if already pulled), then `inbox ack` once addressed — BEFORE you stop. "
+value = "Inbox: you have unpulled/unread parent message(s): run `{cli} inbox pull {id}` (or `inbox read` if already pulled), then `inbox ack {id} --through <the ackThrough that read printed>` once addressed — BEFORE you stop. "
 
 [devswarm_gates.cg_inbox_native_only]
 doc = "The one-time inbound line when only the native probe is unknown and the report is satisfied: {cli}, {id}."

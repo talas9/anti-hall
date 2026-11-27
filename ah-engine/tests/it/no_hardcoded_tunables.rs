@@ -33,6 +33,16 @@ use std::path::{Path, PathBuf};
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
     (
+        "src/meshw/stages.rs",
+        "static STAGES",
+        "the thread-local record of one mesh send's stage times (GH #845), off (None) until the CLI front arms it: an initial empty state, not a tunable",
+    ),
+    (
+        "src/meshw/send.rs",
+        "static LAST_ACK",
+        "a thread-local flag that the append just stored an explicit ack, so the native wake after it is skipped (GH #845): an initial false, not a tunable",
+    ),
+    (
         "src/loadscale.rs",
         "static TEST_LOAD",
         "the test-only stand-in for the load average (cfg(test), none = no load) so a loaded test machine moves no deadline: test state, not a tunable",

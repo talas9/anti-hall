@@ -652,6 +652,19 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
             AckOp::Nd(o) => apply_nd(inv, &st, id, reader.as_deref(), nonce.clone(), &repo_key, o, verb, &mut procs, &mut failures),
         }
     }
+    // GH #845 (contract §6): the `bc` ops move the reader's own broadcast cursor through the delivered boundary, before the summary
+    // is derived so the broadcast wake state follows
+    let mut bc_cursor: Option<i64> = None;
+    let key = crate::meshw::read::reader_key(st.reader(), inv, id);
+    for (who, target) in broadcast_ops(&rec) {
+        if who != id && who != key {
+            continue; // only the reader's own cursor: a receipt never moves another workspace's broadcasts
+        }
+        match crate::meshw::read::ack_broadcasts(&st, &key, target) {
+            Ok(moved) => bc_cursor = moved.or(bc_cursor),
+            Err(ident::Defer(reason)) => failures.push(failure(&who, defaults::text("mesh_wake.channel_broadcast_cursor"), &reason)),
+        }
+    }
     if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
         crate::meshw::log_summary_failure(verb, &why);
     }
@@ -685,7 +698,23 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
     if !failures.is_empty() {
         out.put("cursorWriteFailures", OVal::Arr(failures)).put("cursorPersisted", OVal::Bool(false));
     }
+    if let Some(c) = bc_cursor {
+        out.put(defaults::text("mesh_wake.key_broadcast_cursor"), n(c as f64));
+    }
     out
+}
+
+/// GH #845 (contract §6): the `bc` ops of a receipt, as (reader, target seq). An op of another shape is skipped (an old reader skips
+/// the whole kind the same way, which leaves the broadcasts unread: never acked unseen).
+fn broadcast_ops(rec: &OVal) -> Vec<(String, i64)> {
+    let Some(OVal::Arr(ops)) = rec.get("ops") else { return Vec::new() };
+    ops.iter()
+        .filter(|op| matches!(op.get("k"), Some(OVal::Str(k)) if k == defaults::text("mesh_write.op_broadcast")))
+        .filter_map(|op| match (op.get("reader"), op.get("target")) {
+            (Some(OVal::Str(r)), Some(OVal::Num(t))) if t.is_finite() && *t >= 0.0 && is_safe_id(r) => Some((r.clone(), *t as i64)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One `cursorWriteFailures` entry.
