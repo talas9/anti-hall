@@ -6769,3 +6769,72 @@ fn n972_idle_open_task_never_fires_on_a_primary_row() {
     a.ws.as_mut().unwrap().primary = false;
     assert!(signals::idle_open_task_for_tests(&a, &st, n).is_some(), "the true positive: an idle child workspace with its task open");
 }
+
+// ---- #972 class 2 / #961: a hold the session answered (wrote the task after a reminder named it) is confirmed -----------------
+
+fn confirm_ms() -> u64 {
+    defaults::raw("nudges.hold").get("confirm_ms").and_then(V::as_integer).unwrap() as u64
+}
+
+/// Write a task file whose mtime is the simulated clock `at` (the tracker compares it with the tick time of the reminder).
+fn task_file_at(h: &Path, sid: &str, t: Value, at: u64) {
+    task_file(h, sid, t.clone());
+    let sid8: String = sid.chars().take(8).collect();
+    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{}.json", t["id"].as_str().unwrap()));
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+}
+
+fn n972_hold_rows(h: &Path) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+}
+
+#[test]
+fn n972_a_hold_saved_again_after_its_reminder_is_confirmed_and_silent_for_confirm_ms() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972-confirm");
+    let (max, conf) = (hold_max(), confirm_ms());
+    let task = json!({"id": "28", "subject": "Task 28", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}});
+    task_file_at(&h, SID, task.clone(), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1, "the true positive: an expired hold is reminded");
+    // the session answers: the same reason saved again, minutes after the reminder (the 2FA "refreshed minutes earlier" case)
+    task_file_at(&h, SID, task.clone(), n + max + 5 * MIN);
+    let mut at = n + max + 6 * MIN;
+    while at < n + max + conf {
+        ticks(&h, &mut st, &[at]);
+        at += 31 * MIN;
+    }
+    assert_eq!(n972_hold_rows(&h).len(), 1, "confirmed: silent for confirm_ms, not every cooldown {:?}", n972_hold_rows(&h));
+    // bounded: past confirm_ms it speaks again
+    ticks(&h, &mut st, &[n + max + 6 * MIN + conf + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 2, "the confirmation runs out");
+}
+
+#[test]
+fn n972_an_unanswered_hold_keeps_its_cooldown_and_a_new_reason_runs_the_plain_clock() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972-unanswered");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "69", "subject": "Task 69", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file_at(&h, SID, task("waiting on the CI run"), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 2, "no answer: reminded again after the cooldown");
+    // answered with a new reason: confirmed, tied to that reason
+    task_file_at(&h, SID, task("CI green, waiting on the reviewer"), n + max + 40 * MIN);
+    ticks(&h, &mut st, &[n + max + 41 * MIN]);
+    let k = agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()).expect("confirmed");
+    // a later reason no reminder named is a fresh hold on the plain clock, not covered by the old confirmation
+    task_file_at(&h, SID, task("reviewer replied, waiting on the deploy window"), n + max + 50 * MIN);
+    ticks(&h, &mut st, &[n + max + 51 * MIN]);
+    let before = n972_hold_rows(&h).len();
+    ticks(&h, &mut st, &[n + max + 51 * MIN + max + MIN]);
+    assert_eq!(agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()), Some(k), "the confirmation stays tied to the reason it confirmed");
+    assert_eq!(n972_hold_rows(&h).len(), before + 1, "the new reason expired on the plain clock and was reminded");
+}
