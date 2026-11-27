@@ -136,6 +136,13 @@ pub fn build_version() -> &'static str {
     BUILD_VERSION.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+/// The engine's release version without the build suffix (`0.3.30` of `0.3.30+branch.sha`): the one accessor for code that stamps or
+/// compares the engine version (defaults cache, burst profile), so no module but this one reads `CARGO_PKG_VERSION` itself.
+pub fn crate_version() -> &'static str {
+    let v = build_version();
+    v.split('+').next().unwrap_or(v)
+}
+
 /// Numeric dotted-version compare ("0.10.0" > "0.9.0"); non-numeric parts count as 0, a pre-release
 /// suffix ("1.0.0-rc1") is ignored.
 pub fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
