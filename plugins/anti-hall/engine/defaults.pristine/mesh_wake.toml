@@ -205,3 +205,32 @@ value = { kind = "counter", unit = "reads", labels = [] }
 doc = "read-primary lists a broadcast that does not address the reader as a preview of at most this many characters (`preview: true`); an addressed one is listed in full. `inbox read` lists every body in full."
 value = 160
 
+# ---- review: the direct-mail ack race (`inbox read` -> `inbox ack --through`) ----------------------------------------------------
+
+[mesh_wake.flag_ack_through]
+doc = "`inbox ack --through <ackThrough>`: hold every cursor to the boundary the `inbox read` delivered, so mail that arrived after it stays unread. Without it the ack moves through everything unread at ack time (the old behavior)."
+value = "through"
+
+[mesh_wake.key_ack_through]
+doc = "`inbox read` result key: the boundary the read delivered, as the token `inbox ack --through` takes."
+value = "ackThrough"
+
+[mesh_wake.ack_through_sep]
+doc = "Separator between the parts of an `ackThrough` token."
+value = ","
+
+[mesh_wake.ack_through_kv]
+doc = "Separator between a part's key and its position in an `ackThrough` token (the last one in the part)."
+value = ":"
+
+[mesh_wake.ack_through_nd]
+doc = "`ackThrough` key of the NDJSON inbox position."
+value = "nd"
+
+[mesh_wake.ack_through_store]
+doc = "`ackThrough` key of the workspace's own store position (each mesh-group sibling is keyed by its id)."
+value = "store"
+
+[mesh_wake.msg_ack_through_invalid]
+doc = "The refusal text of `inbox ack --through` with a token that is not `<key>:<number>` parts."
+value = "--through takes the ackThrough value that `inbox read` printed."

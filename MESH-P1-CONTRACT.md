@@ -125,6 +125,8 @@ The drain result keys are:
 
 Each listed row: `{from, message, kind:"broadcast", timestamp, urgency, seq, needsReply, addressed}`. `addressed` is the §3 verdict with `addressed_mode = on`.
 
+Direct mail (review, the direct-mail ack race): `inbox read` prints `ackThrough` (`mesh_wake.key_ack_through`), a token `nd:<pos>,store:<pos>[,<sibling id>:<pos>]` naming exactly what it delivered. `inbox ack <id> --through <token>` (`mesh_wake.flag_ack_through`) holds each cursor to that boundary (a cursor the token does not name stays put); without `--through` the ack takes everything unread at ack time, as before. The `ackHint` names the `--through` form.
+
 The cap (review P1-1): a drain lists the oldest `mesh_wake.inbox_broadcast_cap` unread rows, then, past the cap, only the rows that wake the reader, up to `mesh_wake.inbox_broadcast_eligible_cap`. The ack target is the last row before the first one held back, so a row listed past a gap stays unread and is listed again. `mesh read` / `roster --ack` ack through the last row they listed, never the live head (review P1-3).
 
 ## 7. Explicit ack-only (LAST; switch off)

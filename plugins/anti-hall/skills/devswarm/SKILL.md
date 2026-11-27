@@ -609,7 +609,7 @@ wake fires on a per-reader watermark (`broadcastWakeSeq`), so mail arriving whil
 `--question` is allowed (`mesh_wake.allow_broadcast_question`); a question whose mention matches several workspaces is
 refused. `send --ack-only` marks an explicit ack (it wakes no one; `mesh_chat.ack_suppression`). The drain verbs
 list broadcasts, oldest first: `inbox read <id>` shows `broadcasts` (each with `addressed`) and `broadcastAckTarget`; ack them
-with `inbox ack <id> --broadcast-to <broadcastAckTarget>` (never further). `read-primary` lists them and its receipt acks exactly
+with `inbox ack <id> --broadcast-to <broadcastAckTarget>` (never further). `inbox read` also prints `ackThrough`: pass it as `inbox ack <id> --through <ackThrough>` so direct mail that arrives after the read stays unread (without it the ack takes everything unread at ack time). `read-primary` lists them and its receipt acks exactly
 those (`broadcastCursor` in the ack result). No sqlite3 needed. Rules: `engine/defaults/mesh_wake.toml`, `mesh_chat.toml`.
 
 ### Addressing & identity — a plain how-to for BOTH roles

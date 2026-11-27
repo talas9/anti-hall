@@ -294,3 +294,52 @@ fn an_ack_only_broadcast_is_refused() {
     assert_ne!(r.code, 0, "{}", r.stdout);
     assert!(r.stdout.contains(defaults::text("mesh_chat.msg_ack_only_broadcast")), "{}", r.stdout);
 }
+
+/// GH #845 review (the direct-mail ack race): mail that lands between `inbox read` and `inbox ack --through <ackThrough>` stays
+/// unread; the ack moves only through what the read delivered.
+#[test]
+fn mail_arriving_between_read_and_ack_through_stays_unread() {
+    let f = fx("ackthrough");
+    let (primary, _) = registry(&f, &["child-1"]);
+    let inbox = f.inv.home.join("child-1.ndjson");
+    let cursor = f.inv.home.join("child-1.cursor");
+    std::fs::write(&inbox, "").unwrap();
+    std::fs::write(&cursor, "0").unwrap();
+    let dir = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+    let q = |p: &std::path::Path| crate::checks::guardkit::ojson::OVal::Str(p.to_string_lossy().into_owned()).stringify();
+    std::fs::write(
+        dir.join("child-1.json"),
+        format!(
+            r#"{{"id":"child-1","worktreePath":{},"inboxPath":{},"cursorPath":{}}}"#,
+            crate::checks::guardkit::ojson::OVal::Str(f.sub.clone()).stringify(),
+            q(&inbox),
+            q(&cursor)
+        ),
+    )
+    .unwrap();
+    let sent = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "first"])).unwrap();
+    assert_eq!(sent.code, 0, "send: {}", sent.stdout);
+    let read = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(read.contains("first"), "{read}");
+    let key = format!("\"{}\":\"", defaults::text("mesh_wake.key_ack_through"));
+    let through = read.split(&key).nth(1).and_then(|r| r.split('"').next()).unwrap_or_else(|| panic!("no ackThrough: {read}")).to_string();
+    let late = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "late"])).unwrap();
+    assert_eq!(late.code, 0, "send: {}", late.stdout);
+    let flag = format!("--{}", defaults::text("mesh_wake.flag_ack_through"));
+    let ack = crate::meshw::inboxcmd::run_ack(&f.inv, &argv(&["inbox", "ack", "child-1", &flag, &through])).unwrap();
+    assert_eq!(ack.code, 0, "ack: {}", ack.stdout);
+    let again = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(again.contains("late"), "the late mail was acked unseen: {again}");
+    assert!(!again.contains("\"first\""), "the read mail is still unread: {again}");
+}
+
+/// The `--through` token round-trips, and a malformed one is rejected.
+#[test]
+fn the_ack_through_token_round_trips() {
+    defaults::init().unwrap();
+    let tok = crate::meshw::inboxcmd::encode_through(3.0, 7.0, &[("sib-a".into(), 2.0)]);
+    let m = crate::meshw::inboxcmd::decode_through(&tok).unwrap();
+    assert_eq!((m[defaults::text("mesh_wake.ack_through_nd")], m[defaults::text("mesh_wake.ack_through_store")], m["sib-a"]), (3.0, 7.0, 2.0));
+    assert!(crate::meshw::inboxcmd::decode_through("nd:x").is_none());
+    assert!(crate::meshw::inboxcmd::decode_through("").is_none());
+}
