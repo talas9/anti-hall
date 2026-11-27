@@ -596,7 +596,7 @@ value = { kind = "counter", unit = "signals", labels = ["signal", "outcome"] }
 
 [msg.agent_hold_expired]
 doc = "Reminder of the hold_expired signal: a task has been held by a blockedOn reason longer than nudges.hold.hold_max_ms. Placeholders: {tasks}, {n}, {held}."
-value = "agent tracker: Do now: confirm or clear the blocker on {tasks} (held {held}); update blockedOn with what it still waits on and who unblocks it, or clear it and work the task."
+value = "agent tracker: Do now: confirm or clear the blocker on {tasks} (held {held}); update metadata.blockedOn with what it still waits on and who unblocks it, or clear it and work the task."
 
 [msg.agent_hold_owner]
 doc = "Owner notice of the hold_owner signal: a task held by a blockedOn reason that names the owner or a human has been blocked past nudges.hold.hold_max_ms in total. The tracker sends the session one hold_expired reminder to confirm it (it can go out on the same tick as this notice), then none while the reason names the owner; a reason that stops naming the owner starts a new hold. The session's Stop check does not share that confirmation: it lets the hold lapse after hold_max_ms and lists the task again, so the text must not promise the session goes quiet. Placeholders: {agent}, {tasks}, {held}."
@@ -604,7 +604,7 @@ value = "agent tracker: {agent} is waiting on you for {tasks} (blocked {held}); 
 
 [msg.agent_hold_expired_order]
 doc = "Reminder of the hold_expired signal once a named task's reminders were ignored order_after times (order). Placeholders: {tasks} (each named task as msg.agent_hold_task_count renders it, with its own count), {n}, {held}."
-value = "agent tracker: Do now, reminders unanswered: the blockers on {tasks} have stood up to {held}. Verify each still holds, then rewrite blockedOn with the current reason and its owner; if it does not hold, clear blockedOn and dispatch the task."
+value = "agent tracker: Do now, reminders unanswered: the blockers on {tasks} have stood up to {held}. Verify each still holds, then rewrite metadata.blockedOn with the current reason and its owner; if it does not hold, clear metadata.blockedOn and dispatch the task."
 
 [msg.agent_hold_task_ref]
 doc = "How a hold reminder or owner notice names a task whose subject is empty or whitespace (GH #959), so every listed task is visibly named. Placeholder: {id} (the task id)."

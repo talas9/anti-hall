@@ -143,9 +143,18 @@ function tgIdleSkips(open, rows) {
   return out;
 }
 
+// Whether the Stop saw a hold of task `t` run out (its blockedOn or other marker): the task has a stated reason, it only needs confirming.
+function tgLapsed(t) {
+  if (tgHolds === null) return false;
+  var pre = t.id + '|';
+  return Object.keys(tgHolds.lapsed).some(function (k) { return k.indexOf(pre) === 0; });
+}
+
 function tgIdleLabel(t) {
   var subj = tk.oneLine(t.content && t.content !== t.id ? t.content : ah.cfg('task_guard.subject_unknown'), ah.cfgNum('task_guard.subject_max'));
-  return '#' + t.id + ' ' + JSON.stringify(subj) + ' [' + tk.oneLine(t.status || ah.cfg('task_guard.status_open'), ah.cfgNum('task_guard.status_max')) + ']';
+  var lapsed = tgLapsed(t) && tk.blockedOnText(t) !== ''
+    ? text.render(ah.cfg('idle_rule.label_lapsed'), { reason: tk.oneLine(t.blockedOn, ah.cfgNum('idle_rule.subject_ref_max')) }) : '';
+  return '#' + t.id + ' ' + JSON.stringify(subj) + ' [' + tk.oneLine(t.status || ah.cfg('task_guard.status_open'), ah.cfgNum('task_guard.status_max')) + ']' + lapsed;
 }
 
 // {what, instead, extra} of the R-idle block for `tasks`: the exact ids first (the visible line is cut near 115 units), the one step that
@@ -155,9 +164,12 @@ function tgIdleRuleText(kind, tasks, upd) {
   var more = tasks.length > max ? text.render(ah.cfg('idle_rule.more'), { n: tasks.length - max }) : '';
   var first = tasks[0] ? tasks[0].id : '';
   var vars = { n: tasks.length, ids: ids.join(ah.cfg('idle_rule.id_sep')), more: more, upd: upd, first: first };
+  // a listed task whose blockedOn hold ran out has a reason: the headline says so instead of "no blocked reason"
+  var lapsedTasks = tasks.filter(function (t) { return tgLapsed(t) && tk.blockedOnText(t) !== ''; }), lapsed = lapsedTasks.length > 0;
+  if (lapsed) vars.first = lapsedTasks[0].id;
   return {
-    what: text.render(kind === 'idle' ? ah.cfg('idle_rule.what_idle') : ah.cfg('idle_rule.what_open'), vars),
-    instead: text.render(ah.cfg('idle_rule.instead'), vars),
+    what: text.render(lapsed ? ah.cfg('idle_rule.what_lapsed') : kind === 'idle' ? ah.cfg('idle_rule.what_idle') : ah.cfg('idle_rule.what_open'), vars),
+    instead: text.render(ah.cfg(lapsed ? 'idle_rule.instead_lapsed' : 'idle_rule.instead'), vars),
     extra: [text.render(ah.cfg('idle_rule.details_list'), { list: tasks.map(tgIdleLabel).join('\n') }), text.render(ah.cfg('idle_rule.details_steps'), vars)],
   };
 }

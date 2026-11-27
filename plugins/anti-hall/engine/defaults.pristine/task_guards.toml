@@ -721,7 +721,7 @@ value = "finish the pending tasks before stopping."
 
 [task_guard.generic_allowed]
 doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
-value = "a task that is truly blocked: mark it with {upd} (blockedBy an open task, or blockedOn 'owner'); it is then no longer listed."
+value = "a task that is truly blocked: mark it with {upd} (blockedBy an open task, or metadata.blockedOn 'owner'); it is then no longer listed."
 
 [task_guard.block_json]
 doc = "The stdout line of a block; `{reason}` is the reason as a JSON string."
@@ -1915,6 +1915,18 @@ value = ", "
 doc = "Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out."
 value = " (+{n} more)"
 
+[idle_rule.what_lapsed]
+doc = "First line of either R-idle block when a listed task still carries a blockedOn reason whose hold ran out (nudges.hold.hold_max_ms): the reason is not missing, it must be re-confirmed. Same placeholders as what_idle. Kept short: the visible line is cut near 115 units."
+value = "{n} open tasks: blocker lapsed, not missing, on {ids}{more}."
+
+[idle_rule.instead_lapsed]
+doc = "The step line for what_lapsed; `{upd}` the task update tool, `{first}` the first listed id. Kept under 115 units."
+value = "re-confirm it: {upd} #{first} with metadata.blockedOn=<reason>, or run an agent for it, or finish it."
+
+[idle_rule.label_lapsed]
+doc = "Tail of a task's line in the saved details when its blockedOn hold ran out: `{reason}` is the reason it still carries, cut to idle_rule.subject_ref_max."
+value = " (blockedOn lapsed: {reason})"
+
 [idle_rule.prompt_ref_max]
 doc = "Most UTF-16 units of a running agent's spawn prompt (from its start) that are read for a task number (#<id>) or a task subject; an agent launched for a task names it in its brief even when its description only names the work."
 value = 600
@@ -1935,16 +1947,16 @@ value = 80
 min = 1
 
 [idle_rule.what_idle]
-doc = "First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail. Kept short: the visible line is cut near 115 units."
+doc = "First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail (idle_rule.what_lapsed replaces it when a listed task has a lapsed blockedOn). Kept short: the visible line is cut near 115 units."
 value = "{n} open tasks idle, no live agent, no blocked reason: {ids}{more}."
 
 [idle_rule.what_open]
-doc = "First line of the R-idle generic block; same placeholders as what_idle."
+doc = "First line of the R-idle generic block; same placeholders as what_idle (idle_rule.what_lapsed replaces it when a listed task has a lapsed blockedOn)."
 value = "{n} open tasks unfinished, none has a live agent or a blocked reason: {ids}{more}."
 
 [idle_rule.instead]
 doc = "The step that clears the block, in the instead line (kept under 115 units so it stays visible); `{upd}` the task update tool, `{first}` the first listed id."
-value = "spawn an agent with #{first} in its description, or {upd} it blockedOn=<reason>, or finish it."
+value = "run an agent with #{first} in its description, or {upd} metadata.blockedOn=<reason>, or finish it."
 
 [idle_rule.details_list]
 doc = "Saved-details block listing every idle task; `{list}` has one line per task: id, subject, status."
@@ -1952,7 +1964,7 @@ value = "Idle tasks:\n{list}"
 
 [idle_rule.details_steps]
 doc = "Saved-details text with the three ways to clear a listed task; `{upd}` the task update tool, `{first}` the first listed id."
-value = "To clear a task, do one of: (1) start an agent whose description contains its id, for example description \"#{first} <what it does>\"; (2) {upd} taskId={first} with metadata blockedOn=<the reason>, or write a line \"BLOCKED: <reason>\" in its subject or description (a bare BLOCKED with no reason does not clear it); a wait on a clock: write \"waiting until <time>\"; (3) finish it and mark it completed."
+value = "To clear a task, do one of: (1) start an agent whose description contains its id, for example description \"#{first} <what it does>\"; (2) {upd} taskId={first} with metadata.blockedOn=<the reason> (the update tool has no blockedOn parameter of its own: only the metadata key counts), or write a line \"BLOCKED: <reason>\" in its subject or description (a bare BLOCKED with no reason does not clear it); a wait on a clock: write \"waiting until <time>\"; (3) finish it and mark it completed."
 
 [metric.idle_rule_fired]
 doc = "R-idle Stop blocks delivered (guards.idleRule on), by kind (idle: the dispatch-demand block; open: the generic block)."
