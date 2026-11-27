@@ -116,6 +116,33 @@ split-debuginfo = "off"
 [profile.ci-test.package.rquickjs-sys]
 opt-level = 3
 
+# Lane and local test builds: release-speed code (the script time limits are sized for release, .cargo/config.toml) without the
+# shipped binary's fat LTO, single codegen unit and debug info, incremental where the machine allows it. Same code as `ci-test`,
+# named for local use so a lane passes `--cargo-profile test-fast` instead of overriding the release profile through environment
+# variables (which also changes the compile-cache keys of every release build). Never shipped.
+[profile.test-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+debug = false
+strip = false
+split-debuginfo = "off"
+
+[profile.test-fast.package.rquickjs-sys]
+opt-level = 3
+
+# Live deploys to a development machine (local integration trains): thin LTO and 16 codegen units, a fraction of the fat-LTO
+# single-unit link of `release`, at release optimisation. Output in target/release-fast/. Public tags keep `release`.
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+incremental = false
+
+[profile.release-fast.package.rquickjs-sys]
+opt-level = 3
+
 # Debug builds (what `cargo test` without --release uses): line tables are enough for backtraces and breakpoints, and the
 # build and link are faster than with full debuginfo.
 [profile.dev]
