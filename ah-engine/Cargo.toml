@@ -28,6 +28,11 @@ ring = { version = "0.17", default-features = false }
 arc-swap = "=1.9.5"
 # Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
 dhat = { version = "0.3.3", optional = true }
+# Exact latency percentiles (#969 hardening): each latency histogram in the metrics registry (src/metrics.rs) also keeps an
+# HdrHistogram, so status and metrics report a p50/p95/p99 within telemetry.hdr_sigfig significant digits instead of the upper
+# bound of a coarse bucket. Default features off: no serialization (and so no flate2/base64/nom); snapshots store the recorded
+# (value, count) pairs as JSON.
+hdrhistogram = { version = "7.6.0", default-features = false }
 # Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
 # off: no module loader, no async, pre-generated bindings. The runtime allocates through the Rust allocator
 # (`Runtime::new_with_alloc`, DECISIONS.md 1.111); QuickJS-NG checks `set_memory_limit` against its own count before calling it.

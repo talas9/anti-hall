@@ -713,7 +713,7 @@ impl Shared {
 
 /// The latency of each phase of a hook call by event: `{event: {phase: {count, p50_us, p95_us, max_us}}}` (the client's connect,
 /// request-to-ACK and ACK-to-response, the daemon's queue wait, judging and delivery, the launcher's startup), and the time of each
-/// check apart under `checks`. Quantiles are upper bucket bounds, as everywhere in the metrics.
+/// check apart under `checks`. Quantiles come from the metrics' HdrHistograms (within `telemetry.hdr_sigfig` digits).
 pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
     let snap = t.with_metrics(|m| m.snapshot(""));
     let mut out = serde_json::Map::new();
@@ -721,7 +721,7 @@ pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
     let field = |h: &serde_json::Value, k: &str| h.get(k).cloned().unwrap_or(serde_json::Value::Null);
     let label = |h: &serde_json::Value, k: &str| h.get("labels").and_then(|l| l.get(k)).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
     for h in snap.get("histograms").and_then(serde_json::Value::as_array).into_iter().flatten() {
-        let row = serde_json::json!({"count": field(h, "count"), "p50_us": field(h, "p50_us"), "p95_us": field(h, "p95_us"), "max_us": field(h, "max_us")});
+        let row = serde_json::json!({"count": field(h, "count"), "p50_us": field(h, "p50_us"), "p95_us": field(h, "p95_us"), "p99_us": field(h, "p99_us"), "max_us": field(h, "max_us")});
         match h.get("name").and_then(serde_json::Value::as_str) {
             Some("hook_phase_us") => {
                 let (event, phase) = (label(h, "event"), label(h, "phase"));

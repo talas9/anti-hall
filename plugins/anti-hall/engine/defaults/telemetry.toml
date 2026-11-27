@@ -4,6 +4,25 @@
 # catches a typo; a registered name nothing records is flagged by the same test. Metrics are kept in memory, bounded,
 # and snapshotted to hot.db with rollups in archive.db (D51); impact events are stored in hot.db (D52).
 
+[telemetry.hdr_sigfig]
+doc = "#969 hardening: significant digits of the HdrHistogram each latency metric (unit us) keeps beside its buckets, from which status (phases) and metrics report p50/p95/p99 (2 = within 1 %). Each histogram holds about 10 KB of counts at 2 over the shipped bounds (2560 u32 counters), about 70 KB at 3. 0 = off: percentiles are the bucket bounds of telemetry.latency_buckets_us again."
+value = 2
+min = 0
+max = 5
+unit = "digits"
+
+[telemetry.hdr_lowest_us]
+doc = "#969 hardening: the smallest latency the HdrHistogram tells apart (telemetry.hdr_sigfig), in microseconds; smaller values count as this."
+value = 1
+min = 1
+unit = "us"
+
+[telemetry.hdr_highest_us]
+doc = "#969 hardening: the largest latency the HdrHistogram records, in microseconds; a larger one counts as this in the percentiles (the reported maximum stays exact)."
+value = 60000000
+min = 2
+unit = "us"
+
 [telemetry.latency_buckets_us]
 doc = "Upper bounds of the latency histogram buckets; a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate."
 value = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 100000, 1000000]

@@ -11,7 +11,8 @@ use crate::defaults;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-/// A latency histogram with the fixed buckets from `telemetry.latency_buckets_us`.
+/// A latency histogram with the fixed buckets from `telemetry.latency_buckets_us`, plus (for a latency metric, when
+/// `telemetry.hdr_sigfig` is above 0) an HdrHistogram that gives its percentiles within that many significant digits.
 #[derive(Debug, Clone, Default)]
 struct Hist {
     /// Count per bucket; the last entry counts values above the largest bound.
@@ -19,24 +20,54 @@ struct Hist {
     count: u64,
     sum: u64,
     max: u64,
+    /// The exact-percentile histogram; `None` for a byte metric or with the setting off.
+    hdr: Option<Box<hdrhistogram::Histogram<u32>>>,
+}
+
+/// A new HdrHistogram with the configured bounds (`telemetry.hdr_lowest_us`, `.hdr_highest_us`) and precision
+/// (`telemetry.hdr_sigfig`); `None` when the setting is off (0) or the bounds are invalid.
+fn new_hdr() -> Option<Box<hdrhistogram::Histogram<u32>>> {
+    let sig = defaults::num("telemetry.hdr_sigfig");
+    if sig == 0 {
+        return None;
+    }
+    let low = defaults::num("telemetry.hdr_lowest_us").max(1);
+    let high = defaults::num("telemetry.hdr_highest_us").max(low.saturating_mul(2));
+    hdrhistogram::Histogram::<u32>::new_with_bounds(low, high, sig.min(5) as u8).ok().map(Box::new)
+}
+
+/// Record `n` values of `v` in `h`, clamped into its range (the exact maximum is kept apart, in `Hist::max`).
+fn hdr_record(h: &mut hdrhistogram::Histogram<u32>, v: u64, n: u64) {
+    let v = v.clamp(h.low(), h.high());
+    h.saturating_record_n(v, u32::try_from(n).unwrap_or(u32::MAX));
 }
 
 impl Hist {
-    fn observe(&mut self, bounds: &[u64], v: u64) {
+    fn observe(&mut self, bounds: &[u64], v: u64, exact: bool) {
         if self.buckets.is_empty() {
             self.buckets = vec![0; bounds.len() + 1];
+            if exact {
+                self.hdr = new_hdr();
+            }
         }
         let i = bounds.iter().position(|b| v <= *b).unwrap_or(bounds.len());
         self.buckets[i] += 1;
         self.count += 1;
         self.sum += v;
         self.max = self.max.max(v);
+        if let Some(h) = self.hdr.as_mut() {
+            hdr_record(h, v, 1);
+        }
     }
 
-    /// Upper bound of the bucket holding rank `q` (0..1); values above the last bound report the observed maximum.
+    /// The value at rank `q` (0..1): from the HdrHistogram when there is one (within its precision, never above the observed
+    /// maximum), else the upper bound of the bucket holding that rank (values above the last bound report the observed maximum).
     fn quantile(&self, bounds: &[u64], q: f64) -> u64 {
         if self.count == 0 {
             return 0;
+        }
+        if let Some(h) = self.hdr.as_ref().filter(|h| !h.is_empty()) {
+            return h.value_at_quantile(q).min(self.max);
         }
         let rank = ((self.count as f64) * q).ceil().max(1.0) as u64;
         let mut seen = 0;
@@ -47,6 +78,34 @@ impl Hist {
             }
         }
         self.max
+    }
+
+    /// The HdrHistogram as `[[value, count], ...]` (each recorded value's bucket and its count), for a snapshot.
+    fn hdr_pairs(&self) -> Option<Value> {
+        let h = self.hdr.as_ref()?;
+        Some(Value::Array(h.iter_recorded().map(|v| json!([v.value_iterated_to(), v.count_at_value()])).collect()))
+    }
+
+    /// Rebuild the HdrHistogram of a series loaded from a snapshot: from its stored pairs, or (a snapshot from before it
+    /// existed) seeded from its buckets at their upper bounds, the overflow bucket at the observed maximum, so the old counts
+    /// keep their old precision and nothing is lost.
+    fn hdr_load(&mut self, pairs: Option<&Value>, bounds: &[u64]) {
+        let Some(mut h) = new_hdr() else { return };
+        match pairs.and_then(Value::as_array) {
+            Some(a) => {
+                for p in a {
+                    if let (Some(v), Some(n)) = (p.get(0).and_then(Value::as_u64), p.get(1).and_then(Value::as_u64)) {
+                        hdr_record(&mut h, v, n);
+                    }
+                }
+            }
+            None => {
+                for (i, n) in self.buckets.iter().enumerate().filter(|(_, n)| **n > 0) {
+                    hdr_record(&mut h, bounds.get(i).copied().unwrap_or(self.max).min(self.max.max(1)), *n);
+                }
+            }
+        }
+        self.hdr = Some(h);
     }
 }
 
@@ -334,7 +393,8 @@ impl Metrics {
         let bounds: Vec<u64> = bounds_for(name);
         let exists = self.hists.contains_key(&series(name, labels));
         let k = self.key(name, labels, exists);
-        self.hists.entry(k).or_default().observe(&bounds, micros);
+        let exact = !is_byte_metric(name);
+        self.hists.entry(k).or_default().observe(&bounds, micros, exact);
     }
 
     /// Record one observation (bytes) in a histogram registered with unit `bytes` (the same as [`Metrics::observe`]; the name picks
@@ -357,7 +417,16 @@ impl Metrics {
     /// The counters and histograms as JSON, for a snapshot in storage (D51). Gauges are live readings and are not kept.
     pub fn export(&self) -> Value {
         let hists: Map<String, Value> =
-            self.hists.iter().map(|(k, h)| (k.clone(), json!({"buckets": h.buckets, "count": h.count, "sum": h.sum, "max": h.max}))).collect();
+            self.hists
+                .iter()
+                .map(|(k, h)| {
+                    let mut v = json!({"buckets": h.buckets, "count": h.count, "sum": h.sum, "max": h.max});
+                    if let Some(p) = h.hdr_pairs() {
+                        v["hdr"] = p;
+                    }
+                    (k.clone(), v)
+                })
+                .collect();
         json!({"counters": self.counters, "histograms": hists})
     }
 
@@ -375,12 +444,18 @@ impl Metrics {
         if let Some(h) = v.get("histograms").and_then(Value::as_object) {
             for (k, x) in h {
                 let buckets: Vec<u64> = x.get("buckets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-                if buckets.len() != bounds_for(k.split('|').next().unwrap_or("")).len() + 1 {
+                let name = k.split('|').next().unwrap_or("");
+                let bounds = bounds_for(name);
+                if buckets.len() != bounds.len() + 1 {
                     continue;
                 }
                 let n = |f: &str| x.get(f).and_then(Value::as_u64).unwrap_or(0);
                 self.track(k);
-                self.hists.insert(k.clone(), Hist { buckets, count: n("count"), sum: n("sum"), max: n("max") });
+                let mut h = Hist { buckets, count: n("count"), sum: n("sum"), max: n("max"), hdr: None };
+                if !is_byte_metric(name) {
+                    h.hdr_load(x.get("hdr"), &bounds);
+                }
+                self.hists.insert(k.clone(), h);
             }
         }
     }
@@ -427,10 +502,11 @@ impl Metrics {
                         "quantile_note": defaults::text("msg.metrics_quantile_note"),
                     });
                 }
+                let note = if h.hdr.is_some() { "msg.metrics_quantile_note_hdr" } else { "msg.metrics_quantile_note" };
                 json!({
                     "name": name, "labels": labels, "count": h.count, "mean_us": mean, "max_us": h.max,
                     "p50_us": h.quantile(&bounds, 0.50), "p95_us": h.quantile(&bounds, 0.95), "p99_us": h.quantile(&bounds, 0.99),
-                    "quantile_note": defaults::text("msg.metrics_quantile_note"),
+                    "quantile_note": defaults::text(note),
                 })
             })
             .collect();
@@ -485,8 +561,14 @@ mod tests {
         assert_eq!(m.counter("check_calls", &[("check", "none")]), 0);
     }
 
+    /// #969 hardening: a latency histogram reports the value at each rank within telemetry.hdr_sigfig significant digits, not
+    /// the upper bound of a coarse bucket (which jumped from 100 ms to 1 s and gave no p95 past the last bound).
     #[test]
-    fn histogram_quantiles_are_bucket_upper_bounds() {
+    fn latency_quantiles_are_exact_within_the_configured_precision() {
+        let near = |got: &Value, want: u64| {
+            let g = got.as_u64().unwrap();
+            assert!(g.abs_diff(want) * 100 <= want, "{g} is not within 1% of {want}");
+        };
         let mut m = Metrics::default();
         for v in [50, 60, 70, 80, 90, 120, 130, 140, 150, 9000] {
             m.observe("check_latency_us", &[("check", "git")], v);
@@ -494,10 +576,58 @@ mod tests {
         let s = m.snapshot("");
         let h = &s["histograms"][0];
         assert_eq!(h["count"], 10);
-        assert_eq!(h["p50_us"], 100, "the fifth of ten values (90us) sits in the <=100 bucket");
-        assert_eq!(h["p95_us"], 10000, "the tenth value (9000us) sits in the <=10000 bucket");
-        assert_eq!(h["p99_us"], 10000);
+        near(&h["p50_us"], 90);
+        near(&h["p95_us"], 9000);
+        near(&h["p99_us"], 9000);
         assert_eq!(h["max_us"], 9000);
+        assert_eq!(h["quantile_note"], defaults::text("msg.metrics_quantile_note_hdr"));
+        // past the last bucket bound (1 s): 200 calls between 1.0 and 3.0 s give a real p95/p99, not the overflow
+        let mut m = Metrics::default();
+        for i in 0..200u64 {
+            m.observe("hook_latency_us", &[("event", "Stop")], 1_000_000 + i * 10_000);
+        }
+        let h = m.snapshot("")["histograms"][0].clone();
+        near(&h["p50_us"], 1_990_000);
+        near(&h["p95_us"], 2_890_000);
+        near(&h["p99_us"], 2_970_000);
+        assert_eq!(h["max_us"], 2_990_000);
+        // a round trip through a snapshot keeps the exact percentiles
+        let mut back = Metrics::default();
+        back.import(&m.export());
+        assert_eq!(back.snapshot("")["histograms"][0], h);
+    }
+
+    /// A snapshot written before the HdrHistogram existed (buckets only) still loads: its counts are kept, its percentiles are
+    /// the bucket bounds they were, and new observations add exact ones.
+    #[test]
+    fn a_bucket_only_snapshot_still_loads_and_keeps_its_counts() {
+        let bounds = bucket_bounds();
+        let mut buckets = vec![0u64; bounds.len() + 1];
+        buckets[0] = 9;
+        *buckets.last_mut().unwrap() = 1;
+        let old = json!({"counters": {}, "histograms": {"check_latency_us|check=git": {"buckets": buckets, "count": 10, "sum": 5_000_000, "max": 4_000_000}}});
+        let mut m = Metrics::default();
+        m.import(&old);
+        let h = m.snapshot("")["histograms"][0].clone();
+        assert_eq!((h["count"].as_u64(), h["max_us"].as_u64()), (Some(10), Some(4_000_000)));
+        let p50 = h["p50_us"].as_u64().unwrap();
+        assert!(p50.abs_diff(bounds[0]) * 100 <= bounds[0], "{p50}: the old counts keep their bucket bound");
+        assert!(h["p99_us"].as_u64().unwrap().abs_diff(4_000_000) * 100 <= 4_000_000, "the overflow bucket sits at the max: {h}");
+        m.observe("check_latency_us", &[("check", "git")], 4_000_000);
+        assert_eq!(m.snapshot("")["histograms"][0]["count"], 11);
+    }
+
+    /// A histogram without an HdrHistogram (a byte metric, or telemetry.hdr_sigfig = 0) reports bucket bounds, and the shipped
+    /// bounds keep one HdrHistogram small (the engine keeps a few hundred latency series).
+    #[test]
+    fn the_hdr_histogram_is_bounded_and_optional() {
+        let h = new_hdr().expect("on by default");
+        let bytes = h.len() as usize * std::mem::size_of::<u32>();
+        assert!(bytes <= 64 * 1024, "one latency histogram holds {bytes} bytes of counts");
+        let mut x = Hist::default();
+        x.observe(&bucket_bounds(), 90, false);
+        assert!(x.hdr.is_none());
+        assert_eq!(x.quantile(&bucket_bounds(), 0.5), bucket_bounds()[0], "no hdr: the bucket bound");
     }
 
     #[test]
