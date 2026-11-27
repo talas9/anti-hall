@@ -7183,6 +7183,6 @@ fn n972r3_a_failed_blocker_update_does_not_confirm_the_hold() {
         result(at + 500, "tuf", "Error: task list is locked", true),
     ]);
     ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
-    assert!(agent(&st, SID).hold_confirmed.get("81").is_none(), "an errored update confirms nothing");
+    assert!(!agent(&st, SID).hold_confirmed.contains_key("81"), "an errored update confirms nothing");
     assert_eq!(n972_hold_rows(&h).len(), 2, "still unanswered: reminded again after the cooldown");
 }
