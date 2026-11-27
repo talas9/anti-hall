@@ -6998,3 +6998,22 @@ fn n972r_a_resumed_child_is_not_re_latched_by_its_old_stop_notice_over_several_t
         assert!(a.stopped_at == 0 && !a.finished, "tick {i}: re-latched by the stop at n-30min: stopped_at={} finished={}", a.stopped_at, a.finished);
     }
 }
+
+/// Codex #838 P1.2: a live lock that names the session but belongs to another workspace (another checkout, another inbox) does not
+/// cover the workspace the session is bound to.
+#[test]
+fn n972r_a_lock_naming_the_session_under_another_checkout_does_not_cover_it() {
+    let h = home("n972r-other-inbox");
+    let n = now0();
+    devswarm(&h, n, None);
+    let d = h.join(".anti-hall/devswarm");
+    std::fs::write(d.join("workspaces/wsB.json"), r#"{"id":"wsB","sessionId":"other","worktreePath":"/wt/b"}"#).unwrap();
+    std::fs::write(d.join("locks/wake-watch-wsB.lock"), json!({"ts": n, "pid": std::process::id(), "sessionId": "sessW"}).to_string()).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().map(|w| (w.id.as_str(), w.armed)), Some(("ws1", Some(false))), "B's watcher reads B's inbox");
+    // the true positive of coverage: a lock under its own row
+    std::fs::write(d.join("locks/wake-watch-ws1.lock"), json!({"ts": n + 2 * MIN, "pid": std::process::id(), "sessionId": "sessW"}).to_string()).unwrap();
+    ticks_bare(&h, &mut st, &[n + 2 * MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().and_then(|w| w.armed), Some(true));
+}

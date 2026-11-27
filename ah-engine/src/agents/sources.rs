@@ -237,7 +237,7 @@ fn devswarm(env: &Env, st: &mut State) {
         let primary = watcher_primary || by_path;
         let idle = (declined || (by_path && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings)))
             && env.switch("agent_tracker.rearm_idle_setting");
-        let armed = Some(idle || watcher_armed(env, &id, &key));
+        let armed = Some(idle || watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done, primary });
         live_plan(env, &id, a, done);
     }
@@ -298,35 +298,14 @@ fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
 
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
 /// row on its checkout). A lock the check cannot read decides nothing, so it reads as not armed.
-fn watcher_armed(env: &Env, id: &str, session: &str) -> bool {
+fn watcher_armed(env: &Env, id: &str) -> bool {
+    // only a watcher on this workspace's own row or its checkout reads this inbox: a live lock that merely names the session, under
+    // another workspace, watches another inbox and covers nothing here (#972 round 2, Codex #838 P1.2)
     let found = crate::meshw::watcher::live_for_workspace(&env.home, id, env.now_ms as i64);
     if found.as_ref().is_ok_and(|f| f.by_checkout) {
         crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
     }
-    if found.is_ok_and(|f| f.armed) {
-        return true;
-    }
-    // the watcher this session armed holds a live lock naming the session, under whatever row id it resolved: the same lock that
-    // refuses a second arm ("lock-held") covers the session (#972)
-    let by_session = session_lock_live(env, session);
-    if by_session {
-        crate::metrics::bump("agent_ws_coverage", &[("how", "session_lock")]);
-    }
-    by_session
-}
-
-/// A live wake-watch lock (fresh, holder not provably gone: `meshw::watcher::lock_live`) whose record names `session`.
-fn session_lock_live(env: &Env, session: &str) -> bool {
-    if session.is_empty() {
-        return false;
-    }
-    let f = defaults::raw("agent_tracker.devswarm_fields");
-    let (pre, ext) = (defaults::text("mesh_write.wake_lock_prefix"), defaults::text("mesh_write.wake_lock_suffix"));
-    read_dir(&env.base().join(pth("devswarm")).join(pth("locks"))).iter().any(|p| {
-        let Some(id) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(pre)).and_then(|n| n.strip_suffix(ext)) else { return false };
-        json_of(p).is_some_and(|v| v.get(f.str_field("lock_session")).and_then(Value::as_str) == Some(session))
-            && crate::meshw::watcher::lock_live(&env.home, id, env.now_ms as i64).unwrap_or(false)
-    })
+    found.is_ok_and(|f| f.armed)
 }
 
 // ---- the Claude Code CLI --------------------------------------------------------------------------------

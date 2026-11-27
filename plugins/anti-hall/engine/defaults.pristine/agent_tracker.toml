@@ -133,7 +133,7 @@ doc = "Stops of child agents the tracker keeps (#972 class 1), by how: recorded 
 value = { kind = "counter", unit = "decisions", labels = ["how"] }
 
 [metric.agent_ws_coverage]
-doc = "How the tracker settled a DevSwarm session's workspace facts (#972), by how: session_lock (covered by a live wake-watch lock whose record names the session, under another row id), archive_ignored (an archived twin was ignored because the descriptor has a live lock or is newer than the archive), unbound (a row no live descriptor bound this tick lost its stale workspace facts)."
+doc = "How the tracker settled a DevSwarm session's workspace facts (#972), by how: archive_ignored (an archived twin was ignored because the descriptor has a live lock or is newer than the archive), unbound (a row no live descriptor bound this tick lost its stale workspace facts)."
 value = { kind = "counter", unit = "decisions", labels = ["how"] }
 
 [metric.monitor_rearm_prompted]
@@ -270,7 +270,7 @@ value = { bin = "claude", version_args = ["--version"], agents_args = ["agents",
 
 [agent_tracker.devswarm_fields]
 doc = "Field names of the DevSwarm descriptor, plan, wake-watch lock and workspace name-cache files the tracker reads (the DevSwarm format); title is the field of the name cache that holds a workspace's display title."
-value = { id = "id", session = "sessionId", worktree = "worktreePath", title = "name", steps = "steps", step_status = "status", step_text = "text", step_done = "done", step_doing = "doing", step_blocked = "blocked", step_ts = "ts", lock_ts = "ts", lock_pid = "pid", lock_session = "sessionId", hb_ts = "ts", hb_status = "status", hb_step = "step", hb_id = "id", hb_running = "running" }
+value = { id = "id", session = "sessionId", worktree = "worktreePath", title = "name", steps = "steps", step_status = "status", step_text = "text", step_done = "done", step_doing = "doing", step_blocked = "blocked", step_ts = "ts", lock_ts = "ts", lock_pid = "pid", hb_ts = "ts", hb_status = "status", hb_step = "step", hb_id = "id", hb_running = "running" }
 
 [agent_tracker.fmt]
 doc = "Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. count_steps / count_units: the divisors and suffixes of a token count in a message (995687 reads 995k, 1500000 reads 1.5M). count_decimal_below_tenths: a count below this many tenths of its unit shows one decimal (1.5M), at or above it whole units (12M)."
