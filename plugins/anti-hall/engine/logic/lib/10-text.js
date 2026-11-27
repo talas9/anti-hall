@@ -26,10 +26,25 @@ var text = {
     var lines = [p.what || '', p.why || '', p.instead || '', p.allowed || ''];
     if (p.override) lines.push(ah.cfg('guardkit.msg_labels').override + (typeof p.override === 'string' ? p.override : text.render(ah.cfg('guardkit.override_human'), { guard: guard })));
     lines = lines.concat(p.extra || []);
-    var instructions = ah.cfg('guardkit.long_instructions')[guard];
-    if (instructions) lines.push(instructions);
+    // #972 wave 2: the guard's whole catalog of long texts (every message it can give, by raw key, placeholders unfilled) was appended
+    // to every details file. Only the entries the caller names (p.longKeys) are added now, rendered with p.longArgs.
+    var catalog = ah.cfg('guardkit.long_instructions')[guard];
+    if (catalog && Array.isArray(p.longKeys)) {
+      var entries = text.catalogEntries(catalog);
+      for (var i = 0; i < p.longKeys.length; i++) {
+        var k = p.longKeys[i];
+        if (Object.prototype.hasOwnProperty.call(entries, k)) lines.push(text.render(entries[k], p.longArgs || {}));
+      }
+    }
     try { if (!ah.state.writeAtomic(rel, lines.filter(Boolean).join('\n\n') + '\n')) return null; } catch (e) { return null; }
     return '~/' + rel;
+  },
+  // The entries of a long-text catalog (`key: text`, separated by a blank line) as {key: text}.
+  catalogEntries: function (catalog) {
+    var out = {}, re = /(?:^|\n\n)([A-Za-z0-9_]+): /g, m, marks = [];
+    while ((m = re.exec(String(catalog))) !== null) marks.push({ key: m[1], start: m.index, body: re.lastIndex });
+    for (var i = 0; i < marks.length; i++) out[marks[i].key] = String(catalog).slice(marks[i].body, i + 1 < marks.length ? marks[i + 1].start : undefined);
+    return out;
   },
   message: function (kind, guard, p, session) {
     var icons = ah.cfg('guardkit.icons'), labels = ah.cfg('guardkit.msg_labels');

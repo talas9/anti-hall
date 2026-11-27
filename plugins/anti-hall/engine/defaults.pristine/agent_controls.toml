@@ -77,8 +77,12 @@ doc = "Tools whose tool_result can be a message sent to a teammate's inbox."
 value = ["SendMessage"]
 
 [agent_scan.prefilter]
-doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate message (an idle notice or the teammate's own plain-text report)."
-value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "<teammate-message" }
+doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment a teammate message (an idle notice or the teammate's own plain-text report) and a message the host stamped with a peer origin (peer, peer_spaced)."
+value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "<teammate-message", peer = '"kind":"peer"', peer_spaced = '"kind": "peer"' }
+
+[agent_scan.peer_report]
+doc = "A teammate report the host delivers with a structured origin (#972 wave 2): a user entry (entry_type) or an attachment (attachment_entry_type, under attachment_key) of one of attachment_types (queued_command: a message delivered while the session was busy), whose origin (origin_key) has kind_key equal to kind. from_key names the sender; it counts only for a spawned teammate. The envelope text (<agent-message ...>) and the host-record keys of not_a_report_keys do not matter for it."
+value = { entry_type = "user", attachment_entry_type = "attachment", attachment_key = "attachment", attachment_types = ["queued_command"], origin_key = "origin", kind_key = "kind", kind = "peer", from_key = "from" }
 
 [agent_scan.teammate_open]
 doc = "Text that opens a teammate message block. A report body that holds it quotes earlier teammate messages: the report is the outer block's, and nothing after the first closing tag is read as another report."

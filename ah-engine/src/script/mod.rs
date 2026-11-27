@@ -1345,3 +1345,16 @@ mod tests_host_ts;
 #[cfg(test)]
 #[path = "tests_scan_turn/tests.rs"]
 mod tests_scan_turn;
+
+#[cfg(test)]
+/// Temporary debug helper (not committed).
+pub fn golden_debug_cases(check: &str) -> Vec<(String, String)> {
+    golden::load(check)
+        .into_iter()
+        .filter(|c| c["n"].as_str().is_some_and(|n| n.contains("W2") || n == "903"))
+        .map(|c| {
+            let l = golden::lay(&c);
+            (c["n"].as_str().unwrap_or("").to_string(), format!("{}/t/session.jsonl", l.home))
+        })
+        .collect()
+}

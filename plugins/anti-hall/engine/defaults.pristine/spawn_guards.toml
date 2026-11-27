@@ -84,6 +84,22 @@ value = "send through the DevSwarm mesh."
 doc = "What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory."
 value = "target \"{to}\" is a live session; messaging is allowed."
 
+[devswarm_comms.label_kind]
+doc = "Icon kind (guardkit.icons) of the coordinator and live-peer labels (#972 wave 2: the tip icon is banned in hook text)."
+value = "warn"
+
+[devswarm_comms.label_state_dir]
+doc = "Directory of the per-session label state, relative to the home directory: a label is shown once per session and target."
+value = ".anti-hall"
+
+[devswarm_comms.label_state_prefix]
+doc = "Start of the per-session label state file name (and its prune stamp key)."
+value = "devswarm-comms-labels"
+
+[devswarm_comms.label_state_max]
+doc = "Most targets remembered per session; past it the oldest is dropped (and may be labelled once more)."
+value = 64
+
 # ---- swarm-guard -------------------------------------------------------------------------------------------
 
 [swarm_guard.summary]

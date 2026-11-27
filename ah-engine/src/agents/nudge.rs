@@ -636,9 +636,9 @@ fn open_runtime(env: &Env, st: &mut State) {
         return;
     }
     let now = env.now_ms;
-    // a snooze the parent gave this child's runtime nudge outlives that nudge (it closes when the child blinks out of "running"): a new
-    // one about the same child is held until the snooze runs out, as open_new holds the health triggers
-    let hold_snooze = env.switch("agent_nudge.snooze_setting");
+    // a snooze the parent gave this child outlives the nudge it answered (it closes when the child blinks out of "running"): a new
+    // runtime nudge about the same child is held until the snooze runs out, whichever nudge it answered (#972 wave 2: a snooze given to
+    // a health nudge did not hold the runtime step, which came inside it)
     let ids: Vec<String> = st
         .agents
         .values()
@@ -646,7 +646,7 @@ fn open_runtime(env: &Env, st: &mut State) {
             !escalate::primary(a)
                 && !a.dead
                 && !st.nudges.contains_key(&a.id)
-                && !(hold_snooze && st.nudge_snooze.get(&snooze_key(&a.id, rt_trigger())).is_some_and(|s| s.until > now))
+                && !snoozed(env, st, a, now)
                 && state_of(a) == state_name("running")
                 && !done_held(env, st, a, now)
                 // a session its owner is steering is no runtime target, nor is a session row that is its own parent (a Primary the app
@@ -708,8 +708,10 @@ fn rt_follow(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge) {
         n.snooze_until = 0;
     }
     let advanced = level > n.rt_level;
+    // a snooze the parent gave this child on any nudge (`agents nudge <child> snooze`) holds every nag about it (#972 wave 2)
+    let held = snoozed(env, st, a, now);
     // a recorded snooze holds the next step until it runs out (GH #923): the step then fires on its own thresholds
-    if advanced && n.snooze_until > now {
+    if advanced && (n.snooze_until > now || held) {
         if st.nudge_supp_seen.insert(format!("{}|{}|{level}", a.id, grace_cfg().str_field("reason_snoozed"))) {
             crate::metrics::bump("agent_nudge_suppressed", &[("reason", grace_cfg().str_field("reason_snoozed"))]);
         }
@@ -717,7 +719,7 @@ fn rt_follow(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge) {
     }
     let Some(step) = steps.get(level as usize - 1).filter(|_| level > 0) else { return };
     let last = level as usize == steps.len();
-    let due = n.answer_class.is_empty() && n.snooze_until == 0 && now.saturating_sub(n.last_sent) >= step.refire_ms && (n.rt_acked < level || last);
+    let due = n.answer_class.is_empty() && n.snooze_until == 0 && !held && now.saturating_sub(n.last_sent) >= step.refire_ms && (n.rt_acked < level || last);
     if advanced {
         n.rt_level = level;
         n.answer_class.clear();

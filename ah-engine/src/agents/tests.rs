@@ -5062,6 +5062,34 @@ fn health_snooze_holds_across_a_finished_close() {
     assert!(st.nudges.get("abc").is_none(), "held by the snooze; first ref was {}", first.ref_id);
 }
 
+/// #972 wave 2 (item 6): a snooze the parent gave a HEALTH nudge (`agents nudge <child> snooze 45`) holds every nag about the child, the
+/// runtime step too: no runtime nudge opens, and no open one refires or climbs, while it runs. Once it runs out the runtime step fires
+/// again (true positive).
+#[test]
+fn n972_a_health_snooze_holds_the_runtime_nudge_until_it_runs_out() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("n972-health-snooze-rt");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
+    // a 45-minute snooze recorded on a health nudge (waste), which has since closed
+    st.nudge_snooze.insert("abc|waste".into(), nudge::Snooze { until: n + 60 * MIN, snoozes: 1, min: 45, held: 0 });
+    rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    assert_eq!(rt_fired("advise"), 0, "the health snooze holds the runtime step: {:?}", rt_texts(&h));
+    assert!(st.nudges.get("abc").is_none(), "no runtime nudge opens inside the snooze");
+    // an open runtime nudge does not climb a step inside a snooze the parent gave a health nudge either
+    rt_tick(&h, &child, &mut st, n + 61 * MIN, 3);
+    assert_eq!(rt_fired("advise"), 1, "the snooze ran out: the runtime step fires (true positive)");
+    let delivered = rt_texts(&h).len();
+    st.nudge_snooze.insert("abc|waste".into(), nudge::Snooze { until: n + 200 * MIN, snoozes: 2, min: 120, held: 0 });
+    rt_tick(&h, &child, &mut st, n + 95 * MIN, 4);
+    rt_tick(&h, &child, &mut st, n + 125 * MIN, 5);
+    assert_eq!(rt_fired("order") + rt_fired("block"), 0, "no step climbs inside the snooze: {:?}", rt_texts(&h));
+    assert_eq!(rt_texts(&h).len(), delivered, "no refire inside the snooze: {:?}", rt_texts(&h));
+}
+
 /// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
 #[test]
 fn rt_msg_and_wrong_are_counted_per_step() {
