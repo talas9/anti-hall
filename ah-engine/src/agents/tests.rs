@@ -6706,3 +6706,66 @@ fn n972_a_sessionless_app_row_never_displaces_the_sessions_own_descriptor() {
     ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     assert_eq!(agent(&st, "sessP").ws.as_ref().map(|w| w.id.as_str()), Some("primary-p1"));
 }
+
+// ---- #972 class 27: STALLED, drift and idle-open on waiting or Primary rows ------------------------------------------------
+
+#[test]
+fn n972_a_quiet_workspace_with_an_armed_wake_is_waiting_not_stalled() {
+    let n = now0();
+    let h = home("n972-stall-covered");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "the true positive: quiet, nothing armed");
+    a.armed_until = n + 10 * MIN;
+    assert!(signals::stalled_for_tests(&e, &a, n).is_none(), "its own scheduled wake is a stated wait");
+    a.armed_until = n - MIN;
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a wake that ran out exempts nothing");
+}
+
+fn drifting(n: u64) -> Agent {
+    Agent {
+        id: "lead972".into(),
+        kind: "main".into(),
+        step: "T-53 stall on scheduled wait".into(),
+        step_task: "53".into(),
+        step_events: 50,
+        work: ["disk", "cleanup", "cargo", "target"].iter().map(|w| (*w).to_string()).collect(),
+        last_output_ms: n,
+        ..Agent::default()
+    }
+}
+
+#[test]
+fn n972_drift_skips_a_step_task_another_agent_owns_and_quotes_the_current_subject() {
+    let n = now0();
+    let a = drifting(n);
+    let mut st = State::default();
+    let task = |owner: &str| compliance::Task {
+        id: "53".into(),
+        subject: "T-53 tracker guard misfires on waits".into(),
+        status: "in_progress".into(),
+        owner: owner.into(),
+        ..compliance::Task::default()
+    };
+    // the true positive: the session's own step, renamed; the reminder names the current subject, not the old text
+    let own = signals::drift_for_tests(&a, &st, &[task("")]).expect("its own step still drifts");
+    assert_eq!(own.1, "T-53 tracker guard misfires on waits");
+    // the reported case: a live lane owns the task, so the coordinator's work elsewhere is no drift from it
+    st.agents.insert("lane962".into(), Agent { id: "lane962".into(), name: "lane-962".into(), kind: "teammate".into(), parent: "lead972".into(), ..Agent::default() });
+    assert!(signals::drift_for_tests(&a, &st, &[task("lane-962")]).is_none());
+    // an owner nobody tracks (a stale name) decides nothing
+    assert!(signals::drift_for_tests(&a, &st, &[task("ghost")]).is_some());
+}
+
+#[test]
+fn n972_idle_open_task_never_fires_on_a_primary_row() {
+    let n = now0();
+    let st = State::default();
+    let mut a = quiet_workspace(n, true);
+    a.running = false;
+    a.open = true;
+    a.last_output_ms = n - 30 * MIN;
+    assert!(signals::idle_open_task_for_tests(&a, &st, n).is_none(), "the Primary is the owner's session");
+    a.ws.as_mut().unwrap().primary = false;
+    assert!(signals::idle_open_task_for_tests(&a, &st, n).is_some(), "the true positive: an idle child workspace with its task open");
+}

@@ -343,11 +343,23 @@ fn sweep_markers(env: &Env) {
     }
 }
 
-fn drift(a: &Agent) -> Option<Raised> {
+fn drift(a: &Agent, st: &State, tasks: &[Task]) -> Option<Raised> {
     if a.step.is_empty() || a.step_events < lim("drift_min_events") {
         return None;
     }
-    let step: BTreeSet<String> = words(&a.step).into_iter().collect();
+    // the step is a task of the list: its CURRENT subject is the step (a task renamed since is judged by its new words), and a task
+    // another tracked agent owns is that agent's work, not this session's declared step (#972 class 27: the coordinator was told it
+    // drifted from a lane's task, quoting the subject from before a rename)
+    let task = (!a.step_task.is_empty()).then(|| tasks.iter().find(|t| t.id == a.step_task)).flatten();
+    if let Some(t) = task
+        && !t.owner.is_empty()
+        && st.agents.values().any(|o| o.id != a.id && (o.name == t.owner || o.id == t.owner))
+    {
+        crate::metrics::bump("agent_signal_exempt", &[("signal", "drift"), ("reason", "step_owned_elsewhere")]);
+        return None;
+    }
+    let step_text = task.map(|t| super::cap(&t.subject, lim("text_cap"))).filter(|s| !s.is_empty()).unwrap_or_else(|| a.step.clone());
+    let step: BTreeSet<String> = words(&step_text).into_iter().collect();
     if (step.len() as u64) < lim("drift_min_step_words") {
         return None;
     }
@@ -357,7 +369,7 @@ fn drift(a: &Agent) -> Option<Raised> {
     let work: BTreeSet<&String> = a.work.iter().collect();
     let hit = goal.iter().filter(|w| work.contains(w)).count() as u64;
     let pct = hit * fmtn("pct") / goal.len() as u64;
-    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then(|| (pct, a.step.clone()))
+    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then(|| (pct, step_text))
 }
 
 fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
@@ -372,6 +384,12 @@ fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
 /// sits. Raised once per idle spell; it clears the moment the agent works again.
 fn idle_open_task(a: &Agent, st: &State, tasks: &[Task], now: u64) -> Option<Raised> {
     if (!super::is_child(a) && a.kind != kind_name("workspace")) || a.gone || !a.open || a.running || a.last_output_ms == 0 {
+        return None;
+    }
+    // a Primary is the owner's own session: nobody re-tasks or stops it, so "re-task it or stop it" has no reader (#972 class 27, the
+    // stall rule of GH #962 item 5)
+    if a.ws.as_ref().is_some_and(|w| w.primary) {
+        crate::metrics::bump("agent_signal_exempt", &[("signal", "idle_open_task"), ("reason", "primary")]);
         return None;
     }
     let idle = now.saturating_sub(a.last_output_ms);
@@ -653,6 +671,10 @@ fn stalled(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
         Some("ci_wait")
     } else if a.stall_cpu_at > 0 && now.checked_sub(a.stall_cpu_at).is_some_and(|d| d < num(c, "quiet_ms")) {
         Some("cpu")
+    } else if a.armed_until > now {
+        // a Monitor, cron or wakeup it armed will wake it: a stated, bounded wait (#972 class 27: STALLED while the session waited on its
+        // own scheduled check). A bare background shell still exempts nothing (only a build or CI watch does, above).
+        Some("wake_armed")
     } else {
         None
     };
@@ -801,7 +823,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], all: &[Task], now: u6
             "burn_soft" => burn(env, a, now, true),
             "burn_hard" => burn(env, a, now, false),
             "agent_waste" => super::waste::raised(a),
-            "drift" => drift(a),
+            "drift" => drift(a, st, all),
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "monitor_off" => monitor_off(env, a),
@@ -1425,4 +1447,14 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
 #[cfg(test)]
 pub(super) fn stalled_for_tests(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     stalled(env, a, now)
+}
+
+#[cfg(test)]
+pub(super) fn drift_for_tests(a: &Agent, st: &State, tasks: &[Task]) -> Option<Raised> {
+    drift(a, st, tasks)
+}
+
+#[cfg(test)]
+pub(super) fn idle_open_task_for_tests(a: &Agent, st: &State, now: u64) -> Option<Raised> {
+    idle_open_task(a, st, &[], now)
 }

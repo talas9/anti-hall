@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// One task of the session's task list.
+#[derive(Debug, Clone, Default)]
 pub(super) struct Task {
     pub(super) id: String,
     pub(super) subject: String,

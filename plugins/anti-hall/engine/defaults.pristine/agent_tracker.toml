@@ -124,6 +124,10 @@ value = { name = "agent_outcome_kind", label = "kind", shell_file = "shell_file"
 doc = "Sessions found with no live wake-watch (the re-arm signal went up), by kind (main or workspace) and reason: no_stamp (the watcher's liveness stamp is stale or missing) or workspace_lock (a DevSwarm workspace whose wake-watch lock is missing or stale)."
 value = { kind = "counter", unit = "sessions", labels = ["kind", "reason"] }
 
+[metric.agent_signal_exempt]
+doc = "Tracker signals held back by a standing exemption (#972), by signal and reason: drift/step_owned_elsewhere (the declared step is a task another tracked agent owns), idle_open_task/primary (the row is a DevSwarm Primary, which nobody re-tasks or stops)."
+value = { kind = "counter", unit = "ticks", labels = ["signal", "reason"] }
+
 [metric.agent_ws_coverage]
 doc = "How the tracker settled a DevSwarm session's workspace facts (#972), by how: session_lock (covered by a live wake-watch lock whose record names the session, under another row id), archive_ignored (an archived twin was ignored because the descriptor has a live lock or is newer than the archive), unbound (a row no live descriptor bound this tick lost its stale workspace facts)."
 value = { kind = "counter", unit = "decisions", labels = ["how"] }
