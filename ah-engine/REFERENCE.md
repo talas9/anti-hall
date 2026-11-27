@@ -8028,7 +8028,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.armed_limit_skip` | `limit-skip` |  |  | The watcherArmed word while limit conservation is active. |
 | `mesh_write.astral_base` | `65536` |  |  | The first code point outside the Basic Multilingual Plane, subtracted before the surrogate halves are cut. |
 | `mesh_write.backend_journal` | `journal` |  |  | The marker text of Node's journal backend; a store pinned to it is Node's alone. |
-| `mesh_write.boolean_only_flags` | `10 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
+| `mesh_write.boolean_only_flags` | `11 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
 | `mesh_write.broadcast_merge_cap` | `50` |  |  | How many of the newest broadcasts `--with-broadcasts` merges into a read. |
 | `mesh_write.broadcast_partition` | `*mesh-broadcast*` |  |  | The shared partition every broadcast and heartbeat row lands in (Node's BROADCAST_PARTITION_ID). |
 | `mesh_write.builder_type_primary` | `primary` |  |  | The builder type of a Primary checkout. |
@@ -8141,6 +8141,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_answers` | `answers` |  |  | send's reply-correlation flag. |
 | `mesh_write.flag_blockers` | `blockers` |  |  | The repeatable heartbeat flag for blockers. |
 | `mesh_write.flag_broadcast` | `broadcast` |  |  | send's broadcast flag. |
+| `mesh_write.flag_broadcast_to` | `broadcast-to` |  |  | The `inbox ack` flag naming the seq of the last broadcast `inbox read` listed (`broadcastAckTarget`): the broadcast cursor moves through it and no further; without it the broadcast cursor stays. |
 | `mesh_write.flag_cc_primary` | `cc-primary` |  |  | send's copy-the-Primary flag (Node only). |
 | `mesh_write.flag_child` | `child` |  |  | The `inbox tick` flag that first imports the child's native message queue (a pull) before it counts. |
 | `mesh_write.flag_dash_h` | `-h` |  |  | The `-h` word. |
@@ -8345,7 +8346,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.mesh_never_read_hint` | `withheld {withheld} row(s) from {n} sibling partition(s) (cap {cap}); read th...` |  |  | The hint of a read that withheld rows of sibling partitions over the cap. Placeholders: {withheld}, {n} (partitions), {cap}, {reads} (the commands). |
 | `mesh_write.mesh_never_read_read_cmd` | `inbox messages {pid}` |  |  | The command that reads one sibling partition directly. Placeholder: {pid}. |
 | `mesh_write.mesh_never_read_read_sep` | ` ; ` |  |  | The separator of the direct-read commands in the never-read hint. |
-| `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
+| `mesh_write.messages_added_columns` | `12 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`, then the engine's own (chat_kind, wake_audience and sender_kind, GH #845: Node never writes them). |
 | `mesh_write.min_plausible_start_ms` | `1000000000000` |  |  | A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it. |
 | `mesh_write.mm_log_interval_ms` | `60000` |  | ms | The least time between two log lines of the read/peek mismatch (#615), per reason: a loop that keeps reading an empty mailbox that reports unread mail logs one line per interval; the counter mesh_read_peek_mismatch still counts every one. 0 logs every one. |
 | `mesh_write.mm_msg` | `read printed no message but the unread count is not zero` |  |  | The message of that log entry; the entry's context carries the id, the reason, the unread count, the printed count (0) and the time. |
@@ -8473,6 +8474,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.not_draining_age_ms` | `1200000` |  |  | Age of the oldest unread row past which a backlog is also flagged notDraining (liveness.js NOT_DRAINING_AGE_MS, 20 minutes). |
 | `mesh_write.ns_store` | `store` |  |  | The store cursor namespace of `reader_cursors` (the position in the store's messages). |
 | `mesh_write.on_native` | `native` |  |  | On-mode result: the engine answered the call itself. |
+| `mesh_write.op_broadcast` | `bc` |  |  | The `k` of a read-receipt op that moves the reader's broadcast cursor to the seq of the last broadcast the read listed (GH #845; never back, never past it). |
+| `mesh_write.op_broadcast_version` | `1` |  |  | The `opv` of a broadcast read-receipt op (GH #845 contract §6): its format version, so a later format can be told apart. |
 | `mesh_write.op_nd` | `nd` |  |  | The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's). |
 | `mesh_write.op_own` | `own` |  |  | The `k` of a read-receipt op that moves the caller's own partition cursor. |
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
@@ -8520,7 +8523,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.quiet_failed` | `send failed` |  |  | The {why} of a failed send with neither error nor reason. |
 | `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
 | `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
-| `mesh_write.read_ack_hint` | ``inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s...` |  |  | The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}. |
+| `mesh_write.read_ack_hint` | ``inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s...` |  |  | The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts), {id} and {through} (the read's `ackThrough` boundary). |
 | `mesh_write.read_why_not_regular` | `not-a-regular-file` |  |  | The reason a mesh file read was skipped: the path is no regular file (a FIFO, socket or device). |
 | `mesh_write.read_why_over_hard` | `file-over-hard-cap` |  |  | The reason a mesh file read was skipped: the file is past `file_read_hard_max_bytes`. |
 | `mesh_write.read_why_over_soft` | `file-over-soft-cap` |  |  | The reason a mesh file read was counted and logged: the file is past `file_read_max_bytes` but was read. |
@@ -13701,7 +13704,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.err_unresolvable` | `unresolvable-repo-identity` |  |  | Read error: the repo identity needed to find the summary could not be resolved. |
 | `wake_watch.error_backoff_ms` | `60000, 300000, 1800000` |  |  | Waits between repeated error lines, in milliseconds: the first repeat, the second, then the last one forever. |
 | `wake_watch.error_tolerance` | `3` |  |  | Consecutive failed ticks that stay silent; the next one prints an error line. |
-| `wake_watch.field_broadcast` | `broadcastUnreadFromOthers` |  |  | The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded). |
+| `wake_watch.field_broadcast` | `broadcastUnreadFromOthers` |  |  | The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded): the legacy broadcast channel, read only when the row has no wake_watch.field_broadcast_seq (a writer that predates GH #845). |
+| `wake_watch.field_broadcast_cursor` | `broadcastWakeCursor` |  |  | The summary member holding the workspace's broadcast cursor: an ack that moves it while wake-eligible broadcasts stay unread wakes the workspace again (re-review N-3). |
+| `wake_watch.field_broadcast_pending` | `broadcastWakePending` |  |  | The summary member counting the workspace's unread broadcasts that wake it: a watcher with no saved watermark wakes once when it is above 0 instead of seeding it away. |
+| `wake_watch.field_broadcast_seq` | `broadcastWakeSeq` |  |  | The summary member the broadcast channel wakes on (GH #845): the highest seq among the workspace's unread broadcasts that wake it, or null. A line is printed when it passes the saved watermark (lastBroadcastWakeSeq), which never goes down. |
 | `wake_watch.field_direct_unread` | `directUnread` |  |  | The member of a workspace's summary row that counts its unread direct mail (wake coalescing: 0 means the workspace drained what it was woken for). |
 | `wake_watch.field_session` | `sessionId` |  |  | The lock record field that names the session that armed the watcher. |
 | `wake_watch.field_version` | `version` |  |  | The lock record field that names the plugin build holding the lock. |
@@ -13760,8 +13766,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.repos_root_re` | `[\\/]\.devswarm[\\/]repos[\\/]` |  |  | Regex source: a worktree under the DevSwarm repos root, the only kind the supervisor's active list can call archived. |
 | `wake_watch.role_child` | `child` |  |  | The role word of a child workspace in the lines. |
 | `wake_watch.role_primary` | `primary` |  |  | The role word of a Primary in the lines. |
-| `wake_watch.seen_owned_keys` | `lastTotal, lastTotal2, lastBroadcastUnread, meshTotal, ndjsonTotal` |  |  | The members of a cursor file this build owns and always rewrites; any other member (a newer build's) is carried through untouched. |
+| `wake_watch.seen_owned_keys` | `7 items` |  |  | The members of a cursor file this build owns and always rewrites; any other member (a newer build's) is carried through untouched. |
 | `wake_watch.seen_suffix` | `.seen` |  |  | End of a watcher cursor file's name. |
+| `wake_watch.seen_version` | `2` |  |  | The `seenVersion` this build writes into the cursor file; a file below it has no broadcast watermark yet and is reconciled from field_broadcast_pending. |
 | `wake_watch.session_env` | `CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, ANTIHALL_SESSION_ID` |  |  | The variables that name the session that armed the watcher, in order; the first non-empty one is stamped into the lock. |
 | `wake_watch.set_archived_grace_ms` | `6 entries` |  |  | The setting devswarm.archivedGraceMs: how much newer than a child's descriptor the active-list snapshot must be before the child's absence from it reads as archived (milliseconds). |
 | `wake_watch.set_archived_stop` | `6 entries` |  |  | The setting devswarm.archivedChildStop: an archived child's watcher stays alive but silent. |
@@ -15662,6 +15669,95 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tool_advisory.sw_usage` | `4 entries` |  |  | Emit usage advisories on change. Switch guards.usageAdvisoryOnChange: suppress unchanged usage advisory text; off restores the source behavior. Changes always speak; blocks are unaffected. |
 | `tool_advisory.usage_bucket_pct` | `5 entries` |  |  | Usage percentage bucket width. Usage percentage bucket width (guards.usageAdvisoryBucketPct); changing the fullest limit, bucket or reset time speaks immediately. |
 
+### mesh_wake.toml / mesh_wake
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_wake.ack_through_kv` | `:` |  |  | Separator between a part's key and its position in an `ackThrough` token (the last one in the part). |
+| `mesh_wake.ack_through_nd` | `nd` |  |  | `ackThrough` key of the NDJSON inbox position. |
+| `mesh_wake.ack_through_sep` | `,` |  |  | Separator between the parts of an `ackThrough` token. |
+| `mesh_wake.ack_through_store` | `store` |  |  | `ackThrough` key of the workspace's own store position (each mesh-group sibling is keyed by its id). |
+| `mesh_wake.addressed_mode` | `on` |  |  | `on`: a broadcast wakes only its stored audience (mentions, or everyone for a question, a privileged urgent send or a privileged @all); `off`: every broadcast of others wakes, the rule before GH #845. The audience is stored at send either way. |
+| `mesh_wake.allow_broadcast_question` | `1` |  |  | 1 = `mesh send --broadcast --question` is allowed (stored with needs_reply; audience by the rule above, a question with an ambiguous mention refused); 0 = refused, as before GH #845. Node's send must allow it in the same release. |
+| `mesh_wake.audience_all` | `all` |  |  | The `wake_audience` column text of a broadcast that wakes every reader. |
+| `mesh_wake.audience_none` | `none` |  |  | The `wake_audience` column text of a broadcast that wakes no reader (a JSON array of registry ids names an explicit audience). |
+| `mesh_wake.broadcast_wake_roles` | `primary` |  |  | Sender roles whose urgent unmentioned broadcast reaches every reader (phase 1 has no admin role: the owner's word comes through the Primary). |
+| `mesh_wake.broadcast_wake_urgency` | `high, urgent` |  |  | Urgencies at which an unmentioned broadcast from a role in mesh_wake.broadcast_wake_roles reaches every reader. |
+| `mesh_wake.channel_broadcast` | `broadcast` |  |  | The `channel` label of a wake-watch line for a broadcast. |
+| `mesh_wake.channel_broadcast_cursor` | `broadcast-cursor` |  |  | The `channel` of a cursorWriteFailures entry for a broadcast-cursor move an ack could not make. |
+| `mesh_wake.channel_mail` | `mail` |  |  | The `channel` label of a wake-watch line for new direct or inbox mail. |
+| `mesh_wake.dir_ack_through` | `ack-through` |  |  | Directory under the DevSwarm state root where `inbox read` keeps the boundary it delivered per workspace (`<id>.json`), for a bare `inbox ack` (re-review N-6). |
+| `mesh_wake.flag_ack_through` | `through` |  |  | `inbox ack --through <ackThrough>`: hold every cursor to the boundary the `inbox read` delivered, so mail that arrived after it stays unread. A bare `inbox ack` (no --through, no --to) uses the boundary the last `inbox read` kept (`dir_ack_through`), and acks nothing when no read is on record. |
+| `mesh_wake.inbox_broadcast_cap` | `50` |  |  | Most unread broadcasts that do NOT wake the reader one drain lists, oldest first; the rest stay unread (`broadcastsMore`) for the next drain, and the ack stops before the first row held back. Rows that wake the reader have their own budget (`inbox_broadcast_eligible_cap`), so these never crowd them out. |
+| `mesh_wake.inbox_broadcast_eligible_cap` | `50` |  |  | Most unread broadcasts that wake the reader one drain lists (their own budget, beside `inbox_broadcast_cap`). A row listed past a held-back row stays unread until the ack reaches it, and the watcher wakes again while such rows remain after an ack. |
+| `mesh_wake.key_ack_no_read` | `ackedNothing` |  |  | `inbox ack` result key, set when a bare ack found no `inbox read` on record and so acked nothing. |
+| `mesh_wake.key_ack_through` | `ackThrough` |  |  | `inbox read` result key: the boundary the read delivered, as the token `inbox ack --through` takes. |
+| `mesh_wake.key_broadcast_ack_target` | `broadcastAckTarget` |  |  | The member of `inbox read`'s result holding the seq of the last broadcast it listed: pass it to `inbox ack <id> --broadcast-to <seq>`. |
+| `mesh_wake.key_broadcast_cursor` | `broadcastCursor` |  |  | The member of an acking verb's result that reports where the broadcast cursor moved (only when it moved). |
+| `mesh_wake.key_broadcasts` | `broadcasts` |  |  | The member of a drain verb's result that lists the unread broadcasts (each with `addressed`). |
+| `mesh_wake.key_broadcasts_error` | `broadcastsError` |  |  | Drain result key (inbox read, read-primary): why the broadcasts could not be read. The direct mail is still read; no broadcast is listed or acked. |
+| `mesh_wake.key_broadcasts_more` | `broadcastsMore` |  |  | The member of a drain verb's result that says more unread broadcasts wait past the cap. |
+| `mesh_wake.mention_admin` | `admin` |  |  | Mention tokens of an owner/admin relay (`[@admin] …`): from a role in mesh_wake.mention_all_roles they address every recipient of the room, like @all; from anyone else (a child's `RE @admin`) they address no one. |
+| `mesh_wake.mention_all` | `all, everyone` |  |  | Mention tokens that address every reader (honoured only from a role in mesh_wake.mention_all_roles). |
+| `mesh_wake.mention_all_roles` | `primary` |  |  | Sender roles whose @all reaches every reader; from anyone else it addresses no one. |
+| `mesh_wake.mention_min_prefix` | `6` |  |  | Shortest id prefix a mention may use to address a workspace (a shorter token, or one that is no id, such as @admin, addresses no one). Mentions narrow the audience even for a question or an urgent send. |
+| `mesh_wake.mention_primary` | `primary` |  |  | Mention tokens that address the Primary (every registry id with the Primary prefix). |
+| `mesh_wake.mention_re` | `(?:^\|[^A-Za-z0-9_])@([A-Za-z0-9][A-Za-z0-9_-]*)` |  |  | A mention in a broadcast body (JavaScript regex source, case-insensitive; group 1 is the token): an @ not preceded by a letter, digit or underscore (so an e-mail address is not one). |
+| `mesh_wake.mode_on` | `on` |  |  | The mesh_wake.addressed_mode value that turns the addressed rule on. |
+| `mesh_wake.msg_ack_no_read` | `no inbox read on record for this workspace: nothing was acked. Run `inbox rea...` |  |  | The note under `key_ack_no_read`. |
+| `mesh_wake.msg_ack_through_invalid` | `--through takes the ackThrough value that `inbox read` printed.` |  |  | The refusal text of `inbox ack --through` with a token that is not `<key>:<number>` parts. |
+| `mesh_wake.msg_ambiguous_mention` | `@{token} matches several workspaces ({ids}): mention a longer id so the quest...` |  |  | The refusal text of a broadcast question whose mention prefixes several workspaces. |
+| `mesh_wake.msg_broadcast_to_not_number` | `--broadcast-to takes the broadcastAckTarget number that `inbox read` printed.` |  |  | The refusal text of `inbox ack --broadcast-to` with a value that is not a non-negative number. |
+| `mesh_wake.msg_tick_broadcast_unread` | `inbox tick {id}: the broadcast wake count did not read: {why}` |  |  | Debug note when `inbox tick` cannot read the broadcasts that wake a workspace (the tick then counts none); `{id}` and `{why}`. |
+| `mesh_wake.primary_reader` | `all` |  |  | What wakes a Primary reader while mesh_wake.addressed_mode is on: `all` (every broadcast of others, as before) or `addressed` (its stored audience, like a child). |
+| `mesh_wake.primary_reader_addressed` | `addressed` |  |  | The mesh_wake.primary_reader value that applies the addressed rule to a Primary. |
+| `mesh_wake.read_primary_preview_chars` | `160` |  |  | read-primary lists a broadcast that does not address the reader as a preview of at most this many characters (`preview: true`); an addressed one is listed in full. `inbox read` lists every body in full. |
+| `mesh_wake.reason_ambiguous_mention` | `ambiguous-mention` |  |  | The refusal `reason` of a broadcast question whose mention prefixes several workspaces. |
+| `mesh_wake.role_child` | `child` |  |  | The role word of any other sender in the wake rule. |
+| `mesh_wake.role_primary` | `primary` |  |  | The role word of a Primary sender in the wake rule. |
+| `mesh_wake.stage_event_prefix` | `mesh-send-stage.` |  |  | Prefix of the telemetry event name of one send stage (`<prefix><stage>`, kind cmd): `ah-engine telemetry` reports p50/p95/p99 per name. |
+| `mesh_wake.stage_labels` | `12 entries` |  |  | The stage names of one mesh send, as the telemetry and the shadow log label them (key = the stage the code times, value = its label): total (the whole verb), heal (self-heal and daemon probe), open (store open with its DDL), ident (roster read and sender identity), resolve (target resolution), lock (per-recipient lock wait), insert (the INSERT), summary (the summary projection and its write), readback (the read-back verify), receipt (receipt, Jev enqueue, sender activity), wake (the native wake of an idle child), hivecontrol (the hivecontrol subprocesses inside it). |
+| `mesh_wake.stage_log_field` | `stages` |  |  | The member of the mesh shadow-log line that holds a send's stage times in milliseconds. |
+| `mesh_wake.summary_field_cursor` | `broadcastWakeCursor` |  |  | The summary member holding a workspace's broadcast cursor (the watcher wakes again when an ack moves it while wake-eligible broadcasts stay unread). |
+| `mesh_wake.summary_field_pending` | `broadcastWakePending` |  |  | The summary member counting a workspace's unread broadcasts that wake it (display and the start-up reconcile only, never a wake edge). |
+| `mesh_wake.summary_field_seq` | `broadcastWakeSeq` |  |  | The summary member holding the highest seq among a workspace's unread broadcasts that wake it (null when none): the wake-watch's broadcast watermark compares against it, so a drain followed by a new arrival is never missed. |
+| `mesh_wake.suppressed_ack` | `ack` |  |  | The `reason` label of a native wake skipped because the send stored an explicit ack (mesh_chat.ack_suppression on). |
+| `mesh_wake.tick_field_wake` | `wake` |  |  | `inbox tick` result field: what should wake a polling workspace, the unread direct mail without explicit acks plus the broadcasts that wake it. A poll loop acts on this; `unreadTotal` stays the full count. |
+| `mesh_wake.tick_field_wake_direct` | `wakeDirect` |  |  | `inbox tick` result field: the unread direct mail without the explicit acks (`send --ack-only`) while `mesh_chat.ack_suppression` is on. |
+| `mesh_wake.tick_line_wake` | `, wake {wake}` |  |  | Appended to the `inbox tick --quiet` line when the wake count differs from the unread count; `{wake}` is filled in. |
+
+### mesh_chat.toml / mesh_chat
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_chat.ack_suppression` | `1` |  |  | 1 = an explicit ack wakes no one (left out of the direct wake count, inbox tick's wake count and the native wake); 0 = it is ordinary mail. |
+| `mesh_chat.flag_ack_only` | `ack-only` |  |  | The `mesh send` flag that marks a message as an explicit ack (refused with --question or --answers). |
+| `mesh_chat.kind_ack` | `ack` |  |  | The chat_kind stored on an explicit ack. |
+| `mesh_chat.msg_ack_only_broadcast` | `--ack-only answers one sender; send it with --to <id>, not --broadcast.` |  |  | The refusal text of --ack-only combined with --broadcast (an ack answers one sender: send it with --to). |
+| `mesh_chat.msg_ack_only_conflict` | `--ack-only marks a message that needs nothing back; it does not combine with ...` |  |  | The refusal text of --ack-only combined with --question or --answers. |
+
+### mesh_identity.toml / mesh_identity
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_identity.agent_env_builder` | `DEVSWARM_BUILDER_ID` |  |  | The DevSwarm builder-id variable: set to anything but the identity being declared, it marks the caller as that builder's agent. |
+| `mesh_identity.agent_env_markers` | `10 items` |  |  | Environment variables whose presence marks the caller as an agent (Claude Code, Codex, a DevSwarm agent): such a caller is refused when it declares an identity. The owner's room spawns its sends with a clean environment that has none of them. |
+| `mesh_identity.flag_as` | `as` |  |  | `send --as <id>` (operator use): send as a declared identity (an id of `identities` with `cli = true`) instead of the caller's workspace; refused for an agent caller. |
+| `mesh_identity.identities` | `2 entries` |  |  | The declared (non-workspace) senders, by the id stored on their messages: `display` (the name shown), `kind` (stored as the row's sender_kind; unique per identity), `rank`, `cli` (whether a non-agent CLI caller may declare it), and for a proxy `on_behalf_of` (the identity it acts for). |
+| `mesh_identity.identity_fields` | `5 entries` |  |  | The field names of an `identities` entry (the schema the engine reads). |
+| `mesh_identity.key_from_display` | `fromDisplay` |  |  | Listed-row key: a declared sender's display name, when it differs from its id. |
+| `mesh_identity.key_from_kind` | `fromKind` |  |  | Listed-row key: the kind of a declared sender. |
+| `mesh_identity.key_from_rank` | `fromRank` |  |  | Listed-row key: the rank of a declared sender (the higher rank wins when instructions conflict). |
+| `mesh_identity.key_on_behalf_of` | `onBehalfOf` |  |  | Listed-row key: the identity a proxy sender acts for. |
+| `mesh_identity.kind_agent` | `agent` |  |  | The kind of a workspace sender (stored in `sender_kind`); never a declared identity's kind. |
+| `mesh_identity.msg_agent_refused` | `an agent cannot send as {name}: declared identities are the owner's (and the ...` |  |  | The refusal text of a send whose caller is an agent but declares an identity; `{name}` is filled in. |
+| `mesh_identity.msg_unknown_sender` | `unknown mesh sender {name}: declare one of {known} (--as or the sender variab...` |  |  | The refusal text of a send that declares an identity `identities` does not have; `{name}` and `{known}` are filled in. |
+| `mesh_identity.privileged_rank` | `50` |  |  | A sender at or above this rank may wake every reader (an `@all`, a question or an urgent broadcast), as the Primary may. |
+| `mesh_identity.rank_child` | `10` |  |  | The rank of a child workspace (and of any sender that is not declared or a Primary). |
+| `mesh_identity.rank_primary` | `50` |  |  | The rank of a Primary workspace. |
+| `mesh_identity.row_kind_field` | `senderKind` |  |  | The member of a store row read that carries its stored sender_kind (attached only for a declared identity's kind). |
+| `mesh_identity.sender_env` | `AH_MESH_SENDER` |  |  | The environment variable that declares the sender of a send (an id of `identities` with `cli = true`), e.g. the owner's chat room sets it to `admin`; refused for an agent caller. `--as` wins over it. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -16568,6 +16664,11 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `devswarm_orphans_warning_suppressed` | counter | warnings | reason | Orphaned-mesh warnings not shown again, by reason (seen_this_session: the same id set was already shown in this session). |
 | `devswarm_roster_flags` | counter | workspaces | action | Roster flags (#844 item 4), by action: ordered (children named in an order line), gate_counted (a parent Stop-gate block that named flagged children), gate_notice (a flagged set already blocked on this session, shown as a notice). |
 | `devswarm_unread_read_seen` | counter | workspaces | reason | Unread backlogs relabelled 'read, not acked' in the nudge because the child ran `inbox read` on them since the oldest arrived (a read without its ack), by reason (receipt). |
+| `mesh_broadcast_read_failed` | counter | reads |  | Drain reads (inbox read, read-primary) whose broadcast read failed and listed none, while the direct mail was still read. |
+| `mesh_extras_dropped` | counter | messages |  | Sends whose GH #845 columns (chat_kind, wake_audience) could not be set because the store lacks them (its ALTER at open failed): the row is kept and read as a legacy row. |
+| `mesh_wake_lines` | counter | lines | channel, role | Wake lines the wake-watch printed, by channel (mail or broadcast) and watcher role: each is a woken turn (GH #845 baseline). |
+| `mesh_wake_suppressed` | counter | wakes | reason | Native wakes (DevSwarm reactivate) a send skipped, by reason (GH #845). |
+| `mesh_chat_ack` | counter | messages |  | Sends stored as an explicit ack (chat_kind = ack). |
 
 ## Impact kinds
 
