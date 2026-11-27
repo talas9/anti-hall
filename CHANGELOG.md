@@ -20,6 +20,11 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.32 (local integration build, wave A)
+
+- Hardening: crash-latch load exits, hung-worker kill with tombstone, RSS load rule, crash-loop hold, HdrHistogram p99 (feat/harden-latch-p99); overload priority queue, AIMD, session barrier (feat/harden-tower); build profiles test-fast and release-fast, OnceLock version (chore/split-step0-build).
+- Watchdog load scaling is bounded: `daemon.stuck_ms` 5000 x `daemon.watchdog_load_scale_max_permille` 1750 = 8750 ms stays under the shortest guard hook timeout (10 s); test `the_time_bounds_nest` includes the factor.
+
 ## Engine 0.3.31 (local integration build)
 
 - #971 capacity hold: the engine's own local verbs pass under load whatever the spelling (engine and ah-hook); review fixes for the read exemption (inert allow list, write-then-run guard, `&>` regression lines, assigning expansions and bare `( ) < >` exempt nothing).

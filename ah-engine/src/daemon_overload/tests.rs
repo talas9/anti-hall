@@ -443,7 +443,8 @@ fn the_time_bounds_nest() {
         .collect();
     let (wait_lo, wait_hi) = (waits.iter().copied().min().unwrap_or(0), waits.iter().copied().max().unwrap_or(0));
     let client = ship("client.deadline_ms") * ship("daemon.load_scale_max_permille") / 1000;
-    let stuck = ship("daemon.stuck_ms");
+    // R0: the watchdog stretches stuck_ms by its load factor up to daemon.watchdog_load_scale_max_permille; the bound nests at that largest value
+    let stuck = ship("daemon.stuck_ms") * ship("daemon.watchdog_load_scale_max_permille").max(1000) / 1000;
     let hook = ["claude", "codex"]
         .iter()
         .flat_map(|h| defaults::list("dispatch.guard_events").into_iter().map(move |e| (h, e)))
