@@ -80,7 +80,7 @@ mod tests {
     use super::*;
 
     /// The shipped setting names a class in the table, an unknown name or the off word is no class, and on macOS the class is
-    /// really set on the thread (and inherited by a thread it starts); elsewhere nothing changes.
+    /// really set on the thread; elsewhere nothing changes.
     #[test]
     fn the_configured_class_is_set_on_the_calling_thread_and_off_changes_nothing() {
         assert!(configured().is_some(), "the shipped daemon.qos names a class of daemon.qos_classes");
@@ -92,8 +92,8 @@ mod tests {
             if cfg!(target_os = "macos") {
                 assert_eq!(r, Applied::Set);
                 assert_eq!(current(), want, "the thread runs in the configured class");
-                let child = std::thread::spawn(current).join().unwrap();
-                assert_eq!(child, want, "a thread started by a request thread inherits its class");
+                // a thread it starts is NOT assumed to inherit the class: measured 2026-11-28 on macOS, a std::thread child read the
+                // default class (21), so every serving thread sets its own class through apply_self
             } else {
                 assert_eq!(r, Applied::Off);
                 assert_eq!(current(), None);

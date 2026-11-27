@@ -1197,7 +1197,9 @@ fn consumer_tracker(case: &Case, root: &Path) -> Decision {
 /// list is read from the transcript or the store; a list that cannot be read exactly says nothing).
 fn consumer_hygiene(case: &Case, root: &Path) -> Decision {
     let fx = fixture(case, root, &[], &[]);
-    std::fs::write(fx.home.join(".anti-hall/settings.json"), r#"{"handover":{"taskListBudget":1,"taskListEnforce":"advisory"}}"#).unwrap();
+    // the budget line is the open-task limit only with the task window off (GH #982: with it on, the window size is the limit, enforced
+    // at PreToolUse and tested in tests/it/task_window.rs)
+    std::fs::write(fx.home.join(".anti-hall/settings.json"), r#"{"handover":{"taskListBudget":1,"taskListEnforce":"advisory"},"guards":{"taskWindow":false}}"#).unwrap();
     let mut p = base_payload(&fx, "PostToolUse");
     p["tool_name"] = json!("TaskCreate");
     p["tool_input"] = json!({"subject": "brand new task", "description": ""});

@@ -307,6 +307,10 @@ value = [
 doc = "What ends a paragraph of the reply (#972 wave 2: the scope of an attribution and a not-verified marker). Rust regular expression."
 value = '\n[ \t]*\n'
 
+[claim_evidence.list_para_re]
+doc = "A paragraph that is a list (#972 wave 2): its scope also holds the line just before it, the lead-in that governs the list ('Lane-reported results; I have not re-run them yet.' then '- tests pass: 410/410'). Rust regular expression, matched against the paragraph."
+value = '\A\s*(?:[-*+]|[0-9]+[.)])\s'
+
 [claim_evidence.heading_line_re]
 doc = "A line that heads the paragraphs after it (#972 wave 2): a markdown heading, a bold line, or a short line that ends with a colon. Rust regular expression, matched against one line."
 value = '^\s*(?:#{1,6}\s+\S|\*\*[^\n]+\*\*\s*:?\s*$|[^\n.!?]{1,160}:\s*$)'

@@ -70,7 +70,13 @@ function ceScope(t, at) {
   for (var i = lines.length - 1; i >= 0; i--) {
     if (ah.re.find(ah.cfg('claim_evidence.heading_line_re'), '', lines[i])) { head = lines[i]; break; }
   }
-  return head + '\n' + t.slice(start, end);
+  // a list paragraph (claim_evidence.list_para_re) is governed by the line that leads into it, whatever its punctuation
+  var lead = '';
+  if (start > 0 && ah.re.find(ah.cfg('claim_evidence.list_para_re'), '', t.slice(start, end))) {
+    var prev = t.slice(0, start).replace(/\s+$/, '').split('\n');
+    lead = prev[prev.length - 1];
+  }
+  return head + '\n' + lead + '\n' + t.slice(start, end);
 }
 
 // #972 wave 2: the claim's paragraph or heading attributes the result to another agent AND says it was not verified here.
