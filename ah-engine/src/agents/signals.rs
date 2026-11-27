@@ -343,11 +343,25 @@ fn sweep_markers(env: &Env) {
     }
 }
 
-fn drift(a: &Agent) -> Option<Raised> {
+fn drift(a: &Agent, st: &State, tasks: &[Task]) -> Option<Raised> {
     if a.step.is_empty() || a.step_events < lim("drift_min_events") {
         return None;
     }
-    let step: BTreeSet<String> = words(&a.step).into_iter().collect();
+    // the step is a task of the list: its CURRENT subject is the step (a task renamed since is judged by its new words), and a task
+    // another tracked agent owns is that agent's work, not this session's declared step (#972 class 27: the coordinator was told it
+    // drifted from a lane's task, quoting the subject from before a rename)
+    let task = (!a.step_task.is_empty()).then(|| tasks.iter().find(|t| t.id == a.step_task)).flatten();
+    if let Some(t) = task
+        && !t.owner.is_empty()
+        && st.agents.values().any(|o| {
+            super::is_child(o) && o.parent == a.id && !o.gone && !o.dead && !o.finished && (o.name == t.owner || o.id == t.owner)
+        })
+    {
+        crate::metrics::bump("agent_signal_exempt", &[("signal", "drift"), ("reason", "step_owned_elsewhere")]);
+        return None;
+    }
+    let step_text = task.map(|t| super::cap(&t.subject, lim("text_cap"))).filter(|s| !s.is_empty()).unwrap_or_else(|| a.step.clone());
+    let step: BTreeSet<String> = words(&step_text).into_iter().collect();
     if (step.len() as u64) < lim("drift_min_step_words") {
         return None;
     }
@@ -357,7 +371,7 @@ fn drift(a: &Agent) -> Option<Raised> {
     let work: BTreeSet<&String> = a.work.iter().collect();
     let hit = goal.iter().filter(|w| work.contains(w)).count() as u64;
     let pct = hit * fmtn("pct") / goal.len() as u64;
-    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then(|| (pct, a.step.clone()))
+    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then(|| (pct, step_text))
 }
 
 fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
@@ -372,6 +386,12 @@ fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
 /// sits. Raised once per idle spell; it clears the moment the agent works again.
 fn idle_open_task(a: &Agent, st: &State, tasks: &[Task], now: u64) -> Option<Raised> {
     if (!super::is_child(a) && a.kind != kind_name("workspace")) || a.gone || !a.open || a.running || a.last_output_ms == 0 {
+        return None;
+    }
+    // a Primary is the owner's own session: nobody re-tasks or stops it, so "re-task it or stop it" has no reader (#972 class 27, the
+    // stall rule of GH #962 item 5)
+    if a.ws.as_ref().is_some_and(|w| w.primary) {
+        crate::metrics::bump("agent_signal_exempt", &[("signal", "idle_open_task"), ("reason", "primary")]);
         return None;
     }
     let idle = now.saturating_sub(a.last_output_ms);
@@ -705,7 +725,8 @@ fn idle_no_agents(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) ->
 /// GH #515: an idle child whose last line claims running or background work, with no call in flight, no build or background shell
 /// and no output for `claim_ms`. Evidence: the idle seconds; text: the line.
 fn false_claim(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
-    if !super::is_child(a) || !env.switch("agent_tracker.idle_wake_sw") || a.running || a.gone || a.last_output_ms == 0 {
+    // a finished, stopped or dead child claims nothing any more (#972 class 1)
+    if !super::is_child(a) || !env.switch("agent_tracker.idle_wake_sw") || a.running || a.gone || a.finished || a.dead || a.last_output_ms == 0 {
         return None;
     }
     let line = a.said.last()?;
@@ -801,7 +822,7 @@ fn raise(env: &Env, a: &Agent, st: &State, tasks: &[Task], all: &[Task], now: u6
             "burn_soft" => burn(env, a, now, true),
             "burn_hard" => burn(env, a, now, false),
             "agent_waste" => super::waste::raised(a),
-            "drift" => drift(a),
+            "drift" => drift(a, st, all),
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "monitor_off" => monitor_off(env, a),
@@ -1077,6 +1098,13 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         return;
     }
     let now = env.now_ms;
+    // a snooze its parent gave this child (`agents nudge <child> snooze`) holds the nag reminders about the child (agent_tracker.snooze_holds),
+    // not only the nudge loop's own (#972 class 1: a snoozed teammate's false_claim fired again within the hour); safety and
+    // informational rows (burn, an ended background task, no work) still flow
+    if super::is_child(a) && defaults::list("agent_tracker.snooze_holds").contains(&sig) && super::nudge::snoozed(env, st, a, now) {
+        compliance::suppressed_any(sig, "snoozed");
+        return;
+    }
     let cd = defaults::raw("agent_tracker.cooldowns").get(sig);
     let cool = cd.and_then(|c| c.get("cooldown_ms")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let per_day = cd.and_then(|c| c.get("max_per_day")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
@@ -1425,4 +1453,14 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
 #[cfg(test)]
 pub(super) fn stalled_for_tests(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
     stalled(env, a, now)
+}
+
+#[cfg(test)]
+pub(super) fn drift_for_tests(a: &Agent, st: &State, tasks: &[Task]) -> Option<Raised> {
+    drift(a, st, tasks)
+}
+
+#[cfg(test)]
+pub(super) fn idle_open_task_for_tests(a: &Agent, st: &State, now: u64) -> Option<Raised> {
+    idle_open_task(a, st, &[], now)
 }

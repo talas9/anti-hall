@@ -6627,3 +6627,355 @@ fn n964_completing_the_step_counts_and_ends_it_even_with_closed_statuses_emptied
     assert_eq!(steps, 1, "the completion counted");
     assert!(!open && step.is_empty(), "the completed step ended: open={open} step={step:?}");
 }
+
+// ---- #972 class 7: the tracker's wake-watch coverage follows the live lock, every tick -------------------------------
+
+/// The 2026-11-27 SkyCrew layout: the session's own descriptor `primary-p1` (with an archive twin written long ago), the app's
+/// sessionless row `app-row` on the same checkout, and the watcher's live lock under `primary-p1` naming the session.
+fn sky_layout(h: &Path, n: u64, lock: bool) {
+    let d = h.join(".anti-hall/devswarm");
+    write(
+        &h.join(".claude/projects/p/sessP.jsonl"),
+        &[prompt(n - 5 * MIN, "/wt/sky"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "on it"}]), Some("end_turn"))],
+    );
+    for sub in ["workspaces", "plans", "locks", "archived"] {
+        std::fs::create_dir_all(d.join(sub)).unwrap();
+    }
+    std::fs::write(d.join("archived/primary-p1.json"), r#"{"id":"primary-p1","sessionId":"sessP","worktreePath":"/wt/sky"}"#).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 24 * 3600);
+    std::fs::File::options().write(true).open(d.join("archived/primary-p1.json")).unwrap().set_modified(old).unwrap();
+    std::fs::write(d.join("workspaces/app-row.json"), r#"{"id":"app-row","sessionId":null,"worktreePath":"/wt/sky"}"#).unwrap();
+    std::fs::write(d.join("workspaces/primary-p1.json"), r#"{"id":"primary-p1","sessionId":"sessP","worktreePath":"/wt/sky"}"#).unwrap();
+    if lock {
+        sky_lock(h, n);
+    }
+}
+
+fn sky_lock(h: &Path, ts: u64) {
+    let d = h.join(".anti-hall/devswarm/locks/wake-watch-primary-p1.lock");
+    std::fs::write(d, json!({"ts": ts, "pid": std::process::id(), "sessionId": "sessP"}).to_string()).unwrap();
+}
+
+/// Ticks without arming the session wake stamp (the workspace path decides by the DevSwarm lock alone).
+fn ticks_bare(h: &Path, st: &mut State, at: &[u64]) {
+    for t in at {
+        tick(&env(h, *t), st);
+    }
+}
+
+#[test]
+fn n972_a_live_lock_under_the_sessions_own_descriptor_covers_it_despite_a_stale_archive_twin() {
+    let h = home("n972-sky");
+    let n = now0();
+    sky_layout(&h, n, true);
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessP");
+    let w = a.ws.as_ref().expect("the session is a workspace");
+    assert_eq!((w.id.as_str(), w.armed), ("primary-p1", Some(true)), "bound to its own descriptor and covered: {w:?}");
+    assert!(escalate::primary(a), "its own descriptor says Primary");
+    assert!(!a.flags.contains_key("monitor_unarmed"), "{:?}", a.flags.keys().collect::<Vec<_>>());
+    assert!(queue(&h, "sessP").iter().all(|r| r["signal"] != "monitor_unarmed"), "{:?}", queue(&h, "sessP"));
+}
+
+#[test]
+fn n972_coverage_is_judged_again_every_tick_not_frozen_at_first_sight() {
+    // the row was first seen with no watcher (the flag went up); the watcher armed later and its lock is live: the next tick must see it
+    let h = home("n972-refresh");
+    let n = now0();
+    sky_layout(&h, n, false);
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + 2 * MIN, n + 4 * MIN]);
+    assert_eq!(agent(&st, "sessP").ws.as_ref().and_then(|w| w.armed), Some(false), "no lock yet: not covered");
+    assert!(agent(&st, "sessP").flags.contains_key("monitor_unarmed"), "the true positive still fires");
+    sky_lock(&h, n + 5 * MIN);
+    ticks_bare(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN]);
+    let a = agent(&st, "sessP");
+    assert_eq!(a.ws.as_ref().and_then(|w| w.armed), Some(true), "{:?}", a.ws);
+    assert!(!a.flags.contains_key("monitor_unarmed"), "the flag clears once the live lock covers it");
+}
+
+#[test]
+fn n972_a_sessionless_app_row_never_displaces_the_sessions_own_descriptor() {
+    // no archive twin, no lock: whichever order the rows are read in, the session-id match wins over the checkout match
+    let h = home("n972-order");
+    let n = now0();
+    sky_layout(&h, n, false);
+    std::fs::remove_file(h.join(".anti-hall/devswarm/archived/primary-p1.json")).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(agent(&st, "sessP").ws.as_ref().map(|w| w.id.as_str()), Some("primary-p1"));
+}
+
+// ---- #972 class 27: STALLED, drift and idle-open on waiting or Primary rows ------------------------------------------------
+
+/// Every compliant workspace keeps a wake-watch Monitor armed (owner rule), so an armed wake is no evidence of a stated wait: a quiet
+/// child workspace with its Monitor armed still stalls (the Primary is exempt by n962_primary_session_is_never_stalled).
+#[test]
+fn n972_an_armed_wake_watch_does_not_exempt_a_quiet_child_workspace_from_stalled() {
+    let n = now0();
+    let h = home("n972-stall-armed");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    a.armed_until = n + 20 * MIN;
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some());
+}
+
+fn drifting(n: u64) -> Agent {
+    Agent {
+        id: "lead972".into(),
+        kind: "main".into(),
+        step: "T-53 stall on scheduled wait".into(),
+        step_task: "53".into(),
+        step_events: 50,
+        work: ["disk", "cleanup", "cargo", "target"].iter().map(|w| (*w).to_string()).collect(),
+        last_output_ms: n,
+        ..Agent::default()
+    }
+}
+
+#[test]
+fn n972_drift_skips_a_step_task_another_agent_owns_and_quotes_the_current_subject() {
+    let n = now0();
+    let a = drifting(n);
+    let mut st = State::default();
+    let task = |owner: &str| compliance::Task {
+        id: "53".into(),
+        subject: "T-53 tracker guard misfires on waits".into(),
+        status: "in_progress".into(),
+        owner: owner.into(),
+        ..compliance::Task::default()
+    };
+    // the true positive: the session's own step, renamed; the reminder names the current subject, not the old text
+    let own = signals::drift_for_tests(&a, &st, &[task("")]).expect("its own step still drifts");
+    assert_eq!(own.1, "T-53 tracker guard misfires on waits");
+    // the reported case: a live lane owns the task, so the coordinator's work elsewhere is no drift from it
+    st.agents.insert("lane962".into(), Agent { id: "lane962".into(), name: "lane-962".into(), kind: "teammate".into(), parent: "lead972".into(), ..Agent::default() });
+    assert!(signals::drift_for_tests(&a, &st, &[task("lane-962")]).is_none());
+    // an owner nobody tracks (a stale name) decides nothing
+    assert!(signals::drift_for_tests(&a, &st, &[task("ghost")]).is_some());
+}
+
+#[test]
+fn n972_idle_open_task_never_fires_on_a_primary_row() {
+    let n = now0();
+    let st = State::default();
+    let mut a = quiet_workspace(n, true);
+    a.running = false;
+    a.open = true;
+    a.last_output_ms = n - 30 * MIN;
+    assert!(signals::idle_open_task_for_tests(&a, &st, n).is_none(), "the Primary is the owner's session");
+    a.ws.as_mut().unwrap().primary = false;
+    assert!(signals::idle_open_task_for_tests(&a, &st, n).is_some(), "the true positive: an idle child workspace with its task open");
+}
+
+// ---- #972 class 2 / #961: a hold the session answered (wrote the task after a reminder named it) is confirmed -----------------
+
+fn confirm_ms() -> u64 {
+    defaults::raw("nudges.hold").get("confirm_ms").and_then(V::as_integer).unwrap() as u64
+}
+
+/// Write a task file whose mtime is the simulated clock `at` (the tracker compares it with the tick time of the reminder).
+fn task_file_at(h: &Path, sid: &str, t: Value, at: u64) {
+    task_file(h, sid, t.clone());
+    let sid8: String = sid.chars().take(8).collect();
+    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{}.json", t["id"].as_str().unwrap()));
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+}
+
+fn n972_hold_rows(h: &Path) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+}
+
+#[test]
+fn n972_a_hold_saved_again_after_its_reminder_is_confirmed_and_silent_for_confirm_ms() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972-confirm");
+    let (max, conf) = (hold_max(), confirm_ms());
+    let task = json!({"id": "28", "subject": "Task 28", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}});
+    task_file_at(&h, SID, task.clone(), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1, "the true positive: an expired hold is reminded");
+    // the session answers: the same reason saved again, minutes after the reminder (the 2FA "refreshed minutes earlier" case)
+    task_file_at(&h, SID, task.clone(), n + max + 5 * MIN);
+    let mut at = n + max + 6 * MIN;
+    while at < n + max + conf {
+        ticks(&h, &mut st, &[at]);
+        at += 31 * MIN;
+    }
+    assert_eq!(n972_hold_rows(&h).len(), 1, "confirmed: silent for confirm_ms, not every cooldown {:?}", n972_hold_rows(&h));
+    // bounded: past confirm_ms it speaks again
+    ticks(&h, &mut st, &[n + max + 6 * MIN + conf + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 2, "the confirmation runs out");
+}
+
+#[test]
+fn n972_an_unanswered_hold_keeps_its_cooldown_and_a_new_reason_runs_the_plain_clock() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972-unanswered");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "69", "subject": "Task 69", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file_at(&h, SID, task("waiting on the CI run"), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 2, "no answer: reminded again after the cooldown");
+    // answered with a new reason: confirmed, tied to that reason
+    task_file_at(&h, SID, task("CI green, waiting on the reviewer"), n + max + 40 * MIN);
+    ticks(&h, &mut st, &[n + max + 41 * MIN]);
+    let k = agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()).expect("confirmed");
+    // a later reason no reminder named is a fresh hold on the plain clock, not covered by the old confirmation
+    task_file_at(&h, SID, task("reviewer replied, waiting on the deploy window"), n + max + 50 * MIN);
+    ticks(&h, &mut st, &[n + max + 51 * MIN]);
+    let before = n972_hold_rows(&h).len();
+    ticks(&h, &mut st, &[n + max + 51 * MIN + max + MIN]);
+    assert_eq!(agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()), Some(k), "the confirmation stays tied to the reason it confirmed");
+    assert_eq!(n972_hold_rows(&h).len(), before + 1, "the new reason expired on the plain clock and was reminded");
+}
+
+// ---- #972 class 1: a stopped or snoozed child stays stopped or snoozed --------------------------------------------------------
+
+/// A parent that stopped subagent `abc` 30 min ago (answered TaskStop) and a child transcript that ended mid-turn.
+fn stopped_child(h: &Path, n: u64) {
+    write(
+        &sess(h, "parent"),
+        &[
+            prompt(n - 60 * MIN, "/w"),
+            tool(n - 30 * MIN, "p1", 5, "toolu_stop1", "TaskStop", json!({"task_id": "abc"})),
+            result(n - 30 * MIN + 1000, "toolu_stop1", "Successfully stopped task: abc (Docs-drift review)", false),
+        ],
+    );
+    write(
+        &h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl"),
+        &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "The gate is still running in the background, I will report."}]), None)],
+    );
+    register(h, std::process::id(), "parent", "busy", n);
+}
+
+#[test]
+fn n972_a_stop_outlives_the_launching_transcripts_tail_window() {
+    let h = home("n972-sticky-stop");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "the answered stop ends it");
+    // the parent keeps working: its transcript grows far past the scan's tail window, so the stop is no longer visible there
+    let filler: Vec<String> = (0..400).map(|i| asst(n + 2 * MIN + i, &format!("f{i}"), 5, 5, json!([{"type": "text", "text": "x".repeat(2000)}]), None)).collect();
+    let mut tb = defaults::raw("agent_scan.tail_bytes").to_json();
+    tb = json!(tb.as_u64().unwrap().min(200_000));
+    defaults::set_overlay(&[("agent_scan.tail_bytes", tb)]);
+    append(&sess(&h, "parent"), &filler);
+    ticks(&h, &mut st, &[n + 10 * MIN, n + 40 * MIN, n + 80 * MIN]);
+    let (state, flags) = (signals::state_of(agent(&st, "abc")), agent(&st, "abc").flags.keys().cloned().collect::<Vec<_>>());
+    defaults::set_overlay(&[]);
+    assert_eq!(state, "done", "the stop is kept after it left the window");
+    assert!(flags.iter().all(|f| !["hung", "false_claim", "idle_open_task", "stalled"].contains(&f.as_str())), "no live-agent row about a stopped child: {flags:?}");
+}
+
+#[test]
+fn n972_a_stopped_child_that_writes_again_is_tracked_again() {
+    let h = home("n972-resume");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(agent(&st, "abc").stopped_at > 0);
+    append(&h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl"), &[asst(n + 5 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "resumed"}]), None)]);
+    ticks(&h, &mut st, &[n + 6 * MIN]);
+    assert_eq!(agent(&st, "abc").stopped_at, 0, "output written well after the stop resumes it");
+}
+
+#[test]
+fn n972_a_snoozed_teammate_gets_no_false_claim_until_the_snooze_runs_out() {
+    let n = now0();
+    let h = home("n972-snooze-claim");
+    main_session(&h, "parent", n, 1, "waiting");
+    write(
+        &sub_path(&h, "parent"),
+        &[
+            prompt(n - 30 * MIN, "/w"),
+            tool(n - 20 * MIN, "s1", 5, "t1", "Read", json!({"file_path": "/w/a"})),
+            result(n - 20 * MIN + 500, "t1", "ok", false),
+            asst(n - 10 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "The gate is still running in the background, I will report."}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    st.nudge_snooze.insert("w1|false_claim".into(), nudge::Snooze { until: n + 240 * MIN, snoozes: 1, min: 240, held: 0 });
+    let claims = |h: &Path| queue(h, "parent").into_iter().filter(|r| r["signal"] == "false_claim").count();
+    ticks(&h, &mut st, &[n, n + MIN, n + 60 * MIN]);
+    assert_eq!(claims(&h), 0, "snoozed by its parent");
+    ticks(&h, &mut st, &[n + 241 * MIN, n + 242 * MIN]);
+    assert_eq!(claims(&h), 1, "bounded: once the snooze runs out the claim is reported");
+}
+
+// ---- #972 class 3: outcomes the health nudge missed ---------------------------------------------------------------------------
+
+/// A subagent of `parent` that ran `calls` (each answered ok) and is still in its turn.
+fn sub_with_calls(h: &Path, n: u64, calls: &[(&str, Value)]) {
+    main_session(h, "parent", n, 1, "waiting");
+    let mut lines = vec![prompt(n - 30 * MIN, "/w")];
+    for (i, (name, input)) in calls.iter().enumerate() {
+        let id = format!("t{i}");
+        lines.push(tool(n - 20 * MIN + i as u64 * 1000, &format!("s{i}"), 5, &id, name, input.clone()));
+        lines.push(result(n - 20 * MIN + i as u64 * 1000 + 500, &id, "ok", false));
+    }
+    write(&sub_path(h, "parent"), &lines);
+}
+
+#[test]
+fn n972_a_merge_after_a_cd_is_an_outcome() {
+    let n = now0();
+    let h = home("n972-merge");
+    sub_with_calls(&h, n, &[("Bash", json!({"command": "cd /w/repo && gh pr merge 840 --squash"})), ("Bash", json!({"command": "cd /w/repo && echo gh pr merge 841"}))]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.shipped, a.progress), (1, weight("merge")), "the merge in the second segment counts, the quoted one in an echo does not");
+}
+
+#[test]
+fn n972_a_childs_report_to_its_lead_is_an_outcome_a_message_to_a_peer_is_not() {
+    let n = now0();
+    let h = home("n972-report");
+    let report = "Findings, round 3: P1 the hold clock restarts on a same-text save; P2 the owner notice shows 0s; P2 drift quotes old text.";
+    sub_with_calls(
+        &h,
+        n,
+        &[
+            ("SendMessage", json!({"to": "main", "message": report})),
+            ("SendMessage", json!({"to": "lane-x", "message": report})),
+            ("SendMessage", json!({"to": "main", "message": "still working"})),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.reports, a.progress), (1, weight("report")), "one report to the lead; the peer message and the short ping are no outcome");
+}
+
+#[test]
+fn n972_a_session_whose_descriptor_is_gone_is_a_main_session_again_covered_by_its_own_stamp() {
+    let h = home("n972-unbind");
+    let n = now0();
+    sky_layout(&h, n, true);
+    std::fs::remove_file(h.join(".anti-hall/devswarm/archived/primary-p1.json")).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessP").kind, kind_name("workspace"));
+    // the app archived both rows: the session is no workspace any more; its own session wake stamp is armed and a child runs
+    let d = h.join(".anti-hall/devswarm/workspaces");
+    std::fs::remove_file(d.join("primary-p1.json")).unwrap();
+    std::fs::remove_file(d.join("app-row.json")).unwrap();
+    running_sub(&h, "sessP", n + 5 * MIN, 1);
+    ticks(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN, n + 7 * MIN]);
+    let a = agent(&st, "sessP");
+    assert!(a.ws.is_none() && a.kind == kind_name("main"), "kind={} ws={:?}", a.kind, a.ws);
+    assert!(escalate::primary(a), "the main session is exempt from the runtime ladder");
+    assert!(!a.flags.contains_key("monitor_unarmed"), "its own armed stamp covers it: {:?}", a.flags.keys().collect::<Vec<_>>());
+}

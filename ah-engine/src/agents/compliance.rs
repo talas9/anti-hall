@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// One task of the session's task list.
+#[derive(Debug, Clone, Default)]
 pub(super) struct Task {
     pub(super) id: String,
     pub(super) subject: String,
@@ -25,6 +26,8 @@ pub(super) struct Task {
     pub(super) held_key: String,
     /// The `blockedOn` reason names the owner or a human (a word of `dispatch_tier.owner_values`): only they can clear it.
     pub(super) owner_held: bool,
+    /// When the task file was last written (ms; 0 unknown): a write after a hold reminder named the task confirms the hold (#972).
+    pub(super) mtime: u64,
 }
 
 fn num(t: &V, k: &str) -> u64 {
@@ -120,7 +123,8 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
         let held = reason.chars().count() >= defaults::num("idle_rule.blocked_on_min") as usize;
         let held_key = if held { format!("{}#{:x}", s("f_id"), crate::health::fnv(reason)) } else { String::new() };
         let owner_held = held && owner_named(reason);
-        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key, owner_held });
+        let mtime = crate::checks::agent_scan::mtime_ms(&e.path()).map_or(0, |m| m.max(0.0) as u64);
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key, owner_held, mtime });
     }
     out.sort_by(|x, y| x.id.cmp(&y.id));
     out
@@ -263,6 +267,19 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
             a.blocked_since.insert((*id).to_string(), oldest);
         }
     }
+    // #961 confirm-once, tracker side: a write of a task after a hold reminder named it (a rewritten reason, or the same reason saved
+    // again) is the session's answer; that hold is silent for confirm_ms, tied to the reason it confirmed
+    for t in &open_held {
+        if let Some(told) = a.hold_told.get(&t.id).copied()
+            && t.mtime > told
+        {
+            a.hold_confirmed.insert(t.id.clone(), (t.held_key.clone(), now));
+            a.hold_told.remove(&t.id);
+            suppressed_outcome("hold_expired", "confirmed");
+        }
+    }
+    a.hold_told.retain(|id, _| ids.contains(&id.as_str()));
+    a.hold_confirmed.retain(|id, _| ids.contains(&id.as_str()));
     let keys: Vec<&str> = open_held.iter().map(|t| t.held_key.as_str()).collect();
     a.held_since.retain(|k, _| keys.contains(&k.as_str()));
     for k in keys {
@@ -293,6 +310,7 @@ pub(super) fn hold_sent(a: &mut Agent, named: &[HoldDue], now: u64) {
     for d in named {
         *a.hold_n.entry(d.key.clone()).or_insert(0) += 1;
         a.hold_last.insert(d.key.clone(), now);
+        a.hold_told.insert(d.id.clone(), now);
         if d.owner {
             a.hold_owner.entry(d.id.clone()).or_insert(0);
         }
@@ -433,14 +451,25 @@ pub(super) fn idle_work_held(a: &Agent, st: &State, tasks: &[Task], now: u64) ->
     let open: Vec<&Task> = tasks.iter().filter(|t| !closed.contains(&t.status.as_str())).collect();
     let step: Vec<&Task> = open.iter().copied().filter(|t| !a.step_task.is_empty() && t.id == a.step_task).collect();
     let work = if step.is_empty() { open } else { step };
-    !work.is_empty() && work.iter().all(|t| held_now(t, st, a) && a.held_since.get(&t.held_key).is_some_and(|s| now.saturating_sub(*s) < max))
+    !work.is_empty() && work.iter().all(|t| held_now(t, st, a) && (a.held_since.get(&t.held_key).is_some_and(|s| now.saturating_sub(*s) < max) || confirmed(a, t, now)))
+}
+
+/// The session confirmed this exact hold (it wrote the task after a reminder named it) within `nudges.hold.confirm_ms` (#972, #961).
+fn confirmed(a: &Agent, t: &Task, now: u64) -> bool {
+    let ms = num(defaults::raw("nudges.hold"), "confirm_ms");
+    a.hold_confirmed.get(&t.id).is_some_and(|(k, at)| *k == t.held_key && now.saturating_sub(*at) < ms)
 }
 
 /// The open held tasks whose hold has run past `nudges.hold.hold_max_ms`, with how long each has been held.
 fn expired_holds<'a>(a: &Agent, tasks: &'a [Task], now: u64) -> Vec<(&'a Task, u64)> {
     let max = num(defaults::raw("nudges.hold"), "hold_max_ms");
     // an owner-held task the session already confirmed once is the owner's to hear about, not the session's (see `owner_notice`)
-    tasks.iter().filter(|t| t.held && !(t.owner_held && a.hold_owner.contains_key(&t.id))).filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s)))).filter(|(_, w)| *w >= max).collect()
+    tasks
+        .iter()
+        .filter(|t| t.held && !(t.owner_held && a.hold_owner.contains_key(&t.id)) && !confirmed(a, t, now))
+        .filter_map(|t| a.held_since.get(&t.held_key).map(|s| (t, now.saturating_sub(*s))))
+        .filter(|(_, w)| *w >= max)
+        .collect()
 }
 
 /// The expired holds one hold_expired reminder may name, in rank order: the least reminded first, then the one reminded longest ago
@@ -527,6 +556,17 @@ pub(super) fn count(sig: &str, outcome: &str) {
     if defaults::list("agent_tracker.compliance_signals").contains(&sig) {
         crate::metrics::bump("compliance", &[("signal", sig), ("outcome", outcome)]);
     }
+}
+
+/// A held reminder, counted for any signal: `suppressed:<reason>` (#972).
+pub(super) fn suppressed_any(sig: &str, reason: &str) {
+    suppressed_outcome(sig, reason);
+}
+
+/// A held reminder, counted for any signal: `suppressed:<reason>` (#972: a hold confirmed by the session's answer).
+fn suppressed_outcome(sig: &str, reason: &str) {
+    let o = defaults::raw("nudges.compliance_outcomes");
+    count_any(sig, &format!("{}{}{reason}", o.str_field("suppressed"), o.str_field("reason_sep")));
 }
 
 /// A held reminder: `suppressed:<reason>`.

@@ -593,6 +593,19 @@ pub struct Agent {
     /// rotation (least reminded, then the longest since its last reminder), so a long list rotates and no task starves the others.
     #[serde(default)]
     pub hold_last: BTreeMap<String, u64>,
+    /// Task id -> when a hold_expired reminder naming that task last reached the session, kept across a rewrite of its reason (unlike
+    /// `hold_last`, which goes with the key): a write of the task after it is the session's answer (#972, #961).
+    #[serde(default)]
+    pub hold_told: BTreeMap<String, u64>,
+    /// When a stop of this child was first seen (an answered `TaskStop`, a terminal notice; 0 = none): sticky, so the stop outlives the
+    /// launching transcript's tail window that showed it (#972 class 1). Cleared when the child writes again past
+    /// `limits.stop_resume_ms`.
+    #[serde(default)]
+    pub stopped_at: u64,
+    /// Task id -> the hold key the session confirmed by writing the task after a reminder named it, and when (#972, #961): that hold is
+    /// silent for `nudges.hold.confirm_ms`, tied to the reason it confirmed (a later new reason without a reminder runs the plain clock).
+    #[serde(default)]
+    pub hold_confirmed: BTreeMap<String, (String, u64)>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,
