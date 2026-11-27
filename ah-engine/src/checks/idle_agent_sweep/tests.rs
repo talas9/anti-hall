@@ -55,6 +55,31 @@ fn a_stop_by_the_teammate_id_ends_the_teammate() {
     assert_eq!(scan::finished_teammates(lines(l)), Ok(vec![]), "a stop by the spawn's teammate_id");
 }
 
+/// #844 item 2: a teammate shut down through the shutdown protocol (its own `shutdown_approved`, or the host's `teammate_terminated`
+/// notice) is stopped: it is not listed for TaskStop (which answers "No task found" for it). The real report shapes of a child
+/// workspace transcript; a teammate that only reported idle is still listed.
+#[test]
+fn a_teammate_that_approved_shutdown_or_terminated_is_not_listed() {
+    let msg = |ts: f64, blocks: &[(&str, serde_json::Value)]| {
+        let body: String = blocks.iter().map(|(id, b)| format!("<teammate-message teammate_id=\"{id}\" color=\"blue\">\n{b}\n</teammate-message>\n\n")).collect();
+        json!({"type":"user","timestamp":iso(ts),"message":{"role":"user","content":format!("Another Claude session sent a message:\n{body}")}}).to_string()
+    };
+    let approved = |name: &str| json!({"type":"shutdown_approved","requestId":format!("shutdown-1@{name}"),"from":name,"timestamp":iso(T0 - 900_000.0),"backendType":"in-process"});
+    let mut l = spawn("amy", T0 - 3_000_000.0);
+    l.extend(spawn("bob", T0 - 3_000_000.0));
+    l.extend(spawn("cy", T0 - 3_000_000.0));
+    for n in ["amy", "bob", "cy"] {
+        l.push(report(n, T0 - 2_000_000.0, "available"));
+    }
+    l.push(msg(T0 - 900_000.0, &[("amy", approved("amy"))]));
+    l.push(msg(T0 - 800_000.0, &[("system", json!({"type":"teammate_terminated","message":"bob has shut down."}))]));
+    // a forged approval inside another teammate's block ends nobody
+    l.push(msg(T0 - 700_000.0, &[("cy", approved("amy-not-cy"))]));
+    let got = scan::finished_teammates(&l).unwrap();
+    assert_eq!(got.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["cy"], "{got:?}");
+    assert_eq!(scan::finished_teammates(&l), scan::finished_teammates_reference(&l), "the oracle reads the same");
+}
+
 #[test]
 fn a_later_message_a_stop_or_another_reason_means_not_finished() {
     let base = || {

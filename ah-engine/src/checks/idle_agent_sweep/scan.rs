@@ -45,6 +45,7 @@ struct Res {
     status: Regex,
     system_reminder_notice: Regex,
     stop_gone: Regex,
+    terminated_message: Regex,
 }
 
 fn res() -> std::sync::Arc<Res> {
@@ -64,6 +65,7 @@ fn res() -> std::sync::Arc<Res> {
             status: c("idle_sweep.re_status", false),
             system_reminder_notice: c("idle_sweep.re_system_reminder_notice", false),
             stop_gone: c("idle_sweep.re_stop_gone", true),
+            terminated_message: c("idle_sweep.re_terminated_message", false),
         }
     })
 }
@@ -345,6 +347,7 @@ impl LineFacts {
                             Op::ToolUse { id, name } => id.len() + name.as_ref().map_or(0, String::len),
                             Op::Stop { id, tuid, .. } => id.len() + tuid.as_ref().map_or(0, String::len),
                             Op::Idle { name, reason, .. } => name.len() + reason.len(),
+                            Op::Ended { name, .. } => name.len(),
                             Op::Spawn { tuid, name, agent_id, stop_id, .. } => tuid.as_ref().map_or(0, String::len) + name.len() + agent_id.len() + stop_id.len(),
                             Op::LaunchedIf { tuid, id } => tuid.as_ref().map_or(0, String::len) + id.len(),
                             Op::Text { tuid, inbox, .. } => tuid.as_ref().map_or(0, String::len) + inbox.as_ref().map_or(0, String::len),
@@ -370,6 +373,8 @@ enum Op {
     Idle { name: String, inner: Result<f64, Defer>, ts: f64, reason: String },
     /// A teammate spawn result, valid when its tool result answers a launch call.
     Spawn { tuid: Option<String>, name: String, ts: f64, agent_id: String, stop_id: String },
+    /// A teammate a report says has ended (shutdown approved, or terminated): stopped at the line's time.
+    Ended { name: String, ts: f64 },
     /// A tool result that carried an error.
     Errored(String),
     /// A tool result that says the stopped task no longer exists.
@@ -380,8 +385,8 @@ enum Op {
     Text { tuid: Option<String>, tool_result: bool, resume: bool, queued: bool, inbox: Option<String>, ts: f64 },
 }
 
-/// The idle reports a genuine teammate report carries, before they are matched with a spawn: `(name, time it names, reason)`.
-fn teammate_idle_candidates(e: &Value) -> Vec<(String, Result<f64, Defer>, String)> {
+/// The `<teammate-message teammate_id="…">` blocks of a genuine teammate report entry, each as (teammate id, its one-line JSON body).
+fn teammate_blocks(e: &Value) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     if str_of(e, "type") != Some("user") {
         return out;
@@ -417,14 +422,46 @@ fn teammate_idle_candidates(e: &Value) -> Vec<(String, Result<f64, Defer>, Strin
             continue;
         }
         let Some(o) = parse_line(body) else { continue };
-        if str_of(&o, "type") != Some("idle_notification") || str_of(&o, "from") != Some(name) {
-            continue;
+        out.push((name.to_string(), o));
+    }
+    out
+}
+
+/// The idle reports a genuine teammate report carries, before they are matched with a spawn: `(name, time it names, reason)`.
+fn teammate_idle_candidates(e: &Value) -> Vec<(String, Result<f64, Defer>, String)> {
+    teammate_blocks(e)
+        .into_iter()
+        .filter(|(name, o)| str_of(o, "type") == Some("idle_notification") && str_of(o, "from") == Some(name.as_str()))
+        .map(|(name, o)| {
+            let inner = match str_of(&o, "timestamp") {
+                Some(s) => ts_of(s),
+                None => Ok(f64::NAN),
+            };
+            let reason = str_of(&o, "idleReason").unwrap_or("").to_string();
+            (name, inner, reason)
+        })
+        .collect()
+}
+
+/// The teammates a genuine teammate report says have ended (#844 item 2): a teammate's own approval of a shutdown request
+/// (`idle_sweep.end_types`, sent by that teammate) or the host's notice that it terminated (`idle_sweep.terminated_type` from
+/// `idle_sweep.system_sender`, its name read by `idle_sweep.re_terminated_message`). Ended is stopped: a shut-down teammate is not
+/// "finished and not stopped", and TaskStop no longer finds it.
+fn teammate_end_candidates(e: &Value) -> Vec<String> {
+    let r = res();
+    let ends = defaults::list("idle_sweep.end_types");
+    let (system, terminated) = (defaults::text("idle_sweep.system_sender"), defaults::text("idle_sweep.terminated_type"));
+    let mut out = Vec::new();
+    for (name, o) in teammate_blocks(e) {
+        let typ = str_of(&o, "type").unwrap_or("");
+        if ends.contains(&typ) && str_of(&o, "from") == Some(name.as_str()) {
+            out.push(name);
+        } else if name == system
+            && typ == terminated
+            && let Some(m) = str_of(&o, "message").and_then(|t| r.terminated_message.captures(t))
+        {
+            out.push(m[1].to_string());
         }
-        let inner = match str_of(&o, "timestamp") {
-            Some(s) => ts_of(s),
-            None => Ok(f64::NAN),
-        };
-        out.push((name.to_string(), inner, str_of(&o, "idleReason").unwrap_or("").to_string()));
     }
     out
 }
@@ -504,6 +541,11 @@ pub fn digest_line(raw: &str) -> Option<LineFacts> {
     if has_idle {
         for (name, inner, reason) in teammate_idle_candidates(&entry) {
             ops.push(Op::Idle { name, inner, ts, reason });
+        }
+    }
+    if defaults::list("idle_sweep.end_marks").iter().any(|m| line.contains(m)) {
+        for name in teammate_end_candidates(&entry) {
+            ops.push(Op::Ended { name, ts });
         }
     }
     if etype == Some("user") {
@@ -624,6 +666,11 @@ pub fn finished_from<'a, F: IntoIterator<Item = &'a LineFacts>>(facts: F) -> Res
                     if sc.answers(tuid.as_deref(), "idle_sweep.launch_tools") {
                         sc.event(name, Kind::Spawn, *ts, seq, "");
                         sc.team_info.set(name, Info { agent_id: agent_id.clone(), stop_id: stop_id.clone() });
+                    }
+                }
+                Op::Ended { name, ts } => {
+                    if sc.team_events.has(name) {
+                        sc.event(name, Kind::Stop, *ts, seq, "");
                     }
                 }
                 Op::Errored(t) => {
@@ -826,6 +873,13 @@ pub(super) fn finished_teammates_reference<S: AsRef<str>>(lines: impl IntoIterat
         if has_idle {
             for (name, when, reason) in teammate_idles(&entry, ts, &sc.team_info)? {
                 sc.event(&name, Kind::Idle, when, seq, &reason);
+            }
+        }
+        if defaults::list("idle_sweep.end_marks").iter().any(|m| line.contains(m)) {
+            for name in teammate_end_candidates(&entry) {
+                if sc.team_events.has(&name) {
+                    sc.event(&name, Kind::Stop, ts, seq, "");
+                }
             }
         }
         if etype != Some("user") {
