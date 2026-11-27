@@ -74,5 +74,6 @@ Daemon status, metrics, backups, schedules and limits.
 - `maintenance.sessionEndReaper` = true: Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the...
 - `diagnostics.engineCurrencyCheckout` = "": Checkout the currency job compares with
 - `diagnostics.engineCurrency` = true: Engine currency job on or off (kill switch)
+- `limitConserve.usageSource` = "auto": Where usage readings come from
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

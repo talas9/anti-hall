@@ -108,6 +108,8 @@ What the automatic guards check and how to read a block.
 - `guards.editGuardCapEdit` = true: guards.editGuardCapEdit: near the usage cap, edit-guard lets the main thread make a small,...
 - `devswarm.inlineWorkNudge` = true: Advise against inline workspace work
 - `devswarm.inlineWorkNudgeThreshold` = 5: Inline calls before an advisory
+- `guards.commandDeployScriptsAsWritten` = true: Judge role scripts as written
+- `guards.handoverRedirect` = true: Redirect new handovers written outside anti-hall's handover folder
 - `guards.repeatHint` = true: Switch for the repeated-block hint
 - `guards.delegateStandDown` = true: Relax delegation when spawning is unavailable
 - `guards.agentSpawnAvailable` = "auto": Detect or override host spawn capability

@@ -101,6 +101,7 @@ Subagent, delegation and routing guards.
 - `agents.nudgeScope` = true: Scope nudges and wakes
 - `agents.nudge` = true: Route unhealthy-child signals to its parent
 - `agents.nudgeSnoozeHold` = true: Preserve snoozes per child and trigger
+- `afk.offerHold` = true: Hold a turn that ends offering work
 - `guards.idleGateMode` = "one_line": Quiet response mode
 - `guards.idleGateOwnerCronOptIn` = false: Owner-authored roster cron prompts are excluded unless this setting is enabled; known mailbox...
 - `guards.idleGate` = true: Enable the conservative scheduled-turn gate through guards.idleGate
