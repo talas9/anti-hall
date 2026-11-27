@@ -7095,3 +7095,29 @@ fn n972r_an_unrelated_task_write_does_not_confirm_the_hold() {
     assert!(agent(&st, SID).hold_confirmed.get("75").is_none(), "no blocker field was written");
     assert_eq!(n972_hold_rows(&h).len(), 2, "unanswered: reminded again after the cooldown");
 }
+
+/// Codex #838 P2.5: the once-per-step dedupe of drift keys on the step the reminder is about (the task's current subject), so a rename
+/// is a new step that may be reminded again.
+#[test]
+fn n972r_a_renamed_step_is_a_new_step_for_the_drift_dedupe() {
+    let n = now0();
+    let h = home("n972r-drift-rename");
+    let task = |subj: &str| json!({"id": "53", "subject": subj, "status": "in_progress", "owner": "", "blockedBy": []});
+    task_file(&h, SID, task("T-53 stall on scheduled wait"));
+    let mut lines = vec![prompt(n - 60 * MIN, "/w"), tool(n - 50 * MIN, "u0", 5, "tu", "TaskUpdate", json!({"taskId": "53", "status": "in_progress", "subject": "T-53 stall on scheduled wait"})), result(n - 50 * MIN + 500, "tu", "Updated task", false)];
+    for i in 0..12u64 {
+        let id = format!("b{i}");
+        lines.push(tool(n - 40 * MIN + i * 1000, &format!("c{i}"), 5, &id, "Bash", json!({"command": format!("du -sh /cache/derived/data{i} && rm -rf /cache/derived/data{i}")})));
+        lines.push(result(n - 40 * MIN + i * 1000 + 500, &id, "ok", false));
+    }
+    lines.push(asst(n - 30 * MIN, "e", 5, 5, json!([{"type": "text", "text": "cleaned"}]), Some("end_turn")));
+    write(&sess(&h, SID), &lines);
+    let drifts = |h: &Path| queue(h, SID).into_iter().filter(|r| r["signal"] == "drift").count();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(drifts(&h), 1, "the true positive: drift from the declared step");
+    take_queue(&h, SID);
+    task_file(&h, SID, task("T-53 tracker guard misfires on waits"));
+    ticks(&h, &mut st, &[n + 70 * MIN, n + 71 * MIN]);
+    assert_eq!(drifts(&h), 2, "the renamed step is a new step: reminded again after the cooldown");
+}
