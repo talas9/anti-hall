@@ -1917,7 +1917,7 @@ value = " (+{n} more)"
 
 [idle_rule.what_lapsed]
 doc = "First line of either R-idle block when a listed task still carries a blockedOn reason whose hold ran out (nudges.hold.hold_max_ms): the reason is not missing, it must be re-confirmed. Same placeholders as what_idle. Kept short: the visible line is cut near 115 units."
-value = "{n} open tasks: blocker lapsed, not missing, on {ids}{more}."
+value = "Blocker lapsed (hold ran out), not missing: {ids}{more}."
 
 [idle_rule.instead_lapsed]
 doc = "The step line for what_lapsed; `{upd}` the task update tool, `{first}` the first listed id. Kept under 115 units."

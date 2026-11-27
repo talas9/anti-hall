@@ -39,6 +39,8 @@ function tgHeld(t, kind, marker) {
     first = typeof was === 'number' && isFinite(was) && was <= tgHolds.now ? was : tgHolds.now;
     tgHolds.seen[key] = first;
   }
+  // a TaskUpdate that re-confirms the marker (the same text again) rewrites the task's store file: the hold runs from that write
+  if (typeof t.touchedMs === 'number' && isFinite(t.touchedMs) && t.touchedMs > first && t.touchedMs <= tgHolds.now) first = t.touchedMs;
   if (tgHolds.now - first < tgHolds.max) return true;
   if (tgHolds.lapsed[key] === undefined) { tgHolds.lapsed[key] = kind; ah.metric('idle_rule_hold_lapsed', ['reason', kind]); }
   return false;
@@ -160,18 +162,22 @@ function tgIdleLabel(t) {
 // {what, instead, extra} of the R-idle block for `tasks`: the exact ids first (the visible line is cut near 115 units), the one step that
 // clears each in the instead line, the full per-task list and the three clearing steps in the saved details.
 function tgIdleRuleText(kind, tasks, upd) {
-  var max = ah.cfgNum('idle_rule.ids_max'), ids = tasks.slice(0, max).map(function (t) { return '#' + t.id; });
-  var more = tasks.length > max ? text.render(ah.cfg('idle_rule.more'), { n: tasks.length - max }) : '';
-  var first = tasks[0] ? tasks[0].id : '';
-  var vars = { n: tasks.length, ids: ids.join(ah.cfg('idle_rule.id_sep')), more: more, upd: upd, first: first };
-  // a listed task whose blockedOn hold ran out has a reason: the headline says so instead of "no blocked reason"
-  var lapsedTasks = tasks.filter(function (t) { return tgLapsed(t) && tk.blockedOnText(t) !== ''; }), lapsed = lapsedTasks.length > 0;
-  if (lapsed) vars.first = lapsedTasks[0].id;
-  return {
-    what: text.render(lapsed ? ah.cfg('idle_rule.what_lapsed') : kind === 'idle' ? ah.cfg('idle_rule.what_idle') : ah.cfg('idle_rule.what_open'), vars),
-    instead: text.render(ah.cfg(lapsed ? 'idle_rule.instead_lapsed' : 'idle_rule.instead'), vars),
-    extra: [text.render(ah.cfg('idle_rule.details_list'), { list: tasks.map(tgIdleLabel).join('\n') }), text.render(ah.cfg('idle_rule.details_steps'), vars)],
-  };
+  var max = ah.cfgNum('idle_rule.ids_max');
+  // a task whose blockedOn hold ran out has a reason that needs confirming; the others have none: two groups, each named alone
+  var lapsed = tasks.filter(function (t) { return tgLapsed(t) && tk.blockedOnText(t) !== ''; });
+  var missing = tasks.filter(function (t) { return lapsed.indexOf(t) < 0; });
+  function vars(group) {
+    var ids = group.slice(0, max).map(function (t) { return '#' + t.id; });
+    var more = group.length > max ? text.render(ah.cfg('idle_rule.more'), { n: group.length - max }) : '';
+    return { n: group.length, ids: ids.join(ah.cfg('idle_rule.id_sep')), more: more, upd: upd, first: group[0] ? group[0].id : '' };
+  }
+  var parts = [], extra = [];
+  if (missing.length > 0) parts.push(text.render(kind === 'idle' ? ah.cfg('idle_rule.what_idle') : ah.cfg('idle_rule.what_open'), vars(missing)));
+  if (lapsed.length > 0) parts.push(text.render(ah.cfg('idle_rule.what_lapsed'), vars(lapsed)));
+  var instead = text.render(ah.cfg(missing.length > 0 ? 'idle_rule.instead' : 'idle_rule.instead_lapsed'), vars(missing.length > 0 ? missing : lapsed));
+  if (missing.length > 0 && lapsed.length > 0) extra.push(text.render(ah.cfg('idle_rule.instead_lapsed'), vars(lapsed)));
+  extra.push(text.render(ah.cfg('idle_rule.details_list'), { list: tasks.map(tgIdleLabel).join('\n') }), text.render(ah.cfg('idle_rule.details_steps'), vars(tasks)));
+  return { what: parts.join(' '), instead: instead, extra: extra };
 }
 
 // `devswarmChildAttended(owner)`: the app database shows the owner's workspace live (tk.childAttended).
