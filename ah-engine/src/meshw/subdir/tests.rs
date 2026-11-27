@@ -282,3 +282,15 @@ fn a_primary_in_a_linked_worktree_known_only_via_the_app_db_has_its_alias_reject
     // without the app database the same file reads as a child alias (the env is what tells the two apart)
     assert_eq!(crate::meshw::common::read_aliases(&f.inv.home, &f.inv.env), vec![(w_label, "child-1".to_string())]);
 }
+
+/// GH #845 review P2-16: an explicit ack answers one sender, so `--ack-only` with `--broadcast` is refused (nothing is stored).
+#[test]
+fn an_ack_only_broadcast_is_refused() {
+    let f = fx("ackonly-bc");
+    descriptor(&f, "child-1", &f.sub);
+    let key = ident::repo_key_for_worktree(&f.root).unwrap().unwrap();
+    crate::meshw::common::init_new_store(&f.inv, &key).unwrap();
+    let r = send::run(&f.inv, &argv(&["send", "--broadcast", "--ack-only", "--message", "got it"])).unwrap();
+    assert_ne!(r.code, 0, "{}", r.stdout);
+    assert!(r.stdout.contains(defaults::text("mesh_chat.msg_ack_only_broadcast")), "{}", r.stdout);
+}

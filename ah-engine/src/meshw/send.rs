@@ -750,7 +750,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     let question = a.has(defaults::text("mesh_write.flag_question"));
     let answers = a.has(defaults::text("mesh_write.flag_answers"));
-    // GH #845: a broadcast question (mesh_wake.allow_broadcast_question, off by default) is stored with needs_reply; its audience
+    // GH #845: a broadcast question (mesh_wake.allow_broadcast_question, on by default) is stored with needs_reply; its audience
     // is resolved below
     if broadcast && question && defaults::num("mesh_wake.allow_broadcast_question") == 0 {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_question_broadcast")))]));
@@ -759,6 +759,10 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let ack_only = a.has(defaults::text("mesh_chat.flag_ack_only"));
     if ack_only && (question || answers) {
         return Ok(refused(&[("error", s(defaults::text("mesh_chat.msg_ack_only_conflict")))]));
+    }
+    // review P2-16: an ack answers one sender, so it is a direct message only
+    if ack_only && broadcast {
+        return Ok(refused(&[("error", s(defaults::text("mesh_chat.msg_ack_only_broadcast")))]));
     }
     if broadcast && answers {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_answers_broadcast")))]));
