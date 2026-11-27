@@ -575,7 +575,7 @@ impl L {
         // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a command it can not balance is held
         // under `unreadable` (#918 review: the quote-blind raw text alone would let any such tail switch the reading off)
         let ncfg = Self::capacity_norm_cfg(cfg);
-        let norm = ncfg
+        let mut norm = ncfg
             .as_ref()
             .and_then(|c| shellwords::normalise(command, c));
         if let Some(n) = norm.as_ref().filter(|n| n.opt_skips > 0) {
@@ -599,6 +599,26 @@ impl L {
         {
             limits::bump(Ctr::CapacityParsedRead);
             return false;
+        }
+        // #971: a list the exemption could not pass as a whole has its engine-local calls masked out (`parsed.mask`), so the rest
+        // of it is decided as it would be without them, as dispatch::capacity_decide
+        let masked = ncfg
+            .as_ref()
+            .filter(|_| listed)
+            .and_then(|c| self.capacity_mask(cfg, command, c));
+        let command = masked.as_deref().unwrap_or(command);
+        if masked.is_some() {
+            limits::bump(Ctr::CapacityParsedMask);
+            norm = ncfg
+                .as_ref()
+                .and_then(|c| shellwords::normalise(command, c));
+            if self.capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str()))
+                || ncfg
+                    .as_ref()
+                    .is_some_and(|c| self.capacity_parsed_read(cfg, command, c))
+            {
+                return false;
+            }
         }
         // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
         let mut texts: Vec<&str> = match &norm {
@@ -1067,11 +1087,17 @@ impl L {
             ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
             ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
             ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
+            ro_assign_deny: strs(cfg.get("parsed").and_then(|p| p.get("assign_deny"))),
+            ro_assigners: strs(cfg.get("parsed").and_then(|p| p.get("assigners"))),
+            ro_text_opts: strs(cfg.get("parsed").and_then(|p| p.get("text_opts"))),
+            ro_bin_dirs: strs(cfg.get("parsed").and_then(|p| p.get("bin_dirs"))),
+            ro_inert: strs(cfg.get("parsed").and_then(|p| p.get("inert"))),
         })
     }
 
     /// The parsed read exemption (`dispatch.capacity_hold` `parsed`), as the engine's dispatch::capacity_parsed_read: each pipeline
-    /// of the list is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does.
+    /// of the list is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does and
+    /// whose redirections match `parsed.redirs` and not `parsed.redirs_unless` (#971).
     fn capacity_parsed_read(
         &self,
         cfg: &toml::Value,
@@ -1084,15 +1110,91 @@ impl L {
         let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else {
             return false;
         };
-        !parts.is_empty()
-            && parts.iter().all(|p| match p {
-                shellwords::Part::Read(t) => self.capacity_read_only(cfg, t),
-                shellwords::Part::Local(tail) => {
-                    tail.is_empty()
-                        || self.capacity_read_only(cfg, tail)
-                        || Self::capacity_tail_ok(cfg, tail)
-                }
-            })
+        if parts.is_empty() || !parts.iter().all(|p| self.capacity_part_ok(cfg, p)) {
+            return false;
+        }
+        // #971 review: an engine call that writes a file passes only beside parts that can not run or load what it wrote, as the
+        // engine's dispatch::capacity_parsed_read
+        let writers = parts
+            .iter()
+            .filter(|p| Self::capacity_writes(cfg, p))
+            .count();
+        writers == 0
+            || writers == 1
+                && parts
+                    .iter()
+                    .filter(|p| !Self::capacity_writes(cfg, p))
+                    .all(|p| match p {
+                        shellwords::Part::Read(t) => Self::capacity_parsed_regex(cfg, "after_write", t),
+                        shellwords::Part::Local(..) => true,
+                    })
+    }
+
+    /// #971 review: whether `text` matches the `parsed.<key>` regular expression (ASCII, case-insensitive, on bytes), as the
+    /// engine's dispatch::capacity_parsed_regex; an empty or uncompilable one matches nothing.
+    fn capacity_parsed_regex(cfg: &toml::Value, key: &str, text: &str) -> bool {
+        let pat = cfg
+            .get("parsed")
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// #971 review: whether an engine-local call writes a file (a redirection off `parsed.redirs_inert`); never masked, as the
+    /// engine's dispatch::capacity_writes.
+    fn capacity_writes(cfg: &toml::Value, part: &shellwords::Part) -> bool {
+        matches!(part, shellwords::Part::Local(_, redirs)
+            if redirs.iter().any(|r| !Self::capacity_parsed_regex(cfg, "redirs_inert", r)))
+    }
+
+    /// Whether one part of the parsed read exemption passes, as the engine's dispatch::capacity_part_ok.
+    fn capacity_part_ok(&self, cfg: &toml::Value, part: &shellwords::Part) -> bool {
+        match part {
+            shellwords::Part::Read(t) => self.capacity_read_only(cfg, t),
+            shellwords::Part::Local(tail, redirs) => {
+                (tail.is_empty()
+                    || self.capacity_read_only(cfg, tail)
+                    || Self::capacity_tail_ok(cfg, tail))
+                    && redirs.iter().all(|r| Self::capacity_redir_ok(cfg, r))
+            }
+        }
+    }
+
+    /// #971: `command` with each engine-local call that passes replaced by `parsed.mask`, `None` when there is none (or `mask`
+    /// is empty: off); a call that writes a file is never masked. As the engine's
+    /// dispatch::capacity_mask.
+    fn capacity_mask(
+        &self,
+        cfg: &toml::Value,
+        command: &str,
+        ncfg: &shellwords::Cfg,
+    ) -> Option<String> {
+        let mask = cfg
+            .get("parsed")
+            .and_then(|p| p.get("mask"))
+            .and_then(|v| v.as_str())
+            .filter(|m| !m.is_empty())?;
+        let home = Some(ncfg.ro_home.as_str())
+            .filter(|h| !h.is_empty())
+            .and_then(std::env::var_os);
+        let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
+            .into_iter()
+            .filter(|(_, p)| self.capacity_part_ok(cfg, p) && !Self::capacity_writes(cfg, p))
+            .collect();
+        if spans.is_empty() {
+            return None;
+        }
+        let mut out = command.to_string();
+        for (range, _) in spans.iter().rev() {
+            out.replace_range(range.clone(), mask);
+        }
+        Some(out)
     }
 
     /// #969: the load factor (permille) sampled for this event: the load per core clamped to [1000, `daemon.load_scale_max_permille`]
@@ -1133,6 +1235,28 @@ impl L {
                 .case_insensitive(true)
                 .build()
                 .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// #971: whether a redirection of an engine-local verb is harmless (`parsed.redirs`, not `parsed.redirs_unless`), as the
+    /// engine's dispatch::capacity_redir_ok; an empty or uncompilable `redirs`, or an uncompilable `redirs_unless`, passes none.
+    fn capacity_redir_ok(cfg: &toml::Value, redir: &str) -> bool {
+        let pat = |k: &str| {
+            cfg.get("parsed")
+                .and_then(|p| p.get(k))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let re = |p: &str| {
+            regex::bytes::RegexBuilder::new(p)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+        };
+        let (ok, unless) = (pat("redirs"), pat("redirs_unless"));
+        !ok.is_empty()
+            && re(&ok).is_ok_and(|r| r.is_match(redir.as_bytes()))
+            && (unless.is_empty() || re(&unless).is_ok_and(|r| !r.is_match(redir.as_bytes())))
     }
 
     /// Whether the pipe tail of an engine-local verb is one of the `parsed.tail_ok` filters, as the engine's

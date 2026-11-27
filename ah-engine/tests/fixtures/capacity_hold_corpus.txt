@@ -506,3 +506,136 @@ H ah-engine telemetry actions --mistake f a t k
 H ah-engine telemetry actions
 P ah-engine telemetry summary
 P ah-engine telemetry events
+#
+# #971: live false holds of the engine's own local verbs under load (sanitised). A harmless redirection of the engine's output
+# (2>&1, >/dev/null, a file under /tmp), a quoted message holding any characters, a literal variable (ID=, S=, F=) in an argument,
+# a pipe tail into cut, and a reader spelled by its system path pass; a redirection into a config file, a conditional or
+# backgrounded assignment, a shell variable the shell itself reads (PATH, IFS) and a risky verb or list stay held
+P ~/.anti-hall/ah-engine/bin/ah-engine mesh send --to abc --quiet --message "Lead, ASK on #1: the value must be #0A0B0C (ratio 0.01/0.02/0.03).\n- Keep it: assert value == conf.kValue (conf.txt:35).\n- Push to the PR. The merge hold stays until I lift it." 2>&1|tail -1
+P pgrep -fl 'ah-engine serve' | head; ~/.anti-hall/ah-engine/bin/ah-engine status 2>&1 | head -20; cd /tmp/x && /usr/bin/grep -rn x defaults logic | head
+P "$HOME/.anti-hall/ah-engine/bin/ah-engine" agents nudge abc snooze 90 "picked option 2 at ~10:00Z; now building" 2>&1 | tail -2
+P "$HOME/.anti-hall/ah-engine/bin/ah-engine" mesh inbox ack-primary primary-abc --cursor 6657 2>&1 | tail -1 | cut -c1-150
+P "$HOME/.anti-hall/ah-engine/bin/ah-engine" mesh inbox peek-primary primary-abc > /tmp/x/peek.json 2>&1; grep -o '"body":"[^"]*"' /tmp/x/peek.json | cut -c1-1500
+P AH=$HOME/.anti-hall/ah-engine/bin/ah-engine; ID=abc-123; $AH mesh inbox pull $ID >/dev/null 2>&1; $AH mesh inbox read-primary $ID 2>&1 | tail -40
+P C=~/.anti-hall/ah-engine/bin/ah-engine; $C mesh inbox ack-primary abc --receipt r1 | head -c 15; echo; cd /tmp/x; git status --short
+P E=~/.anti-hall/ah-engine/bin/ah-engine; $E mesh inbox ack-primary primary-abc --receipt r1 >/dev/null 2>&1; $E mesh send --to abc --quiet --message "Primary: good. The deploy has been running ~40 min with no SHA yet; don't push"
+P M=~/.anti-hall/ah-engine/bin/ah-engine; $M mesh inbox peek-primary primary-abc 2>&1 | grep -oE '"unreadCount":[0-9]+' ; tail -4 /tmp/x/notes.md | cut -c1-600
+P E="$HOME/.anti-hall/ah-engine/bin/ah-engine"; S=/tmp/x\n"$E" mesh send --to abc --message-file $S/out.md >/dev/null 2>&1 && echo a\n"$E" mesh send --to def --message-file $S/out2.md >/dev/null 2>&1 && echo b
+P "$HOME/.anti-hall/ah-engine/bin/ah-engine" mesh inbox ack-primary abc --receipt r1 >/dev/null; "$HOME/.anti-hall/ah-engine/bin/ah-engine" mesh heartbeat abc --step 6 --status blocked --summary "queued; waiting on the owner's pick"
+P ah-engine mesh heartbeat abc --summary "#1 ACTIVE: worker building; suite running" 2>&1 | cut -c1-20
+P ah-engine mesh send --to abc --message 'costs $5; run `make` later, <(not a sub) and $(not one either)'
+P E="$HOME/.anti-hall/ah-engine/bin/ah-engine"; M="Lead: found it (reproduced: a | b > c). Carry on; git push is next."; "$E" mesh send --to abc --message "$M" >/dev/null 2>&1 && echo sent
+P ah-engine status >> /tmp/x/status.log 2>&1
+P ah-engine status &>/dev/null && echo up
+P ah-engine status 2>/dev/null 1>&2
+H ah-engine status > ~/.claude/settings.json
+H ah-engine status &>~/.claude/settings.json
+H ah-engine status &>> ~/.claude/x
+H C=--check; print -v C 1; ah-engine config set daemon.nice 0 $C
+H C=--check; integer C=1; ah-engine config set daemon.nice 0 $C
+H ah-engine mesh read abc > /tmp/x/r.sh; bash /tmp/x/r.sh
+H ah-engine status >> "$HOME/.anti-hall/skip.json" 2>&1
+H ah-engine status > /tmp/../etc/x
+H ah-engine status > settings.json
+H ah-engine status > $TMPDIR/x
+H ah-engine status > "$(git push)"
+H ah-engine status >(git push)
+H ah-engine status 2>&1 | sh
+H ah-engine status 2>&1 | cut -c1-20 | sh
+H ah-engine status | sort -o /tmp/x/out
+H ah-engine mesh send --to a --message "$(date)" 2>&1
+H ah-engine mesh send --to a --message "`git push`" 2>&1
+H ah-engine mesh send --to a --message x 2>&1; git push
+H ah-engine status >/dev/null 2>&1 & git push
+H ah-engine agents stop abc 2>&1 | tail -1
+H ah-engine config set daemon.nice 0 >/dev/null 2>&1
+H X="abc stop"; ah-engine agents nudge $X msg
+H C=--nope; false && C=--check; ah-engine config set daemon.nice 0 $C
+H C=--check & ah-engine config set daemon.nice 0 $C
+H E=/tmp/evil; false && E=~/.anti-hall/ah-engine/bin/ah-engine; "$E" status
+H E=/tmp/evil; E=~/.anti-hall/ah-engine/bin/ah-engine & "$E" status
+H PATH=/tmp/evil; ah-engine status
+H IFS=x; ah-engine status
+H HOME=/tmp/evil; "$HOME/.anti-hall/ah-engine/bin/ah-engine" status
+H E=~/.anti-hall/ah-engine/bin/ah-engine; printf -v E /tmp/evil; "$E" status
+H ID=abc; $ID status
+H /tmp/evil/ah-engine status 2>&1; git push
+# #971: an engine-local call in a list the exemption can not pass as a whole is masked out; the rest is decided without it
+# #971 review: an engine call that writes a file is never masked (a later command may run what it wrote, spelled any way:
+# sh < f, . f, python3 -c with runpy); next to anything but a plain non-git read it is held
+H E="$HOME/.anti-hall/ah-engine/bin/ah-engine"; F=/tmp/x/inbox.json; "$E" mesh inbox read-primary abc > $F 2>&1; python3 -c 'import json,sys; print(json.load(open(sys.argv[1])))' $F
+P ah-engine mesh inbox ack-primary abc --receipt r1 2>&1 | cut -c1-60; cd /tmp/x && git -C sub status --short | wc -l; ls ../art 2>/dev/null
+P ah-engine mesh send --to abc --message "firebase deploy and git push are next" 2>&1 | tail -1; sleep 5
+P sleep 2; ~/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick abc --child --quiet; git status --short | wc -l
+H ah-engine mesh send --to a --message x; sleep 1; git push
+H ah-engine status; sleep 1; ah-engine agents stop x
+H ah-engine status | python3 -c "print(1)"; sleep 1
+H f() { git push; }; ah-engine status; f
+H ah-engine mesh send --to a --message "$(git push)"; sleep 1
+H export PATH=/tmp/evil; ah-engine status 2>&1; sleep 1
+H ah-engine status > ~/.claude/settings.json; sleep 1
+H E=/tmp/evil; sleep 1; E=~/.anti-hall/ah-engine/bin/ah-engine & "$E" status; sleep 1
+P E=~/.anti-hall/ah-engine/bin/ah-engine; sleep 1; "$E" status
+H C=--check; echo $((C=1)); ah-engine config set daemon.nice 0 $C; sleep 1
+H E=~/.anti-hall/ah-engine/bin/ah-engine; echo $((E=1)); "$E" agents stop x
+#
+# #971 security review: fail-opens of the parsed read exemption and the mask (each passed before the fix). An assignment value
+# holding a substitution, a pipeline that starts with an assignment, a text value that runs code through parameter expansion
+# (zsh (e), bash @P, an arithmetic subscript), a text option that swallows a redirection, an unquoted ( ) < > inside a word (a
+# zsh multi-name function, a glob qualifier, a joined redirection), an engine call whose output file a later command can run or
+# read as config, a command that rebinds a name (zsh commands[..]=, autoload, setopt, trap ...), and a write into a config file
+H OUT="$(git push 2>&1)"; echo done
+H R="$(gh pr merge 12 --squash)"; ah-engine mesh send --to lead --message "merged"
+H ah-engine status && X="$(git push)"
+H ah-engine status && X="$(rm -rf build)"
+H X=`git push`; ah-engine status
+H X=1 | git push; ls
+H X= | rm -rf ~/x; ah-engine status
+H X='$(git push)'; ah-engine mesh send --to a --message "${(e)X}"
+H X='$(git push)'; ah-engine mesh send --to a --message "${X@P}"
+H Y='x[$(git push)]'; Z=(1); ah-engine mesh send --to a --message "${Z[Y]}"
+H Y='x[$(git push)]'; Z=1; ah-engine mesh send --to a --message "$Z[Y]"
+H Y='x[$(git push)]'; Z=1; echo "$Z[Y]"
+H ah-engine status --message >~/.claude/settings.json
+H ah-engine status --message=>~/.claude/settings.json
+H ah-engine mesh send --to a>~/.claude/settings.json
+H ah-engine status x>~/.claude/settings.json
+H ah-engine status () git push; ah-engine status
+H ah-engine status () { git push }; ah-engine status
+H ah-engine mesh read a > /tmp/x/r.sh; bash /tmp/x/"r.sh"
+H ah-engine mesh read a > /tmp/x/r.sh; cd /tmp/x; bash r.sh
+H ah-engine mesh read a > /tmp/x/r.sh; . /tmp/x/r''.sh
+H ah-engine mesh read a > /tmp/x/r.sh; sh < /tmp/x/r.sh
+H ah-engine mesh read a > /tmp/x/config; git -C /tmp/x log -1
+H ah-engine mesh read a > /tmp/x/.git/config; cd /tmp/x; git status
+H E=ah-engine; cd ${E::=/bin/sh}; "$E" status
+H cd ${PATH::=/tmp/evil}; ah-engine status
+H cd /tmp/*(e:'. /tmp/x/r':); ah-engine status
+H commands[ah-engine]=/tmp/evil; ah-engine status
+H fpath+=(/tmp/evil); autoload -U ah-engine; ah-engine status
+H autoload -U ah-engine; ah-engine status
+H unfunction ah-engine; ah-engine status
+H enable -f /tmp/evil.so x; ah-engine status
+H zmodload /tmp/evil; ah-engine status
+H setopt GLOB_SUBST; ah-engine status
+H emulate sh; ah-engine status
+H trap 'x' DEBUG; ah-engine status
+H integer E; ah-engine status
+H float E; ah-engine status
+H functions -c x ah-engine; ah-engine status
+H echo x > ~/.claude/settings.json
+H echo x >> "$HOME/.codex/config.toml"
+H echo x >| ${HOME}/.anti-hall/settings.json
+H echo x &> ~/.Claude/settings.json
+H echo x | tee -a ~/.claude/settings.json
+H cp /tmp/x ~/.claude/settings.json
+H mv /tmp/x .claude/settings.local.json
+H ln -sf /tmp/x ./.mcp.json
+H cp -t ~/.anti-hall /tmp/x
+H echo x > ~/.anti-hall/work/../skip.json
+P echo x > ~/.anti-hall/work/lane/notes.md
+P echo x >> ~/.anti-hall/history/x.md
+P cat ~/.claude/settings.json
+P cp ~/.claude/settings.json /tmp/x/backup.json
+P ah-engine status </dev/null 2>&1
+P ah-engine mesh send --to abc --message "fix (#971): a > b, see $HOME and ${USER}" 2>&1 | tail -1
