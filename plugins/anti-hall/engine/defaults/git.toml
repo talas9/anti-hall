@@ -1073,6 +1073,10 @@ value = "^[0-9]*(?:>>?|<|&>>?)$"
 doc = "Options of bash, sh, dash and zsh that take the next word as their operand (--rcfile ./x, -o pipefail, +O extglob): that word is not the script the shell runs. Shared by the shells; an option a shell does not know never occurs in a working call."
 value = ["--rcfile", "--init-file", "-O", "+O", "-o", "+o"]
 
+[git.shell_operand_letters]
+doc = "Short option letters of bash, sh, dash and zsh that take the next word as their operand when they appear in a bundle (-eo pipefail, +Oe extglob)."
+value = ["o", "O"]
+
 [git.script_assign_re]
 doc = "A variable assignment word (name=value, d=${d%/}). Where a program is expected (a command run by its path) it is no script path; after bash, sh or source it is a script name like any other."
 value = "^[A-Za-z_][A-Za-z0-9_]*\\+?="

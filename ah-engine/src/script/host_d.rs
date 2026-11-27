@@ -61,6 +61,14 @@ fn task_json(t: &Task) -> Value {
             Since::Unsure => json!("unsure"),
         },
     );
+    o.insert(
+        "blockedOnAtMs".into(),
+        match t.blocked_on_at {
+            Since::Unknown => Value::Null,
+            Since::Ms(ms) => json!(ms),
+            Since::Unsure => json!("unsure"),
+        },
+    );
     Value::Object(o)
 }
 
