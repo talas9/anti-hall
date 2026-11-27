@@ -503,6 +503,13 @@ fn note_call(a: &mut Agent, name: &str) {
     }
 }
 
+/// Whether a message tool's input names one of `agent_tracker.report_to.names` as its recipient (field `agent_tracker.report_to.field`).
+fn report_to(input: &Value) -> bool {
+    let r = defaults::raw("agent_tracker.report_to");
+    let to = str_of(input, r.str_field("field")).trim().to_lowercase();
+    !to.is_empty() && r.get("names").map(V::strings).unwrap_or_default().iter().any(|n| n.to_lowercase() == to)
+}
+
 fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let name = str_of(b, tr("name"));
     let input = b.get(tr("input")).cloned().unwrap_or(Value::Null);
@@ -533,6 +540,9 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         for w in words(path) {
             push_ring(&mut a.work, w, lim("work_words_max"));
         }
+    } else if super::is_child(a) && tools("report").contains(&name) && report_to(&input) {
+        // a child's message to its lead is a delivered report (#972 class 3: a reviewer's findings sent by SendMessage read "0 outcomes")
+        class = "report".into();
     } else if tools("read").contains(&name) {
         // reading is work on the step too: its targets are the words the drift check compares with the step
         a.step_events += 1;
@@ -559,9 +569,11 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         push = seg_hit("push");
         if seg_hit("commit") {
             class = "commit".into();
-        } else if pat("merge").is_some_and(|r| r.is_match(arg)) {
+        } else if seg_hit("merge") {
+            // per segment, like commit and push: the merge and deploy patterns are anchored at the program a segment runs, so matched
+            // against the joined segments they saw only the first one (`cd repo && gh pr merge 840` was no merge, #972 class 3)
             class = "merge".into();
-        } else if pat("deploy").is_some_and(|r| r.is_match(arg)) {
+        } else if seg_hit("deploy") {
             class = "deploy".into();
         } else if pat("test").is_some_and(|r| r.is_match(arg)) {
             class = "test".into();
@@ -759,6 +771,10 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if pat("guard_fire").is_some_and(|r| r.is_match(&text)) {
         a.guard_fires += 1;
+    }
+    if !failed && p.class == "report" {
+        a.reports += 1;
+        a.progress += weight("report");
     }
     // a subagent launched in the foreground returned its result to this agent
     if !failed && !p.ack && tools("agent").contains(&p.name.as_str()) {

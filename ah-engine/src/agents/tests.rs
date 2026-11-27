@@ -6914,3 +6914,39 @@ fn n972_a_snoozed_teammate_gets_no_false_claim_until_the_snooze_runs_out() {
     ticks(&h, &mut st, &[n + 241 * MIN, n + 242 * MIN]);
     assert_eq!(claims(&h), 1, "bounded: once the snooze runs out the claim is reported");
 }
+
+// ---- #972 class 3: outcomes the health nudge missed ---------------------------------------------------------------------------
+
+/// A subagent of `parent` that ran `calls` (each answered ok) and is still in its turn.
+fn sub_with_calls(h: &Path, n: u64, calls: &[(&str, Value)]) {
+    main_session(h, "parent", n, 1, "waiting");
+    let mut lines = vec![prompt(n - 30 * MIN, "/w")];
+    for (i, (name, input)) in calls.iter().enumerate() {
+        let id = format!("t{i}");
+        lines.push(tool(n - 20 * MIN + i as u64 * 1000, &format!("s{i}"), 5, &id, name, input.clone()));
+        lines.push(result(n - 20 * MIN + i as u64 * 1000 + 500, &id, "ok", false));
+    }
+    write(&sub_path(h, "parent"), &lines);
+}
+
+#[test]
+fn n972_a_merge_after_a_cd_is_an_outcome() {
+    let n = now0();
+    let h = home("n972-merge");
+    sub_with_calls(&h, n, &[("Bash", json!({"command": "cd /w/repo && gh pr merge 840 --squash"})), ("Bash", json!({"command": "cd /w/repo && echo gh pr merge 841"}))]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.shipped, a.progress), (1, weight("merge")), "the merge in the second segment counts, the quoted one in an echo does not");
+}
+
+#[test]
+fn n972_a_childs_report_to_its_lead_is_an_outcome_a_message_to_a_peer_is_not() {
+    let n = now0();
+    let h = home("n972-report");
+    sub_with_calls(&h, n, &[("SendMessage", json!({"to": "main", "message": "Findings: 3 P1 ..."})), ("SendMessage", json!({"to": "lane-x", "message": "hi"}))]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.reports, a.progress), (1, weight("report")), "one report to the lead; the peer message is no outcome");
+}
