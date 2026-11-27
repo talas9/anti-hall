@@ -109,6 +109,9 @@ pub struct Cfg {
     /// #971: the system directories (`/usr/bin/`, `/bin/`) a reader's command word may be spelled with: `/usr/bin/grep` reads as
     /// `grep`.
     pub ro_bin_dirs: Vec<String>,
+    /// #971: the commands that never assign a shell variable (`echo`, `grep`, `git`, `sleep`): after a pipeline every command of
+    /// which is one of these, the variables of [`local_spans`]' reading stay known; after any other they are unknown.
+    pub ro_inert: Vec<String>,
 }
 
 /// What the parsed read exemption ([`read_only_parts`]) made of one pipeline of a command list.
@@ -347,11 +350,13 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
             }
             continue;
         }
-        // lenient: a command every word of which resolves runs no expansion that could assign (`$((E=1))`, `${E:=x}` resolve
-        // nothing) and a builtin that assigns stopped the masking above, so its variables stay known; any other pipeline is kept for the
-        // rules and leaves every variable unknown
+        // lenient: a pipeline every word of which resolves (no `$((E=1))` or `${E:=x}`) and every command of which never assigns
+        // (`ro_inert`, an allow list: zsh's `print -v`, `integer` assign too) keeps the variables known; any other pipeline is kept for
+        // the rules and leaves every variable unknown
+        let inert = || pipe.iter().all(|el| cfg.ro_inert.iter().any(|x| *x == base(&el[0].0)));
         match ro_pipeline(&pipe, &vars, cfg, home) {
-            Some(Part::Read(_)) if lenient => {}
+            Some(Part::Read(_)) if lenient && inert() => {}
+            Some(Part::Read(_)) if lenient => vars.clear(),
             Some(part) => parts.push((span, part)),
             None if lenient => vars.clear(),
             None => return None,
@@ -1000,6 +1005,11 @@ fn is_redir(word: &str) -> bool {
     (w.starts_with('<') || w.starts_with('>')) && !w[1..].starts_with('(')
 }
 
+/// #971: the target of a redirection as [`Part::Local`] carries it (`/tmp/x` of `>>/tmp/x`, `1` of `2>&1`).
+pub fn redir_target(redir: &str) -> &str {
+    redir_split(redir).1
+}
+
 /// #971: the operator of a redirection word (`2>`, `>>`, `&>`, `>|`, `2>&`) and its target written in the same word (`/dev/null`,
 /// `1`), the target empty when it is the next word (`> /dev/null`).
 fn redir_split(word: &str) -> (&str, &str) {
@@ -1602,7 +1612,13 @@ mod tests {
     /// is left out and voids nothing, but leaves its variables unknown; a rebinding command word stops the masking from there on.
     #[test]
     fn local_spans_find_the_engine_local_calls_of_any_list() {
-        let c = Cfg { ro_assigners: vec!["export".into()], ro_assign_deny: vec!["PATH".into()], cmd_wrappers: vec!["then".into()], ..ro_cfg() };
+        let c = Cfg {
+            ro_assigners: vec!["export".into()],
+            ro_assign_deny: vec!["PATH".into()],
+            cmd_wrappers: vec!["then".into()],
+            ro_inert: vec!["sleep".into(), "echo".into()],
+            ..ro_cfg()
+        };
         let home = Some(std::ffi::OsStr::new("/Users/me"));
         let spans = |cmd: &str| local_spans(cmd, &c, home).map(|v| v.into_iter().map(|(r, _)| cmd[r].to_string()).collect::<Vec<_>>());
         assert_eq!(spans("sleep 1; ah-engine status 2>&1 | head -3; python3 -c 'x'"), Some(vec!["ah-engine status 2>&1 | head -3".to_string()]));
@@ -1613,6 +1629,7 @@ mod tests {
         assert_eq!(spans("E=ah-engine; sleep 1; \"$E\" status"), Some(vec!["\"$E\" status".to_string()]), "a command whose words resolve assigns nothing");
         assert_eq!(spans("E=ah-engine; echo $((E=1)); \"$E\" status"), Some(vec![]), "an expansion it can not resolve leaves the variable unknown");
         assert_eq!(spans("E=ah-engine; x \"$(y)\"; \"$E\" status"), Some(vec![]));
+        assert_eq!(spans("C=--check; print -v C 1; ah-engine config set k v $C"), Some(vec![]), "a command off the inert list may assign");
         assert_eq!(spans("ah-engine agents stop x; sleep 1"), Some(vec![]), "a verb off the list");
         assert_eq!(spans("export PATH=/tmp/e; ah-engine status"), Some(vec![]), "an assigning command stops the masking");
         assert_eq!(spans("if true; then PATH=/tmp/e; fi; ah-engine status"), Some(vec![]), "a denied assignment behind a wrapper word");

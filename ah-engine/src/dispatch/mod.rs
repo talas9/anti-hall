@@ -514,6 +514,7 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         ro_assigners: strs(cfg.get("parsed").and_then(|p| p.get("assigners"))),
         ro_text_opts: strs(cfg.get("parsed").and_then(|p| p.get("text_opts"))),
         ro_bin_dirs: strs(cfg.get("parsed").and_then(|p| p.get("bin_dirs"))),
+        ro_inert: strs(cfg.get("parsed").and_then(|p| p.get("inert"))),
     })
 }
 
@@ -882,11 +883,16 @@ fn capacity_part_ok(cfg: &defaults::V, part: &shellwords::Part) -> bool {
 }
 
 /// #971: `command` with each engine-local call that passes ([`shellwords::local_spans`], [`capacity_part_ok`]) replaced by
-/// `parsed.mask` (a no-op command), `None` when there is none (or `mask` is empty: off). The ah-hook launcher applies the same keys.
+/// `parsed.mask` (a no-op command), `None` when there is none (or `mask` is empty: off). A call whose redirection writes a file the
+/// rest of the command names again (`> /tmp/r.sh; bash /tmp/r.sh`) is not masked: what it writes may run. The ah-hook launcher applies
+/// the same keys.
 fn capacity_mask(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> Option<String> {
     let mask = cfg.get("parsed").and_then(|p| p.get("mask")).and_then(|v| v.as_str()).filter(|m| !m.is_empty())?;
     let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
-    let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?.into_iter().filter(|(_, p)| capacity_part_ok(cfg, p)).collect();
+    let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
+        .into_iter()
+        .filter(|(range, p)| capacity_part_ok(cfg, p) && !capacity_writes_what_runs(command, range.end, p))
+        .collect();
     if spans.is_empty() {
         return None;
     }
@@ -905,6 +911,13 @@ fn capacity_redir_ok(cfg: &defaults::V, redir: &str) -> bool {
     let re = |p: &str| regex::RegexBuilder::new(p).case_insensitive(true).build();
     let (ok, unless) = (pat("redirs"), pat("redirs_unless"));
     !ok.is_empty() && re(ok).is_ok_and(|r| r.is_match(redir)) && (unless.is_empty() || re(unless).is_ok_and(|r| !r.is_match(redir)))
+}
+
+/// #971: whether an engine-local call's redirection writes a file (a target that starts with `/`) the command names again after it.
+fn capacity_writes_what_runs(command: &str, end: usize, part: &shellwords::Part) -> bool {
+    let shellwords::Part::Local(_, redirs) = part else { return false };
+    let after = command.get(end..).unwrap_or_default();
+    redirs.iter().map(|r| shellwords::redir_target(r)).any(|t| t.starts_with('/') && after.contains(t))
 }
 
 /// Whether the pipe tail of an engine-local verb is one of the filters `parsed.tail_ok` names (`jq`, `python3 -m json.tool`), the

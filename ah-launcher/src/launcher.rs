@@ -1091,6 +1091,7 @@ impl L {
             ro_assigners: strs(cfg.get("parsed").and_then(|p| p.get("assigners"))),
             ro_text_opts: strs(cfg.get("parsed").and_then(|p| p.get("text_opts"))),
             ro_bin_dirs: strs(cfg.get("parsed").and_then(|p| p.get("bin_dirs"))),
+            ro_inert: strs(cfg.get("parsed").and_then(|p| p.get("inert"))),
         })
     }
 
@@ -1126,7 +1127,8 @@ impl L {
     }
 
     /// #971: `command` with each engine-local call that passes replaced by `parsed.mask`, `None` when there is none (or `mask`
-    /// is empty: off), as the engine's dispatch::capacity_mask.
+    /// is empty: off); a call whose redirection writes a file the rest of the command names again is not masked. As the engine's
+    /// dispatch::capacity_mask.
     fn capacity_mask(
         &self,
         cfg: &toml::Value,
@@ -1143,7 +1145,10 @@ impl L {
             .and_then(std::env::var_os);
         let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
             .into_iter()
-            .filter(|(_, p)| self.capacity_part_ok(cfg, p))
+            .filter(|(range, p)| {
+                self.capacity_part_ok(cfg, p)
+                    && !Self::capacity_writes_what_runs(command, range.end, p)
+            })
             .collect();
         if spans.is_empty() {
             return None;
@@ -1193,6 +1198,19 @@ impl L {
                 .case_insensitive(true)
                 .build()
                 .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// #971: whether an engine-local call's redirection writes a file (a target that starts with `/`) the command names again after
+    /// it, as the engine's dispatch::capacity_writes_what_runs.
+    fn capacity_writes_what_runs(command: &str, end: usize, part: &shellwords::Part) -> bool {
+        let shellwords::Part::Local(_, redirs) = part else {
+            return false;
+        };
+        let after = command.get(end..).unwrap_or_default();
+        redirs
+            .iter()
+            .map(|r| shellwords::redir_target(r))
+            .any(|t| t.starts_with('/') && after.contains(t))
     }
 
     /// #971: whether a redirection of an engine-local verb is harmless (`parsed.redirs`, not `parsed.redirs_unless`), as the
