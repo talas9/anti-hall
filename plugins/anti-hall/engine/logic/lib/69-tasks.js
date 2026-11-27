@@ -132,7 +132,12 @@ var tk = {
     });
   },
   statusLc: function (t) { return (t.status || '').toLowerCase(); },
-  isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0; },
+  // The backlog line (`T-∞ Backlog: …`, task_window.backlog_re) is an index of the backlog, not work: never an open task while the task
+  // window is on (GH #982).
+  isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0 && !tk.isBacklogLine(t); },
+  isBacklogLine: function (t) {
+    return !!t && typeof t.content === 'string' && jx.re('task_window.backlog_re').test(t.content) && ah.settings.bool('task_window.setting');
+  },
   isDone: function (t) { return ah.cfg('taskstate.done_statuses').indexOf(tk.statusLc(t)) >= 0; },
   // The blockedOn marker as the owner-blocked test reads it: a string trimmed and lowercased, else empty.
   blockedOnText: function (t) { return typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : ''; },

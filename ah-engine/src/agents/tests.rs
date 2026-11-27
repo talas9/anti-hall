@@ -3674,6 +3674,18 @@ fn compliance_rows(h: &Path, sig: &str) -> Vec<Value> {
 }
 
 #[test]
+fn the_backlog_line_of_the_task_window_is_never_a_task_the_nudges_count() {
+    // GH #982: `T-∞ Backlog: …` indexes the backlog store; it is not work, so no idle or dispatch nudge may name it
+    let h = home("backlog-line");
+    let e = env(&h, now0());
+    task_file(&h, SID, json!({"id": "1", "subject": "T-1 [P0] Real work", "status": "pending", "owner": "", "blockedBy": []}));
+    task_file(&h, SID, json!({"id": "2", "subject": "T-∞ Backlog: 3 more (1 P0, 2 P1) · next: T-7 [P0] x · run /anti-hall:tasks-reconcile", "status": "pending", "owner": "", "blockedBy": []}));
+    let ts = compliance::session_tasks(&e, SID);
+    assert_eq!(ts.len(), 1, "only the real task is read");
+    assert_eq!(ts[0].subject, "T-1 [P0] Real work");
+}
+
+#[test]
 fn the_task_list_is_read_from_the_session_dir_a_named_list_and_a_pointer_not_the_uuid_dir() {
     let h = home("list-layout");
     let e = env(&h, now0());

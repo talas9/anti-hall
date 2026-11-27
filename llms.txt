@@ -188,6 +188,7 @@ Shared libraries (historical, Node era; no Node hook ships and each is now an en
 | anti-hall-devswarm | devswarm |
 | anti-hall-doctor | doctor |
 | anti-hall-handover | handover |
+| anti-hall-tasks-reconcile | tasks-reconcile |
 | anti-hall-install-statusline | install-statusline (explains what applies on Codex) |
 | anti-hall-jev | jev |
 | anti-hall-model-policy | skills/MODEL-POLICY.md (Codex model table) |

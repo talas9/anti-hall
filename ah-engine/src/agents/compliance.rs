@@ -106,12 +106,17 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let (max_files, max_bytes) = (defaults::num("taskstate.store_max_files") as usize, defaults::num("taskstate.store_file_max_bytes"));
     let mut out = Vec::new();
+    // the backlog line of the task window (GH #982) is an index of the backlog, not work: never a task the nudges count
+    let backlog = regex::Regex::new(defaults::text("task_window.backlog_re")).ok();
     for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(c.str_field("task_ext"))).take(max_files) {
         if e.metadata().is_ok_and(|m| m.len() > max_bytes) {
             continue;
         }
         let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
         let s = |k: &str| v.get(c.str_field(k)).map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).unwrap_or_default();
+        if backlog.as_ref().is_some_and(|r| r.is_match(&s("f_subject"))) {
+            continue;
+        }
         let blocked = v
             .get(c.str_field("f_blocked"))
             .and_then(Value::as_array)
