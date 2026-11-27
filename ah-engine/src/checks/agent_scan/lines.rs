@@ -694,8 +694,14 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
         let (id, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
         at += m.get(0).map_or(0, |x| x.end());
         at += c[at..].len() - trim_start(&c[at..]).len();
-        if !body.starts_with('{') && !body.trim().is_empty() {
+        let lead = body.trim_start();
+        if !lead.starts_with('{') && !lead.is_empty() {
             out.push(Idle { id: id.to_string(), ts: Got::of(Ok(Some(Ts(entry_ts)))), report: true });
+            // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is quoted
+            // text, never another teammate's report
+            if body.contains(defaults::text("agent_scan.teammate_open")) {
+                break;
+            }
             continue;
         }
         if body.contains('\n') || !body.starts_with('{') {
@@ -716,6 +722,20 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
             Ok(Some(Ts(if inner.is_finite() && entry_ts.is_finite() { inner } else { entry_ts })))
         })();
         out.push(Idle { id: id.to_string(), ts: Got::of(ts), report: false });
+    }
+    // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report text)
+    // dates it, the entry's receipt time is its latest possible time
+    let idles: Vec<(String, f64)> = out
+        .iter()
+        .filter_map(|i| match (&i.ts, i.report) {
+            (Got::Ok(Some(Ts(t))), false) if t.is_finite() => Some((i.id.clone(), *t)),
+            _ => None,
+        })
+        .collect();
+    for i in out.iter_mut().filter(|i| i.report) {
+        if let Some((_, t)) = idles.iter().find(|(id, t)| *id == i.id && *t < entry_ts) {
+            i.ts = Got::Ok(Some(Ts(*t)));
+        }
     }
     out
 }

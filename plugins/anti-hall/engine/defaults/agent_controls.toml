@@ -80,6 +80,10 @@ value = ["SendMessage"]
 doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate message (an idle notice or the teammate's own plain-text report)."
 value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "<teammate-message" }
 
+[agent_scan.teammate_open]
+doc = "Text that opens a teammate message block. A report body that holds it quotes earlier teammate messages: the report is the outer block's, and nothing after the first closing tag is read as another report."
+value = "<teammate-message"
+
 [agent_scan.teammate_report_prefix]
 doc = "Text a teammate report entry begins with."
 value = "Another Claude session sent a message:"

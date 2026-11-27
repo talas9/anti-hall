@@ -1223,8 +1223,14 @@ impl Walk {
                 continue;
             }
             // a plain-text body is the teammate's own report (a SendMessage to the coordinator), an answer to everything sent before it
-            if !body.starts_with('{') && !body.trim().is_empty() {
+            let lead = body.trim_start();
+            if !lead.starts_with('{') && !lead.is_empty() {
                 out.push((id.to_string(), entry_ts, "report"));
+                // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is
+                // quoted text, never another teammate's report
+                if body.contains(defaults::text("agent_scan.teammate_open")) {
+                    break;
+                }
                 continue;
             }
             if body.contains('\n') || !body.starts_with('{') {
@@ -1243,6 +1249,14 @@ impl Walk {
             }
             let ts = if inner.is_finite() && entry_ts.is_finite() { inner } else { entry_ts };
             out.push((id.to_string(), ts, "idle"));
+        }
+        // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report
+        // text) dates it, the entry's receipt time is its latest possible time
+        let idles: Vec<(String, f64)> = out.iter().filter(|o| o.2 == "idle").map(|o| (o.0.clone(), o.1)).collect();
+        for o in out.iter_mut().filter(|o| o.2 == "report") {
+            if let Some((_, t)) = idles.iter().find(|(i, t)| *i == o.0 && t.is_finite() && *t < o.1) {
+                o.1 = *t;
+            }
         }
         Ok(out)
     }
