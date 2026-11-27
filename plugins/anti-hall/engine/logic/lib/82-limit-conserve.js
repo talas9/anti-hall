@@ -13,7 +13,7 @@ function lcReadJson(path) {
 
 // The account-switch guard: true when the logged-in account changed and the usage cache has not been refreshed since. The write of
 // the account state Node makes at this point is not done here but left in `pend.w`: a case that cannot be settled must find nothing written.
-function lcAccountStale(home, pend) {
+function lcAccountStale(home, pend, cachePath) {
   if (!ah.settings.bool('ctxbudget.set_limit_account_check')) return false;
   var cj = lcReadJson(home + '/' + ah.cfg('ctxbudget.claude_json'));
   if (cj.big) { ah.unable('limit-conserve-inject:claude_json_big'); return false; } // the account cannot be read: no account change is assumed
@@ -22,7 +22,7 @@ function lcAccountStale(home, pend) {
   var accountRel = ah.cfg('ctxbudget.account_state'), acc = lcReadJson(home + '/' + accountRel);
   if (acc.big) { ah.unable('limit-conserve-inject:account_big'); return false; } // the stored account state is left as it is
   var stored = acc.v && typeof acc.v === 'object' && typeof acc.v.userID === 'string' && typeof acc.v.usageCacheMtime === 'number' ? acc.v : null;
-  var mtime = ah.fs.mtimeMs(home + '/' + ah.cfg('ctxbudget.usage_cache'));
+  var mtime = ah.fs.mtimeMs(cachePath);
   var write = function (m) { pend.w = function () { try { ah.state.writeAtomic(accountRel, text.render(ah.cfg('ctxbudget.lc_account_json'), { user: JSON.stringify(user), mtime: m === null ? ah.cfg('ctxbudget.json_null') : String(m) })); } catch (e) { /* best effort */ } }; };
   if (!stored) { write(mtime); return false; }
   if (stored.userID !== user) {
@@ -40,11 +40,10 @@ function lcConserving(home, pend) {
   if (mode === 'on') return { reason: ah.cfg('ctxbudget.lc_reason_manual'), resetsAt: null };
   if (mode === 'off') return null;
   var threshold = ah.settings.num('ctxbudget.set_limit_threshold');
-  var cache = lcReadJson(home + '/' + ah.cfg('ctxbudget.usage_cache'));
-  if (cache.big) { ah.unable('limit-conserve-inject:usage_big'); return null; } // a usage cache over the read cap: no conservation
-  if (cache.bad) return null;
-  var parsed = cache.v, now = ah.clock.now();
-  if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') return null;
+  // GH #981: the configured usage source; a stale snapshot is no reading (unknown), even with a reset time ahead
+  var snap = usage.fresh(home, ah.cfg('ctxbudget.usage_reader_conserve'));
+  if (snap === null) return null;
+  var parsed = snap.parsed, now = ah.clock.now();
   var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0;
   var effective = function (pct, resetsAt) {
     if (resetsAt && typeof resetsAt === 'string') {
@@ -65,7 +64,7 @@ function lcConserving(home, pend) {
     }
   }
   if (!trips.length) return null;
-  if (lcAccountStale(home, pend)) return null;
+  if (lcAccountStale(home, pend, snap.path)) return null;
   var finite = candidates.filter(function (s) { return isFinite(new Date(s).getTime()); });
   finite.sort(function (a, b) { return new Date(a).getTime() - new Date(b).getTime(); });
   return { reason: trips.join('+'), resetsAt: finite.length ? finite[0] : null };

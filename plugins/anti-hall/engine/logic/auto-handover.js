@@ -24,6 +24,21 @@ function ahConsultJev(p, cfg, result) {
   ah.jev.ask(spec);
 }
 
+// GH #981: a prompt that asks for a handover in plain words (ctxbudget.handover_hint_res) gets one line naming the anti-hall handover
+// skill and the exact path, so instruction text of another plugin (".omc/handoffs/") does not pick the place. '' when off or no match.
+function ahHandoverHint(p) {
+  if (!ah.settings.bool('ctxbudget.handover_hint_setting') || typeof p.prompt !== 'string') return '';
+  var prompt = p.prompt.slice(0, ah.cfgNum('ctxbudget.handover_hint_prompt_max'));
+  var test = function (r) { return ah.re.test(r, 'i', prompt); };
+  if (!ah.cfg('ctxbudget.handover_hint_res').some(test) || ah.cfg('ctxbudget.handover_hint_skip_res').some(test)) return '';
+  var rel = null;
+  try { rel = cb.expectedHandoverPath(p); } catch (e) { rel = null; }
+  if (rel === null) return '';
+  var codex = coordinator.isCodexPayload(p);
+  ah.metric('auto_handover_hint', ['host', codex ? ah.cfg('ctxbudget.handover_hint_host_codex') : ah.cfg('ctxbudget.handover_hint_host_claude')]);
+  return text.render(ah.cfg('ctxbudget.handover_hint_msg'), { skill: ah.cfg(codex ? 'ctxbudget.handover_hint_skill_codex' : 'ctxbudget.handover_hint_skill_claude'), path: rel });
+}
+
 // Node's os.homedir() for this call: false when there is none or it is the real home under a test marker (Node's own guard then writes
 // nothing); a relative HOME is resolved against the stand-in directory (counted).
 function ahAdopt(p) {
@@ -42,12 +57,13 @@ function decide(p) {
   if (!p || typeof p !== 'object' || ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return ahEmpty();
   if (!ahAdopt(p)) return ahEmpty();
   if (ah.settings.skipped(ah.cfg('ctxbudget.skip_auto_handover'))) return ahEmpty();
+  var hint = ahHandoverHint(p);
   var cfg = cb.resolveEffective(), tag = cb.sessionTag(p);
-  if (!tag) return ahEmpty();
+  if (!tag) return ahOut(hint);
   var latch = cb.readLatch(tag), fired = latch.fired === true, w = { latch: null, inferred: null }, out = '', jev = null;
   if (!cfg.enabled) {
     if (fired) cb.writeLatch(tag, { fired: false });
-    return ahEmpty();
+    return ahOut(hint);
   }
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : null;
   if (tp && hookProc.openKnown(p, tp) === null) ah.unable('auto-handover:relative_transcript');
@@ -104,5 +120,5 @@ function decide(p) {
   if (w.inferred) cb.writeInferred(w.inferred);
   if (w.latch) cb.writeLatch(tag, w.latch);
   if (jev) ahConsultJev(p, cfg, jev.result);
-  return ahOut(out);
+  return ahOut(out === '' || hint === '' ? out + hint : out + cb.c('ctxbudget.ah_parts_sep') + hint);
 }

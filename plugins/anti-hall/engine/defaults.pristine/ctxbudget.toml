@@ -113,7 +113,7 @@ doc = "The OMC usage cache file, relative to the home directory."
 value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
 
 [ctxbudget.usage_max_stale_ms]
-doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent."
+doc = "Snapshot age beyond which a usage reading is unknown (GH #981: whatever its reset times say); limit conservation, the spawn stand-down and the small-edit relief do not act on it, and doctor warns."
 value = 21600000
 unit = "ms"
 

@@ -491,7 +491,7 @@ doc = "AFK question-tool calls denied with the question ladder, by tool (every c
 value = { kind = "counter", unit = "events", labels = ["tool"] }
 
 [metric.afk_question_parked]
-doc = "AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook)."
+doc = "AFK questions turned into work, by action: nudged (a turn ending on a plain-text question held with the ladder), offer (a turn ending on an offer of work held, GH #981), capped (let through after afk.question_max_holds), listed (NEEDS OWNER bullets printed by back / progress; CLI counts are added by the next hook)."
 value = { kind = "counter", unit = "events", labels = ["action"] }
 
 [metric.afk_output_tokens]

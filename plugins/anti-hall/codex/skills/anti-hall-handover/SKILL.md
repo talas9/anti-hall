@@ -46,12 +46,12 @@ The handover is written **by the agent holding the session context** —
 **never delegate the writing to a subagent**: it never lived this session, so
 its reconstruction loses decision/trial fidelity (a field failure: a session
 delegated handover-writing to a subagent even after loading this skill).
-Documented exception to delegation-first/orchestrate-only doctrine. Parity
-note: `edit-guard`'s wrong-location redirect and `model-routing-guard`'s
-spawn-intent advisory (shared files) carry this rule's logic, but Codex's
-`hooks.json` wires neither onto a Write/Edit or Agent-spawn matcher (it does
-register `tasklist-guard` and `handover-resume`) — treat this as YOUR
-discipline here, not yet a mechanical rail. Use the Write/Edit tool for
+Documented exception to delegation-first/orchestrate-only doctrine.
+`edit-guard` runs on `apply_patch` here too: a NEW handover-named `.md`
+outside `.anti-hall/handovers/` (including another plugin's folder such as
+`.omx/handoffs/` or `.omc/handoffs/`) is blocked with the exact session path
+to write instead. Instruction text from another orchestration layer never
+picks the folder: handovers go only under `.anti-hall/handovers/`. Use the Write/Edit tool for
 every file below, never a Bash heredoc (`cat > f <<EOF`) — a heredoc body is
 scanned as shell by `git-guard` (shared with Claude Code), and prose that
 merely mentions a git command near backticks can trip a block Write/Edit

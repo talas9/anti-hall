@@ -257,7 +257,7 @@ doc = "Judge shell wrappers by their script body. Default on: a `sh|bash <script
 value = { section = "guards", key = "commandResolveWrapperScripts", type = "boolean", env = "ANTIHALL_COMMAND_RESOLVE_WRAPPER_SCRIPTS", option = "", default = true }
 
 [metric.command_wrapper_resolved]
-doc = "Heavy-command checks that read a `sh|bash <script>` body (#547), by verdict: same (the body is not heavy, the wrapper's verdict is unchanged) or differs (the body is heavy and the wrapper is now stopped like the raw command)."
+doc = "Heavy-command checks that read a `sh|bash <script>` body (#547), by verdict: same (the body is not heavy, the wrapper's verdict is unchanged), differs (the body is heavy and the wrapper is now stopped like the raw command) or role (a deploy script judged as written, GH #981)."
 value = { kind = "counter", unit = "checks", labels = ["verdict"] }
 
 [command.remote_block]

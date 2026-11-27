@@ -76,6 +76,27 @@ function egHandoverPath(cwd, p) {
   return path.join.apply(null, [root].concat(spec.dir, [date, sid, spec.file]));
 }
 
+// The absolute path of this session's next handover (auto-handover's expected path under the repository root), else the canonical
+// HANDOVER.md path under the project root.
+function egNextHandover(cwd, p) {
+  try {
+    var rel = cb.expectedHandoverPath(p);
+    if (rel !== null) return { rel: rel, abs: ah.path.join(cb.repoRoot(cb.cwdOf(p)), rel) };
+  } catch (e) { if (cmdFatal(e)) throw e; }
+  var abs = egHandoverPath(cwd, p);
+  return { rel: abs, abs: abs };
+}
+
+// GH #981: the block of a new handover written at a foreign plugin's path (.omc/handoffs/...) or outside .anti-hall/handovers.
+function egForeign(tool, file, cwd, p, codexPatch) {
+  var right = egNextHandover(cwd, p);
+  ah.metric('edit_guard_handover_redirected', ['tool', tool]);
+  return egBlock(text.message('block', ah.cfg('edit_guard.guard_name'), {
+    what: text.render(ah.cfg('edit_guard.msg_foreign_what'), { tool: tool, file: egSlashes(String(file)) }), why: ah.cfg('edit_guard.msg_foreign_why'),
+    instead: text.render(ah.cfg('edit_guard.msg_foreign_instead'), { path: right.rel }), allowed: right.abs,
+  }), codexPatch);
+}
+
 // The coordinator delegation block text for `tool` (hooks/edit-guard.js delegationReason).
 function egDelegation(tool, cwd, p) {
   var HT = LIB['./lib/host-text.js'];
@@ -146,12 +167,9 @@ function egEditLines(ti, codexPatch, cwd) {
 // The usage buckets of the cache as [{name, pct, resetsAt}]; pct is null for a reading that cannot be trusted (a stale cache with no
 // reset time). A window whose reset has passed counts 0. Model-specific weekly buckets (edit_guard.cap_scoped_*) are included. null: no cache.
 function egCapBuckets(home) {
-  var file = ah.path.join(home, ah.cfg('ctxbudget.usage_cache')), size = ah.fs.size(file);
-  if (size === null || size > ah.cfgNum('script.read_max_bytes')) return null;
-  var raw = ah.fs.readText(file), parsed;
-  if (raw === null) return null;
-  try { parsed = JSON.parse(raw); } catch (e) { return null; }
-  if (!egIsObj(parsed) || !egIsObj(parsed.data)) return null;
+  var snap = usage.fresh(home, ah.cfg('ctxbudget.usage_reader_edit')); // GH #981: the configured source; stale = no reading
+  if (snap === null) return null;
+  var parsed = snap.parsed;
   var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
   var stale = ts > 0 && (now - ts) > ah.cfgNum('ctxbudget.usage_max_stale_ms'), out = [];
   var scopedBucket = false;
@@ -327,6 +345,11 @@ function egMain(p) {
     }), codexPatch);
   }
 
+  // GH #981: a new handover at a foreign plugin's path or outside .anti-hall/handovers: every agent, with the exact session path
+  for (var fi = 0; fi < paths.length; fi++) {
+    if (LIB['./edit-guard.js'].foreignHandover(paths[fi], cwd)) return egForeign(tool, paths[fi], cwd, p, codexPatch);
+  }
+
   if (!coordinator.isCoordinator(p)) return 'allow';
   // a DevSwarm child workspace is a worker on its own branch: its edits are its job
   if (egChildWorker(cwd)) return 'allow';
@@ -359,6 +382,8 @@ function egMain(p) {
       what: text.render(ah.cfg('edit_guard.msg_outside_what'), { tool: tool }), why: ah.cfg('edit_guard.msg_outside_why'),
       instead: text.render(ah.cfg('edit_guard.msg_outside_instead'), { path: right }), allowed: right,
     });
+  } else if (verdict === 'block-handover-foreign') {
+    return egForeign(tool, at, cwd, p, codexPatch);
   } else if (verdict === 'block-handover') {
     reason = text.message('block', guard, {
       what: text.render(ah.cfg('edit_guard.msg_new_what'), { tool: tool }), why: ah.cfg('edit_guard.msg_new_why'),

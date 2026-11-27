@@ -253,6 +253,11 @@ var cb = {
   // as hasOpenTasks reads it (sidechain records skipped); `lines` is the tail the caller already holds (read here when omitted).
   quiet: function (p, lines) {
     if (nostop.afkOn() || nostop.session(p) !== null) return true;
+    // GH #981: an OMC autonomous loop drives this session (task-guard defers to it the same way): no stopping-point advice against it
+    if (ah.settings.bool('ctxbudget.set_quiet_on_omc_loop') && omcx.loopActive(ah.home() || '', p && typeof p.cwd === 'string' ? p.cwd : '', p && p.session_id ? String(p.session_id) : '', ah.clock.now(), ah.cfg('ctxbudget.omc_tag'))) {
+      ah.metric('auto_handover_quiet_omc', []);
+      return true;
+    }
     var home = ah.home(), sid = p && p.session_id ? String(p.session_id) : '';
     if (home && sid !== '') {
       var gaps = { n: 0, strict: true }, st = tk.storeTasks(home, sid, gaps);

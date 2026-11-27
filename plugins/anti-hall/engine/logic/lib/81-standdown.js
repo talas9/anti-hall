@@ -4,13 +4,9 @@
 'use strict';
 
 function swgUsageBuckets(home) {
-  var rel = ah.cfg('ctxbudget.usage_cache'), path = ah.path.join(home, rel), size = ah.fs.size(path);
-  if (size === null) return null;
-  if (size > ah.cfgNum('script.read_max_bytes')) { ah.unable('swarm-guard:usage_big'); return null; }
-  var raw = ah.fs.readText(path), parsed;
-  if (raw === null) return null;
-  try { parsed = JSON.parse(raw); } catch (e) { return null; }
-  if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') return null;
+  var snap = usage.fresh(home, ah.cfg('ctxbudget.usage_reader_spawn')); // GH #981: the configured source; stale = no reading
+  if (snap === null) return null;
+  var parsed = snap.parsed;
   var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
   var pcts = ah.cfg('spawn_usage.bucket_pct'), resets = ah.cfg('spawn_usage.bucket_resets'), names = ah.cfg('spawn_usage.bucket_names'), out = [];
   for (var i = 0; i < pcts.length; i++) {

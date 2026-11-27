@@ -530,6 +530,62 @@ pub fn explain_setting_here(key: &str, layers: &Layers, project: &BTreeMap<Strin
     explain_setting(key, layers, project, &|n| std::env::var(n).ok())
 }
 
+/// GH #981: `config explain <section.key>` for a switch the checks read through a setting descriptor (a defaults entry whose value is
+/// a table naming `section` and `key`, e.g. `ask_guard.child_deny_setting` = guards.denyChildQuestions): the value the checks see (the
+/// request settings chain: environment, settings.json, plugin option, default) and the environment, settings.json and default layers.
+/// `None` when no descriptor names that key.
+pub fn explain_descriptor(key: &str, env: &crate::reqenv::RequestEnv) -> Option<Json> {
+    let (section, name) = key.split_once('.')?;
+    let all = defaults::all();
+    let e = all.iter().find(|e| e.value.str_field("section") == section && e.value.str_field("key") == name && e.value.get("default").is_some())?;
+    let st = crate::checks::git::util::Settings::from_env(env);
+    let root = crate::checks::guardkit::settings::plugin_root(&Json::Null, env);
+    // a switch is read the way the checks read it (get_bool); any other kind through the typed chain
+    let eff = match e.value.get("default") {
+        Some(V::Bool(_)) => json!(crate::checks::guardkit::settings::get_bool(&st, &e.value)),
+        _ => crate::checks::guardkit::settings::get_setting(&st, &e.value, None, &root).ok().flatten().unwrap_or(Json::Null),
+    };
+    let env_name = e.value.str_field("env");
+    let from_env = (!env_name.is_empty()).then(|| st.env.get(env_name).map(|v| json!(v))).flatten();
+    let from_settings = crate::checks::guardkit::settings::read_object(&st, defaults::text("guardkit.settings_file"))
+        .and_then(|o| o.get(section).and_then(Json::as_object).and_then(|s| s.get(name)).cloned());
+    let default = e.value.get("default").map(V::to_json);
+    let names = defaults::list("layers.descriptor_layer_names");
+    let states = defaults::list("layers.state_names");
+    let held = [from_env, from_settings, default];
+    let mut applied = false;
+    let rows: Vec<Json> = names
+        .iter()
+        .zip(held)
+        .map(|(layer, v)| {
+            let state = match &v {
+                None => states[3],
+                Some(x) if !applied && same_setting_value(x, &eff) => {
+                    applied = true;
+                    states[0]
+                }
+                Some(_) => states[1],
+            };
+            json!({"layer": layer, "state": state, "value": v})
+        })
+        .collect();
+    let source = rows.iter().find(|r| r["state"] == json!(states[0])).and_then(|r| r["layer"].as_str()).unwrap_or(defaults::text("layers.descriptor_source_other")).to_string();
+    Some(json!({"key": key, "value": eff, "source": source, "descriptor": e.key, "layers": rows, "refused": Json::Null}))
+}
+
+/// A layer's raw value equals the effective one: the same JSON, or the same value once read as the effective one's type (an environment
+/// `0` against an effective `false`, by the boolean words of guardkit.true_tokens / false_tokens).
+fn same_setting_value(raw: &Json, eff: &Json) -> bool {
+    if raw == eff {
+        return true;
+    }
+    match (raw, eff) {
+        (Json::String(s), Json::Bool(b)) => crate::checks::guardkit::settings::token(s) == Some(*b),
+        (Json::String(s), Json::String(t)) => s.trim().eq_ignore_ascii_case(t),
+        _ => false,
+    }
+}
+
 /// `config explain <key>`: the effective value of a setting and what every layer holds for it (`applied`, `shadowed` by a higher
 /// layer, `refused`, or absent), highest precedence first. `None` for a key that is not a setting.
 pub fn explain_setting(key: &str, layers: &Layers, project: &BTreeMap<String, Json>, env: &dyn Fn(&str) -> Option<String>) -> Option<Json> {

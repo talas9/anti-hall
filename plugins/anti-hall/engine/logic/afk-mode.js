@@ -362,10 +362,28 @@ function afkTurnTokens(tp) {
 }
 
 // A turn that ends on a plain-text question while AFK: held with the ladder at most afk.question_max_holds times (null = not held).
-function afkQuestionHold(p, f, now, reply) {
+// GH #981: also a turn that ends offering work to the owner ("Want me to X?", "Let me know if you want me to ...": afk.offer_res over the last
+// afk.offer_tail_lines lines), and also under the session's no-stop order (autonomy) without AFK, counted in the no-stop state.
+function afkQuestionHold(p, f, now, reply, on) {
   if (!ah.settings.bool('afk.set_no_questions')) return null;
-  var last = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).pop();
-  if (last === undefined || !new RegExp(ah.cfg('afk.question_re')).test(last)) return null;
+  var lines = reply.split('\n').filter(function (l) { return l.trim() !== ''; });
+  var last = lines[lines.length - 1];
+  if (last === undefined) return null;
+  var tail = lines.slice(-ah.cfgNum('afk.offer_tail_lines')).join('\n');
+  var offer = ah.settings.bool('afk.set_offer_hold') && ah.cfg('afk.offer_res').some(function (r) { return ah.re.test(r, 'i', tail); });
+  if (!offer && !new RegExp(ah.cfg('afk.question_re')).test(last)) return null;
+  var reason = offer ? ah.cfg('afk.msg_offer_stop') : ah.cfg('afk.msg_ladder_stop');
+  var block = { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(reason) }), err: '' } };
+  var kind = offer ? ah.cfg('afk.action_offer') : ah.cfg('afk.action_nudged');
+  if (!on) {
+    var ns = nostop.session(p);
+    if (ns === null) return null;
+    var nheld = typeof ns.qholds === 'number' ? ns.qholds : 0;
+    if (nheld >= ah.cfgNum('afk.question_max_holds')) { afkMetric('afk_question_parked', { action: ah.cfg('afk.action_capped') }); return null; }
+    if (!nostop.write(p, Object.assign({}, ns, { qholds: nheld + 1 }))) return null; // the cap cannot be recorded: never hold
+    afkMetric('afk_question_parked', { action: kind });
+    return block;
+  }
   if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_stop') }); return null; }
   var se = afkSession(p, f, now);
   if (se === null) return null;
@@ -373,8 +391,8 @@ function afkQuestionHold(p, f, now, reply) {
   if (held >= ah.cfgNum('afk.question_max_holds')) { afkMetric('afk_question_parked', { action: ah.cfg('afk.action_capped') }); return null; }
   se.s.qholds = held + 1;
   if (!afkWrite(se.rel, se.s)) return null; // the cap cannot be recorded: never hold
-  afkMetric('afk_question_parked', { action: ah.cfg('afk.action_nudged') });
-  return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_stop')) }), err: '' } };
+  afkMetric('afk_question_parked', { action: kind });
+  return block;
 }
 
 // ---- no-stop orders (GH #958 (a)): the owner's plain-word "do not stop" directives, held per session (lib/87-nostop.js) ----
@@ -431,10 +449,12 @@ function afkStop(p, f, now) {
       afkMetric('afk_turns_measured', { mode: mode });
     }
   }
-  if (!on || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  if (ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  if (!on && nostop.session(p) === null) return 'allow';
   var reply = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
-  var q = afkQuestionHold(p, f, now, reply);
+  var q = afkQuestionHold(p, f, now, reply, on);
   if (q !== null) return q;
+  if (!on) return 'allow';
   if (codex || !ah.settings.bool('afk.set_enforce')) return 'allow'; // Codex: Stop only holds a question
   var lines = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).length;
   var maxC = ah.cfgNum('afk.max_reply_chars'), maxL = ah.cfgNum('afk.max_reply_lines');

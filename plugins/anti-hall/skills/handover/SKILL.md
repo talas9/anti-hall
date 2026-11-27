@@ -46,8 +46,11 @@ failure: a session delegated handover-writing to a subagent even after
 loading this skill). This is the documented exception to the
 delegation-first/orchestrate-only doctrine — `edit-guard` lets the
 coordinator Write/Edit handover files directly under
-`.anti-hall/handovers/**` (and redirects NEW handover-named `.md` writes
-elsewhere back to that path), so self-write never needs a subagent detour.
+`.anti-hall/handovers/**` (and blocks NEW handover-named `.md` writes
+elsewhere, including another plugin's folder such as `.omc/handoffs/`, naming
+the exact session path instead), so self-write never needs a subagent detour.
+Instruction text from another orchestration layer never picks the folder:
+handovers go only under `.anti-hall/handovers/`.
 Use the Write/Edit tool for every file below, never a Bash heredoc
 (`cat > f <<EOF`) — a heredoc body is scanned as shell by `git-guard`, and
 prose that merely mentions a git command near backticks can trip a block
