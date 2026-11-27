@@ -172,8 +172,7 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
         cursor
     } else {
         crate::meshw::summary::check(&st, inv, None)?;
-        let c = st.advance_broadcast_cursor(&cursor_key, common::now_ms()).map_err(|e| store_err("advance", e))? as f64;
-        crate::meshw::mark_committed();
+        let c = ack_listed(&st, &cursor_key, &unseen)?.map_or(cursor, |c| c as f64);
         if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_read"), &why);
         }
@@ -208,6 +207,15 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     let effect = if peek { Effect::None } else { Effect::BroadcastCursor(cursor_key) };
     Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect })
 }
+/// Review P1-3 (contract §6): `mesh read` acks exactly through the last broadcast it listed, never the live head it would sample
+/// after the scan (a broadcast landing in between would be acked unseen). The new cursor, `None` when it did not move.
+fn ack_listed(st: &crate::meshw::store::MeshStore, key: &str, listed: &[serde_json::Value]) -> R<Option<i64>> {
+    let Some(target) = listed.iter().filter_map(|r| r["storeSeq"].as_f64()).filter(|q| q.is_finite()).map(|q| q as i64).max() else {
+        return Ok(None);
+    };
+    ack_broadcasts(st, key, target)
+}
+
 /// GH #845 (contract §6): the unread broadcasts a drain verb lists beside the direct mail, with the exact boundary an ack may move
 /// the broadcast cursor through. A read never samples the live head to ack.
 pub(crate) struct UnreadBroadcasts {
@@ -427,6 +435,26 @@ mod tests {
         assert_eq!(rest.rows.len(), 11, "the 10 unaddressed rows past the gap and the addressed row are still unread");
         ack_broadcasts(&st, "w-a", rest.target.unwrap()).unwrap();
         assert!(unread_broadcasts(&st, &inv, "w-a").unwrap().rows.is_empty());
+    }
+
+    /// Review P1-3: `mesh read` acks through the last row it listed; a broadcast that lands after its scan stays unread.
+    #[test]
+    fn mesh_read_acks_only_what_it_listed() {
+        let (_d, st, _inv) = scratch("legacy-read");
+        assert_eq!(ack_listed(&st, "w-a", &[]).unwrap(), None, "nothing listed, nothing acked");
+        broadcast(&st, "w-b", "one", 1);
+        broadcast(&st, "w-b", "two", 2);
+        let mut listed = Vec::new();
+        st.reader()
+            .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {
+                listed.push(m);
+                true
+            })
+            .unwrap();
+        broadcast(&st, "w-b", "landed after the scan", 3);
+        let to = ack_listed(&st, "w-a", &listed).unwrap().unwrap();
+        assert!(to < st.broadcast_head().unwrap(), "the cursor stops before the late arrival");
+        assert_eq!(st.reader().broadcast_cursor("w-a").unwrap() as i64, to);
     }
 
     /// The receipt op carries exactly the delivered boundary, and none is made when nothing was listed.
