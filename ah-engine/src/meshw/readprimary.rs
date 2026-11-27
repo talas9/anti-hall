@@ -2011,9 +2011,11 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         && let Ok(bst) = common::open_store(inv, &o.repo_key)
     {
         // review P2-8: a broadcast read that fails never fails the direct-mail drain: none listed, none acked, the reason noted
-        if let Some(mut u) = crate::meshw::read::unread_broadcasts_or_note(bst.reader(), inv, id, &mut out) {
+        // re-review N-5: the cursor key is the registry id the summary reads
+        let key = crate::meshw::read::reader_key(bst.reader(), inv, id);
+        if let Some(mut u) = crate::meshw::read::unread_broadcasts_or_note(bst.reader(), inv, &key, &mut out) {
             crate::meshw::read::preview_unaddressed(&mut u);
-            if let Some(op) = crate::meshw::read::broadcast_op(id, &u) {
+            if let Some(op) = crate::meshw::read::broadcast_op(&key, &u) {
                 ops.push(op);
             }
             crate::meshw::read::put_broadcasts(&mut out, &u, false);

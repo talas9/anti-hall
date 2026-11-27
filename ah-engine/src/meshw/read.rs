@@ -325,6 +325,17 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
     Ok(UnreadBroadcasts { rows, more, from: cursor, target, wake_pending, wake_seq })
 }
 
+/// Re-review N-5 / P2-9: the key a drain reads and acks the broadcast cursor under: the reader's registry id, the key the summary
+/// (and so the watcher) reads. An id the registry holds is itself; a mesh id or label resolves to its registry row; anything else is
+/// kept as given.
+pub(crate) fn reader_key(r: &crate::mesh::MeshReader, inv: &Inv, id: &str) -> String {
+    let rows = r.roster().map(|v| ident::rows_of(&v)).unwrap_or_default();
+    if rows.iter().any(|x| x.id == id) {
+        return id.to_string();
+    }
+    crate::meshw::send::resolve_mesh_target(inv, Some(r), &rows, Some(id)).ok().flatten().map_or_else(|| id.to_string(), |x| x.id)
+}
+
 /// Review P2-8: [`unread_broadcasts`] for a drain verb whose direct mail must not fail with it. A broadcast read that fails lists
 /// none (so nothing is acked), says why in the result (`mesh_wake.key_broadcasts_error`) and is counted (`mesh_broadcast_read_failed`).
 pub(crate) fn unread_broadcasts_or_note(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, o: &mut Obj) -> Option<UnreadBroadcasts> {
@@ -583,6 +594,23 @@ mod tests {
         assert_eq!(len(0), defaults::num("mesh_wake.read_primary_preview_chars") as usize);
         assert_eq!(u.rows[0].get("preview"), Some(&OVal::Bool(true)));
         assert_eq!(len(1), long.len(), "the addressed row is whole");
+    }
+
+    /// Re-review N-5: a drain addressed by a mesh id keys the broadcast cursor by the registry row that id resolves to (the key the
+    /// summary and the watcher read), so an ack lowers the watcher's pending count.
+    #[test]
+    fn a_mesh_id_reads_the_registry_rows_broadcast_cursor() {
+        let (d, st, inv) = scratch("key");
+        let wt = d.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        let wt = wt.canonicalize().unwrap().to_string_lossy().into_owned();
+        let row = crate::meshw::store::RegistryRow { id: "reg-1".into(), worktree_path: Some(wt.clone()), ..Default::default() };
+        st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        let mesh_id = ident::raw_path_mesh_id(&wt).unwrap().expect("a mesh id for the worktree");
+        assert_ne!(mesh_id, "reg-1");
+        assert_eq!(reader_key(st.reader(), &inv, &mesh_id), "reg-1");
+        assert_eq!(reader_key(st.reader(), &inv, "reg-1"), "reg-1");
+        assert_eq!(reader_key(st.reader(), &inv, "nobody"), "nobody");
     }
 
     /// Re-review N-2: both caps keep their bounds (a cap of 0 would list and ack nothing, ever).

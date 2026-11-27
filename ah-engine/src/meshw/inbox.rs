@@ -655,11 +655,12 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
     // GH #845 (contract §6): the `bc` ops move the reader's own broadcast cursor through the delivered boundary, before the summary
     // is derived so the broadcast wake state follows
     let mut bc_cursor: Option<i64> = None;
+    let key = crate::meshw::read::reader_key(st.reader(), inv, id);
     for (who, target) in broadcast_ops(&rec) {
-        if who != id {
+        if who != id && who != key {
             continue; // only the reader's own cursor: a receipt never moves another workspace's broadcasts
         }
-        match crate::meshw::read::ack_broadcasts(&st, &who, target) {
+        match crate::meshw::read::ack_broadcasts(&st, &key, target) {
             Ok(moved) => bc_cursor = moved.or(bc_cursor),
             Err(ident::Defer(reason)) => failures.push(failure(&who, defaults::text("mesh_wake.channel_broadcast_cursor"), &reason)),
         }

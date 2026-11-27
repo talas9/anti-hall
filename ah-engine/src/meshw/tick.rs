@@ -705,7 +705,7 @@ fn add_wake(inv: &Inv, id: &str, desc: &OVal, c: &mut Counted) {
             c.ack_unread = count_acks(&c.nd_lines, c.provenance, rows, &acks, &ack_hashes, &family).min(c.unread);
         }
     }
-    match crate::meshw::read::broadcast_wake(&o.reader, inv, id) {
+    match crate::meshw::read::broadcast_wake(&o.reader, inv, &crate::meshw::read::reader_key(&o.reader, inv, id)) {
         Ok((p, q)) => (c.bc_wake, c.bc_wake_seq) = (p, q),
         Err(Defer(why)) => crate::debug::violated("meshw", &defaults::render("mesh_wake.msg_tick_broadcast_unread", &[("id", &id), ("why", &why)])),
     }

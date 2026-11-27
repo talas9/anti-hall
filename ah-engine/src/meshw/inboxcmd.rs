@@ -375,7 +375,8 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
     if c.unavail.is_none() {
         match common::open_store(inv, &c.store_key) {
             Ok(st) => {
-                if let Some(u) = crate::meshw::read::unread_broadcasts_or_note(st.reader(), inv, id, &mut o) {
+                let key = crate::meshw::read::reader_key(st.reader(), inv, id);
+                if let Some(u) = crate::meshw::read::unread_broadcasts_or_note(st.reader(), inv, &key, &mut o) {
                     crate::meshw::read::put_broadcasts(&mut o, &u, true);
                 }
             }
@@ -669,7 +670,7 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
         // GH #845 (contract §6): `--broadcast-to <seq>` acks the broadcasts `inbox read` listed, through the boundary it printed and
         // never further (before the summary is derived, so the broadcast wake state follows); without it the cursor stays
         if let Some(t) = bc_to {
-            bc_moved = crate::meshw::read::ack_broadcasts(st, id, t)?;
+            bc_moved = crate::meshw::read::ack_broadcasts(st, &crate::meshw::read::reader_key(st.reader(), inv, id), t)?;
         }
         if let Some(why) = crate::meshw::summary::derive_after_write(st, inv, &c.store_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_ack"), &why);
