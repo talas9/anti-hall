@@ -54,12 +54,12 @@ fn text(key: &str) -> &'static str {
     defaults::text(key)
 }
 
-/// A line on stdout, the watcher's event channel. A closed pipe is not an error here: the loop keeps going.
-fn emit(line: &str) {
+/// A line on stdout, the watcher's event channel. A closed pipe is not an error here: the loop keeps going. Answers whether the
+/// line was written, so a wake that never reached the workspace does not move its watermark (review P1-2).
+fn emit(line: &str) -> bool {
     let mut out = std::io::stdout().lock();
     let line = if line.ends_with('\n') { line.to_string() } else { format!("{line}\n") };
-    crate::discard::harmless(out.write_all(line.as_bytes())); // keep: Node swallows an output error too, "never let it kill the loop"
-    crate::discard::harmless(out.flush()); // keep: same
+    out.write_all(line.as_bytes()).and_then(|()| out.flush()).is_ok()
 }
 
 /// One line printed by the DevSwarm half of the merged watcher, counted by source (`merged_watch_rows`).
@@ -480,14 +480,16 @@ impl Run<'_> {
         snap.now_ms = now_ms();
         snap.coalesce_ms = self.coalesce;
         let snap = read::attach_broadcast(snap, &p.home, a.hashes.as_ref(), &a.id.id);
-        let (state, lines) = {
+        let (before, (state, lines)) = {
             let s = locked(self.cell);
-            edge::tick(&s.state, &snap)
+            (s.state.clone(), edge::tick(&s.state, &snap))
         };
+        let mut printed = true;
         for l in &lines {
-            emit(l);
+            printed &= emit(l);
             count_row();
         }
+        let state = edge::undo_unprinted(&before, state, printed);
         if state.held > 0 {
             crate::metrics::bump_by_shared("wake_watch_coalesced", &[("role", a.id.role())], u64::from(state.held));
         }

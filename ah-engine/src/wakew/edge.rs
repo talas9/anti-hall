@@ -220,6 +220,16 @@ fn note_wake(st: &mut State, snap: &Snapshot) {
     }
 }
 
+/// Review P1-2: the tick's lines were (`printed`) or were not all written out. A broadcast line that did not reach the workspace
+/// must not move the watermark: the old one is kept and marked unknown (never saved), so the next tick prints again.
+pub fn undo_unprinted(before: &State, mut after: State, printed: bool) -> State {
+    if !printed && after.woke_broadcast > 0 {
+        after.last_bc_seq = before.last_bc_seq;
+        after.bc_seq_missing = true;
+    }
+    after
+}
+
 /// `tick(state, snapshot)` -> the new state and the lines to print.
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
@@ -351,8 +361,10 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         let pending = snap.bc_pending.unwrap_or(0.0);
         // the line shows how many unread broadcasts wake the workspace (`0 -> N`), in the legacy line text
         let line = || wake_line(snap, 0.0, pending.max(1.0), Some(text("wake_watch.label_broadcast")));
+        // review P1-2: a (re)armed watcher, or one with no trusted watermark, prints once for pending eligible mail, so a line lost
+        // to a closed pipe or a restart after the watermark was saved still reaches the workspace
         let reacked = st.last_bc_pending.is_some_and(|was| pending > 0.0 && pending < was);
-        if st.bc_seq_missing {
+        if st.bc_seq_missing || arming {
             if pending > 0.0 {
                 lines.push(line());
                 st.woke_broadcast += 1;

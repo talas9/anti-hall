@@ -464,3 +464,31 @@ fn an_ack_that_leaves_eligible_rows_unread_wakes_again() {
     assert!(lines.is_empty(), "all read");
 }
 
+/// Review P1-2: a (re)armed watcher whose saved watermark already covers pending eligible broadcasts still prints once, so a
+/// line lost to a closed pipe or a restart is not lost for good.
+#[test]
+fn arming_with_pending_eligible_broadcasts_prints_once() {
+    let st = State { last_total: 1.0, last_total2: 1.0, last_bc_seq: 50.0, ..State::default() };
+    let (st, lines) = tick(&st, &bc(Some(50.0), 2.0));
+    assert_eq!((lines.len(), st.woke_broadcast), (2, 1), "the arm line and one broadcast line: {lines:?}");
+    let (_, lines) = tick(&st, &bc(Some(50.0), 2.0));
+    assert!(lines.is_empty());
+    let quiet = State { last_total: 1.0, last_total2: 1.0, last_bc_seq: 50.0, ..State::default() };
+    let (_, lines) = tick(&quiet, &bc(None, 0.0));
+    assert_eq!(lines.len(), 1, "only the arm line when nothing is pending");
+}
+
+/// Review P1-2: when a broadcast line could not be printed, the watermark it advanced is rolled back and marked unknown, so it is
+/// neither saved nor trusted: the next tick prints again.
+#[test]
+fn a_failed_broadcast_print_does_not_advance_the_watermark() {
+    let before = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 10.0, ..State::default() };
+    let (after, lines) = tick(&before, &bc(Some(20.0), 1.0));
+    assert_eq!((lines.len(), after.last_bc_seq), (1, 20.0));
+    let kept = super::edge::undo_unprinted(&before, after.clone(), true);
+    assert_eq!(kept.last_bc_seq, 20.0, "printed: kept");
+    let undone = super::edge::undo_unprinted(&before, after, false);
+    assert_eq!((undone.last_bc_seq, undone.bc_seq_missing), (10.0, true));
+    let (_, lines) = tick(&undone, &bc(Some(20.0), 1.0));
+    assert_eq!(lines.len(), 1, "the next tick prints it again");
+}
