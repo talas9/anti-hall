@@ -149,7 +149,7 @@ function tgIdleSkips(open, rows) {
     });
   });
   // a live background shell or Monitor is the work an in-progress task is waiting on: the session is not idle
-  var bgLive = (rows || []).some(function (r) { return typeof r.shellKind === 'string' && r.shellKind !== '' && r.live !== false; });
+  var bgLive = tk.bgLive(rows);
   open.forEach(function (t) {
     var why = '';
     if (tgOwnerBlocked(t)) why = ah.cfg('idle_rule.reason_owner');
@@ -204,16 +204,7 @@ function tgChildAttended(owner) { return tk.childAttended(owner); }
 
 // A task whose owner names an agent this session has running (its id, the name it was launched with, or its description) is attended: the agent is working
 // it. `rows` is the running-agent list of the transcript scan (null when unreadable: nothing is attended through it).
-function tgMatchingOwners(owner, rows) {
-  var o = (owner || '').trim().toLowerCase();
-  if (!o || rows === null || tgCoordinator(o)) return [];
-  var min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
-  return rows.filter(function (r) {
-    var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
-    var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
-    return o === id || (d !== '' && o === d) || (nm !== '' && o === nm) || (o.length >= min && d.indexOf(o) >= 0);
-  });
-}
+function tgMatchingOwners(owner, rows) { return tk.matchingOwners(owner, rows); }
 
 function tgLiveAgentOwner(owner, rows) {
   return tgMatchingOwners(owner, rows).some(function (r) { return r.live === true; });
@@ -558,14 +549,7 @@ function tgDecideCore(p) {
     if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
     // a scan of a truncated tail lists the agents it saw, never all of them: an owner launched before the window may still run
     var scanUnknown = own === null || own.truncated === true;
-    var tracked = ah.transcript.trackedAgents(p);
-    rows = (own === null ? [] : own.rows).map(function (r) {
-      r.live = ah.transcript.trackedLiveness(r.id, tracked);
-      return r;
-    });
-    tracked.forEach(function (r) {
-      rows.push({ id: r.id, description: r.name, live: ah.transcript.trackedLiveness(r.id, tracked) });
-    });
+    rows = tk.coverRows(own, ah.transcript.trackedAgents(p));
     rows.scanUnknown = scanUnknown;
   }
   tgHoldsOpen(home, safeSession, now);

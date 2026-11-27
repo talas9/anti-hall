@@ -564,7 +564,13 @@ fn readers_declared(inv: &Inv, key: &str, id: &str) -> R<bool> {
 }
 
 fn find_plan(inv: &Inv, id: &str, root: &str) -> R<Value> {
-    Ok(match crate::meshw::plan::find_for(inv, id, Some(root).filter(|r| !r.is_empty()))? {
+    // the checkout the turn runs in first; then where `plan set <id>` wrote it (the descriptor's worktree, then the id): a child whose
+    // session cwd moved to another checkout still has its plan (#844 item 6: "no step plan yet" right after `plan set` returned ok)
+    let found = match crate::meshw::plan::find_for(inv, id, Some(root).filter(|r| !r.is_empty()))? {
+        Some(f) => Some(f),
+        None => crate::meshw::plan::find(inv, id)?,
+    };
+    Ok(match found {
         Some(f) => json!({"plan": f.plan.stringify()}),
         None => json!({"plan": null}),
     })
@@ -687,6 +693,25 @@ mod tests {
         let key = ident::repo_key_for_worktree(&fx.repo).unwrap().unwrap();
         let store = MeshStore::open(&crate::meshw::union::store_dir(&fx.inv.home, &key).join(defaults::text("mesh_write.store_file"))).unwrap();
         ident::rows_of(&store.reader().roster().unwrap())
+    }
+
+    /// #844 item 6: a plan `plan set <id>` wrote under the child's registered worktree is found when the turn runs in another
+    /// checkout (the session's cwd moved); an id with neither has none.
+    #[test]
+    fn the_plan_of_the_registered_worktree_is_found_from_another_checkout() {
+        let fx = fx("plan-elsewhere");
+        let wt = format!("{}/../wt", fx.repo);
+        std::fs::create_dir_all(&wt).unwrap();
+        assert!(std::process::Command::new("git").current_dir(&wt).args(["init", "-q", "-b", "main"]).status().unwrap().success());
+        let wt = std::path::Path::new(&wt).canonicalize().unwrap().to_string_lossy().into_owned();
+        seed_descriptor(&fx, ID, &format!("{{\"id\":\"{ID}\",\"worktreePath\":{wt:?}}}"));
+        let key = crate::meshw::plan::key_for_worktree(&wt).unwrap().unwrap();
+        let plans = devswarm_root(&fx.inv.home).join(defaults::text("mesh_write.dir_plans"));
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(plans.join(format!("{key}{}", json_suffix())), r#"{"steps":[{"n":1,"text":"a","status":"done"},{"n":2,"text":"b","status":"doing"}]}"#).unwrap();
+        let got = find_plan(&fx.inv, ID, &fx.repo).unwrap();
+        assert!(got["plan"].as_str().is_some_and(|p| p.contains("\"doing\"")), "{got}");
+        assert_eq!(find_plan(&fx.inv, "child-2", &fx.repo).unwrap(), json!({"plan": null}));
     }
 
     /// 2026-10-23 (a downstream project, `child-turn-defer: prepare:registry-collision`): a registry row of the id at another worktree stopped the

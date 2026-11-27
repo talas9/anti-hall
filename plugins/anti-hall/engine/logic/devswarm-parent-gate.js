@@ -570,9 +570,10 @@ function pgGate(p, root, l) {
   var qs = pgQuestions(home, own, descriptors, selfKey, fx);
   var unanswered = qs.blocking, informational = qs.informational, truncated = own.truncated;
   var parked = pgParkedSegment(home, own.id, l.cli); // escalation notices the supervisor could not deliver to this Primary block like unread mail
+  var flagged = pgFlaggedSegment(home, scopeKey, ah.clock.now(), sid, fx); // #844 item 4: children the last roster flagged (straying, stale, unpushed)
   var stateRel = ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_role.pg_dir_gate') + '/' + sid.replace(/[^A-Za-z0-9_.-]/g, '_') + '.json';
   var stateFile = home + '/' + stateRel;
-  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && parked === null) { fx.unlink = stateRel; return fx; }
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && parked === null && flagged === null) { fx.unlink = stateRel; return fx; }
 
   var entries = [];
   if (own.id !== null) {
@@ -820,7 +821,7 @@ function pgGate(p, root, l) {
   if (archivedUnreadFamilies > 0) fx.err += text.render(ah.cfg('devswarm_role.pg_err_archived_unread'), { n: String(archivedUnreadFamilies) });
   pgStray(home, sidRaw, scopeKey, keyOf, now, fx);
 
-  if (blocking.length === 0 && unanswered.length === 0 && !truncated && parked === null) {
+  if (blocking.length === 0 && unanswered.length === 0 && !truncated && parked === null && flagged === null) {
     // a pass that only deferred unread mail keeps the loop state and skips the wake-coverage line; only a clean pass clears the state,
     // after the wake-coverage line (which needs a live child of this project) is known to be silent
     if (!busyAdvisoryHeld) {
@@ -833,6 +834,7 @@ function pgGate(p, root, l) {
   // ---- the block: loop state, cap, escalation -----------------------------------------------------------------------
   var kinds = blocking.map(function (b) { return own.id === b.id ? ah.cfg('devswarm_role.pg_kind_mailbox') : ah.cfg('devswarm_role.pg_kind_children'); });
   if (parked !== null) kinds.push(ah.cfg('devswarm_role.pg_kind_parked')); // its arrival opens a fresh budget; its text never enters the signature
+  if (flagged !== null) kinds.push(ah.cfg('devswarm_role.pg_kind_flagged')); // the same budget, cap and one escalation as the other kinds
   kinds.sort();
   kinds = kinds.filter(function (k, i) { return i === 0 || k !== kinds[i - 1]; });
   var sig = ah.sha1(ah.cfg('devswarm_role.pg_sig_prefix') + kinds.join(','));
@@ -916,7 +918,9 @@ function pgGate(p, root, l) {
     : ah.cfg('devswarm_role.pg_reason_parked_only');
   var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
   var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: ah.cfg('devswarm_role.gate_guard') });
-  fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + wake, skip) }) + '\n';
+  var flagText = flagged !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + flagged : '';
+  fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + flagText + wake, skip) }) + '\n';
+  if (flagged !== null) ah.metric('devswarm_roster_flags', ['action', 'gate_counted']);
   pgCountFired(escalateTimes !== null || qEscalateTimes !== null ? 'escalation' : 'block');
   return fx;
 }
@@ -996,6 +1000,31 @@ function pgDrainMarker(home, id) {
   if (m === null || typeof m !== 'object' || !piFinite(m.startedAt)) return null;
   var age = ah.clock.now() - m.startedAt, ttl = pgSetNum('devswarm_role.pg_set_drain_ttl');
   return { stale: !(age >= 0 && age <= ttl), session: m.sessionId !== null && m.sessionId !== undefined ? String(m.sessionId) : '' };
+}
+
+// #844 item 4: the children the last roster read flagged (devswarm_parent.dir_flags/<key>.json, written by the prompt hook), as the
+// segment the parent Stop gate counts, or null (switch off, no project, no record, a record older than flag_record_fresh_ms, none flagged).
+function pgFlaggedSegment(home, key, now, sid, fx) {
+  if (!ah.settings.bool('devswarm_parent.set_roster_orders') || !pgSafeId(key)) return null;
+  var rec = pgJson(pgDir(home) + '/' + ah.cfg('devswarm_parent.dir_flags') + '/' + key + '.json');
+  if (!jx.isObj(rec) || !piFinite(rec.at) || rec.at > now || now - rec.at > ah.cfgNum('devswarm_parent.flag_record_fresh_ms')) return null;
+  var ws = Array.isArray(rec.ws) ? rec.ws.filter(function (w) { return jx.isObj(w) && typeof w.id === 'string' && Array.isArray(w.reasons) && w.reasons.length; }) : [];
+  if (!ws.length) return null;
+  // one block per flagged set and session: asking a child does not clear its flag until it reports or pushes, so the same set seen
+  // again is a stderr notice, never a block loop (the minutes in a reason do not make a new set)
+  var sig = ah.sha1(JSON.stringify(ws.map(function (w) { return [w.id, w.reasons.map(function (x) { return String(x).replace(/[0-9]+/g, '#'); })]; })));
+  var seenRel = ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_parent.dir_flags') + '/' + ah.cfg('devswarm_role.pg_flagged_seen_prefix') + ah.sha1(String(sid)).slice(0, ah.cfgNum('devswarm_role.pg_stray_seen_hash_len')) + '.json';
+  var seen = pgJson(home + '/' + seenRel);
+  if (jx.isObj(seen) && seen.sig === sig) {
+    fx.err += text.render(ah.cfg('devswarm_role.pg_flagged_notice'), { n: String(ws.length) }) + '\n';
+    ah.metric('devswarm_roster_flags', ['action', 'gate_notice']);
+    return null;
+  }
+  fx.extra.push({ rel: seenRel, body: JSON.stringify({ sig: sig, at: now }) });
+  var max = ah.cfgNum('devswarm_parent.flag_list_max');
+  var list = ws.slice(0, max).map(function (w) { return text.render(ah.cfg('devswarm_parent.flag_item'), { title: typeof w.label === 'string' && w.label ? w.label : w.id, reasons: w.reasons.join(ah.cfg('devswarm_parent.flag_reason_sep')) }); });
+  var more = ws.length > max ? text.render(ah.cfg('devswarm_parent.flag_more'), { n: String(ws.length - max) }) : '';
+  return text.render(ah.cfg('devswarm_role.pg_flagged_text'), { n: String(ws.length), list: list.join(ah.cfg('devswarm_parent.flag_item_sep')) + more });
 }
 
 // `emitStrayingAdvisory(home, sessionId, repoKeyOf, selfKey)`: the straying warnings of this project's children (devswarm-plan.js

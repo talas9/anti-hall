@@ -286,6 +286,22 @@ value = "⚠️ anti-hall · devswarm-escalations: not delivered ({n}): the supe
 doc = "What separates the escalated children in the parked-escalation text."
 value = ", "
 
+[devswarm_role.pg_kind_flagged]
+doc = "The block kind of children the last roster flagged (#844 item 4: straying, stale progress, long-unpushed commits; devswarm_parent.dir_flags)."
+value = "flagged"
+
+[devswarm_role.pg_flagged_text]
+doc = "The parent Stop-gate text for flagged children. Placeholders: {n}, {list} (devswarm_parent.flag_item entries)."
+value = "⚠️ {n} workspace(s) flagged in the roster: {list}. Ask each one (mesh send) what blocks it, then decide: continue, split, push or archive."
+
+[devswarm_role.pg_flagged_seen_prefix]
+doc = "File-name prefix of the per-session record of the flagged set the parent Stop gate already blocked on (devswarm_parent.dir_flags/<prefix><session hash>.json): the same set blocks once per session, then is a notice."
+value = "gate-seen-"
+
+[devswarm_role.pg_flagged_notice]
+doc = "The stderr notice of a flagged set the parent Stop gate already blocked on this session. Placeholder: {n}."
+value = "anti-hall: {n} workspace(s) still flagged in the roster (already raised this session; they clear when the child reports or pushes)."
+
 [devswarm_role.pg_parked_joiner]
 doc = "What joins the parked-escalation text to the block reason."
 value = "\n\n"

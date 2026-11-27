@@ -3218,6 +3218,34 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);
 }
 
+/// #844 item 3: the report duty is a recent heartbeat, not one per turn. A heartbeat this child wrote within
+/// devswarm_gates.cg_report_fresh_ms (without --summary, so no summary row) satisfies the Stop; an older one, or one under another
+/// id, does not.
+#[test]
+fn a_child_gate_honours_the_latest_heartbeat_of_this_child() {
+    let gate = |beat_id: &str, off_ms: i64| {
+        let case = golden::lay(&json!({
+            "env": {"HOME": "{HOME}", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "feat/x", "DEVSWARM_BUILDER_ID": "b-1", "DEVSWARM_AI_AGENT": "codex"},
+            "event": "Stop", "opts": {"payload_sha1": "hb-fresh"},
+            "payload": {"hook_event_name": "Stop", "session_id": "hb-stop", "cwd": "{HOME}"},
+            "files": {
+                ".anti-hall/devswarm/workspaces/b-1.json": "{}",
+                ".anti-hall/devswarm/heartbeats/b-1.json": format!("{{\"id\":\"{beat_id}\",\"ts\":{{MS:{off_ms}}},\"source\":\"heartbeat\"}}")
+            }
+        }));
+        match golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate") {
+            Some(Verdict::Exact(out)) => out.out,
+            _ => String::new(),
+        }
+    };
+    let fresh = gate("b-1", -300_000);
+    assert!(!fresh.contains("no heartbeat or report sent"), "a heartbeat 5 min old is a report: {fresh}");
+    let stale = gate("b-1", -1_000_000);
+    assert!(stale.contains("workspace duty unfinished: no heartbeat or report sent"), "older than cg_report_fresh_ms: {stale}");
+    let other = gate("b-2", -300_000);
+    assert!(other.contains("no heartbeat or report sent"), "a record under another id: {other}");
+}
+
 /// The engine's own wake prompts stay pending in the native queue (a `task` nothing accepts), so the strict native probe counts them
 /// for ever. The child's pull records how many of its pending messages are wake prompts in the fresh wake-tick marker, and the gate
 /// subtracts them: a child whose only pending natives are wake prompts is not blocked as having unread parent mail (GH wake-pings).
@@ -3279,6 +3307,43 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     assert_eq!(answer["decision"], "block");
     let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap();
     assert!(details.contains("c-1"), "{details}");
+}
+
+/// #844 item 4: children the roster flagged (the record the prompt hook writes) are counted by the parent Stop gate; a stale record,
+/// or one with nothing flagged, counts nothing.
+#[test]
+fn the_parent_gate_counts_children_the_roster_flagged() {
+    let gate_n = |rec: Option<Value>, runs: usize| {
+        let case = golden::lay(&json!({
+            "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
+            "event": "Stop", "opts": {"payload_sha1": "flags"},
+            "payload": {"hook_event_name": "Stop", "session_id": "flags-parent", "cwd": "{HOME}/repo"},
+            "files": {"repo/.git/HEAD": "ref: refs/heads/main\n"}
+        }));
+        if let Some(r) = rec {
+            let key = crate::meshw::ident::repo_key_for_worktree(&format!("{}/repo", case.home)).unwrap().expect("a project key");
+            let dir = format!("{}/.anti-hall/devswarm/{}", case.home, defaults::text("devswarm_parent.dir_flags"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/{key}.json"), r.to_string()).unwrap();
+        }
+        match golden::run_case("devswarm-parent-gate", &case, runs).expect("a shipped gate") {
+            // the visible line is the framed headline; the full reason is in the block-details file
+            Some(Verdict::Exact(out)) if !out.out.is_empty() => {
+                out.out + &std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap_or_default()
+            }
+            _ => String::new(),
+        }
+    };
+    let gate = |rec: Option<Value>| gate_n(rec, 1);
+    let now = crate::checks::replykit::io::now_ms();
+    let ws = json!([{"id": "c-1", "label": "L5 Login", "reasons": ["straying (burn)", "no progress report for 21 min"]}]);
+    assert!(gate(None).is_empty(), "no record: nothing to count");
+    let o = gate(Some(json!({"at": now, "ws": ws})));
+    assert!(o.contains("\"decision\":\"block\"") && o.contains("1 workspace(s) flagged in the roster: L5 Login (straying (burn), no progress report for 21 min)"), "{o}");
+    assert!(gate(Some(json!({"at": now - 3_600_000.0, "ws": ws}))).is_empty(), "a stale record counts nothing");
+    assert!(gate(Some(json!({"at": now, "ws": []}))).is_empty(), "nothing flagged");
+    // the same flagged set again in the same session (asking the child does not clear it at once): a notice, not a block loop
+    assert!(gate_n(Some(json!({"at": now, "ws": ws})), 2).is_empty(), "the second Stop on the same set does not block");
 }
 
 /// One row of a parent-gate fixture: who sent it and how it reached the store.
@@ -4346,6 +4411,108 @@ mod afk_mode {
         assert_eq!(m.counter("afk_nostop", &[("action", "cleared")]), 1);
     }
 
+    fn task_rec(h: &str, id: &str, rec: Value) {
+        let d = format!("{h}/.claude/tasks/session-s1");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut r = json!({"id": id, "blockedBy": []});
+        for (k, v) in rec.as_object().cloned().unwrap_or_default() {
+            r[k] = v;
+        }
+        std::fs::write(format!("{d}/{id}.json"), r.to_string()).unwrap();
+    }
+
+    /// A transcript with one background `Agent` launch named `name` (description "integrate the train"), and the tracker's proof
+    /// that it is live: its tracker row is named by the description, never by the launch name.
+    fn live_teammate(h: &str, name: &str) {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ag0", "name": "Agent", "input": {"description": "integrate the train", "prompt": "p", "run_in_background": true, "name": name}}]}, "timestamp": ts});
+        let text = "Async agent launched successfully. (internal metadata)\nagentId: a000000000000001 (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/a000000000000001.output\n";
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_ag0", "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        std::fs::write(format!("{h}/t.jsonl"), format!("{launch}\n{res}\n")).unwrap();
+        let id = "a000000000000001";
+        let rel = format!("{h}/.claude/projects/p/s1/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+        std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let mut st = crate::agents::State::default();
+        st.agents.insert(
+            id.into(),
+            crate::agents::Agent { id: id.into(), kind: "subagent".into(), parent: "s1".into(), name: "integrate the train".into(), cwd: h.into(), path: rel, ..Default::default() },
+        );
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    /// #844 item 1: a task owned by a live teammate (by its launch name, which the tracker row does not carry), or whose blockedOn names
+    /// that teammate, is not idle work: no-stop does not hold it. A task nothing covers still is.
+    #[test]
+    fn no_stop_skips_tasks_owned_by_or_blocked_on_a_live_teammate() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-owned");
+        drained();
+        live_teammate(&h, "integ-0331");
+        task_rec(&h, "1", json!({"subject": "[P0] release all", "status": "pending", "owner": "integ-0331"}));
+        task_rec(&h, "2", json!({"subject": "[P0] hold fix", "status": "pending", "metadata": {"blockedOn": "waiting on integ-0331 to merge"}}));
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "every open task is owned by or blocked on a live teammate");
+        task_rec(&h, "3", json!({"subject": "[P1] free task", "status": "pending"}));
+        let o = stop();
+        assert!(o.contains("continue the work plan: [P1] free task"), "only the uncovered task is named: {o}");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// #844 item 1, the shape of the reported loop: the owner is an in-process teammate (a `teammate_spawned` launch, the team-mode
+    /// shape) that the transcript shows running and the tracker has no row for. Its task is covered; a free task still is not.
+    #[test]
+    fn no_stop_skips_a_task_owned_by_a_running_in_process_teammate() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-teammate");
+        drained();
+        let ts = "2999-01-01T00:00:00.000Z";
+        let call = json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "Agent", "input": {"description": "integrate", "prompt": "p", "name": "integ-0331"}}]}});
+        let res = json!({"type": "user", "timestamp": ts, "toolUseResult": {"status": "teammate_spawned", "name": "integ-0331", "agent_id": "ainteg-0331-4e73c1cee12244e6", "teammate_id": "integ-0331@s1"}, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "spawned"}]}});
+        std::fs::write(format!("{h}/t.jsonl"), format!("{call}\n{res}\n")).unwrap();
+        task_rec(&h, "1", json!({"subject": "[P0] release all", "status": "in_progress", "owner": "integ-0331"}));
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "the owner is a running teammate");
+        task_rec(&h, "2", json!({"subject": "[P1] free task", "status": "pending"}));
+        assert!(stop().contains("continue the work plan: [P1] free task"), "a free task is still held");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// #844 item 1: plain holds within afk.nostop_burst_window_ms escalate once after afk.nostop_burst_max, then no-stop stays quiet for
+    /// afk.nostop_quiet_ms; the quiet ends by itself, and an owner prompt that is no phrase does not reset the burst.
+    #[test]
+    fn no_stop_holds_escalate_once_then_go_quiet() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-burst");
+        drained();
+        task(&h, "1", "[P1] a", "pending");
+        task(&h, "2", "[P1] b", "pending");
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let t0 = 1_900_000_000_000.0_f64;
+        let stop_at = |ms: f64| {
+            super::super::host::set_clock(Some(ms));
+            let o = out(&run(&h, "Stop", json!({}), &[]));
+            super::super::host::set_clock(None);
+            o
+        };
+        for i in 0..3 {
+            assert!(stop_at(t0 + f64::from(i) * 60_000.0).contains("continue the work plan"), "plain hold {i}");
+        }
+        run(&h, "UserPromptSubmit", json!({"prompt": "status?"}), &[]);
+        let o = stop_at(t0 + 200_000.0);
+        assert!(o.contains("no-stop held this session 3 times in 10 min") && o.contains("pause for 30 min"), "escalated once: {o}");
+        assert!(stop_at(t0 + 260_000.0).is_empty(), "quiet after the escalation");
+        assert!(stop_at(t0 + 200_000.0 + 1_799_000.0).is_empty(), "still quiet");
+        assert!(stop_at(t0 + 200_000.0 + 1_800_000.0).contains("continue the work plan"), "the quiet ends by itself");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "escalated")]), 1);
+        assert_eq!(m.counter("afk_nostop", &[("action", "quiet")]), 2);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
     /// GH #958 (a): no open work left ends the state; the hold count is capped per owner prompt and a new prompt restarts it.
     #[test]
     fn no_stop_ends_when_no_open_work_remains_and_is_capped_per_owner_prompt() {
@@ -4356,11 +4523,18 @@ mod afk_mode {
         run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
         std::fs::write(format!("{h}/.anti-hall/settings.json"), "{}").unwrap();
         let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        // holds spaced past afk.nostop_burst_window_ms never escalate (#844): only the per-prompt cap ends them
+        let spaced = |i: u32| {
+            super::super::host::set_clock(Some(1_900_000_000_000.0 + f64::from(i) * 601_000.0));
+            let o = stop();
+            super::super::host::set_clock(None);
+            o
+        };
         let cap = 30;
         for i in 0..cap {
-            assert!(stop().contains("only task"), "hold {i}");
+            assert!(spaced(i).contains("only task"), "hold {i}");
         }
-        assert!(stop().is_empty(), "capped after afk.nostop_max_holds");
+        assert!(spaced(cap).is_empty(), "capped after afk.nostop_max_holds");
         assert_eq!(nostop(&h)["on"], json!(true), "capped, not ended");
         run(&h, "UserPromptSubmit", json!({"prompt": "carry on"}), &[]);
         assert!(stop().contains("only task"), "an owner prompt restarts the count");

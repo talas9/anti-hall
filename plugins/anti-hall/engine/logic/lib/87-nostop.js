@@ -44,18 +44,22 @@ var nostop = {
     if (r.unsure || r.unreadable) return null;
     return r.tasks || [];
   },
-  // The open tasks of `tasks` that no live agent, DevSwarm workspace or running background job is working.
+  // The open tasks of `tasks` that no live agent, DevSwarm workspace or running background job is working, read from the same rows
+  // and rules as the idle-tasks check (tk.coverRows, #844): an owner that names a live agent (id, launch name or description), a
+  // blockedOn that names a live agent or the owner, an in-progress task while a background shell, Monitor or tracked job runs.
   uncovered: function (p, open) {
     if (open.length === 0) return [];
-    var rows = [];
-    try { rows = ah.transcript.trackedAgents(p); } catch (e) { rows = []; }
-    if (!Array.isArray(rows)) rows = [];
+    var tracked = [], scan = null, tp = p && typeof p.transcript_path === 'string' ? p.transcript_path : '';
+    try { tracked = ah.transcript.trackedAgents(p); } catch (e) { tracked = []; }
+    if (tp !== '') { try { scan = ah.transcript.agents(tp); } catch (e) { scan = null; } }
+    var rows = tk.coverRows(scan, tracked);
     var coord = new RegExp(ah.cfg('task_guard.coordinator_owner_re'), 'i');
-    var bgLive = rows.some(function (r) { return typeof r.shellKind === 'string' && r.shellKind !== '' && r.live !== false; });
+    var bgLive = tk.bgLive(rows);
     var inProg = ah.cfg('taskstate.in_progress_statuses');
     return open.filter(function (t) {
       var o = typeof t.owner === 'string' ? t.owner.trim() : '';
-      if (o !== '' && !coord.test(o) && (ah.transcript.trackedLiveness(o, rows) === true || tk.childAttended(o))) return false;
+      if (o !== '' && !coord.test(o) && (tk.attendedOwner(o, rows) || tk.childAttended(o))) return false;
+      if (tk.ownerHeld(t) || tk.blockedOnLive(t, rows)) return false;
       if (bgLive && inProg.indexOf(tk.statusLc(t)) >= 0) return false;
       return true;
     });

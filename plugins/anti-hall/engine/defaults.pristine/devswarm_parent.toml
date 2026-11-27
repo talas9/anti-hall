@@ -791,6 +791,78 @@ value = ["stall"]
 doc = "Source label of the stale_flag_on_parked waste event. No token saving is estimated."
 value = "parked_roster"
 
+[devswarm_parent.set_roster_orders]
+doc = "Roster orders (#844). Switch devswarm.rosterOrders (default on): a working child with an active straying warning, a heartbeat older than devswarm_parent.flag_stale_ms or commits unpushed longer than devswarm_parent.flag_unpushed_ms is named in a \"Do now: ask\" order line, and the parent Stop gate counts it (devswarm_role.pg_kind_flagged)."
+value = { section = "devswarm", key = "rosterOrders", env = "ANTIHALL_DEVSWARM_ROSTER_ORDERS", default = true }
+
+[devswarm_parent.flag_stale_ms]
+doc = "A working child whose latest heartbeat is at least this old (milliseconds) is flagged: its progress is stale."
+value = 900000
+min = 60000
+max = 86400000
+
+[devswarm_parent.flag_unpushed_ms]
+doc = "A working child with unpushed commits whose newest commit is at least this old (milliseconds) is flagged."
+value = 1800000
+min = 60000
+max = 86400000
+
+[devswarm_parent.flag_record_fresh_ms]
+doc = "How long (milliseconds) the parent Stop gate trusts the roster-flag record the last prompt wrote; an older record counts nothing."
+value = 900000
+min = 60000
+max = 86400000
+
+[devswarm_parent.dir_flags]
+doc = "The per-project roster-flag records (roster-flags/<key>.json: {at, ws: [{id, label, reasons}]}), under the DevSwarm directory; the parent Stop gate reads them."
+value = "roster-flags"
+
+[devswarm_parent.flag_reason_straying]
+doc = "A flag reason: an active straying warning. Placeholder: {signals}."
+value = "straying ({signals})"
+
+[devswarm_parent.flag_reason_stale]
+doc = "A flag reason: the heartbeat is stale. Placeholder: {min}."
+value = "no progress report for {min} min"
+
+[devswarm_parent.flag_reason_unpushed]
+doc = "A flag reason: commits unpushed. Placeholders: {n} commits, {min} minutes since the newest."
+value = "{n} commit(s) unpushed, newest {min} min old"
+
+[devswarm_parent.flag_reason_sep]
+doc = "Joins the reasons of one flagged child."
+value = ", "
+
+[devswarm_parent.flag_item]
+doc = "One flagged child in the order. Placeholders: {title}, {reasons}."
+value = "{title} ({reasons})"
+
+[devswarm_parent.flag_item_sep]
+doc = "Joins the flagged children in the order."
+value = "; "
+
+[devswarm_parent.flag_list_max]
+doc = "Most flagged children named in the order line; the rest are counted (devswarm_parent.flag_more)."
+value = 4
+min = 1
+max = 50
+
+[devswarm_parent.flag_more]
+doc = "The tail of the order line when more children are flagged than it names. Placeholder: {n}."
+value = " (+{n} more)"
+
+[devswarm_parent.msg_flag_order]
+doc = "The order line for flagged children (one line, UserPromptSubmit). Placeholders: {n}, {list}, {cli}, {id} (the first flagged child)."
+value = "⚠️ Do now: ask {list} what is blocking it and whether to stop, split or push: `{cli} send --to {id} --message \"status? you are flagged in the roster\"`."
+
+[devswarm_parent.flag_dedupe_key]
+doc = "The dedupe key of the roster-flag order line: the same order is not repeated every turn (devswarm_parent.nudge_keepalive)."
+value = "parent-roster-flags"
+
+[metric.devswarm_roster_flags]
+doc = "Roster flags (#844 item 4), by action: ordered (children named in an order line), gate_counted (a parent Stop-gate block that named flagged children), gate_notice (a flagged set already blocked on this session, shown as a notice)."
+value = { kind = "counter", unit = "workspaces", labels = ["action"] }
+
 [devswarm_parent.sw_token_unknown]
 doc = "Show unknown tokens when sampling is unproven. Switch devswarm.tokenUnknown (default on): a plan's roster token total is displayed only when its source exists, is sampled within token_offset_tolerance_bytes and has a recent usage record; otherwise show tok ?. This is a display stopgap, not a transcript resolver."
 value = { section = "devswarm", key = "tokenUnknown", env = "ANTIHALL_DEVSWARM_TOKEN_UNKNOWN", default = true }
