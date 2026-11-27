@@ -425,6 +425,10 @@ value = "anti-hall: the engine was still starting, so this {event} was not check
 doc = "Log detail for a hook call that skipped the daemon because a down marker, the breaker or the crash-loop cooldown was active."
 value = "skipped"
 
+[msg.client_skip_crashloop_hold]
+doc = "R0 (#969 hardening review): log detail for a hook call that skipped the daemon during the first client.crashloop_hold_max_ms of a crash-loop cooldown: load, not down, so a guard call in a dispatch.capacity_hold class is held and anything else passes."
+value = "skipped_crashloop_hold"
+
 [msg.client_skip_breaker_load]
 doc = "Log detail for a hook call that skipped the daemon because the client breaker (files.breaker_until) was open while a daemon process was still there (#905, client.down_requires_gone): load, not down, so a guard call in a dispatch.capacity_hold class is held and anything else passes."
 value = "skipped_breaker_load"

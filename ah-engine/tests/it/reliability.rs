@@ -2453,6 +2453,28 @@ fn an_open_breaker_holds_a_force_push_while_the_daemon_is_there_and_passes_all_o
     assert!(log.contains("skipped_breaker_load"), "the breaker-load skip is logged: {log}");
 }
 
+/// R0 (#969 hardening review): a crash-loop cooldown used to pass every call for its whole length, so a latch was a silent guard
+/// outage. A fresh trip is load: a force push is held, a read passes. Past client.crashloop_hold_max_ms the rest of the cooldown
+/// passes everything, so a broken install never blocks pushes for the whole cooldown.
+#[test]
+fn a_fresh_crash_loop_cooldown_holds_a_force_push_and_passes_all_past_its_backstop() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("crashhold", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_CRASHLOOP_HOLD_MAX_MS", "600000")]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let cooldown = ah_engine::config::ClientConfig::from_env().crash_cooldown.as_millis() as u64;
+    let now = ah_engine::health::now_ms();
+    std::fs::write(e.eng().join("crashloop.until"), (now + cooldown).to_string()).unwrap(); // tripped just now
+    let (_, held, _) = e.wrapper_hook(DENY_IN);
+    let (_, read, _) = e.wrapper_hook(READ_IN);
+    std::fs::write(e.eng().join("crashloop.until"), (now + 60_000).to_string()).unwrap(); // tripped cooldown - 60 s ago: past the backstop
+    let (_, late, _) = e.wrapper_hook(DENY_IN);
+    let log = e.health_log();
+    assert_eq!(held, 2, "a fresh crash-loop cooldown holds a force push: {log}");
+    assert_eq!(read, 0, "and passes a read: {log}");
+    assert_eq!(late, 0, "past client.crashloop_hold_max_ms the cooldown passes everything: {log}");
+    assert!(log.contains("skipped_crashloop_hold"), "the hold is logged: {log}");
+}
+
 /// #905 review: a live daemon that fails every exchange (it holds the singleton lock, a live pid, and answers no frame) holds a force
 /// push only for client.load_hold_max_ms with no OK reply; past it the daemon is treated as down (counted hold_expired) and every
 /// call passes, so a broken install cannot hold pushes forever. An open breaker with an expired hold run passes everything too.

@@ -841,6 +841,13 @@ env = "AH_ENGINE_DOWN_REQUIRES_GONE"
 min = 0
 max = 1
 
+[client.crashloop_hold_max_ms]
+doc = "R0 (#969 hardening review): for this long after a crash-loop trip (client.crash_n within client.crash_window_s), a hook call is treated as load, not as a daemon that is gone: a guard call in a dispatch.capacity_hold class (a push, merge, delete, deploy) is held and anything else passes. Past it the rest of the cooldown (client.crash_cooldown_s) passes everything, so a broken install never blocks every push for the whole cooldown. 0 = never hold (the cooldown passes everything)."
+value = 600000
+min = 0
+env = "AH_ENGINE_CRASHLOOP_HOLD_MAX_MS"
+unit = "ms"
+
 [client.load_hold_max_ms]
 doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there; and a daemon that answers late, client.slow_fallback_max_ms: every late reply, whether or not it trips client.slow_down_n, #910) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
 value = 300000
