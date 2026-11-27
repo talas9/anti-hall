@@ -21,6 +21,7 @@ working", "write a handover") and the matching skill is picked.
 | `simplify` | "Simplify this", "deslop", over-engineered code | A cleanup that keeps behaviour the same and reports the net line change. |
 | `debt` | Tracking a deliberate shortcut | Registers and audits `// anti-hall:` debt markers so shortcuts do not rot unnoticed. |
 | `handover` | Before `/compact` or `/clear`, or at the end of a session | Writes a complete session handover. See [Handovers](handovers.md). |
+| `tasks-reconcile` | At resume, or when a guard says a window slot is free or the window is full | Reconciles the task list with its task store: logs finished tasks, merges duplicates, re-ranks, fills the window (default 5) and rewrites the backlog line. |
 
 ## Running anti-hall
 

@@ -1538,7 +1538,7 @@ value = "verify the handover and record the result."
 
 [tasklist_hygiene.summary]
 doc = "One-line description of the tasklist-hygiene check in the generated reference."
-value = "Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+value = "Task window at TaskCreate/TaskUpdate (guards.taskWindow): at most guards.taskWindowSize active tasks plus one `T-∞ Backlog:` line, subjects `T-<n> [P<0-3>] title`, top priorities only, an owner on in-progress tasks, blocked tasks moved to the backlog store, resumed lists rebuilt from the saved store; each refusal names the form to use and /anti-hall:tasks-reconcile keeps the store. Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
 
 [tasklist_hygiene.skip_subagent]
 doc = "true: a subagent's task call (its payload carries a coordinator_work.agent_markers field) marked done gets no delete order and no done tip: a subagent's list is the spawner's, and its order to delete a task it may not edit was ignored by design (ignored-rules audit 2026-11-20). Only those two are skipped: the taskListEnforce = block refusal, the budget line and the deleted count still apply."
@@ -2025,3 +2025,237 @@ value = { kind = "counter", unit = "errors", labels = ["kind"] }
 [task_guard.prune_advisory]
 doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
 value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
+
+# ---- task window (GH #982): N active tasks + one backlog line; the full list in a per-session store; rules enforced at write time ----
+# tasklist-hygiene (PreToolUse/PostToolUse on TaskCreate/TaskUpdate) enforces these. Claude only: Codex has no task tools or task hook
+# events, so on Codex the rules live in the tasks-reconcile and handover skills only.
+
+[task_window.setting]
+doc = "Switch guards.taskWindow (default on): the task-list window rules are enforced when a task is created or changed (subject format, window size, top priorities in the window, an owner on an in-progress task, blocked tasks moved to the backlog, the resume check), and the full list is kept in the per-session task store. Off: none of this runs, and the backlog line counts as an open task again."
+value = { section = "guards", key = "taskWindow", env = "ANTIHALL_TASK_WINDOW", aliases = [], default = true }
+
+[task_window.size_setting]
+doc = "guards.taskWindowSize: most active tasks in the live list (the backlog line is extra, slot N+1). When the switch is on this replaces handover.taskListBudget as the open-task limit."
+value = { section = "guards", key = "taskWindowSize", env = "ANTIHALL_TASK_WINDOW_SIZE", aliases = [], min = 1, default = 5 }
+
+[task_window.priority_setting]
+doc = "Switch guards.taskWindowPriority (default on): a new task may not take a free window slot while the backlog holds a higher-priority task."
+value = { section = "guards", key = "taskWindowPriority", env = "ANTIHALL_TASK_WINDOW_PRIORITY", aliases = [], default = true }
+
+[task_window.owner_setting]
+doc = "Switch guards.taskWindowOwner (default on): a task set to in progress must name its owner (the agent working it, or main)."
+value = { section = "guards", key = "taskWindowOwner", env = "ANTIHALL_TASK_WINDOW_OWNER", aliases = [], default = true }
+
+[task_window.blocked_setting]
+doc = "Switch guards.taskWindowBlocked (default on): a task update that marks a task blocked (metadata.blockedOn with a reason, or addBlockedBy) saves it to the backlog and is refused with the order to delete it from the window."
+value = { section = "guards", key = "taskWindowBlocked", env = "ANTIHALL_TASK_WINDOW_BLOCKED", aliases = [], default = true }
+
+[task_window.resume_setting]
+doc = "Switch guards.taskWindowResume (default on): in a session resumed from a handover, task creates are checked against the predecessor's task store (adopted into this session's store) or, when it has none, its markdown task snapshot, so the list is rebuilt from the saved one and not from memory."
+value = { section = "guards", key = "taskWindowResume", env = "ANTIHALL_TASK_WINDOW_RESUME", aliases = [], default = true }
+
+[task_window.subject_re]
+doc = "JavaScript regex source a task subject must match whole: `T-<n> [P<0-3>] title`. Group 1 is the task number n (a stable id, never renumbered), group 2 the priority digit, group 3 the title."
+value = '^T-(\d+) \[P([0-3])\] (\S.*)$'
+
+[task_window.backlog_re]
+doc = "JavaScript (and Rust) regex source of the backlog line's subject (slot N+1). That task is an index of the backlog, not work: it never counts as an open task for the task guards (tk.isOpen) or the compliance nudges, and never takes a window slot."
+value = '^T-∞ Backlog:'
+
+[task_window.backlog_line]
+doc = "The backlog line's subject as the guard renders it: `{n}` tasks in the backlog, `{counts}` the per-priority counts, `{next}` the top backlog task, `{skill}` task_window.reconcile_skill."
+value = "T-∞ Backlog: {n} more ({counts}) · next: {next} · run {skill}"
+
+[task_window.backlog_count]
+doc = "One priority's count in the backlog line; `{n}` the count, `{p}` the priority digit."
+value = "{n} P{p}"
+
+[task_window.backlog_count_sep]
+doc = "Separator between the per-priority counts."
+value = ", "
+
+[task_window.backlog_none]
+doc = "The `{next}` of a backlog line when nothing waits."
+value = "none"
+
+[task_window.subject_form]
+doc = "A subject in the expected form; `{n}` the number, `{p}` the priority digit or task_window.p_unknown, `{title}` the title."
+value = "T-{n} [P{p}] {title}"
+
+[task_window.p_unknown]
+doc = "The priority slot shown when the guard cannot tell the priority."
+value = "<0-3>"
+
+[task_window.title_strip_re]
+doc = "JavaScript regex source (case-insensitive) removed from the start of a malformed subject to get its title: a `T-<n>`/`#<n>` id and bracketed tags."
+value = '^\s*(?:(?:T-\S+|#\d+)\s*)?(?:\[[^\]]*\]\s*)*'
+
+[task_window.title_max]
+doc = "Longest title the guard quotes in an expected form (UTF-16 units); longer ones are cut with taskkit.ellipsis."
+value = 50
+min = 8
+
+[task_window.reconcile_skill]
+doc = "How the guard names the reconcile skill in its orders."
+value = "/anti-hall:tasks-reconcile"
+
+[task_window.store_dir]
+doc = "Path parts, under the session's project root (ah.project.repoRoot), of the task store directory: one `<session>.json` per session. Must start with paths.base_dir (the scoped writer's rule)."
+value = [".anti-hall", "tasks", "store"]
+
+[task_window.store_format]
+doc = "Version stamped in a store file; a file with another version is read as absent (the guard starts a new one only when the old one is not there, so nothing is overwritten: a file it cannot read is left alone and no store rule runs)."
+value = 1
+min = 1
+
+[task_window.store_max_bytes]
+doc = "Largest store file read or written; a bigger one is left alone (no store rule runs) and counted."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[task_window.states]
+doc = "The store states of a task: in the live window, waiting in the backlog, blocked (in the backlog, waiting on something or the owner), done (finished, to be logged and cleared by tasks-reconcile), dropped (deleted from the live list without being finished; kept, never deleted)."
+value = { window = "window", backlog = "backlog", blocked = "blocked", done = "done", dropped = "dropped" }
+
+[task_window.reserve_ttl_ms]
+doc = "How long a create the guard let through holds its window slot before the created task shows in the live list. Parallel creates are judged under a lock against the live list plus these reservations, so N+1 parallel creates cannot all pass."
+value = 120000
+min = 1000
+unit = "ms"
+
+[task_window.lock_rel]
+doc = "The lock file (relative to the home, under paths.base_dir) that serialises store updates of one session; `{sid}` is the session key."
+value = ".anti-hall/task-window/{sid}.flock"
+
+[task_window.lock_group]
+doc = "The defaults group whose lock_* keys time the store lock."
+value = "advisor"
+
+[task_window.lock_wait_ms]
+doc = "How long a task call waits for the store lock. A call that cannot take it writes nothing and enforces only the rules that need no store (format, owner)."
+value = 400
+min = 0
+unit = "ms"
+
+[task_window.snapshot_file]
+doc = "The detail file of a handover that holds its markdown task snapshot (read only when the predecessor session left no store)."
+value = "state.md"
+
+[task_window.snapshot_heading_re]
+doc = "JavaScript regex source (case-insensitive, multiline) of the task snapshot heading in a handover's state file."
+value = '^##\s*Task list snapshot\s*$'
+
+[task_window.snapshot_row_re]
+doc = "JavaScript regex source of one data row of the snapshot table (a table row that is neither the header nor the divider)."
+value = '^\|(?!\s*-)(?!\s*id\s*\|)\s*[^|\s]'
+
+[task_window.snapshot_end_re]
+doc = "JavaScript regex source of the line that ends the snapshot section (the next markdown heading)."
+value = '^#'
+
+[task_window.snapshot_read_max]
+doc = "Most bytes of the handover state file read for its snapshot."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[task_window.owner_hint]
+doc = "The owner value the in-progress order suggests."
+value = "<agent name, or main>"
+
+[task_window.what_format]
+doc = "Block: the subject is not in the window form; `{subject}` is the subject given (cut)."
+value = "task subject \"{subject}\" is not `T-<n> [P<0-3>] title`."
+
+[task_window.instead_create]
+doc = "Do instead of a malformed create; `{subject}` is the expected subject."
+value = "TaskCreate subject=\"{subject}\""
+
+[task_window.instead_rename]
+doc = "Do instead of a malformed rename; `{id}` the task id, `{subject}` the expected subject."
+value = "TaskUpdate taskId={id} subject=\"{subject}\""
+
+[task_window.what_dup]
+doc = "Block: the number is taken by another task; `{n}` the number, `{other}` the title that has it."
+value = "T-{n} is already \"{other}\"."
+
+[task_window.what_full]
+doc = "Block: the window is full; `{n}` the task, `{open}` the live window count, `{max}` the window size. The task is already saved in the backlog store."
+value = "window full ({open}/{max}): T-{n} saved to the backlog store."
+
+[task_window.instead_full]
+doc = "Do instead when the window is full; `{skill}` the reconcile skill."
+value = "finish or move a window task first; {skill} swaps in higher priorities."
+
+[task_window.what_order]
+doc = "Block: a backlog task outranks the new one; `{n}`/`{p}` the new task, `{bn}`/`{bp}` the backlog one."
+value = "T-{bn} [P{bp}] in the backlog outranks T-{n} [P{p}]."
+
+[task_window.instead_order]
+doc = "Do instead: pull the backlog task first; `{subject}` its subject."
+value = "TaskCreate subject=\"{subject}\" first."
+
+[task_window.what_owner]
+doc = "Block: an in-progress task with no owner; `{id}` the task id."
+value = "task {id} goes in progress with no owner."
+
+[task_window.instead_owner]
+doc = "Do instead; `{id}` the task id, `{owner}` task_window.owner_hint."
+value = "TaskUpdate taskId={id} status=in_progress owner=\"{owner}\""
+
+[task_window.what_blocked]
+doc = "Block: a blocked task belongs in the backlog; `{n}` its number. It is already saved there as blocked."
+value = "blocked tasks leave the window: T-{n} saved to the backlog store as blocked."
+
+[task_window.instead_blocked]
+doc = "Do now when a blocked task was saved; `{id}` the task id."
+value = "TaskUpdate taskId={id} status=deleted"
+
+[task_window.what_drift]
+doc = "Block: a resumed session creates a task before loading the saved window; `{missing}` how many saved window tasks are not live yet."
+value = "resumed list: {missing} saved window task(s) not loaded yet."
+
+[task_window.instead_drift]
+doc = "Do instead: load the saved window; `{subject}` the first saved window subject."
+value = "TaskCreate subject=\"{subject}\" (load the saved window first)"
+
+[task_window.drift_detail]
+doc = "Details line: the saved window subjects to create, in order; `{list}` joined by task_window.drift_sep."
+value = "Load these saved window tasks first, then the backlog line: {list}"
+
+[task_window.drift_sep]
+doc = "Separator of the saved window subjects in the drift details."
+value = " | "
+
+[task_window.what_import]
+doc = "Block: a resumed session has only a markdown task snapshot; `{path}` the handover state file."
+value = "resumed list not imported from {path}."
+
+[task_window.instead_import]
+doc = "Do now: import the snapshot; `{skill}` the reconcile skill."
+value = "run {skill} (it imports the snapshot into the store)"
+
+[task_window.what_backlog_dup]
+doc = "Block: a second backlog line; `{id}` the existing one's task id."
+value = "a backlog line already exists (task {id})."
+
+[task_window.instead_backlog_dup]
+doc = "Do instead: update the existing backlog line; `{id}` its task id."
+value = "TaskUpdate taskId={id} with the new backlog subject"
+
+[task_window.slot_free]
+doc = "Order after a window task was finished or deleted while the backlog holds tasks; `{skill}` the reconcile skill, `{next}` the top backlog task."
+value = "a window slot is free: run {skill} (next: {next})."
+
+[task_window.slot_free_then]
+doc = "The slot-free order folded into the done order of the same call (one order per message); same placeholders as task_window.slot_free."
+value = " Then run {skill}: a window slot is free (next: {next})."
+
+[task_window.skill_rules]
+doc = "The task-list rules as the skills state them (tasks-reconcile and handover, Claude and Codex). A test checks that each of those skills holds this text exactly, so the guard and the skills cannot drift. `{size}` is not filled: the skills name the setting."
+value = "Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner live in the backlog store, not in the window; the full list lives in `.anti-hall/tasks/store/<session>.json`."
+
+[metric.task_window]
+doc = "Task-window actions at TaskCreate/TaskUpdate, by action (block_format, block_dup, block_full, block_order, block_owner, block_blocked, block_drift, block_import, block_backlog_dup, saved_backlog, reserved, adopted, slot_free, store_write_failed, store_unreadable, lock_busy)."
+value = { kind = "counter", unit = "events", labels = ["action"] }

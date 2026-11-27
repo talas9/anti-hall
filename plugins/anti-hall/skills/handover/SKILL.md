@@ -227,7 +227,7 @@ Trigger: <auto-threshold|user-request|restart-pending|task-boundary> · context:
 - [ ] `git status` — expect: <what>
 - [ ] `pwd` — expect: <path>
 - [ ] re-read `CLAUDE.md` — rules may have been dropped by compaction
-- [ ] rebuild the session task list from `.anti-hall/tasks/INDEX.md` Active rows only
+- [ ] run `/anti-hall:tasks-reconcile`: it loads the window and the backlog line from the task store
 - [ ] MEMORY.md consolidated (within `handover.memoryIndexMaxLines` / `handover.memoryIndexMaxChars`)
 - [ ] `<smoke/test command>` — expect: <result>
 - [ ] read-back to the user: goal, next action, active session rules — in your own words, before any new work
@@ -294,11 +294,12 @@ as `.anti-hall/progress/INDEX.md`:
    stable slug) and today's date.
 2. Compute seq = (existing `HANDOVER*.md` count in this session's dir) + 1.
 3. **Consolidate the task list and the MEMORY.md index** (before writing files):
-   - Task list, open tasks only: delete completed tasks from the session task list. Group duplicates and related items into one task each; keep at most `handover.taskListBudget` active tasks (default 12).
-   - Subjects are `T-<n> [P] <short title>`, at most `handover.taskSubjectMax` characters (default 60). `n` is the PRIORITY RANK: the smaller the number, the higher the priority. Renumber after every change.
-   - Details live in `.anti-hall/tasks/INDEX.md` (one line per active task, plus a Backlog section for the rest) and in `.anti-hall/tasks/T-<n>/` folders only for local material. Never copy a GitHub issue's content: the issue is the spec. Nothing is dropped: a task removed from the session list moves to the INDEX Backlog.
+   - Task list, open tasks only: delete completed tasks from the session task list. Group duplicates and related items into one task each; keep at most `guards.taskWindowSize` active tasks (default 5) plus the backlog line; everything else goes to the task store's backlog (`handover.taskListBudget`, default 12, applies only with `guards.taskWindow` off).
+   - Subjects are `T-<n> [P] <short title>`, at most `handover.taskSubjectMax` characters (default 60). `n` is a stable task number, never renumbered; the priority is the `[P0-3]` tag.
+   - The full list (window and backlog) lives in the task store `.anti-hall/tasks/store/<session>.json`, kept by the guard and by `/anti-hall:tasks-reconcile`; local material goes in `.anti-hall/tasks/T-<n>/` folders only. Never copy a GitHub issue's content: the issue is the spec. Nothing is dropped: a task removed from the session list stays in the store's backlog.
    - Verify "done" or "obsolete" against real state (GitHub issue/PR state, logs, files) before dropping a task. Never delete data; archive instead.
-   - The handover's Open items and the state.md task table are generated from the INDEX Active section, not from a dump of the session list.
+   - The handover's Open items and the state.md task table are generated from the task store, not from a dump of the session list.
+   - Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner live in the backlog store, not in the window; the full list lives in `.anti-hall/tasks/store/<session>.json`.
    - MEMORY.md index: group related one-line entries into topic sections; each line at most ~130 characters; keep every memory file reachable from the index (one line may link several related files: `[a](a.md) · [b](b.md) — shared hook`). Never delete memory files: change structure only. Flag stale or contradicted memories in the handover for owner OK instead of deleting them. Stay within `handover.memoryIndexMaxLines` (default 100) and `handover.memoryIndexMaxChars` (default 12000).
    - The terminal "ready to restart" declaration is refused while the task list or the memory index is over budget, or while the active list still contains completed tasks.
 4. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
@@ -432,6 +433,7 @@ works the same for both).
    in your own words) before starting any new work.
 4. Page in detail files only as needed, per the Detail-file pointer table's "read
    this when" column — progressive disclosure, not a full read of everything.
-5. Recreate/reconcile your task list (TaskCreate/TaskUpdate or TodoWrite) from
-   state.md's Task list snapshot BEFORE starting any work — the snapshot is
-   the source of truth for what's pending/in-progress/blocked.
+5. Run `/anti-hall:tasks-reconcile` BEFORE starting any work: it loads the window and the
+   backlog line from the predecessor's task store (the guard adopts it), or imports
+   state.md's Task list snapshot when there is no store. TaskCreate refuses a
+   rebuild from memory.
