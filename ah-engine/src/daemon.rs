@@ -1884,7 +1884,9 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
 /// The next request this worker serves (#969): the oldest of the highest-ranked class it may take. A limited class is taken only
 /// while fewer of its requests than the adaptive limit are being served, so the workers above the limit stay free for guard and
 /// control requests. `None` after a wait of `daemon.worker_wait_ms` with nothing it may take (the worker then does its upkeep).
-fn next_request(sh: &Shared) -> Option<crate::overload::Item<UnixStream>> {
+/// The flag says whether the request was counted in `limited_running` (the worker un-counts exactly that, even when the limited
+/// classes are edited while it runs).
+fn next_request(sh: &Shared) -> Option<(crate::overload::Item<UnixStream>, bool)> {
     let workers = sh.busy_since.len();
     let limited = crate::overload::limited_ranks();
     let mut q = lk(&sh.queue);
@@ -1895,7 +1897,8 @@ fn next_request(sh: &Shared) -> Option<crate::overload::Item<UnixStream>> {
         let may = |rank: usize| !limited.get(rank).copied().unwrap_or(false) || running < limit;
         let held = defaults::text("overload.what_limited");
         if let Some(item) = q.pop(may, |i| crate::overload::count(held, i.class, i.event)) {
-            if limited.get(item.class).copied().unwrap_or(false) {
+            let counted = limited.get(item.class).copied().unwrap_or(false);
+            if counted {
                 sh.limited_running.fetch_add(1, SeqCst);
             }
             sh.depth.fetch_sub(1, SeqCst);
@@ -1904,7 +1907,7 @@ fn next_request(sh: &Shared) -> Option<crate::overload::Item<UnixStream>> {
                 sh.depth.load(SeqCst) == q.len(),
                 defaults::render("msg.inv_queue_pop", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
             );
-            return Some(item);
+            return Some((item, counted));
         }
         let (g, timeout) = sh.cv.wait_timeout(q, defaults::millis("daemon.worker_wait_ms")).unwrap_or_else(|e| e.into_inner());
         q = g;
@@ -1921,13 +1924,12 @@ fn worker(sh: Arc<Shared>, idx: usize) {
     crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);
     PEER_SLOT.with(|p| *p.borrow_mut() = Some(sh.busy_peer[idx].clone()));
     loop {
-        let Some(item) = next_request(&sh) else {
+        let Some((item, limited)) = next_request(&sh) else {
             crate::script::maintain(true);
             crate::memdiag::worker_tick(idx);
             continue;
         };
         let (wait, class, event) = (item.at.elapsed(), item.class, item.event);
-        let limited = crate::overload::limited_ranks().get(class).copied().unwrap_or(false);
         // #969 shed mode: the limit is backed off to its floor (sustained overload), or this request waited past its class bound
         let workers = sh.busy_since.len();
         let floor = crate::overload::enabled() && lk(&sh.limiter).at_floor(workers);

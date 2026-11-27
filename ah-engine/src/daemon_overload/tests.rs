@@ -49,6 +49,7 @@ fn exchange(sock: &std::path::Path, req: &[u8]) -> Option<bool> {
 
 struct Run {
     guard_ms: Vec<u64>,
+    control_ms: Vec<u64>,
     /// (guard requests run in shed mode, advisory requests run in shed mode, advisory requests run in full)
     shed: (u64, u64, u64),
     guard_busy: usize,
@@ -129,6 +130,14 @@ fn drive(tag: &str, secs: u64) -> (Run, Arc<Shared>) {
         }
         std::thread::sleep(Duration::from_millis(40));
     }
+    // R4: a control verb (status, ping) during the same flood
+    let mut control_ms: Vec<u64> = (0..5)
+        .filter_map(|_| {
+            let t = Instant::now();
+            (exchange(&sock, b"CTL ping") == Some(true)).then(|| t.elapsed().as_millis() as u64)
+        })
+        .collect();
+    control_ms.sort_unstable();
     stop.store(true, SeqCst);
     let (mut advisory_done, mut advisory_busy) = (0, 0);
     for f in flooders {
@@ -139,7 +148,7 @@ fn drive(tag: &str, secs: u64) -> (Run, Arc<Shared>) {
     guard_ms.sort_unstable();
     let shed = (SHED_GUARD.load(SeqCst), SHED_ADVISORY.load(SeqCst), FULL_ADVISORY.load(SeqCst));
     crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup; an absent directory is the goal state
-    (Run { guard_ms, shed, guard_busy, advisory_done, advisory_busy }, sh)
+    (Run { guard_ms, control_ms, shed, guard_busy, advisory_done, advisory_busy }, sh)
 }
 
 /// The FIFO daemon makes a guard call wait behind the advisory flood (all four workers busy with 310 ms advisory requests); with
@@ -154,7 +163,7 @@ fn under_an_advisory_flood_pre_tool_use_p99_stays_inside_the_deadline_and_advice
     let (after, sh) = drive("prio", 3);
     let line = |name: &str, r: &Run| {
         format!(
-            "{name}: PreToolUse n={} p50={} ms p99={} ms max={} ms busy={}; PostToolUse served={} busy={}; shed mode guard={} advisory={} (advisory in full {})",
+            "{name}: PreToolUse n={} p50={} ms p99={} ms max={} ms busy={}; PostToolUse served={} busy={}; shed mode guard={} advisory={} (advisory in full {}); CTL ping max={} ms of {}",
             r.guard_ms.len(),
             p(&r.guard_ms, 50),
             p(&r.guard_ms, 99),
@@ -164,7 +173,9 @@ fn under_an_advisory_flood_pre_tool_use_p99_stays_inside_the_deadline_and_advice
             r.advisory_busy,
             r.shed.0,
             r.shed.1,
-            r.shed.2
+            r.shed.2,
+            r.control_ms.last().copied().unwrap_or(0),
+            r.control_ms.len()
         )
     };
     let report = format!("{}\n{}\nstatus overload: {}", line("before (FIFO)", &before), line("after (overload)", &after), sh.overload_json());
@@ -173,6 +184,8 @@ fn under_an_advisory_flood_pre_tool_use_p99_stays_inside_the_deadline_and_advice
     assert_eq!(after.guard_busy, 0, "no guard call is refused while advisory requests are queued: {report}");
     assert!(p(&after.guard_ms, 99) <= deadline, "PreToolUse p99 inside client.deadline_ms ({deadline} ms): {report}");
     assert!(p(&before.guard_ms, 99) > deadline, "the FIFO baseline misses the deadline under the same flood (the test bites): {report}");
+    assert_eq!(after.control_ms.len(), 5, "every control call is answered during the flood: {report}");
+    assert!(after.control_ms.last().copied().unwrap_or(u64::MAX) <= deadline, "control calls answer inside the deadline: {report}");
     assert!(after.advisory_done > 0, "advisory work is still served (shed, not starved): {report}");
     assert!(after.shed.1 > 0, "advisory requests are shed (their advice skipped) under the flood: {report}");
     assert_eq!(before.shed, (0, 0, before.shed.2), "the FIFO baseline never sheds: {report}");
