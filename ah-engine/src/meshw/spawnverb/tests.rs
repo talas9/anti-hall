@@ -176,3 +176,60 @@ fn a_tail_only_ls_remote_match_is_not_the_branch() {
     let (_, out) = run(Some("dev"), &["-p", "go"], &r, &[]);
     assert_eq!(str_at(&out, &["sourceFallback", "used"]), Some("main"), "{}", out.stringify());
 }
+
+/// A submodule repo whose `worktree list` shows the branch checked out at `other`, and whose `worktree add` creates the `.git` link.
+struct Busy {
+    other: String,
+    calls: RefCell<Vec<Vec<String>>>,
+}
+
+impl Runner for Busy {
+    fn run(&self, spec: &RunSpec) -> RunResult {
+        self.calls.borrow_mut().push(spec.args.clone());
+        let has = |w: &str| spec.args.iter().any(|a| a == w);
+        let stdout = if has("list") {
+            format!("worktree {}\nHEAD {}\nbranch refs/heads/feat-x\n", self.other, "1".repeat(40))
+        } else if has("add") {
+            // the path follows the add options: the first argument after `add` that is absolute
+            let at = spec.args.iter().position(|a| a == "add").unwrap();
+            let p = spec.args[at + 1..].iter().find(|a| a.starts_with('/')).unwrap();
+            std::fs::create_dir_all(p).unwrap();
+            std::fs::write(Path::new(p).join(".git"), "gitdir: x\n").unwrap();
+            String::new()
+        } else {
+            String::new()
+        };
+        let status = if has("--verify") { 1 } else { 0 };
+        RunResult { ok: status == 0, status: Some(status), stdout, ..RunResult::default() }
+    }
+}
+
+/// #844 item 5: the worktreeInclude copy made the submodule path non-empty ("already exists") AND the branch is checked out in
+/// another worktree. The repair adds the submodule worktree detached at the pinned commit, moves the pre-copied file back, and says so.
+#[test]
+fn a_submodule_whose_branch_is_checked_out_elsewhere_is_repaired_detached_at_the_pin() {
+    defaults::init().unwrap();
+    let base = crate::testtmp::path(format!("ah-spawn-busy-{}", std::process::id()));
+    crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: a stale directory of an earlier run
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    assert!(std::process::Command::new("git").current_dir(&wt).args(["init", "-q", "-b", "main"]).status().unwrap().success());
+    let wt = wt.canonicalize().unwrap().to_string_lossy().into_owned();
+    std::fs::create_dir_all(format!("{wt}/.git/modules/app")).unwrap();
+    let p = format!("{wt}/app");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(format!("{p}/.env"), "K=1\n").unwrap();
+    let other = base.join("old");
+    std::fs::create_dir_all(&other).unwrap();
+    let runner = Busy { other: other.to_string_lossy().into_owned(), calls: RefCell::new(Vec::new()) };
+    let pin = "a".repeat(40);
+    let text = format!("git worktree add -b feat-x {p} {pin}\nfatal: '{p}' already exists\n");
+    let f = Failure { path: Some(p.clone()), error: t("devswarm_cli.sp_fail_already_exists").to_string(), repair_error: None };
+    let got = repair_one(&runner, &f, &text, "feat-x", Some(&["app".to_string()]), 1).expect("repaired").expect("a handled shape");
+    let add = runner.calls.borrow().iter().find(|c| c.iter().any(|a| a == "add")).cloned().unwrap();
+    assert!(add.iter().any(|a| a == "--detach") && add.iter().any(|a| a == &pin) && !add.iter().any(|a| a == "-b"), "{add:?}");
+    assert_eq!(got.get("detached"), Some(&OVal::Bool(true)), "{}", got.stringify());
+    assert!(str_at(&got, &["note"]).is_some_and(|n| n.contains("feat-x")), "{}", got.stringify());
+    assert_eq!(std::fs::read_to_string(format!("{p}/.env")).unwrap(), "K=1\n", "the pre-copied file is moved back");
+    crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup
+}

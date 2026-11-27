@@ -4085,6 +4085,14 @@ value = ["rev-parse", "--verify", "--quiet"]
 doc = "The repair error when the pinned commit cannot be fetched. {sha} {error}."
 value = "pinned commit {sha} is missing from the local submodule clone and could not be fetched: {error}"
 
+[devswarm_cli.sp_git_detach]
+doc = "The git option that adds a submodule worktree detached at the pinned commit when its branch is checked out in another worktree (#844)."
+value = "--detach"
+
+[devswarm_cli.sp_detached_note]
+doc = "The note (and warning) of a submodule worktree spawn repaired detached at the pinned commit because its branch is checked out in another worktree. {branch}."
+value = "branch {branch} is checked out in another worktree, so this submodule worktree was created detached at the superproject's pinned commit; run `git switch -c <new-branch>` in it before committing."
+
 [devswarm_cli.sp_err_branch_elsewhere]
 doc = "The repair error when the branch is checked out in another worktree. {branch}."
 value = "branch {branch} is checked out in another worktree"
