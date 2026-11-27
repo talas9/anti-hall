@@ -1945,22 +1945,20 @@ mod tests {
         assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
         assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
         // #969: an engine call the exemption can not pass (here a redirection into a file outside /tmp; #971: /dev/null passes) is
-        // never held as an unread script; engine-unlisted is off by default (parsed.unlisted_rule = "", 0.3.31), so it passes;
-        // #971 review: a write into a config file is held as config-write
+        // held as engine-unlisted, never as an unread script; #971 review: a write into a config file is held as config-write
         let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ./out.json");
-        assert_eq!(e.rule, None, "unlisted_rule off: an engine call the exemption can not pass is not held");
+        assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
         let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ~/.claude/settings.json");
         assert_eq!(e.rule.as_deref(), Some("config-write"));
         assert_eq!(decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null").rule, None);
         // a script whose whole body the parsed read exemption passes (a local engine verb, a plain read) is no engine-unlisted call
         std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
         assert_eq!(got("bash eng.sh"), (None, None));
-        // #969 review: a script's engine call off the local list is decided as the same call at the top level is (engine-unlisted is
-        // off by default, 0.3.31: it passes there and here)
+        // #969 review: a script's engine call off the local list is held as engine-unlisted, as the same call at the top level is
         std::fs::write(dir.join("engw.sh"), "ah-engine agents stop x\n").unwrap();
-        assert_eq!(got("bash engw.sh"), (None, None));
+        assert_eq!(got("bash engw.sh"), want("script:engine-unlisted", "script_read"));
         std::fs::write(dir.join("engw2.sh"), "ls\nenv -S 'ah-engine config set daemon.nice 0'\n").unwrap();
-        assert_eq!(got("bash engw2.sh"), (None, None), "through a split option too");
+        assert_eq!(got("bash engw2.sh"), want("script:engine-unlisted", "script_read"), "through a split option too");
         assert_eq!(got("ls -la && cd /tmp"), (None, None));
         assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
         std::fs::remove_dir_all(&dir).unwrap();
