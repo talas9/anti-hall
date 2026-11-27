@@ -669,6 +669,11 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
 /// `teammateIdles` without the spawned-teammate test (the replay applies it): every candidate report with its outcome.
 fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
     let mut out = Vec::new();
+    // a report the host stamped with a peer origin (#972 wave 2): its sender is structured, whatever envelope wraps the text
+    if let Some(who) = super::peer_report_from(entry) {
+        out.push(Idle { id: who.to_string(), ts: Got::of(Ok(Some(Ts(entry_ts)))), report: true });
+        return out;
+    }
     if sprop(entry, "type") != Some("user") {
         return out;
     }

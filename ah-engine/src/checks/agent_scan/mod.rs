@@ -593,6 +593,7 @@ struct Flags {
     taskstop: bool,
     task_status: bool,
     tool_use: bool,
+    /// A teammate message: an idle notice or plain report in a `<teammate-message` block, or a report the host stamped with a peer origin.
     idle: bool,
 }
 
@@ -607,7 +608,7 @@ impl Flags {
 /// lossily decoded, trimmed line would; otherwise the scan decodes and trims first and searches the string.
 struct Prefilter {
     fast: bool,
-    keys: [&'static str; 10],
+    keys: [&'static str; 12],
     finders: Vec<memchr::memmem::Finder<'static>>,
 }
 
@@ -615,7 +616,7 @@ fn prefilter() -> std::sync::Arc<Prefilter> {
     static P: crate::defaults::Cache<Prefilter> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let k = defaults::raw("agent_scan.prefilter");
-        let keys: [&'static str; 10] = [
+        let keys: [&'static str; 12] = [
             k.str_field("launch"),
             k.str_field("notification"),
             k.str_field("agent_use"),
@@ -626,6 +627,8 @@ fn prefilter() -> std::sync::Arc<Prefilter> {
             k.str_field("task_status"),
             k.str_field("tool_use"),
             k.str_field("idle"),
+            k.str_field("peer"),
+            k.str_field("peer_spaced"),
         ];
         let blank = |b: u8| b.is_ascii_whitespace() || b == 0x0b;
         let fast = keys.iter().all(|n| n.is_ascii() && n.as_bytes().first().is_some_and(|b| !blank(*b)) && n.as_bytes().last().is_some_and(|b| !blank(*b)));
@@ -643,7 +646,7 @@ impl Prefilter {
             taskstop: has(5) || has(6),
             task_status: has(7),
             tool_use: has(8),
-            idle: has(9),
+            idle: has(9) || has(10) || has(11),
         }
     }
 
@@ -1197,6 +1200,13 @@ impl Walk {
     /// `teammateIdles(entry, entryTs, spawned)`: `(name, ts, reason)` of each genuine teammate report in this entry.
     fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64, &'static str)>> {
         let mut out = Vec::new();
+        // a report the host stamped with a peer origin (#972 wave 2): its sender is structured, whatever envelope wraps the text
+        if let Some(who) = peer_report_from(entry) {
+            if self.team_info.has(who) {
+                out.push((who.to_string(), entry_ts, "report"));
+            }
+            return Ok(out);
+        }
         if sprop(entry, "type") != Some("user") {
             return Ok(out);
         }
@@ -1275,6 +1285,26 @@ impl Walk {
         }
         Ok(out)
     }
+}
+
+/// The sender of a message the host delivered with a peer origin (`agent_scan.peer_report`): a user entry, or an attachment of a listed
+/// type (a message delivered while the session was busy), whose origin kind is the peer word. Its envelope text (`<agent-message`,
+/// `<teammate-message`) and the record keys that mark host-made entries do not matter: the origin names who sent it. The caller decides
+/// whether the sender is a spawned teammate.
+pub(super) fn peer_report_from(entry: &Value) -> Option<&str> {
+    let cfg = defaults::raw("agent_scan.peer_report");
+    let key = cfg.str_field("origin_key");
+    let origin = match sprop(entry, "type") {
+        Some(t) if t == cfg.str_field("entry_type") => prop(entry, key),
+        Some(t) if t == cfg.str_field("attachment_entry_type") => prop(entry, cfg.str_field("attachment_key"))
+            .filter(|a| sprop(a, "type").is_some_and(|at| cfg.get("attachment_types").map(|l| l.strings()).unwrap_or_default().contains(&at)))
+            .and_then(|a| prop(a, key)),
+        _ => None,
+    }?;
+    if sprop(origin, cfg.str_field("kind_key")) != Some(cfg.str_field("kind")) {
+        return None;
+    }
+    sprop(origin, cfg.str_field("from_key")).filter(|w| !w.is_empty())
 }
 
 /// The time of the teammate's own idle notice that follows a report which quotes earlier teammate messages: `rest` is what follows the

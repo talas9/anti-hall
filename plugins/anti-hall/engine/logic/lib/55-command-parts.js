@@ -124,6 +124,9 @@ function extractSubstitutionsJs(s) {
       i++; continue;
     }
     if (!inDouble && c === "'") { inSingle = true; i++; continue; }
+    // #972 wave 2: a backslash outside single quotes makes the next character literal: an escaped backtick or `\$(` in a quoted
+    // argument (`gh issue comment --body "run \`git pull\`"`) is text, not a substitution
+    if (c === '\\') { i += 2; continue; }
     if (c === '"') { inDouble = !inDouble; i++; continue; }
     if (c === '$' && c2 === '(') {
       let depth = 1; let j = i + 2; let inner = [];
