@@ -955,6 +955,14 @@ value = 8
 doc = "git subcommands that label a block a remote push."
 value = ["push"]
 
+[command.pull_light_flags]
+doc = "The only flags a `git pull --ff-only` may carry to stay light in the main thread (it fast-forwards the local branch and nothing else). Any other flag (--squash, --autostash, --no-commit, a rebase, prune or force flag, an unknown one) makes the pull heavy; --ff-only itself must be present."
+value = ["--ff-only", "--quiet", "--verbose", "-q", "-v"]
+
+[command.pull_light_short]
+doc = "The letters a bundled short flag of a light `git pull --ff-only` may hold (-qv); any other letter or a digit makes the pull heavy."
+value = ["q", "v"]
+
 [command.classify_pull_subs]
 doc = "git subcommands that label a block a remote pull or fetch."
 value = ["pull", "fetch"]

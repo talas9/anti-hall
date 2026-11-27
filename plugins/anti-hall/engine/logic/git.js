@@ -2557,10 +2557,11 @@ function pushPrepass(cmd, cwd) {
 
 // The script an interpreter call names: its first word that is not an option and not a redirection (`bash 2>/dev/null x.sh`, `bash 2> /dev/null x.sh`).
 function scriptArgOf(args) {
-  const redir = new RegExp(ah.cfg('git.script_redirect_re')), bare = new RegExp(ah.cfg('git.script_redirect_bare_re'));
+  const redir = new RegExp(ah.cfg('git.script_redirect_re')), bare = new RegExp(ah.cfg('git.script_redirect_bare_re')), opd = ah.cfg('git.shell_operand_opts');
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
-    if (t.text.startsWith('-')) continue;
+    if (opd.indexOf(t.text) >= 0) { i++; continue; } // an option that takes an operand (--rcfile x, -o pipefail): the next word is not the script
+    if (t.text.startsWith('-') || t.text.startsWith('+')) continue;
     if (bare.test(t.text)) { i++; continue; } // the operator stands alone: the next word is its target
     if (redir.test(t.raw !== undefined ? t.raw : t.text)) continue;
     return t;

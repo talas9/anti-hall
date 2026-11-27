@@ -1216,6 +1216,7 @@ impl Walk {
             }
         }
         let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+        let mut late: Option<f64> = None;
         let mut at = prefix.len();
         at += c[at..].len() - trim_start(&c[at..]).len();
         while let Some(m) = pats().teammate_block.captures(&c[at..]) {
@@ -1232,6 +1233,12 @@ impl Walk {
                 // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is
                 // quoted text, never another teammate's report
                 if body.contains(defaults::text("agent_scan.teammate_open")) {
+                    // the teammate's own idle notice may follow the quoted text: it dates the report
+                    if let Some(t) = late_idle_ts(&c[at..], id, entry_ts)?
+                        && t < entry_ts
+                    {
+                        late = Some(t);
+                    }
                     break;
                 }
                 continue;
@@ -1255,7 +1262,12 @@ impl Walk {
         }
         // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report
         // text) dates it, the entry's receipt time is its latest possible time
-        let idles: Vec<(String, f64)> = out.iter().filter(|o| o.2 == "idle").map(|o| (o.0.clone(), o.1)).collect();
+        let mut idles: Vec<(String, f64)> = out.iter().filter(|o| o.2 == "idle").map(|o| (o.0.clone(), o.1)).collect();
+        if let Some(t) = late {
+            for o in out.iter().filter(|o| o.2 == "report") {
+                idles.push((o.0.clone(), t));
+            }
+        }
         for o in out.iter_mut().filter(|o| o.2 == "report") {
             if let Some((_, t)) = idles.iter().find(|(i, t)| *i == o.0 && t.is_finite() && *t < o.1) {
                 o.1 = *t;
@@ -1263,6 +1275,32 @@ impl Walk {
         }
         Ok(out)
     }
+}
+
+/// The time of the teammate's own idle notice that follows a report which quotes earlier teammate messages: `rest` is what follows the
+/// block that closed early. Only a single-line idle notice from `id` itself, not dated past the entry, counts; the latest one wins.
+pub(super) fn late_idle_ts(rest: &str, id: &str, entry_ts: f64) -> Res<Option<f64>> {
+    let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+    let mut best: Option<f64> = None;
+    for (at, _) in rest.match_indices(defaults::text("agent_scan.teammate_open")) {
+        let Some(m) = pats().teammate_block.captures(&rest[at..]) else { continue };
+        let (who, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
+        if who != id || body.contains('\n') || !body.starts_with('{') {
+            continue;
+        }
+        let Some(o) = parse_json(body)? else { continue };
+        if sprop(&o, "type") != Some("idle_notification") || sprop(&o, "from") != Some(id) {
+            continue;
+        }
+        let t = match sprop(&o, "timestamp") {
+            Some(t) => date_parse(t)?,
+            None => f64::NAN,
+        };
+        if t.is_finite() && entry_ts.is_finite() && t <= entry_ts + skew && best.is_none_or(|b| t > b) {
+            best = Some(t);
+        }
+    }
+    Ok(best)
 }
 
 /// `parseResumeResult(text)` -> `(id, full)`.

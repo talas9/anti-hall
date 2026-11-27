@@ -1069,6 +1069,10 @@ value = "^[0-9]*[<>&]"
 doc = "A redirection operator written apart from its target (2>, >>, <): the word after it is the target, not the script."
 value = "^[0-9]*(?:>>?|<|&>>?)$"
 
+[git.shell_operand_opts]
+doc = "Options of bash, sh, dash and zsh that take the next word as their operand (--rcfile ./x, -o pipefail, +O extglob): that word is not the script the shell runs. Shared by the shells; an option a shell does not know never occurs in a working call."
+value = ["--rcfile", "--init-file", "-O", "+O", "-o", "+o"]
+
 [git.script_assign_re]
 doc = "A variable assignment word (name=value, d=${d%/}). Where a program is expected (a command run by its path) it is no script path; after bash, sh or source it is a script name like any other."
 value = "^[A-Za-z_][A-Za-z0-9_]*\\+?="

@@ -108,8 +108,9 @@ var tk = {
           ownerUnknown: rec.owner !== undefined && typeof rec.owner !== 'string',
           blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
           blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
-          // when the store last wrote the task (any TaskUpdate rewrites the file): a re-confirmed blockedOn restarts its hold
+          // when the store last wrote the task and a hash of what it holds: a rewrite that leaves the content as it was is a blockedOn re-saved as it stood
           touchedMs: ah.fs.mtimeMs(dir + '/' + files[k]),
+          touchedSig: ah.sha1(raw),
         });
       }
       // a listable store directory is THE store, even with no task in it: never fall through to another alias's directory. But a directory
@@ -129,7 +130,7 @@ var tk = {
       var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
       t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.ownerUnknown = s.ownerUnknown; t.blockedBy = s.blockedBy;
       if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
-      t.touchedMs = s.touchedMs;
+      t.touchedMs = s.touchedMs; t.touchedSig = s.touchedSig;
       t.unknown = null; t.blockUnknown = false;
       return t;
     });

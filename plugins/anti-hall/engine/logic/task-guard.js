@@ -39,8 +39,17 @@ function tgHeld(t, kind, marker) {
     first = typeof was === 'number' && isFinite(was) && was <= tgHolds.now ? was : tgHolds.now;
     tgHolds.seen[key] = first;
   }
-  // a TaskUpdate that re-confirms the marker (the same text again) rewrites the task's store file: the hold runs from that write
-  if (typeof t.touchedMs === 'number' && isFinite(t.touchedMs) && t.touchedMs > first && t.touchedMs <= tgHolds.now) first = t.touchedMs;
+  // A TaskUpdate that re-saves the marker as it stands rewrites the task's store file with the same content: the file is newer and its
+  // content hash is the one seen at the last Stop. A write that changed anything else (an activeForm, a status) changes the hash and renews
+  // nothing; so does a first sight of the file (no signature kept yet).
+  if (typeof t.touchedMs === 'number' && isFinite(t.touchedMs) && typeof t.touchedSig === 'string') {
+    var sk = key + '#sig', prevSig = tgHolds.prior[sk], parts = typeof prevSig === 'string' ? prevSig.split('|') : null;
+    if (parts !== null && parts.length === 2 && parts[1] === t.touchedSig && t.touchedMs > Number(parts[0]) && t.touchedMs > first && t.touchedMs <= tgHolds.now) {
+      first = t.touchedMs;
+      tgHolds.seen[key] = first;
+    }
+    tgHolds.seen[sk] = (parts !== null && parts[1] === t.touchedSig ? Math.max(Number(parts[0]), t.touchedMs) : t.touchedMs) + '|' + t.touchedSig;
+  }
   if (tgHolds.now - first < tgHolds.max) return true;
   if (tgHolds.lapsed[key] === undefined) { tgHolds.lapsed[key] = kind; ah.metric('idle_rule_hold_lapsed', ['reason', kind]); }
   return false;
