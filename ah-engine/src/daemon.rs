@@ -1891,12 +1891,15 @@ fn next_request(sh: &Shared) -> Option<(crate::overload::Item<UnixStream>, bool)
     let limited = crate::overload::limited_ranks();
     let mut q = lk(&sh.queue);
     loop {
-        q.reclass(|c| crate::overload::classify_read(&peek_head(c)));
+        q.reclass(|c| {
+            let head = peek_head(c);
+            crate::overload::classify_read(&head).map(|(r, e)| (r, e, crate::overload::session_of(&head)))
+        });
         let limit = lk(&sh.limiter).limit(workers);
         let running = sh.limited_running.load(SeqCst);
         let may = |rank: usize| !limited.get(rank).copied().unwrap_or(false) || running < limit;
         let held = defaults::text("overload.what_limited");
-        if let Some(item) = q.pop(may, |i| crate::overload::count(held, i.class, i.event)) {
+        if let Some(item) = q.pop(may, crate::overload::age_bound, |i| crate::overload::count(held, i.class, i.event)) {
             let counted = limited.get(item.class).copied().unwrap_or(false);
             if counted {
                 sh.limited_running.fetch_add(1, SeqCst);
@@ -1945,9 +1948,10 @@ fn worker(sh: Arc<Shared>, idx: usize) {
         if limited {
             sh.limited_running.fetch_sub(1, SeqCst);
         }
-        if crate::overload::enabled() {
-            lk(&sh.limiter).update(item.at.elapsed(), crate::overload::target(class, event), workers);
+        if let Some(target) = crate::overload::target(class, event).filter(|_| crate::overload::enabled()) {
+            lk(&sh.limiter).update(item.at.elapsed(), target, workers);
         }
+        lk(&sh.queue).finish(item.session.as_deref()); // the session's later requests may go
         sh.cv.notify_all(); // a worker holding back a limited request re-checks the limit
         sh.busy_peer[idx].store(0, SeqCst);
         sh.busy_since[idx].store(0, SeqCst);
@@ -3008,8 +3012,15 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             let mut q = lk(&sh.queue);
             // requests ahead of this one: the queued ones and those a worker is serving now
             let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
-            let item = crate::overload::Item { conn: s, at: Instant::now(), in_flight, class, event, limited: false, unread: crate::overload::enabled() && read.is_none() };
-            let refused = match q.push(item, sh.cfg().queue) {
+            let item = crate::overload::Item { conn: s, at: Instant::now(), in_flight,
+                class,
+                event,
+                limited: false,
+                unread: crate::overload::enabled() && read.is_none(),
+                session: crate::overload::enabled().then(|| crate::overload::session_of(&head)).flatten(),
+            };
+            // a request whose event carries a recorder is never evicted (its state is what a later guard reads)
+            let refused = match q.push(item, sh.cfg().queue, |v| crate::overload::evictable(v.event)) {
                 crate::overload::Admit::Queued => {
                     sh.depth.fetch_add(1, SeqCst);
                     None

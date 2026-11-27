@@ -30,8 +30,8 @@ doc = "The class of a request whose prefix or event could not be read when it wa
 value = "guard"
 
 [overload.peek_bytes]
-doc = "How many bytes of a new connection the accept loop peeks (non-blocking, nothing consumed) to class it. Bytes not yet sent are not waited for; the request is then classed overload.class_unknown."
-value = 2048
+doc = "How many bytes of a new connection the accept loop (and a worker, for a request that had sent nothing yet) peeks, non-blocking and consuming nothing, to read its class, event and session. Bytes not yet sent are not waited for: the request is then classed overload.class_unknown, and a session beyond the bytes peeked (a D request carries its payload after the forwarded environment; the socket buffer bounds what is visible) leaves the request outside the per-session barrier."
+value = 16384
 min = 16
 max = 65536
 unit = "bytes"
@@ -69,30 +69,54 @@ max = 10000
 unit = "permille"
 
 [overload.aimd_target_ms_by_class]
-doc = "Latency target per class: a request served (queue wait plus judging) slower than this shrinks the adaptive limit, faster grows it. Guard requests count too: a slow guard means advisory work must yield workers."
-value = { control = 1500, guard = 300, turn = 1500, advisory = 500 }
+doc = "Latency target per class of overload.aimd_signal_classes: a request served (queue wait plus judging) slower than this shrinks the adaptive limit, faster grows it."
+value = { turn = 1500, advisory = 500 }
 unit = "ms"
 
 [overload.aimd_target_ms_by_event]
-doc = "Latency target per event, over its class row: events whose normal work is a transcript scan or a turn summary (Stop, SubagentStop, UserPromptSubmit, SessionStart) are allowed longer than the PreToolUse guard target, so a normal Stop does not read as overload."
-value = { Stop = 2500, SubagentStop = 2500, UserPromptSubmit = 2500, SessionStart = 3000 }
+doc = "Latency target per event, over its class row (signal classes only): turn events whose normal work is a transcript scan or a turn summary (UserPromptSubmit, SessionStart) are allowed longer, so a normal one does not read as overload."
+value = { UserPromptSubmit = 2500, SessionStart = 3000 }
 unit = "ms"
 
 [overload.shed_at_limit]
-doc = "Shed mode is on while the adaptive limit is at or below this many workers (sustained overload: several slow requests in a row backed it off to its floor). In shed mode every request runs without its advisory checks."
+doc = "Shed mode is on while the adaptive limit is at or below this many workers (sustained overload: several slow turn or advisory requests in a row backed it off to its floor). In shed mode a request runs without the checks listed in overload.shed_eligible."
 value = 1
 min = 0
 max = 64
 unit = "workers"
 
 [overload.shed_wait_ms_by_class]
-doc = "A request that waited in the queue longer than this (its class row; a class not listed never) runs in shed mode even when the limit is above overload.shed_at_limit: its client is already late, so only what can block or must be recorded runs."
-value = { guard = 300, turn = 1000, advisory = 500 }
+doc = "A request that waited in the queue longer than this (its class row; a class not listed never) runs in shed mode even when the limit is above overload.shed_at_limit (shed mode skips only overload.shed_eligible). The bounds nest (test the_time_bounds_nest): above a script call's HARD CPU limit (script.time_limit_ms x script.time_hard_factor, capped by script.time_hard_cap_ms), so one full-length script ahead does not make a request late; below the client's deadline at its largest load factor (client.deadline_ms x daemon.load_scale_max_permille), so a shed request still reaches a waiting client."
+value = { guard = 550, turn = 550, advisory = 550 }
 unit = "ms"
 
-[overload.keep_checks]
-doc = "Checks that run in shed mode although they neither fail closed nor are listed in diagnostics.shed_never, with the reason for each: deliveries the agent needs."
-value = { "switch-notice" = "the up-front line: a placeholder answer that costs nothing and orders the blocking guards' output." }
+[overload.shed_eligible]
+doc = "The checks shed mode may skip: a POSITIVE list of checks proven advice-only (they never return a block or exit 2), shipped EMPTY, so shed mode skips nothing until a check is listed after review. A check's failure mode (script.failure_mode_by_check) says what happens when it errs, never whether it can block, so it does not make a check sheddable. A listed check that fails closed or is a recorder (diagnostics.shed_never) still runs."
+value = []
+
+[overload.session_key]
+doc = "The JSON key of the session in a request's first bytes (the hook payload's session_id): requests of one session are served in arrival order across classes (the per-session barrier), so a Stop never judges before its session's PostToolUse recorders ran."
+value = "session_id"
+
+[overload.session_max_chars]
+doc = "Longest session id kept for the per-session barrier (characters); a longer one is cut."
+value = 128
+min = 8
+max = 1024
+unit = "chars"
+
+[overload.evictable_events]
+doc = "Events whose queued requests a full queue may answer BUSY to make room for a higher class. Shipped EMPTY: PostToolUse, UserPromptSubmit and the others carry recorders (diagnostics.shed_never: task-tracker, devswarm-parent-reply-tracker, git-audit, merge-side-pick, ...) whose state a later Stop or guard reads, and a BUSY request is not replayed. List only events with no recorder entry."
+value = []
+
+[overload.age_promote_ms_by_class]
+doc = "Aging against starvation: a queued request of a listed class that waited longer than this is served before higher classes (when its class may take a worker), so a sustained guard load never starves turn and advisory work. A class not listed is never promoted by age."
+value = { turn = 1000, advisory = 1500 }
+unit = "ms"
+
+[overload.aimd_signal_classes]
+doc = "Classes whose request latency drives the adaptive limit. Only the limited classes: guard latency on a starved machine (PreToolUse judge p95 about 1 s at load 4-5 per core) would pin the limit at its floor and keep shed mode on."
+value = ["turn", "advisory"]
 
 [overload.drop_reason]
 doc = "The reason word a check skipped in shed mode is recorded under (metrics answers_dropped and delivery_lost, budget dropped counts)."
