@@ -305,9 +305,10 @@ impl MeshReader {
     }
 
     /// The seq and hash of every row of partition `id` whose chat kind is `kind`; none on a store without the column.
-    pub fn rows_of_kind(&self, id: &str, kind: &str) -> Res<Vec<(i64, Option<String>)>> {
+    pub fn rows_of_kind(&self, id: &str, kind: &str) -> Res<Vec<(Option<i64>, Option<String>)>> {
         let Ok(mut st) = self.conn.prepare_cached(sql::MESH_ROWS_OF_KIND) else { return Ok(Vec::new()) };
-        let rows = st.query_map(params![id, kind], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        // a row with no seq (a legacy import) cannot be told apart by seq; its hash still matches an NDJSON twin
+        let rows = st.query_map(params![id, kind], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 

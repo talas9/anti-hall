@@ -455,7 +455,7 @@ fn ack_rows(o: &Opened, pids: &[&str]) -> (std::collections::HashSet<i64>, std::
     let kind = defaults::text("mesh_chat.kind_ack");
     for pid in pids {
         for (q, h) in o.reader.rows_of_kind(pid, kind).unwrap_or_default() {
-            seqs.insert(q);
+            seqs.extend(q);
             if let Some(h) = h {
                 hashes.insert(h);
             }
@@ -1221,11 +1221,8 @@ mod tests {
     #[test]
     fn explicit_acks_are_counted_by_seq_and_by_hash() {
         let line = |h: &str, from: &str| {
-            OVal::Obj(vec![
-                (defaults::text("mesh_write.ndjson_hash_field").into(), s(h)),
-                (defaults::text("mesh_write.ndjson_sender_field").into(), s(from)),
-            ])
-            .stringify()
+            OVal::Obj(vec![(defaults::text("mesh_write.ndjson_hash_field").into(), s(h)), (defaults::text("mesh_write.ndjson_sender_field").into(), s(from))])
+                .stringify()
         };
         let lines = vec![line("h-ack", "w-b"), line("h-mail", "w-b"), line("h-own", "w-a")];
         let rows = [serde_json::json!({"storeSeq": 7, "sender": "w-b"}), serde_json::json!({"storeSeq": 8, "sender": "w-b"})];

@@ -803,7 +803,18 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         let bc_cursor = st.reader().broadcast_cursor(&d.id).unwrap_or_else(|e| soft("broadcast-cursor", e)) as f64;
         // directUnread: the unread direct mail without what the recipient's own identity family sent
         let own_unread = own_unread.unwrap_or_else(|| unread_rows.iter().filter(|r| r.sender.as_ref().is_some_and(|x| family.contains(x))).count());
-        let direct_unread = (unread - own_unread as f64).max(0.0);
+        let mut direct_unread = (unread - own_unread as f64).max(0.0);
+        // review P2-5: an unread explicit ack (`send --ack-only`) from outside the family is not unread mail while suppression is on,
+        // so the watcher's arm and held re-wake paths (which read this) never wake for it
+        if ack_suppressed && direct_unread > 0.0 {
+            let acks: HashSet<i64> = st.reader().rows_of_kind(&d.id, ack_kind).unwrap_or_else(|e| soft("acks", e)).into_iter().filter_map(|(q, _)| q).collect();
+            let unread_acks = unread_rows
+                .iter()
+                .filter(|r| r.store_seq.is_some_and(|q| q.is_finite() && acks.contains(&(q as i64))))
+                .filter(|r| !r.sender.as_ref().is_some_and(|x| family.contains(x)))
+                .count();
+            direct_unread = (direct_unread - unread_acks as f64).max(0.0);
+        }
         // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
         // (an explicit ack is left out while mesh_chat.ack_suppression is on: it wakes no one, GH #845)
         let wake_prefix = defaults::text("agent_tracker.wake_prefix");
@@ -1183,6 +1194,34 @@ mod tests {
         assert_eq!(summary_row_of_x("live", &[("h:1:1", 3, None), ("h:2:2", 1, None)]), (2, 1));
         // no reader row: the floor is the fallback
         assert_eq!(summary_row_of_x("floor", &[]), (2, 1));
+    }
+
+    /// Review P2-5: an unread explicit ack is not counted in `directUnread` while ack suppression is on (`unread` keeps it).
+    #[test]
+    fn direct_unread_leaves_explicit_acks_out() {
+        use crate::meshw::store::RegistryRow;
+        let dir = scratch("acks");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row =
+            RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        use crate::meshw::store::{mesh_message_hash, mesh_message_row};
+        for i in 0..3 {
+            let (ts, body) = (1_700_000_000_000 + i, format!("m{i}"));
+            let h = mesh_message_hash(Some("other"), Some("X"), defaults::text("mesh_write.mtype_direct"), "normal", &body, &ts.to_string(), false);
+            let row = mesh_message_row(Some("other"), Some("X"), false, &body, ts, "normal", &h, false, None);
+            let kind = (i == 2).then(|| defaults::text("mesh_chat.kind_ack"));
+            st.append_mesh_row_with(&row, kind, None).unwrap();
+        }
+        assert_eq!(st.reader().rows_of_kind("X", defaults::text("mesh_chat.kind_ack")).unwrap().len(), 1);
+        let sum = compute(&st, &inv_in(&dir), None).unwrap();
+        let w = sum.get("workspaces").and_then(|w| w.get("X")).expect("X is in the summary").clone();
+        let num = |k: &str| match w.get(k) {
+            Some(OVal::Num(x)) => *x as i64,
+            _ => panic!("{k} is no number"),
+        };
+        assert_eq!((num("unread"), num("directUnread")), (3, 2));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 
     fn scratch(tag: &str) -> std::path::PathBuf {
