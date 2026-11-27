@@ -577,6 +577,8 @@ pub fn run_doctor(p: &Parsed) -> i32 {
             doc.infol(note.to_string());
         }
     }
+    detect::omc_text_section(&mut doc, &ctx);
+    detect::usage_section(&mut doc, &ctx);
     workflows_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     detect::foreign_section(&mut doc, &ctx, root_path);
     if p.rest.iter().any(|a| a == defaults::text("doctor.logs_flag")) {

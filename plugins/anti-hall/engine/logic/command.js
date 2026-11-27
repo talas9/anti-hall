@@ -843,9 +843,27 @@ LIB['./edit-guard.js'] = (function () {
     var m = payload && payload.permission_mode;
     return typeof m === 'string' && m.toLowerCase() === ah.cfg('command.eg_plan_mode');
   }
+  // GH #981: a NEW handover-shaped file at a foreign plugin's path (edit_guard.foreign_handover_globs, e.g. .omc/handoffs/**) or a
+  // HANDOVER*.md anywhere outside .anti-hall/handovers/** (edit_guard.handover_home_globs). Checked before the allowlist, which lets
+  // .omc/** through. A row's owner plugin that is on keeps its own folder (an OMC team stage hand-off); an existing file stays editable.
+  function foreignHandover(filePath, cwd) {
+    if (!filePath || !cwd || !ah.settings.bool('edit_guard.foreign_handover_setting')) return false;
+    var rel = toRelPath(filePath, cwd).split('/').map(foldSegment).join('/');
+    var hits = function (g) { return globToRegExp(String(g).split('/').map(foldSegment).join('/')).test(rel); };
+    if (ah.cfg('edit_guard.handover_home_globs').some(hits)) return false;
+    var rows = ah.cfg('edit_guard.foreign_handover_globs').filter(function (r) { return hits(r.glob); });
+    if (rows.length === 0) return false;
+    var sh = spawn.stateHome(), home = sh.unknown || sh.guarded ? '' : sh.ok, tag = ah.cfg('edit_guard.guard_name');
+    // every matching row must be owned by a plugin that is on for the path to be left alone (a HANDOVER*.md has no owner)
+    if (rows.every(function (r) { return r.owner !== '' && omcx.ownerEnabled(r.owner, home, String(cwd), tag); })) return false;
+    var exists = false;
+    try { exists = fs.existsSync(path.resolve(String(cwd), String(filePath))); } catch (e) { if (e.unsure) throw e; exists = true; }
+    return !exists;
+  }
   function editVerdict(filePath, cwd, payload) {
     var projectEditAllow = projectEditAllowOn();
     if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) return 'block-self-edit';
+    if (foreignHandover(filePath, cwd)) return 'block-handover-foreign';
     if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
     var canon = canonicalUnderProjectRoot(filePath, cwd);
     if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return 'allow';
@@ -865,6 +883,7 @@ LIB['./edit-guard.js'] = (function () {
     return 'block';
   }
   function isNotesTarget(filePath, cwd, payload) {
+    if (foreignHandover(filePath, cwd)) return false; // a Bash write of a new foreign-path handover is no notes write (GH #981)
     if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
     var canon = canonicalUnderProjectRoot(filePath, cwd);
     if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return true;
@@ -892,7 +911,7 @@ LIB['./edit-guard.js'] = (function () {
     }
     return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, payload && payload.session_id);
   }
-  return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason };
+  return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason, foreignHandover: foreignHandover };
 })();
 
 // ---------------------------------------------------------------------------------------------------------------------

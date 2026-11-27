@@ -1328,6 +1328,9 @@ mod tests_golden_f;
 #[path = "home_unset_tests/tests.rs"]
 mod tests_home_unset;
 #[cfg(test)]
+#[path = "omc_coexist/tests.rs"]
+mod tests_omc_coexist;
+#[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
 #[cfg(test)]

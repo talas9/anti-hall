@@ -73,7 +73,9 @@ function csEvaluate(input) {
     }
     var mtime = ah.fs.mtimeMs(cachePath);
     var accountStale = trips.length > 0 && csAccountStale(home, input, mtime);
-    var active = !accountStale && trips.length > 0;
+    // GH #981: a snapshot older than ctxbudget.usage_max_stale_ms (or of unknown age) is reported, never acted on, whatever its reset times
+    var tooOld = !(ts > 0) || (now - ts) > maxStale;
+    var active = !accountStale && !tooOld && trips.length > 0;
     var resetsAt = null;
     if (active) {
       var cands = [];

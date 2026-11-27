@@ -76,6 +76,19 @@ function caOverBudget(tp, sid) {
   return out;
 }
 
+// OMC is enabled and its Stop context guard orders /compact now: the context is in its band (its threshold, from its environment variable
+// else ctxbudget.omc_guard_default_pct, up to ctxbudget.omc_guard_critical_pct, where it lets the stop through) or it blocked this session
+// within omc_coexist.guard_recent_ms.
+function caOmcOrdersCompact(p, pct) {
+  var home = ah.home() || '', cwd = typeof p.cwd === 'string' ? p.cwd : '', sid = p.session_id ? String(p.session_id) : '';
+  if (!omcx.enabled(home, cwd, ah.cfg('ctxbudget.omc_tag'))) return false;
+  if (omcx.guardBlockedRecently(home, sid, ah.clock.now())) return true;
+  if (pct === null) return false;
+  var raw = ah.env.get(ah.cfg('ctxbudget.omc_guard_env')), at = raw === null ? NaN : parseInt(raw, 10);
+  if (!isFinite(at)) at = ah.cfgNum('ctxbudget.omc_guard_default_pct');
+  return pct >= at && pct < ah.cfgNum('ctxbudget.omc_guard_critical_pct');
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('ctxbudget.judge_child_env')) === ah.cfg('ctxbudget.judge_child_on')) return 'allow';
   var home = caHome();
@@ -135,6 +148,12 @@ function decide(p) {
   var result = cb.getContextPct(tp, p.session_id, w); // tp is absolute here
   var pct = result && isFinite(result.pct) ? result.pct : null;
   var threshold = ah.settings.num('ctxbudget.set_ah_pct'), margin = ah.settings.num('ctxbudget.set_ca_margin'), window = ah.settings.num('ctxbudget.set_ca_recent');
+  // GH #981: the OMC plugin's own context guard orders /compact at this context (OMC_CONTEXT_GUARD_THRESHOLD up to its critical level), or
+  // blocked this session's Stop moments ago: a compact recommendation then follows OMC's order, and a second, contrary block would trap it
+  if (ah.settings.bool('ctxbudget.set_compact_defer_omc') && caOmcOrdersCompact(p, pct)) {
+    ah.metric('compact_advice_deferred_omc', []);
+    return caAllow(w);
+  }
   var low = pct !== null && pct < threshold - margin;
   var recent = window > 0 && turn.turnsSinceCompact !== null && turn.turnsSinceCompact <= window;
   if (!low && !recent) return caAllow(w);
