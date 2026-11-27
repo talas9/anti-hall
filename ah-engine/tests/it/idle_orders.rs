@@ -454,6 +454,8 @@ fn a_working_child_with_a_stale_heartbeat_is_ordered_and_recorded_for_the_gate()
     beat(&e, 20);
     let out = turn(&e, "flag-1", &[]);
     assert!(out.contains("Do now: ask") && out.contains("no progress report for 20 min") && out.contains(CHILD), "got: {out}");
+    // the command runs as printed: the DevSwarm CLI's own send verb (`{cli}` already names the mesh CLI)
+    assert!(out.contains(&format!(" send --to {CHILD} --message ")) && !out.contains("mesh mesh"), "got: {out}");
     let dir = e.dir.join("home/.anti-hall/devswarm/roster-flags");
     let rec = std::fs::read_dir(&dir).unwrap().next().expect("a flag record").unwrap().path();
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(rec).unwrap()).unwrap();

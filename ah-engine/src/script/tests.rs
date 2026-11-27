@@ -3286,7 +3286,7 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
 /// or one with nothing flagged, counts nothing.
 #[test]
 fn the_parent_gate_counts_children_the_roster_flagged() {
-    let gate = |rec: Option<Value>| {
+    let gate_n = |rec: Option<Value>, runs: usize| {
         let case = golden::lay(&json!({
             "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
             "event": "Stop", "opts": {"payload_sha1": "flags"},
@@ -3299,14 +3299,15 @@ fn the_parent_gate_counts_children_the_roster_flagged() {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(format!("{dir}/{key}.json"), r.to_string()).unwrap();
         }
-        match golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate") {
+        match golden::run_case("devswarm-parent-gate", &case, runs).expect("a shipped gate") {
             // the visible line is the framed headline; the full reason is in the block-details file
-            Some(Verdict::Exact(out)) => {
+            Some(Verdict::Exact(out)) if !out.out.is_empty() => {
                 out.out + &std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap_or_default()
             }
             _ => String::new(),
         }
     };
+    let gate = |rec: Option<Value>| gate_n(rec, 1);
     let now = crate::checks::replykit::io::now_ms();
     let ws = json!([{"id": "c-1", "label": "L5 Login", "reasons": ["straying (burn)", "no progress report for 21 min"]}]);
     assert!(gate(None).is_empty(), "no record: nothing to count");
@@ -3314,6 +3315,8 @@ fn the_parent_gate_counts_children_the_roster_flagged() {
     assert!(o.contains("\"decision\":\"block\"") && o.contains("1 workspace(s) flagged in the roster: L5 Login (straying (burn), no progress report for 21 min)"), "{o}");
     assert!(gate(Some(json!({"at": now - 3_600_000.0, "ws": ws}))).is_empty(), "a stale record counts nothing");
     assert!(gate(Some(json!({"at": now, "ws": []}))).is_empty(), "nothing flagged");
+    // the same flagged set again in the same session (asking the child does not clear it at once): a notice, not a block loop
+    assert!(gate_n(Some(json!({"at": now, "ws": ws})), 2).is_empty(), "the second Stop on the same set does not block");
 }
 
 /// One row of a parent-gate fixture: who sent it and how it reached the store.

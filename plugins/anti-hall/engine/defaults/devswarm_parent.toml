@@ -853,14 +853,14 @@ value = " (+{n} more)"
 
 [devswarm_parent.msg_flag_order]
 doc = "The order line for flagged children (one line, UserPromptSubmit). Placeholders: {n}, {list}, {cli}, {id} (the first flagged child)."
-value = "⚠️ Do now: ask {list} what is blocking it and whether to stop, split or push: `{cli} mesh send --to {id} --message \"status? you are flagged in the roster\"`."
+value = "⚠️ Do now: ask {list} what is blocking it and whether to stop, split or push: `{cli} send --to {id} --message \"status? you are flagged in the roster\"`."
 
 [devswarm_parent.flag_dedupe_key]
 doc = "The dedupe key of the roster-flag order line: the same order is not repeated every turn (devswarm_parent.nudge_keepalive)."
 value = "parent-roster-flags"
 
 [metric.devswarm_roster_flags]
-doc = "Roster flags (#844 item 4), by action: ordered (children named in an order line), gate_counted (children the parent Stop gate counted)."
+doc = "Roster flags (#844 item 4), by action: ordered (children named in an order line), gate_counted (a parent Stop-gate block that named flagged children), gate_notice (a flagged set already blocked on this session, shown as a notice)."
 value = { kind = "counter", unit = "workspaces", labels = ["action"] }
 
 [devswarm_parent.sw_token_unknown]
