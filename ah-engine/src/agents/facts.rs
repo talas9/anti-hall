@@ -659,6 +659,19 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         todos(a, &input);
     } else if tools("task_update").contains(&name) {
         let task = str_of(&input, tr("task_id")).to_string();
+        // a write of the task's blocker (its blockedOn, owner or status, nudges.idle_wake field names): the answer a hold reminder asks
+        // for; a write of anything else (a subject fix) is not (#972 round 2, Codex #838 P2.4)
+        let iw = defaults::raw("nudges.idle_wake");
+        let blocker = input.get(iw.str_field("f_metadata")).is_some_and(|m| m.get(iw.str_field("f_blocked_on")).is_some())
+            || input.get(iw.str_field("f_owner")).is_some()
+            || input.get(iw.str_field("f_status")).is_some();
+        if blocker && !task.is_empty() {
+            a.blocker_writes.insert(task.clone(), ts);
+            while a.blocker_writes.len() > lim("task_names_max") as usize {
+                let Some(k) = a.blocker_writes.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
+                a.blocker_writes.remove(&k);
+            }
+        }
         let text = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
         let subject = str_of(&input, tr("subject"));
         if !task.is_empty() && !subject.is_empty() {

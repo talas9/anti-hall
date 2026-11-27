@@ -605,6 +605,10 @@ pub struct Agent {
     /// Hashes of the reports (messages to its lead) this child already earned credit for, newest last (`report_to.dedupe_max`, #972).
     #[serde(default)]
     pub report_keys: Vec<String>,
+    /// Task id -> when this session last wrote that task's blocker fields (blockedOn, owner or status) with a task update: the answer
+    /// that confirms a hold reminder (#972 round 2).
+    #[serde(default)]
+    pub blocker_writes: BTreeMap<String, u64>,
     /// Task id -> the hold key the session confirmed by writing the task after a reminder named it, and when (#972, #961): that hold is
     /// silent for `nudges.hold.confirm_ms`, tied to the reason it confirmed (a later new reason without a reminder runs the plain clock).
     #[serde(default)]

@@ -6775,12 +6775,24 @@ fn confirm_ms() -> u64 {
     defaults::raw("nudges.hold").get("confirm_ms").and_then(V::as_integer).unwrap() as u64
 }
 
-/// Write a task file whose mtime is the simulated clock `at` (the tracker compares it with the tick time of the reminder).
+/// Set a task file's mtime to the simulated clock `at` (a real write's mtime is the time of the write).
+fn touch_task_at(h: &Path, sid: &str, id: &str, at: u64) {
+    let sid8: String = sid.chars().take(8).collect();
+    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{id}.json"));
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+}
+
+/// Write a task file and, as the session would, the TaskUpdate call that saved its blocker (`metadata.blockedOn`) at the simulated
+/// clock `at` (the tracker compares the call's time with the tick time of the reminder).
 fn task_file_at(h: &Path, sid: &str, t: Value, at: u64) {
     task_file(h, sid, t.clone());
-    let sid8: String = sid.chars().take(8).collect();
-    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{}.json", t["id"].as_str().unwrap()));
-    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+    let id = format!("tu{at}");
+    let input = json!({"taskId": t["id"], "metadata": t["metadata"]});
+    touch_task_at(h, sid, t["id"].as_str().unwrap(), at);
+    let p = sess(h, sid);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+    writeln!(f, "{}\n{}", tool(at, &format!("m{at}"), 5, &id, "TaskUpdate", input), result(at + 500, &id, "Updated task", false)).unwrap();
 }
 
 fn n972_hold_rows(h: &Path) -> Vec<Value> {
@@ -7059,4 +7071,27 @@ fn n972r_a_merge_credits_only_when_the_calls_success_proves_it_ran() {
         ticks(&h, &mut st, &[n]);
         assert_eq!(agent(&st, "w1").shipped, want, "{tag}: {cmd}");
     }
+}
+
+/// Codex #838 P2.4: a write of the task that does not touch its blocker (a subject fix) is no answer to the hold reminder.
+#[test]
+fn n972r_an_unrelated_task_write_does_not_confirm_the_hold() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972r-subject-write");
+    let max = hold_max();
+    let task = |subj: &str| json!({"id": "75", "subject": subj, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}});
+    task_file_at(&h, SID, task("Task 75"), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    append(&sess(&h, SID), &[tool(n - MIN, "m0", 5, "tu0", "TaskUpdate", json!({"taskId": "75", "metadata": {"blockedOn": "waiting on the store review"}})), result(n - MIN + 500, "tu0", "Updated task", false)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1);
+    // a subject fix after the reminder: the file changes, the blocker does not
+    task_file(&h, SID, task("Task 75 (renamed)"));
+    touch_task_at(&h, SID, "75", n + max + 5 * MIN);
+    append(&sess(&h, SID), &[tool(n + max + 5 * MIN, "m1", 5, "tu1", "TaskUpdate", json!({"taskId": "75", "subject": "Task 75 (renamed)"})), result(n + max + 5 * MIN + 500, "tu1", "Updated task", false)]);
+    ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
+    assert!(agent(&st, SID).hold_confirmed.get("75").is_none(), "no blocker field was written");
+    assert_eq!(n972_hold_rows(&h).len(), 2, "unanswered: reminded again after the cooldown");
 }
