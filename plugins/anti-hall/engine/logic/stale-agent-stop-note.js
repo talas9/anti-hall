@@ -25,12 +25,16 @@ function sanNote(scan, taskId, now) {
     var q = scan.pending[i];
     if (q.name === taskId || (q.agentId && q.agentId === taskId)) { pm = q; break; }
   }
+  // a teammate that never received a message (only its spawn prompt) has nothing the coordinator left unanswered
+  if (pm && pm.messaged === false) pm = null;
   if (pm) {
-    var last = sanNum(pm.lastIdleMs) ? text.render(ah.cfg('stale_note.msg_pending_last'), { time: sanHhmm(pm.lastIdleMs) }) : '';
+    // a report time after the message is no "report before it" (the message was sent while the teammate was busy): the clause naming it is left out
+    var inverted = sanNum(pm.lastIdleMs) && sanNum(pm.sentAtMs) && pm.lastIdleMs > pm.sentAtMs;
+    var last = sanNum(pm.lastIdleMs) && !inverted ? text.render(ah.cfg('stale_note.msg_pending_last'), { time: sanHhmm(pm.lastIdleMs) }) : '';
     var seen = sanNum(pm.lastSeenMs) && sanNum(pm.sentAtMs) && pm.lastSeenMs > pm.sentAtMs
       ? text.render(ah.cfg('stale_note.msg_pending_seen'), { min: String(Math.max(0, Math.round((now - pm.lastSeenMs) / 60000))) }) : '';
     // built piece by piece: a name that holds `{time}` must not be filled in a second time
-    var what = '"' + sanOneLine(pm.name, max) + '"' + ah.cfg('stale_note.msg_pending_a') + sanHhmm(pm.sentAtMs) + ah.cfg('stale_note.msg_pending_b') + last +
+    var what = '"' + sanOneLine(pm.name, max) + '"' + ah.cfg('stale_note.msg_pending_a') + sanHhmm(pm.sentAtMs) + (inverted ? '' : ah.cfg('stale_note.msg_pending_b')) + last +
       ah.cfg('stale_note.msg_pending_c');
     return text.message('warn', guard, { what: what, why: ah.cfg('stale_note.msg_pending_why') + seen, instead: ah.cfg('stale_note.msg_instead') });
   }

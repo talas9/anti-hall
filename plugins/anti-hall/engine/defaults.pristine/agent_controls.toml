@@ -77,8 +77,8 @@ doc = "Tools whose tool_result can be a message sent to a teammate's inbox."
 value = ["SendMessage"]
 
 [agent_scan.prefilter]
-doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate idle notice."
-value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "idle_notification" }
+doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate message (an idle notice or the teammate's own plain-text report)."
+value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "<teammate-message" }
 
 [agent_scan.teammate_report_prefix]
 doc = "Text a teammate report entry begins with."

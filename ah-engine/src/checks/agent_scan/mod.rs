@@ -87,6 +87,9 @@ pub struct Pending {
     pub live: bool,
     /// The `<name>@<team>` agent id (empty when unknown).
     pub agent_id: String,
+    /// Whether `sent_at_ms` is a message to the teammate (false: it is the spawn prompt, the teammate's first instruction, which is not a
+    /// message the coordinator can have left unanswered).
+    pub messaged: bool,
 }
 
 /// An insertion-ordered map: a JavaScript `Map` (setting an existing key keeps its position).
@@ -1038,7 +1041,7 @@ impl Walk {
 
         if has_idle {
             for i in self.teammate_idles(&entry, entry_ts)? {
-                self.team_event(&i.0, "idle", i.1, seq);
+                self.team_event(&i.0, i.2, i.1, seq);
             }
         }
 
@@ -1189,7 +1192,7 @@ impl Walk {
     }
 
     /// `teammateIdles(entry, entryTs, spawned)`: `(name, ts, reason)` of each genuine teammate report in this entry.
-    fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64)>> {
+    fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64, &'static str)>> {
         let mut out = Vec::new();
         if sprop(entry, "type") != Some("user") {
             return Ok(out);
@@ -1216,7 +1219,15 @@ impl Walk {
             let (id, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
             at += m.get(0).map_or(0, |x| x.end());
             at += c[at..].len() - trim_start(&c[at..]).len();
-            if !self.team_info.has(id) || body.contains('\n') || !body.starts_with('{') {
+            if !self.team_info.has(id) {
+                continue;
+            }
+            // a plain-text body is the teammate's own report (a SendMessage to the coordinator), an answer to everything sent before it
+            if !body.starts_with('{') && !body.trim().is_empty() {
+                out.push((id.to_string(), entry_ts, "report"));
+                continue;
+            }
+            if body.contains('\n') || !body.starts_with('{') {
                 continue;
             }
             let Some(o) = parse_json(body)? else { continue };
@@ -1231,7 +1242,7 @@ impl Walk {
                 continue;
             }
             let ts = if inner.is_finite() && entry_ts.is_finite() { inner } else { entry_ts };
-            out.push((id.to_string(), ts));
+            out.push((id.to_string(), ts, "idle"));
         }
         Ok(out)
     }
@@ -1937,7 +1948,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
     let names: Vec<String> = team_events.keys().cloned().collect();
     for name in names {
         let Some(evs) = team_events.get(&name) else { continue };
-        if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle") {
+        if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle" || e.kind == "report") {
             continue;
         }
         if evs.iter().any(|e| !e.ts.is_finite()) {
@@ -1953,6 +1964,8 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         }
         let mut state = St::Idle;
         let (mut queued, mut pend, mut last_idle) = (f64::NAN, f64::NAN, f64::NAN);
+        // whether `pend` is a message sent to the teammate (not its spawn prompt)
+        let mut pend_sent = false;
         for e in &ordered {
             match e.kind {
                 // the spawn prompt is the teammate's first instruction: it is busy on it until its first idle report (#965)
@@ -1960,6 +1973,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
                     state = St::Busy;
                     queued = f64::NAN;
                     pend = e.ts;
+                    pend_sent = false;
                 }
                 "stop" => {
                     state = St::Stopped;
@@ -1971,24 +1985,38 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
                     if state == St::Idle {
                         state = St::Busy;
                         pend = e.ts;
+                        pend_sent = true;
                     } else {
                         queued = e.ts;
+                    }
+                }
+                // the teammate's own report to the coordinator: it answers every message sent before it; a teammate still on its spawn prompt stays busy.
+                // It leaves `last_idle` to the idle notices (the same entry usually carries both)
+                "report" => {
+                    queued = f64::NAN;
+                    if pend_sent {
+                        pend = f64::NAN;
+                        pend_sent = false;
+                        state = St::Idle;
                     }
                 }
                 _ => {
                     last_idle = e.ts;
                     if queued.is_finite() {
                         pend = queued;
+                        pend_sent = true;
                         queued = f64::NAN;
                         state = St::Busy;
                     } else {
                         pend = f64::NAN;
+                        pend_sent = false;
                         state = St::Idle;
                     }
                 }
             }
         }
         let sent = if queued.is_finite() { queued } else { pend };
+        let messaged = queued.is_finite() || pend_sent;
         if !sent.is_finite() || background.contains(&name) {
             continue;
         }
@@ -1998,7 +2026,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         let info = w.team_info.get(&name);
         let agent_id = info.map(|i| i.agent_id.clone()).unwrap_or_default();
         let tuid = info.and_then(|i| i.tool_use_id.clone());
-        pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id }));
+        pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id, messaged }));
         if !live {
             continue;
         }

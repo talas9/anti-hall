@@ -219,7 +219,7 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
 
 /// `agentScan(path, tailBytes, ignoreUnansweredStops)`: JSON text. `{"launched":[...], "terminal":[ids], "pending":[...]}`: every
 /// launched, adopted and live teammate agent in launch order; the ids whose terminal evidence stands; the teammates sent a message
-/// they have not reported on since (`{"name","agentId","sentAtMs","lastIdleMs","lastSeenMs","live"}`, a time that is unknown is
+/// they have not reported on since (`{"name","agentId","sentAtMs","lastIdleMs","lastSeenMs","live","messaged"}`, a time that is unknown is
 /// `null`). With `ignoreUnansweredStops` a `TaskStop` call with no result yet is not counted as stopping. `null` when the transcript
 /// cannot be read, `{"unsure":true}` when it holds something only JavaScript could read (or a relative path).
 pub fn agent_scan(path: &str, tail: f64, ignore_unanswered_stops: bool) -> String {
@@ -289,11 +289,12 @@ impl serde::Serialize for PendingView<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let p = self.p;
-        let mut m = s.serialize_map(Some(6))?;
+        let mut m = s.serialize_map(Some(7))?;
         m.serialize_entry("agentId", &p.agent_id)?;
         m.serialize_entry("lastIdleMs", &p.last_idle_ms)?;
         m.serialize_entry("lastSeenMs", &p.last_seen_ms)?;
         m.serialize_entry("live", &p.live)?;
+        m.serialize_entry("messaged", &p.messaged)?;
         m.serialize_entry("name", self.name)?;
         m.serialize_entry("sentAtMs", &p.sent_at_ms)?;
         m.end()
