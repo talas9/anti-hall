@@ -310,11 +310,12 @@ impl MeshReader {
         Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
     }
 
-    /// The mesh seqs of workspace `id`'s rows of chat kind `kind`; none on a store with no `chat_kind` column.
-    pub fn seqs_of_kind(&self, id: &str, kind: &str) -> Res<std::collections::HashSet<i64>> {
-        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_SEQS_OF_KIND) else { return Ok(std::collections::HashSet::new()) };
-        let rows = st.query_map(params![id, kind], |r| r.get::<_, i64>(0))?;
-        Ok(rows.collect::<Result<std::collections::HashSet<i64>, _>>()?)
+    /// The GH #845 columns (`chat_kind`, `wake_audience`) of workspace `id`'s rows with seq above `since`, by seq; rows with neither
+    /// are left out (a legacy row). None at all on a store without the columns.
+    pub fn extras_of(&self, id: &str, since: i64) -> Res<std::collections::HashMap<i64, (Option<String>, Option<String>)>> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_EXTRAS_OF) else { return Ok(std::collections::HashMap::new()) };
+        let rows = st.query_map(params![id, since], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))))?;
+        Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)
     }
 
     fn message(r: &Row<'_>, index: u64) -> Res<Value> {

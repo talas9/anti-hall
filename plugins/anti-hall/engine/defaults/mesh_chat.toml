@@ -1,24 +1,28 @@
-# ah-engine shipped defaults for mesh chat kinds (GH #845 phase 1). Format: see the header of engine.toml.
+# ah-engine shipped defaults for mesh chat kinds (GH #845 phase 1, contract MESH-P1-CONTRACT.md §7). Format: see the header of
+# engine.toml.
 #
-# A short acknowledgement ("here", "ok", "thanks") is stored like any message but marked `chat_kind = ack` at send: it never wakes
-# its recipient and is left out of the direct count the wake-watch fires on. A question (`--question`) is never an ack, and neither
-# is a body holding a question mark or more than a few words after the acknowledgement (a status report such as "done: merged #12"
-# is not an ack: `done` is not an ack word).
+# An explicit ack (`mesh send --to X --ack-only --message "here"`) is stored with `chat_kind = ack`. While
+# mesh_chat.ack_suppression is on it wakes no one and is left out of every wake count; off, it is ordinary mail. Nothing is
+# classified from the body: a short reply that is not flagged stays wake-eligible.
 
 [mesh_chat.kind_ack]
-doc = "The chat_kind stored on an ack-only message."
+doc = "The chat_kind stored on an explicit ack."
 value = "ack"
 
-[mesh_chat.ack_re]
-doc = "An ack-only body (case-insensitive, matched against the trimmed body): an acknowledgement word, then at most a few characters with no question mark (a name, an emoji)."
-value = '^(?:here|present|ok|okay|ack|acked|thanks|thank you|thx|noted|got it|roger|👍|✅|👋)(?:[^A-Za-z0-9_?][^?]{0,24})?$'
+[mesh_chat.flag_ack_only]
+doc = "The `mesh send` flag that marks a message as an explicit ack (refused with --question or --answers)."
+value = "ack-only"
 
-[mesh_chat.ack_max_chars]
-doc = "Longest trimmed body, in characters, that may be classified ack-only."
-value = 40
-min = 1
-max = 1000
+[mesh_chat.msg_ack_only_conflict]
+doc = "The refusal text of --ack-only combined with --question or --answers."
+value = "--ack-only marks a message that needs nothing back; it does not combine with --question or --answers."
+
+[mesh_chat.ack_suppression]
+doc = "1 = an explicit ack wakes no one (left out of the direct wake count, inbox tick's wake count and the native wake); 0 = it is ordinary mail."
+value = 0
+min = 0
+max = 1
 
 [metric.mesh_chat_ack]
-doc = "Sends stored as ack-only (chat_kind = ack): each would have raised a wake before GH #845."
+doc = "Sends stored as an explicit ack (chat_kind = ack)."
 value = { kind = "counter", unit = "messages", labels = [] }

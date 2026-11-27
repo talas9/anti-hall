@@ -645,12 +645,16 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let pq_cap = defaults::num("mesh_write.summary_pending_questions_cap") as usize;
     let bpart = defaults::text("mesh_write.broadcast_partition");
     let broadcast_all = messages(st, bpart, 0.0)?;
-    // GH #845: who each unread broadcast wakes. A broadcast is parsed once per call, the first time some reader has it unread.
-    let policy = crate::meshw::wakepolicy::Policy::load();
+    // GH #845 (contract §3-§4): who each unread broadcast wakes. The stored audience is decoded, and a legacy row's audience
+    // resolved, once per call, the first time some reader has the row unread.
+    let mode = crate::meshw::wakepolicy::Mode::load();
     let ack_kind = defaults::text("mesh_chat.kind_ack");
-    let bc_acks = st.reader().seqs_of_kind(bpart, ack_kind).unwrap_or_else(|e| soft("broadcast-acks", e));
-    let mut bc_parsed: HashMap<usize, crate::meshw::wakepolicy::Parsed> = HashMap::new();
+    let ack_suppressed = defaults::num("mesh_chat.ack_suppression") == 1;
+    let bc_extras = st.reader().extras_of(bpart, 0).unwrap_or_else(|e| soft("broadcast-extras", e));
+    let mut bc_audience: HashMap<usize, Option<crate::meshw::wakepolicy::Audience>> = HashMap::new();
+    let mut bc_legacy: HashMap<usize, crate::meshw::wakepolicy::Audience> = HashMap::new();
     let rows = registry(st)?;
+    let roster_ids: Vec<&str> = rows.iter().map(|d| d.id.as_str()).collect();
     let archived = archive_complete_ids(home);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
     let aliases = crate::meshw::common::read_aliases(home, &inv.env);
@@ -801,33 +805,46 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         let own_unread = own_unread.unwrap_or_else(|| unread_rows.iter().filter(|r| r.sender.as_ref().is_some_and(|x| family.contains(x))).count());
         let direct_unread = (unread - own_unread as f64).max(0.0);
         // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
-        // (an ack-only message is left out: it wakes no one, GH #845)
-        let direct_from_others = st
-            .reader()
-            .message_count_from_others_except(&d.id, &family, defaults::text("agent_tracker.wake_prefix"), ack_kind)
-            .unwrap_or_else(|e| soft("count", e)) as f64;
+        // (an explicit ack is left out while mesh_chat.ack_suppression is on: it wakes no one, GH #845)
+        let wake_prefix = defaults::text("agent_tracker.wake_prefix");
+        let direct_from_others = if ack_suppressed {
+            st.reader().message_count_from_others_except(&d.id, &family, wake_prefix, ack_kind)
+        } else {
+            st.reader().message_count_from_others(&d.id, &family, wake_prefix)
+        }
+        .unwrap_or_else(|e| soft("count", e)) as f64;
         let unread_bc: Vec<(usize, &Msg)> =
             broadcast_all.iter().enumerate().filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
         let from_others = |r: &Msg| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)));
         let bc_from_others = unread_bc.iter().filter(|(_, r)| from_others(r)).count();
-        // broadcastWakeFromOthers: the unread broadcasts of others that address this workspace (the wake-watch's broadcast channel)
-        let bc_wake = unread_bc
-            .iter()
-            .filter(|(_, r)| from_others(r))
-            .filter(|(i, r)| {
-                let p = bc_parsed.entry(*i).or_insert_with(|| {
-                    let kind = r.store_seq.filter(|q| bc_acks.contains(&(*q as i64))).map(|_| ack_kind);
-                    policy.parse(&crate::meshw::wakepolicy::Bc {
-                        sender: r.sender.as_deref(),
-                        urgency: r.urgency.as_deref(),
-                        needs_reply: r.needs_reply,
-                        chat_kind: kind,
-                        body: &r.body,
+        // broadcastWakeSeq / broadcastWakePending: the unread broadcasts of others that wake this workspace (contract §3-§4); the
+        // watcher wakes when the highest seq passes its watermark, so a drain plus a new arrival between two polls still wakes
+        let mut wake_seq: Option<f64> = None;
+        let mut wake_pending = 0usize;
+        for (i, r) in unread_bc.iter().filter(|(_, r)| from_others(r)) {
+            let q = r.store_seq.unwrap_or(0.0);
+            let (kind, stored_text) = bc_extras.get(&(q as i64)).map_or((None, None), |(k, a)| (k.as_deref(), a.as_deref()));
+            let stored = bc_audience.entry(*i).or_insert_with(|| crate::meshw::wakepolicy::decode(stored_text)).clone();
+            let legacy = || {
+                bc_legacy
+                    .entry(*i)
+                    .or_insert_with(|| {
+                        let b = crate::meshw::wakepolicy::Bc {
+                            sender: r.sender.as_deref(),
+                            urgency: r.urgency.as_deref(),
+                            question: r.needs_reply,
+                            heartbeat: false,
+                            body: &r.body,
+                        };
+                        crate::meshw::wakepolicy::resolve(&b, &roster_ids).unwrap_or_else(|e| crate::meshw::wakepolicy::Audience::Ids(e.ids))
                     })
-                });
-                policy.wakes(p, &d.id)
-            })
-            .count();
+                    .clone()
+            };
+            if mode.wakes(stored.as_ref(), kind, &d.id, legacy, false) {
+                wake_pending += 1;
+                wake_seq = Some(wake_seq.map_or(q, |m| m.max(q)));
+            }
+        }
         let mut working_on = OVal::Null;
         for r in &broadcast_all {
             if r.is_heartbeat && r.sender.as_deref() == Some(d.id.as_str()) {
@@ -850,7 +867,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             ("oldestDirectUnreadSender".into(), s_or_null(oldest_sender.as_deref())),
             ("broadcastUnread".into(), n(unread_bc.len() as f64)),
             ("broadcastUnreadFromOthers".into(), n(bc_from_others as f64)),
-            (defaults::text("mesh_wake.summary_field").into(), n(bc_wake as f64)),
+            (defaults::text("mesh_wake.summary_field_seq").into(), opt_num(wake_seq)),
+            (defaults::text("mesh_wake.summary_field_pending").into(), n(wake_pending as f64)),
             ("urgencyMax".into(), urgency_max),
             ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().map(|(_, r)| *r))),
             ("working_on".into(), working_on),

@@ -222,10 +222,56 @@ impl MeshStore {
         Ok(Appended { inserted: true, seq })
     }
 
-    /// Mark the row with hash `hash` as chat kind `kind` (GH #845). `false` when the store has no `chat_kind` column (its ALTER at
-    /// open failed) or the update failed: the row then stays a plain message, as before.
-    pub fn set_chat_kind(&self, hash: &str, kind: &str) -> bool {
-        retry_busy(|| self.conn().prepare_cached(sql::MESHW_SET_CHAT_KIND)?.execute(params![kind, hash])).is_ok_and(|n| n > 0)
+    /// [`append_mesh_row`](Self::append_mesh_row) with the GH #845 columns (`chat_kind`, `wake_audience`) set in the SAME
+    /// transaction, so no reader ever sees the row without them. A store whose ALTER at open failed has no such columns: the row is
+    /// kept (the extras are dropped, counted as `mesh_extras_dropped`), as a legacy row every reader classifies on read.
+    pub fn append_mesh_row_with(&self, m: &MeshRow, chat_kind: Option<&str>, audience: Option<&str>) -> Res<Appended> {
+        if chat_kind.is_none() && audience.is_none() {
+            return self.append_mesh_row(m);
+        }
+        let c = self.conn();
+        let out = retry_busy(|| {
+            c.execute_batch(sql::MESHW_BEGIN_IMMEDIATE)?;
+            let r = (|| -> rusqlite::Result<Appended> {
+                let q = if m.hash.is_some() { sql::MESHW_APPEND_OR_IGNORE } else { sql::MESHW_APPEND };
+                let changes = c.prepare_cached(q)?.execute(params![
+                    m.workspace_id,
+                    m.ts,
+                    m.hash,
+                    m.body,
+                    m.sender,
+                    m.recipient,
+                    m.mtype,
+                    m.urgency,
+                    i64::from(m.is_heartbeat),
+                    i64::from(m.needs_reply),
+                    m.orig_hash,
+                    m.instance_nonce
+                ])?;
+                if changes == 0 {
+                    return Ok(Appended { inserted: false, seq: None });
+                }
+                let id = c.last_insert_rowid();
+                match c.prepare_cached(sql::MESHW_SET_EXTRAS).and_then(|mut s| s.execute(params![chat_kind, audience, id])) {
+                    Ok(_) => {}
+                    Err(e) if is_busy(&e) => return Err(e),
+                    Err(_) => crate::metrics::bump_shared("mesh_extras_dropped", &[]),
+                }
+                let seq: Option<i64> = c.prepare_cached(sql::MESHW_SEQ_OF_ID)?.query_row(params![id], |r| r.get(0)).ok();
+                Ok(Appended { inserted: true, seq })
+            })();
+            match r {
+                Ok(v) => {
+                    c.execute_batch(sql::MESHW_COMMIT)?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    crate::discard::harmless(c.execute_batch(sql::MESHW_ROLLBACK)); // keep: the failure itself is returned
+                    Err(e)
+                }
+            }
+        })?;
+        Ok(out)
     }
 
     /// `appendMessage(m)` (the native-ingest insert): `Ok(true)` when a row was inserted, `Ok(false)` for a duplicate hash.

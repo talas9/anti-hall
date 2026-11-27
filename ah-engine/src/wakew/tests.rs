@@ -391,3 +391,55 @@ fn each_tick_counts_its_wake_lines_per_channel() {
     assert_eq!(lines.len(), 1, "only the arm line: {lines:?}");
     assert_eq!((st.woke_mail, st.woke_broadcast), (0, 0), "the arm line is not a wake");
 }
+
+fn bc(seq: Option<f64>, pending: f64) -> Snapshot {
+    Snapshot { bc_seq: Some(seq), bc_pending: Some(pending), ..child(1.0, Some(1.0), Some(pending)) }
+}
+
+/// GH #845 (Codex P0-1): the broadcast channel wakes on the watermark, so a drain followed by a new arrival between two polls (the
+/// unread count stays 1) still wakes.
+#[test]
+fn a_drain_plus_a_new_arrival_between_polls_still_wakes() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 0.0, ..State::default() };
+    let (st, lines) = tick(&st, &bc(Some(100.0), 1.0));
+    assert_eq!((lines.len(), st.last_bc_seq), (1, 100.0));
+    // the reader drained seq 100 and seq 105 arrived before the next poll: pending is 1 again, the seq moved
+    let (st, lines) = tick(&st, &bc(Some(105.0), 1.0));
+    assert_eq!((lines.len(), st.last_bc_seq), (1, 105.0), "{lines:?}");
+    // drained, nothing new: the watermark never goes down and nothing prints
+    let (st, lines) = tick(&st, &bc(None, 0.0));
+    assert_eq!((lines.len(), st.last_bc_seq), (0, 105.0));
+    let (_, lines) = tick(&st, &bc(Some(105.0), 1.0));
+    assert!(lines.is_empty(), "a row at or under the watermark was already woken for");
+}
+
+/// A fresh or pre-watermark watcher wakes once for pending eligible mail instead of seeding it away, and seeds silently when none.
+#[test]
+fn a_missing_watermark_reconciles_pending_mail_instead_of_seeding_it() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, bc_seq_missing: true, ..State::default() };
+    let (after, lines) = tick(&st, &bc(Some(42.0), 2.0));
+    assert_eq!((lines.len(), after.last_bc_seq, after.bc_seq_missing), (1, 42.0, false));
+    let (after, lines) = tick(&st, &bc(None, 0.0));
+    assert_eq!((lines.len(), after.bc_seq_missing), (0, false));
+}
+
+/// A summary row without the watermark field (an older writer) keeps the legacy count channel.
+#[test]
+fn a_row_without_the_watermark_uses_the_legacy_count() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_broadcast: 0.0, ..State::default() };
+    let (_, lines) = tick(&st, &child(1.0, Some(1.0), Some(2.0)));
+    assert_eq!(lines.len(), 1);
+}
+
+/// The watermark survives a restart only in a cursor file of this version.
+#[test]
+fn the_watermark_round_trips_through_the_cursor_file() {
+    let h = home("bcseq");
+    let st = State { last_total: 3.0, last_total2: 4.0, last_bc_seq: 77.0, ..State::default() };
+    assert!(read::save_seen(&h, "w1", &st, false));
+    let back = read::load_seen(&h, "w1", false);
+    assert_eq!((back.last_bc_seq, back.bc_seq_missing), (77.0, false));
+    let unknown = State { bc_seq_missing: true, ..st };
+    assert!(read::save_seen(&h, "w2", &unknown, false));
+    assert!(read::load_seen(&h, "w2", false).bc_seq_missing, "an unknown watermark is never saved as 0");
+}

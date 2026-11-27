@@ -26,8 +26,8 @@ doc = "Prefix of a store-direct mesh message's dedupe hash (Node's meshMessageHa
 value = "mesh:"
 
 [mesh_write.messages_added_columns]
-doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`, then the engine's own (chat_kind, GH #845: Node never reads or writes it)."
-value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT", "chat_kind TEXT"]
+doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`, then the engine's own (chat_kind and wake_audience, GH #845: Node never writes them)."
+value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT", "chat_kind TEXT", "wake_audience TEXT"]
 
 [mesh_write.write_seq_column]
 doc = "The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn)."
@@ -1082,6 +1082,14 @@ value = "sibling"
 [mesh_write.op_nd]
 doc = "The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's)."
 value = "nd"
+
+[mesh_write.op_broadcast]
+doc = "The `k` of a read-receipt op that moves the reader's broadcast cursor to the seq of the last broadcast the read listed (GH #845; never back, never past it)."
+value = "bc"
+
+[mesh_write.flag_broadcast_to]
+doc = "The `inbox ack` flag naming the seq of the last broadcast `inbox read` listed (`broadcastAckTarget`): the broadcast cursor moves through it and no further; without it the broadcast cursor stays."
+value = "broadcast-to"
 
 [mesh_write.ps_poll_ms]
 doc = "How often the process snapshot checks whether `ps` has finished."

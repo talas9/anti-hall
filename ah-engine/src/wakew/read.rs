@@ -107,7 +107,7 @@ impl Hashes {
 }
 
 /// One read's outcome (`{ ok, error, total }`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Part {
     /// The read worked.
     pub ok: bool,
@@ -117,10 +117,15 @@ pub struct Part {
     pub total: Option<f64>,
     /// The workspace's unread direct mail (`wake_watch.field_direct_unread`), `None` when the row has none (GH #884).
     pub unread: Option<f64>,
+    /// Broadcast channel only (GH #845): `None` when the row has no `wake_watch.field_broadcast_seq` (an older writer: the legacy
+    /// count channel applies), `Some(None)` when it holds null (nothing unread wakes the workspace), else the highest such seq.
+    pub seq: Option<Option<f64>>,
+    /// Broadcast channel only: `wake_watch.field_broadcast_pending`, when the row has it.
+    pub pending: Option<f64>,
 }
 
 fn unresolvable() -> Part {
-    Part { ok: false, error: Some(text("wake_watch.err_unresolvable").to_string()), total: None, unread: None }
+    Part { ok: false, error: Some(text("wake_watch.err_unresolvable").to_string()), total: None, unread: None, ..Part::default() }
 }
 
 fn workspace_row<'a>(summary: &'a Option<J>, id: &str) -> Option<&'a J> {
@@ -138,7 +143,7 @@ fn inbound_total(row: &J) -> Option<f64> {
 
 /// The row as one direct read: its inbound total and its unread direct mail.
 fn direct_part(row: &J) -> Part {
-    Part { ok: true, error: None, total: inbound_total(row), unread: finite(row.get(text("wake_watch.field_direct_unread"))) }
+    Part { ok: true, error: None, total: inbound_total(row), unread: finite(row.get(text("wake_watch.field_direct_unread"))), ..Part::default() }
 }
 
 /// `readPrimarySnapshot(home, hashes, id)`: the repo-key bucket first, the legacy bucket when the row is absent there.
@@ -156,7 +161,7 @@ pub fn read_direct(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
     {
         return direct_part(row);
     }
-    Part { ok: true, error: None, total: None, unread: None }
+    Part { ok: true, error: None, total: None, unread: None, ..Part::default() }
 }
 
 /// `readBroadcastSnapshot`: the heartbeat- and own-sender-excluded unread broadcast count of the row the direct channel would
@@ -171,16 +176,19 @@ pub fn read_broadcast(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
         b = h.fallback.as_deref().and_then(|k| read_summary(home, k));
         row = workspace_row(&b, id).filter(|w| finite(w.get("total")).is_some());
     }
-    // GH #845: a summary written by a writer that predates the addressed count (the Node backup's) has only the older field; the
-    // channel then reads that one, which wakes on every broadcast as before, instead of going silent
-    let total = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast"))).or_else(|| finite(w.get(text("wake_watch.field_broadcast_fallback")))));
-    Part { ok: true, error: None, total, unread: None }
+    // GH #845: a writer that knows the broadcast watermark writes `field_broadcast_seq` (a number or null): the channel wakes on it.
+    // A row without the key (an older writer) keeps the legacy count channel.
+    let seq = row.and_then(|w| w.get(text("wake_watch.field_broadcast_seq")).map(|v| finite(Some(v))));
+    let pending = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast_pending"))));
+    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None, seq, pending }
 }
 
 /// `attachBroadcastChannel`: fold the broadcast channel into a snapshot, failing closed with whatever the direct channels said.
 pub fn attach_broadcast(mut snap: Snapshot, home: &Path, hashes: Option<&Hashes>, id: &str) -> Snapshot {
     let b = read_broadcast(home, hashes, id);
     snap.total3 = Some(b.total);
+    snap.bc_seq = b.seq;
+    snap.bc_pending = b.pending;
     let base_ok = snap.ok;
     snap.ok = base_ok && b.ok;
     let b_err = b.error.unwrap_or_default();
@@ -221,17 +229,26 @@ fn num_member(o: &J, key: &str) -> Option<f64> {
 
 /// `loadSeenState(home, id, fs, role)`: the cursors, with a `*_missing` flag for each counter that has no recorded history.
 pub fn load_seen(home: &Path, id: &str, primary: bool) -> State {
-    let fresh = State { total_missing: true, total2_missing: true, broadcast_missing: true, ..State::default() };
+    let fresh = State { total_missing: true, total2_missing: true, broadcast_missing: true, bc_seq_missing: true, ..State::default() };
     let Some(obj) = read_text(&seen_path(home, id)).and_then(|t| parse_json(&t)) else { return fresh };
     let Some(last_total) = num_member(&obj, "lastTotal").filter(|_| matches!(obj, J::Obj(_))) else { return fresh };
     let last_total2 = num_member(&obj, "lastTotal2").unwrap_or(0.0);
     let broadcast = num_member(&obj, "lastBroadcastUnread");
     let mesh_total = num_member(&obj, "meshTotal");
     let nd_total = num_member(&obj, "ndjsonTotal");
+    // GH #845: the broadcast watermark counts only from a file of this version on (an older one is reconciled on the first read)
+    let version_ok = num_member(&obj, "seenVersion").is_some_and(|v| v >= defaults::num("wake_watch.seen_version") as f64);
+    let bc_seq = num_member(&obj, "lastBroadcastWakeSeq").filter(|_| version_ok);
     // seenCountersFromLegacy: a pre-counter file records only positional cursors and not which role wrote them
     let (legacy_mesh, legacy_nd) = if primary { (last_total.max(last_total2), None) } else { (last_total2, Some(last_total)) };
     let mesh = mesh_total.unwrap_or(legacy_mesh);
-    let mut st = State { last_broadcast: broadcast.unwrap_or(0.0), broadcast_missing: broadcast.is_none(), ..State::default() };
+    let mut st = State {
+        last_broadcast: broadcast.unwrap_or(0.0),
+        broadcast_missing: broadcast.is_none(),
+        last_bc_seq: bc_seq.unwrap_or(0.0),
+        bc_seq_missing: bc_seq.is_none(),
+        ..State::default()
+    };
     if primary {
         st.last_total = mesh;
         st.last_total2 = mesh;
@@ -279,6 +296,11 @@ pub fn save_seen(home: &Path, id: &str, st: &State, primary: bool) -> bool {
     out.set("lastTotal", J::Num(fin(st.last_total)));
     out.set("lastTotal2", J::Num(fin(st.last_total2)));
     out.set("lastBroadcastUnread", J::Num(fin(st.last_broadcast)));
+    // GH #845: the watermark is written only once it is known (a missing one is reconciled, never saved as 0)
+    if !st.bc_seq_missing {
+        out.set("lastBroadcastWakeSeq", J::Num(fin(st.last_bc_seq)));
+        out.set("seenVersion", J::Num(defaults::num("wake_watch.seen_version") as f64));
+    }
     if primary {
         out.set("meshTotal", J::Num(fin(st.last_total)));
         // the positional lastTotal2 carries the mesh total too, so an older child-role build never re-fires from a stale 0

@@ -326,7 +326,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         own_version,
         start_ppid,
         poll,
-        saved: (state.last_total, state.last_total2, state.last_broadcast),
+        saved: saved_key(&state),
         notified_update: None,
         archived_checked: None,
         own_archived: false,
@@ -373,7 +373,7 @@ struct Run<'a> {
     start_ppid: i32,
     poll: Duration,
     /// The cursors as last written, so an idle watcher writes nothing.
-    saved: (f64, f64, f64),
+    saved: (f64, f64, f64, f64),
     notified_update: Option<String>,
     archived_checked: Option<Instant>,
     own_archived: bool,
@@ -495,10 +495,10 @@ impl Run<'_> {
         for (key, by) in [("mesh_wake.channel_mail", state.woke_mail), ("mesh_wake.channel_broadcast", state.woke_broadcast)] {
             crate::metrics::bump_by_shared("mesh_wake_lines", &[("channel", defaults::text(key)), ("role", a.id.role())], u64::from(by));
         }
-        let changed = (state.last_total, state.last_total2, state.last_broadcast) != self.saved;
+        let changed = saved_key(&state) != self.saved;
         locked(self.cell).state = state.clone();
         if changed && read::save_seen(&p.home, &a.id.id, &state, a.id.primary) {
-            self.saved = (state.last_total, state.last_total2, state.last_broadcast);
+            self.saved = saved_key(&state);
         }
         Flow::Next
     }
@@ -609,3 +609,9 @@ pub fn run(rest: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests;
+
+/// The state whose change makes the cursor file worth rewriting: the three counters and the GH #845 broadcast watermark (`-1` while it is
+/// still unknown, so learning it is a change).
+fn saved_key(st: &edge::State) -> (f64, f64, f64, f64) {
+    (st.last_total, st.last_total2, st.last_broadcast, if st.bc_seq_missing { -1.0 } else { st.last_bc_seq })
+}

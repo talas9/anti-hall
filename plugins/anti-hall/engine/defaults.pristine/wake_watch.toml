@@ -257,15 +257,25 @@ value = '�'
 
 [wake_watch.seen_owned_keys]
 doc = "The members of a cursor file this build owns and always rewrites; any other member (a newer build's) is carried through untouched."
-value = ["lastTotal", "lastTotal2", "lastBroadcastUnread", "meshTotal", "ndjsonTotal"]
+value = ["lastTotal", "lastTotal2", "lastBroadcastUnread", "lastBroadcastWakeSeq", "seenVersion", "meshTotal", "ndjsonTotal"]
 
 [wake_watch.field_broadcast]
-doc = "The summary member the broadcast channel wakes on: the unread broadcasts of others that address this workspace (a mention, a question, an urgent Primary broadcast; GH #845, see mesh_wake.toml). Heartbeats, acks and the workspace's own sends are excluded."
-value = "broadcastWakeFromOthers"
-
-[wake_watch.field_broadcast_fallback]
-doc = "The summary member the broadcast channel reads when wake_watch.field_broadcast is absent (a summary written by the Node backup, which predates it): every unread broadcast of others, heartbeats and own sends excluded."
+doc = "The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded): the legacy broadcast channel, read only when the row has no wake_watch.field_broadcast_seq (a writer that predates GH #845)."
 value = "broadcastUnreadFromOthers"
+
+[wake_watch.field_broadcast_seq]
+doc = "The summary member the broadcast channel wakes on (GH #845): the highest seq among the workspace's unread broadcasts that wake it, or null. A line is printed when it passes the saved watermark (lastBroadcastWakeSeq), which never goes down."
+value = "broadcastWakeSeq"
+
+[wake_watch.field_broadcast_pending]
+doc = "The summary member counting the workspace's unread broadcasts that wake it: a watcher with no saved watermark wakes once when it is above 0 instead of seeding it away."
+value = "broadcastWakePending"
+
+[wake_watch.seen_version]
+doc = "The `seenVersion` this build writes into the cursor file; a file below it has no broadcast watermark yet and is reconciled from field_broadcast_pending."
+value = 2
+min = 1
+max = 1000
 
 # ---- words -------------------------------------------------------------------------------------------------------------------
 

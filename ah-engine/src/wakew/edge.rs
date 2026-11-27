@@ -46,6 +46,12 @@ pub struct State {
     pub woke_mail: u32,
     /// Wake lines the last tick printed for broadcasts, same counter.
     pub woke_broadcast: u32,
+    /// The broadcast watermark (GH #845): the highest broadcast seq a line was printed for (or that was seeded); it never goes down,
+    /// so a drain followed by a new arrival between two polls still wakes.
+    pub last_bc_seq: f64,
+    /// No watermark was saved (a fresh watcher, or a cursor file from a build before it): the first read with the watermark field
+    /// reconciles instead of seeding silently, so pending eligible mail always wakes once.
+    pub bc_seq_missing: bool,
 }
 
 impl Default for State {
@@ -68,6 +74,8 @@ impl Default for State {
             held: 0,
             woke_mail: 0,
             woke_broadcast: 0,
+            last_bc_seq: 0.0,
+            bc_seq_missing: false,
         }
     }
 }
@@ -92,6 +100,11 @@ pub struct Snapshot {
     pub total2: Option<Option<f64>>,
     /// Broadcast channel.
     pub total3: Option<Option<f64>>,
+    /// Broadcast watermark channel (GH #845): `None` when the summary row predates it (the legacy `total3` count applies),
+    /// `Some(None)` when nothing unread wakes the workspace, else the highest seq of the unread broadcasts that do.
+    pub bc_seq: Option<Option<f64>>,
+    /// How many unread broadcasts wake the workspace (display and the start-up reconcile only).
+    pub bc_pending: Option<f64>,
     /// The workspace's direct mail it has not read yet (the summary's `directUnread`), `None` when unknown.
     pub unread: Option<f64>,
     /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
@@ -328,6 +341,30 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     }
     // BROADCAST CHANNEL: a third, independent observation, never merged into the dual-channel logic.
     let total3 = snap.total3.flatten();
+    if let Some(seq) = snap.bc_seq {
+        // GH #845 watermark: wake when the highest eligible unread seq passes the saved one (never on a count edge, which a drain
+        // plus a new arrival between two polls would hide). A watcher with no saved watermark wakes once for pending eligible mail.
+        let pending = snap.bc_pending.unwrap_or(0.0);
+        // the line shows how many unread broadcasts wake the workspace (`0 -> N`), in the legacy line text
+        let line = || wake_line(snap, 0.0, pending.max(1.0), Some(text("wake_watch.label_broadcast")));
+        if st.bc_seq_missing {
+            if pending > 0.0 {
+                lines.push(line());
+                st.woke_broadcast += 1;
+            }
+            st.bc_seq_missing = false;
+            st.last_bc_seq = st.last_bc_seq.max(seq.unwrap_or(0.0));
+        } else if let Some(s) = seq.filter(|s| *s > st.last_bc_seq) {
+            lines.push(line());
+            st.woke_broadcast += 1;
+            st.last_bc_seq = s;
+        }
+        // the legacy count stays in step silently, for a build that still reads it
+        if let Some(t3) = total3 {
+            st.last_broadcast = t3;
+        }
+        return (st, lines);
+    }
     if let Some(t3) = total3
         && t3 > st.last_broadcast
     {
