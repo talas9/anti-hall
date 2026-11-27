@@ -231,7 +231,7 @@ fn ro_text(v: &str) -> bool {
     let name_char = |c: &char| c.is_ascii_alphanumeric() || *c == '_';
     let mut i = 0;
     while i < cs.len() {
-        if cs[i] != '$' {
+        if cs.get(i) != Some(&'$') {
             i += 1;
             continue;
         }
@@ -404,7 +404,10 @@ fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) 
         // #971 review: an unquoted ( ) < > inside a word (a zsh multi-name function `a b () ..`, a glob qualifier `*(e:..:)`, a
         // redirection joined to a word `x>f`) is shell syntax no word list reads: it exempts nothing and masks nothing from there
         // on; nor does an expansion that assigns (`${E::=..}`, `$((E=1))`)
-        let assigns = |w: &str| w.find("${").is_some_and(|at| w[at..].contains('=')) || w.contains("((") || w.contains("$[");
+        let assigns = |w: &str| {
+            let braced = w.find("${").is_some_and(|at| w[at..].contains('='));
+            braced || w.contains("((") || w.contains("$[")
+        };
         let assigning = pipe.iter().flatten().any(|(w, e)| *e != Exp::Lit && assigns(w));
         if meta && !lenient {
             return None;
@@ -486,10 +489,11 @@ fn ro_pipeline(pipe: &[Vec<(String, Exp)>], vars: &[Var], cfg: &Cfg, home: Optio
         let short = cfg.ro_bin_dirs.iter().find_map(|d| w.strip_prefix(d.as_str()).filter(|r| !r.is_empty() && !r.contains('/')));
         short.map_or(w.clone(), str::to_string)
     };
-    let first = &pipe[0];
-    let prog = ro_expand(&first[0].0, first[0].1, vars, cfg, home, At::Command)?;
+    let first = pipe.first()?;
+    let (w0, e0) = first.first()?;
+    let prog = ro_expand(w0, *e0, vars, cfg, home, At::Command)?;
     let mut tail = Vec::new();
-    for el in &pipe[1..] {
+    for el in pipe.iter().skip(1) {
         let words = el.iter().map(|(w, exp)| ro_expand(w, *exp, vars, cfg, home, At::Arg)).collect::<Option<Vec<_>>>()?;
         let mut words = words.into_iter();
         let head = bin(words.next()?);
@@ -497,14 +501,14 @@ fn ro_pipeline(pipe: &[Vec<(String, Exp)>], vars: &[Var], cfg: &Cfg, home: Optio
     }
     let tail = tail.join(" | ");
     if !cfg.ro_programs.contains(&prog) {
-        let args = first[1..].iter().map(|(w, exp)| ro_expand(w, *exp, vars, cfg, home, At::Arg)).collect::<Option<Vec<_>>>()?;
+        let args = first.iter().skip(1).map(|(w, exp)| ro_expand(w, *exp, vars, cfg, home, At::Arg)).collect::<Option<Vec<_>>>()?;
         let head = std::iter::once(bin(prog)).chain(args).collect::<Vec<_>>().join(" ");
         return Some(Part::Read(if tail.is_empty() { head } else { format!("{head} | {tail}") }));
     }
     let (mut args, mut redirs) = (Vec::new(), Vec::new());
     let mut k = 1;
     while k < first.len() {
-        let (w, exp) = &first[k];
+        let (w, exp) = first.get(k)?;
         if is_redir(w) {
             let (op, target) = redir_split(w);
             let target = if target.is_empty() {

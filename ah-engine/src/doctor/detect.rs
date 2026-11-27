@@ -487,7 +487,7 @@ pub(super) fn stray_submodule_state(doc: &mut Doc, ctx: &Ctx) {
 }
 
 #[cfg(test)]
-mod omc_text_tests {
+mod tests {
     use super::*;
     use std::collections::BTreeMap;
 

@@ -5,6 +5,7 @@
 
 # ---- bounded by a cap read from config, own eviction (registry follow-ups) -------------------------------------------------
 daemon.rs | Shared.queue | accept queue cap (daemon.queue): a full queue answers busy | the connection queue; bounded by the cap, not a cache
+daemon.rs | Shared.busy_peer | exactly one slot per worker thread, built once at start-up and never grown | #969 per-worker peer pid of the request in flight (load QoS)
 db.rs | Mem.kv | registered as mem.db_kv_* and also constrained by tier.budget_kb in Tiered | active key-value items; SQLite remains the source of truth
 gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after gitcache idle_ttl | memoised git state per repository
 hookcfg/session.rs | SessionCore.slots | registered as mem.hook_sessions_*; expired counters are pruned even without SessionEnd | per-session hook condition counters

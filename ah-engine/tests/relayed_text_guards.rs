@@ -4,8 +4,11 @@
 use ah_engine::{checks::Verdict, reqenv::RequestEnv, script};
 use serde_json::json;
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 fn blocked(guard: &str, text: &str, n: usize) -> bool {
-    let home = std::env::temp_dir().join(format!("ah-relayed-{}-{n}-{guard}", std::process::id()));
+    let home = testtmp::path(format!("ah-relayed-{}-{n}-{guard}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let tp = home.join("transcript.jsonl");
     let user = json!({"type":"user","message":{"role":"user","content":"Status?"}});
@@ -111,7 +114,7 @@ fn claim_evidence_still_fires_on_attributed_results_without_a_scoped_marker() {
 fn claim_evidence_accepts_an_engine_version_or_status_call_for_live() {
     let run = |cmd: &str, n: usize| -> bool {
         let text = "The new engine build is live.";
-        let home = std::env::temp_dir().join(format!("ah-relayed-live-{}-{n}", std::process::id()));
+        let home = testtmp::path(format!("ah-relayed-live-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         let tp = home.join("transcript.jsonl");
         let user = json!({"type":"user","message":{"role":"user","content":"Status?"}});

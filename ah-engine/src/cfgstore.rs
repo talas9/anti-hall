@@ -552,6 +552,7 @@ pub fn explain_descriptor(key: &str, env: &crate::reqenv::RequestEnv) -> Option<
     let default = e.value.get("default").map(V::to_json);
     let names = defaults::list("layers.descriptor_layer_names");
     let states = defaults::list("layers.state_names");
+    let state_name = |i: usize| states.get(i).copied().unwrap_or_default();
     let held = [from_env, from_settings, default];
     let mut applied = false;
     let rows: Vec<Json> = names
@@ -559,17 +560,17 @@ pub fn explain_descriptor(key: &str, env: &crate::reqenv::RequestEnv) -> Option<
         .zip(held)
         .map(|(layer, v)| {
             let state = match &v {
-                None => states[3],
+                None => state_name(3),
                 Some(x) if !applied && same_setting_value(x, &eff) => {
                     applied = true;
-                    states[0]
+                    state_name(0)
                 }
-                Some(_) => states[1],
+                Some(_) => state_name(1),
             };
             json!({"layer": layer, "state": state, "value": v})
         })
         .collect();
-    let source = rows.iter().find(|r| r["state"] == json!(states[0])).and_then(|r| r["layer"].as_str()).unwrap_or(defaults::text("layers.descriptor_source_other")).to_string();
+    let source = rows.iter().find(|r| r.get("state") == Some(&json!(state_name(0)))).and_then(|r| r.get("layer")).and_then(Json::as_str).unwrap_or(defaults::text("layers.descriptor_source_other")).to_string();
     Some(json!({"key": key, "value": eff, "source": source, "descriptor": e.key, "layers": rows, "refused": Json::Null}))
 }
 

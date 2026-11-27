@@ -20,6 +20,14 @@ the update.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
 
+## Engine 0.3.31 (local integration build)
+
+- #971 capacity hold: the engine's own local verbs pass under load whatever the spelling (engine and ah-hook); review fixes for the read exemption (inert allow list, write-then-run guard, `&>` regression lines, assigning expansions and bare `( ) < >` exempt nothing).
+- #982 task list window: write-time rule enforcement (`task_window.*` in task_guards.toml), tasks-reconcile skill.
+- #981 OMC coexistence: handover redirect over the edit allowlist, question-deny text and Stop question hold, usage-snapshot staleness, quiet auto-handover and compact advice on the OMC loop, `config explain` for settings keys, doctor OMC-text and usage sections.
+- #972 wave-2 guards: stale-stop agent-message envelope, gh `--body` backticks, block-details raw keys, claim-check attribution, blocker re-nag, runtime-nudge snooze, devswarm-comms repeat, idle nudge.
+- #969 daemon load: daemon QoS, progress-gate deadline, git-check CPU, wake coverage and broadcast wake policy.
+
 ## Engine 0.3.30 (local integration build)
 
 - #972 tracker classes: wake-watch coverage, stale/stopped/snoozed rows, hold confirm-once, 0-outcomes per segment and in reports, STALLED drift.

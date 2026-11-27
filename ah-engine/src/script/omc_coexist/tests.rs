@@ -27,8 +27,10 @@ fn write(h: &str, file: &str) -> Value {
     json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": file, "content": "# handover\n"}, "cwd": h, "session_id": "s1"})
 }
 
+/// The date the edit guard names: the local calendar date (`ho.localDate`), the UTC date only when the zone can not be read.
 fn today() -> String {
-    crate::checks::taskkit::time::iso(crate::checks::taskkit::time::now_ms())[..10].to_string()
+    let now = crate::checks::taskkit::time::now_ms();
+    crate::checks::jsport::date::local_ymd(now as f64).unwrap_or_else(|| crate::checks::taskkit::time::iso(now)[..10].to_string())
 }
 
 mod handover_redirect {
@@ -111,12 +113,23 @@ mod handover_hint {
 mod wrapper_scripts {
     use super::*;
 
-    fn bash(h: &str, cmd: &str) -> (i32, String) {
+    /// The context in which the main-thread heavy-command gate blocks: a DevSwarm checkout (as tests/it/fw1_command.rs sets it up).
+    const DEVSWARM: [(&str, &str); 4] =
+        [("CLAUDE_CODE_ENTRYPOINT", "cli"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feat"), ("ANTIHALL_INGEST_DRY_RUN", "1")];
+
+    fn bash_env(h: &str, cmd: &str, env: &[(&str, &str)]) -> (i32, String) {
         let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": h, "session_id": "s1"});
-        run("command", "PreToolUse", p, &[])
+        let all: Vec<(&str, &str)> = DEVSWARM.iter().chain(env.iter()).copied().collect();
+        run("command", "PreToolUse", p, &all)
+    }
+
+    fn bash(h: &str, cmd: &str) -> (i32, String) {
+        bash_env(h, cmd, &[])
     }
 
     fn script(h: &str, name: &str, body: &str) {
+        std::fs::create_dir_all(format!("{h}/.git")).unwrap();
+        std::fs::write(format!("{h}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::create_dir_all(format!("{h}/bin")).unwrap();
         std::fs::write(format!("{h}/bin/{name}"), body).unwrap();
     }
@@ -143,8 +156,7 @@ mod wrapper_scripts {
         let cmd = "bash bin/deploy-skyfb.sh --only functions:a 2>&1 | tail -25";
         let (code, out) = bash(&h, cmd);
         assert_eq!(code, 0, "{out}");
-        let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": h, "session_id": "s1"});
-        let (code, out) = run("command", "PreToolUse", p, &[("ANTIHALL_COMMAND_DEPLOY_SCRIPTS_AS_WRITTEN", "0")]);
+        let (code, out) = bash_env(&h, cmd, &[("ANTIHALL_COMMAND_DEPLOY_SCRIPTS_AS_WRITTEN", "0")]);
         assert_eq!(code, 2, "switched off: judged by the body (#547): {out}");
     }
 }
@@ -222,7 +234,7 @@ mod usage_source {
     }
 
     fn omc_cache(h: &str, age_ms: i64, weekly: u32) {
-        let now = crate::checks::taskkit::time::now_ms() as i64;
+        let now = crate::checks::taskkit::time::now_ms();
         let reset = crate::checks::taskkit::time::iso((now + 3 * 86_400_000) as _);
         std::fs::create_dir_all(format!("{h}/.claude/plugins/oh-my-claudecode")).unwrap();
         let body = json!({"timestamp": now - age_ms, "data": {"weeklyPercent": weekly, "weeklyResetsAt": reset}});
@@ -244,7 +256,7 @@ mod usage_source {
     /// limitConserve.usageSource: auto takes the fresher of the statusline snapshot and the OMC cache; omc-cache ignores the snapshot.
     #[test]
     fn the_statusline_snapshot_is_a_usage_source() {
-        let now = crate::checks::taskkit::time::now_ms() as i64;
+        let now = crate::checks::taskkit::time::now_ms();
         let snap = |h: &str| {
             std::fs::write(format!("{h}/.anti-hall/usage-statusline.json"), json!({"timestamp": now, "source": "statusline", "data": {"weeklyPercent": 90}}).to_string()).unwrap();
         };

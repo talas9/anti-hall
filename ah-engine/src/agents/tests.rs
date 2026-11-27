@@ -5110,7 +5110,7 @@ fn n972_a_health_snooze_holds_the_runtime_nudge_until_it_runs_out() {
     st.nudge_snooze.insert("abc|waste".into(), nudge::Snooze { until: n + 60 * MIN, snoozes: 1, min: 45, held: 0 });
     rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     assert_eq!(rt_fired("advise"), 0, "the health snooze holds the runtime step: {:?}", rt_texts(&h));
-    assert!(st.nudges.get("abc").is_none(), "no runtime nudge opens inside the snooze");
+    assert!(!st.nudges.contains_key("abc"), "no runtime nudge opens inside the snooze");
     // an open runtime nudge does not climb a step inside a snooze the parent gave a health nudge either
     rt_tick(&h, &child, &mut st, n + 61 * MIN, 3);
     assert_eq!(rt_fired("advise"), 1, "the snooze ran out: the runtime step fires (true positive)");
@@ -5779,10 +5779,8 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     let t = first[0]["text"].as_str().unwrap();
     assert!(t.contains("Do now: confirm or clear the blocker on Choose disk items"), "{t}");
     let mut at = n + max + MIN;
-    // #968: unanswered reminders back off (agent_tracker.cooldowns backoff_cap_ms), so step past the cap each time
-    let cap = defaults::raw("agent_tracker.cooldowns").get("hold_expired").and_then(|c| c.get("backoff_cap_ms")).and_then(V::as_integer).unwrap_or(0) as u64;
     for _ in 0..5 {
-        at += cap.max(31 * MIN) + MIN;
+        at += 31 * MIN;
         ticks(&h, &mut st, &[at]);
     }
     let all = rows(&h);
@@ -5796,44 +5794,6 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     let cleared: u64 =
         ["acted_on", "condition_gone", "expired", "undelivered", "unexplained"].iter().map(|w| compliance_count("hold_expired", &format!("cleared:{w}"))).sum();
     assert_eq!(cleared, 1, "an unexplained or explained clear is always counted");
-}
-
-/// #968 (live: about 95 identical hold reminders over 2 days to a session idle on a real owner gate): reminders about an unchanged
-/// blocker back off, doubling up to agent_tracker.cooldowns.hold_expired.backoff_cap_ms, so an idle session hears it a bounded number
-/// of times a day; a rewritten reason starts again at the plain cooldown. Counted in agent_reminder_backoff.
-#[test]
-fn unanswered_hold_reminders_back_off_and_a_rewritten_reason_starts_over() {
-    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
-    let n = now0();
-    let h = home("hold-backoff");
-    let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
-    let task = |m: Value| json!({"id": "1", "subject": "Flash the board", "status": "pending", "owner": "", "blockedBy": [], "metadata": m});
-    task_file(&h, SID, task(json!({"blockedOn": "waiting on the hardware step at the bench"})));
-    main_session(&h, SID, n, 15, "waiting");
-    let mut st = State::default();
-    let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
-    let mut at = n + max + MIN;
-    ticks(&h, &mut st, &[at]);
-    assert_eq!(rows(&h).len(), 1, "the expired hold is reminded once");
-    // two days of ticks every 31 minutes (the plain cooldown is 30): without backoff about 93 reminders
-    for _ in 0..93 {
-        at += 31 * MIN;
-        ticks(&h, &mut st, &[at]);
-    }
-    let backed = rows(&h).len();
-    assert!(backed <= 12, "an unchanged blocker on an idle session is reminded a bounded number of times: {backed}");
-    assert!(backed >= 5, "never silent: the capped cooldown still repeats: {backed}");
-    assert!(crate::metrics::bumped_on_this_thread("agent_reminder_backoff", &[("signal", "hold_expired")]) > 0, "the backoff is counted");
-    // a rewritten reason is a new blocker: its first reminder after hold_max_ms, then the plain cooldown again (not the backed-off one)
-    task_file(&h, SID, task(json!({"blockedOn": "bench step moved to Monday, owner confirmed"})));
-    at += MIN;
-    ticks(&h, &mut st, &[at]);
-    let before = rows(&h).len();
-    at += max + MIN;
-    ticks(&h, &mut st, &[at]);
-    at += 61 * MIN;
-    ticks(&h, &mut st, &[at]);
-    assert!(rows(&h).len() >= before + 2, "the new reason is reminded at the plain cooldown: {} -> {}", before, rows(&h).len());
 }
 
 /// Owner rule: every main session keeps a wake Monitor armed, even one with nothing running (monitor_unarmed stays silent there).
