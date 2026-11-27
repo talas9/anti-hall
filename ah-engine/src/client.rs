@@ -1221,10 +1221,14 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         return false;
     }
     let Some(_spawn_lock) = spawn_lock() else { return false };
-    let stale = defaults::millis("client.heartbeat_stale_ms");
+    // R0 second path: a starved machine makes a working daemon's heartbeat old too; the kill bound stretches with the load as the
+    // watchdog's do, and the kill leaves a tombstone so the reap does not log it as a crash when the load caused it
+    let load = crate::loadscale::per_core();
+    let stale = Duration::from_millis(crate::loadscale::scale(defaults::num("client.heartbeat_stale_ms"), health::watchdog_factor(load)));
     let still_hung = |hb: &health::Heartbeat| hb.age > stale && health::hang_confirmed(hb);
     let Some(hb) = health::heartbeat_of_lock_holder().filter(|hb| still_hung(hb)) else { return false };
     let pid = hb.pid;
+    health::note_hung_kill(pid, load);
     let unchanged = || health::heartbeat_of_lock_holder().is_some_and(|now| now.ident == hb.ident && now.mtime_ns == hb.mtime_ns && still_hung(&now));
     let killed = pid != std::process::id()
         && hb.generation().is_some()
@@ -1235,6 +1239,7 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         // running, and the client must be descheduled exactly across that moment.
         && crate::procid::signal_verified(pid, libc::SIGKILL, || hb.names_running() && unchanged());
     if !killed {
+        health::clear_hung_kill(); // the daemon lives on: a later death of its own must not be read as this kill
         health::log_event("client_hung_spared", "daemon", &defaults::render("msg.log_hung_spared", &[("pid", &pid), ("why", &why)]));
         return false;
     }

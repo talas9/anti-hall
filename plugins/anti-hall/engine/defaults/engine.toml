@@ -254,6 +254,10 @@ value = "last-crash.json"
 doc = "Last panic of a non-daemon process (a CLI verb or the hook client). Kept apart from last-crash.json so it never counts as a daemon crash or restart."
 value = "cli-crash.json"
 
+[files.hung_kill]
+doc = "R0 (#969 hardening): the tombstone a client leaves just before it ends a hung daemon (client.heartbeat_stale_ms): that daemon's pid and the load per core at the kill. The next start's reap reads it once: a kill under load (health.load_exit_per_core_permille) is logged as health.hung_kill_kind, not as a crash."
+value = "daemon.hung-kill.json"
+
 [files.reaped_prefix]
 doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
 value = "daemon.run.reaped."
@@ -856,7 +860,7 @@ env = "AH_ENGINE_SLOW_WINDOW_MS"
 unit = "ms"
 
 [client.heartbeat_stale_ms]
-doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check."
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. R0: for the kill itself it is multiplied by the watchdog load factor (daemon.watchdog_load_scale_max_permille), and the kill leaves a tombstone (files.hung_kill). 0 disables the check."
 value = 1500
 env = "AH_ENGINE_HEARTBEAT_STALE_MS"
 min = 0
@@ -1075,6 +1079,10 @@ unit = "permille"
 [health.load_exit_kind]
 doc = "R0 (#969 hardening): the event-log kind of a watchdog exit taken under load (health.load_exit_per_core_permille). It must not be listed in health.crashy_kinds."
 value = "watchdog_load"
+
+[health.hung_kill_kind]
+doc = "R0 (#969 hardening): the event-log kind the reap of a daemon a client ended as hung (files.hung_kill) logs when the load per core at the kill was above health.load_exit_per_core_permille. Not in health.crashy_kinds: a client ending a daemon a starved machine made look hung must not latch the crash-loop cooldown. On an idle machine the same kill is logged as a crash with this code, so a daemon that really wedges still latches."
+value = "hung_kill"
 
 [health.crashy_kinds]
 doc = "Event kinds that count toward the crash-loop threshold."

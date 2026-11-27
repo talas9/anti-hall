@@ -23,11 +23,65 @@ fn crashy() -> Vec<&'static str> {
     defaults::list("health.crashy_kinds")
 }
 
+/// R0 (#969 hardening): the load factor (permille) for the bounds after which the engine ends a daemon on its own: the watchdog's
+/// `daemon.stall_ms`, `daemon.stuck_ms` and `daemon.start_stall_ms`, and the client's hung-daemon kill (`client.heartbeat_stale_ms`).
+/// These run outside any request, so unlike a request's deadlines (which take the factor the launcher fitted and passed down) they
+/// sample the load themselves; their ceiling is their own (`daemon.watchdog_load_scale_max_permille`), since no hook bound limits
+/// how long they may wait before ending a daemon. Same step as the request deadlines.
+pub fn watchdog_factor(load: Option<f64>) -> u64 {
+    crate::loadscale::factor_permille(load, defaults::num("daemon.watchdog_load_scale_max_permille"), defaults::num("daemon.load_scale_step_permille"))
+}
+
+/// R0: the load per core (permille) a reading stands for; 0 with no reading.
+pub fn load_permille(load: Option<f64>) -> u64 {
+    load.filter(|l| l.is_finite() && *l > 0.0).map_or(0, |l| (l * 1000.0) as u64)
+}
+
+/// R0: true when a daemon the engine ended at this load per core (permille) was ended by the machine's load, not by a fault of its
+/// own: above `health.load_exit_per_core_permille`. Such an end never counts toward the crash-loop rule.
+pub fn ended_by_load(per_core_permille: u64) -> bool {
+    per_core_permille > defaults::num("health.load_exit_per_core_permille")
+}
+
+/// R0: the event-log kind of a stall or stuck exit taken at `load` per core. Under load ([`ended_by_load`]) it is
+/// `health.load_exit_kind`, which `health.crashy_kinds` does not list: a starved machine is not a crashing binary, and four such
+/// exits in ten minutes must not latch the engine off for the crash-loop cooldown. The spawn-rate rule (`client.spawn_n`) still
+/// counts the restarts. Otherwise, or with no load reading, it stays a crash-loop `watchdog` exit, so a daemon that wedges on an
+/// idle machine still latches.
+pub fn watchdog_exit_kind(load: Option<f64>) -> &'static str {
+    if ended_by_load(load_permille(load)) { defaults::text("health.load_exit_kind") } else { "watchdog" }
+}
+
+/// R0 second path: the client is about to end the hung daemon `pid` at `load` per core: leave a tombstone (`files.hung_kill`) so the
+/// next start's reap logs that end as what it was, not as an unexplained crash ([`reap_marker`]).
+pub fn note_hung_kill(pid: u32, load: Option<f64>) {
+    let v = json!({"pid": pid, "load_permille": load_permille(load), "ts": now_ms()});
+    crate::discard::logged("hung_kill_tombstone_write", crate::atomic::write(state_file("hung_kill"), v.to_string()));
+}
+
+/// R0 second path: drop the tombstone of a kill that did not happen.
+pub fn clear_hung_kill() {
+    crate::discard::harmless(std::fs::remove_file(state_file("hung_kill"))); // keep: an absent file is the goal state
+}
+
+/// R0 second path: the kind and code a reap logs for daemon `pid` given the tombstone (if any): a kill by a client under load is
+/// `health.hung_kill_kind` (not crashy), a kill on an idle machine stays a `crash` (code `health.hung_kill_kind`) so a daemon that
+/// wedges with no load still latches, and anything else is the `crash`/`unknown` it always was.
+fn reap_kind(pid: u32, tombstone: Option<&Value>) -> (&'static str, &'static str) {
+    let hung = defaults::text("health.hung_kill_kind");
+    match tombstone.filter(|t| t.get("pid").and_then(Value::as_u64) == Some(u64::from(pid))) {
+        Some(t) if ended_by_load(t.get("load_permille").and_then(Value::as_u64).unwrap_or(0)) => (hung, hung),
+        Some(_) => ("crash", hung),
+        None => ("crash", "unknown"),
+    }
+}
+
 /// Event kinds that are daemon restarts for the degraded summary: the crashy kinds plus a watchdog exit taken under load
 /// (`health.load_exit_kind`, R0), which is still an outage even though it never counts toward the crash-loop rule.
 fn restart_kinds() -> Vec<&'static str> {
     let mut k = crashy();
     k.push(defaults::text("health.load_exit_kind"));
+    k.push(defaults::text("health.hung_kill_kind"));
     k
 }
 
@@ -713,11 +767,15 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
             log_event("system_restart", "boot", &detail);
             return;
         }
-        let report = json!({"ts": now_ms(), "kind": "crash", "code": "unknown", "pid": pid, "breadcrumb": breadcrumb});
+        // R0 second path: a daemon a client ended as hung left a tombstone; under load that end is not a crash
+        let tombstone = read_json("hung_kill");
+        clear_hung_kill(); // read once
+        let (kind, code) = reap_kind(pid, tombstone.as_ref());
+        let report = json!({"ts": now_ms(), "kind": kind, "code": code, "pid": pid, "breadcrumb": breadcrumb});
         write_crash_report(&report);
         let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("summary", &crash_summary(&report))]);
-        log_event("crash", "unknown", &detail);
-        record_failure("crash", "unknown", &detail);
+        log_event(kind, code, &detail);
+        record_failure(kind, code, &detail);
     }
 }
 
@@ -1163,6 +1221,54 @@ mod tests {
         assert_eq!(s["defaults"]["by_reason"]["defaults_fallback:parse"], 2, "{s}");
         let row = s["reasons"].as_array().unwrap().iter().find(|r| r["code"] == "parse").unwrap();
         assert_eq!((row["count"].as_u64(), row["first_ts"].as_u64(), row["last_ts"].as_u64()), (Some(2), Some(9_500), Some(9_600)));
+    }
+
+    /// R0 second path (#969 hardening review P1-1): a client ending a daemon whose heartbeat a starved machine made old SIGKILLs it,
+    /// and the next start's reap logged an unexplained `crash`: four such kills latched the engine off for the cooldown. Five hung
+    /// kills under load must not latch; the same five on an idle machine still must; a death with no tombstone stays a crash.
+    #[test]
+    fn hung_kills_under_load_never_latch_the_crash_loop_but_idle_ones_still_do() {
+        let _turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("AH_ENGINE_DIR");
+        let cfg = crate::config::ClientConfig::from_env();
+        let dead_pid = || {
+            let mut c = std::process::Command::new("true").spawn().expect("spawn true");
+            c.wait().expect("wait");
+            c.id()
+        };
+        let run = |name: &str, load: Option<f64>, tombstone: bool| -> (bool, Vec<Event>) {
+            let dir = crate::testtmp::path(format!("ah-r0-hung-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take STATE_TURN first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            for _ in 0..5 {
+                let pid = dead_pid();
+                std::fs::write(state_file("run_marker"), pid.to_string()).unwrap();
+                if tombstone {
+                    note_hung_kill(pid, load);
+                }
+                reap_marker_at(None);
+            }
+            let tripped = crashloop_tripped(&cfg);
+            let ev = events();
+            crate::discard::harmless(std::fs::remove_dir_all(&dir));
+            (tripped, ev)
+        };
+        let (loaded, ev) = run("loaded", Some(5.0), true);
+        let (idle, idle_ev) = run("idle", Some(0.5), true);
+        let (untold, _) = run("untold", Some(5.0), false);
+        match &prev {
+            // SAFETY: as above
+            Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
+        }
+        let hung = defaults::text("health.hung_kill_kind");
+        assert!(!loaded, "five hung kills under load latched the crash-loop cooldown");
+        assert_eq!(ev.iter().filter(|e| e.kind == hung).count(), 5, "each reap names the kill: {ev:?}");
+        assert!(idle, "hung kills on an idle machine must still trip the crash loop");
+        assert!(idle_ev.iter().any(|e| e.kind == "crash" && e.code == hung), "an idle kill is a crash with the hung-kill code");
+        assert!(untold, "a death with no tombstone is a crash as before");
+        assert!(!defaults::list("health.crashy_kinds").contains(&hung));
     }
 
     /// R0 (#969 hardening): a watchdog exit taken under load never counts toward the crash loop, but it is still a restart the

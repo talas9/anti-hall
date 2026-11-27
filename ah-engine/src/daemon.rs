@@ -2010,23 +2010,7 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
     now.saturating_sub(beat) > stall_ms
 }
 
-/// R0 (#969 hardening): the watchdog's load factor (permille) for `daemon.stall_ms` and `daemon.stuck_ms`. The watchdog serves no
-/// request, so unlike a request's deadlines (which take the factor the launcher fitted and passed down) it samples the load
-/// itself, once per tick; its ceiling is its own (`daemon.watchdog_load_scale_max_permille`), since no hook bound limits how
-/// long it may wait before it drains the daemon. Same step as the request deadlines.
-fn watchdog_factor(load: Option<f64>) -> u64 {
-    crate::loadscale::factor_permille(load, defaults::num("daemon.watchdog_load_scale_max_permille"), defaults::num("daemon.load_scale_step_permille"))
-}
-
-/// R0: the event-log kind of a stall or stuck exit taken at `load` per core. Above `health.load_exit_per_core_permille` it is
-/// `health.load_exit_kind`, which `health.crashy_kinds` does not list: a starved machine is not a crashing binary, and four
-/// such exits in ten minutes must not latch the engine off for the crash-loop cooldown (every guard passing meanwhile). The
-/// spawn-rate rule (`client.spawn_n`) still counts the restarts. At or under the threshold, or with no load reading, it stays
-/// a crash-loop `watchdog` exit, so a daemon that wedges on an idle machine still latches.
-fn watchdog_exit_kind(load: Option<f64>) -> &'static str {
-    let per_core_permille = load.filter(|l| l.is_finite() && *l > 0.0).map_or(0, |l| (l * 1000.0) as u64);
-    if per_core_permille > defaults::num("health.load_exit_per_core_permille") { defaults::text("health.load_exit_kind") } else { "watchdog" }
-}
+use health::{watchdog_exit_kind, watchdog_factor};
 
 /// R0 (#969 hardening): log and record one watchdog exit (`code` = stall or stuck) taken at `load` per core; returns the kind logged.
 fn watchdog_exit(load: Option<f64>, code: &str, log_detail: &str, failure: &str) -> &'static str {
