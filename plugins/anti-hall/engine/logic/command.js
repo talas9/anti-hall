@@ -1685,13 +1685,25 @@ function isSafeGitPull(segment) {
   if (gitIdx === -1) return false;
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1 || (tokens[subIdx] || '').toLowerCase() !== 'pull') return false;
+  // a configuration given on the command line (git -c fetch.prune=true pull) can change what the pull does
+  for (let i = gitIdx + 1; i < subIdx; i++) {
+    if (tokens[i] === '-c' || tokens[i].startsWith('--config-env') || /^-c./.test(tokens[i])) return false;
+  }
+  // the last mode flag wins in git: the pull fast-forwards only when --ff-only is the effective one
   let ffOnly = false;
   for (let i = subIdx + 1; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t === '--ff-only') ffOnly = true;
-    if (T.fetchDangerous.has(t)) return false;
-    if (t.startsWith('+')) return false;
-    if (t.includes(':')) return false;
+    if (t === '--ff-only') { ffOnly = true; continue; }
+    if (T.fetchDangerous.has(t) || t.startsWith('--prune') || t.startsWith('--force')) return false;
+    if (t.startsWith('+') || t.includes(':')) return false;
+    if (/^--(?:ff|no-ff|squash|no-squash|rebase|no-rebase)(?:=|$)/.test(t)) { ffOnly = false; continue; }
+    // bundled short flags (-qp): r is --rebase, p and f are --prune and --force
+    if (/^-[A-Za-z]+$/.test(t)) {
+      for (const ch of t.slice(1)) {
+        if (ch === 'p' || ch === 'f') return false;
+        if (ch === 'r') ffOnly = false;
+      }
+    }
   }
   return ffOnly;
 }
