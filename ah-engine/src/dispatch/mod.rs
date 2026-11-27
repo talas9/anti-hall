@@ -510,6 +510,10 @@ fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
         ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
         ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
         ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
+        ro_assign_deny: strs(cfg.get("parsed").and_then(|p| p.get("assign_deny"))),
+        ro_assigners: strs(cfg.get("parsed").and_then(|p| p.get("assigners"))),
+        ro_text_opts: strs(cfg.get("parsed").and_then(|p| p.get("text_opts"))),
+        ro_bin_dirs: strs(cfg.get("parsed").and_then(|p| p.get("bin_dirs"))),
     })
 }
 
@@ -537,7 +541,7 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     let Some(rules) = cfg.get("rules").and_then(|v| v.as_table()) else { return none };
     let ncfg = capacity_norm_cfg(cfg);
     let mut exempt: Vec<&'static str> = Vec::new();
-    let norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
+    let mut norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
     if norm.as_ref().is_some_and(|n| n.opt_skips > 0) {
         exempt.push("wrapper_opt");
     }
@@ -549,6 +553,17 @@ pub(crate) fn capacity_decide(payload: &Value) -> Decision {
     if ncfg.as_ref().is_some_and(|c| capacity_parsed_read(cfg, command, c)) {
         exempt.push("parsed_read");
         return Decision { exempt, ..none };
+    }
+    // #971: a list the exemption could not pass as a whole has its engine-local calls masked out (`parsed.mask`), so the rest of
+    // it is decided as it would be without them: an engine-local call is no reason to hold what passes on its own
+    let masked = ncfg.as_ref().and_then(|c| capacity_mask(cfg, command, c));
+    let command = masked.as_deref().unwrap_or(command);
+    if masked.is_some() {
+        exempt.push("parsed_mask");
+        norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
+        if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) || ncfg.as_ref().is_some_and(|c| capacity_parsed_read(cfg, command, c)) {
+            return Decision { exempt, ..none };
+        }
     }
     // #918 review: a command the reading can not balance (a quote or a substitution left open) is matched quote-blind otherwise,
     // so any such tail would switch the reading off: it is held under `unreadable` (empty = off)
@@ -847,16 +862,49 @@ pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
 
 /// The parsed read exemption (`dispatch.capacity_hold` `parsed`): `command` read as a list of pipelines ([`shellwords::read_only_parts`])
 /// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does or is a
-/// `parsed.tail_ok` filter (`| jq ..`). Fails
-/// closed: a list that can not be read, or no pipeline at all, exempts nothing.
+/// `parsed.tail_ok` filter (`| jq ..`) and each of whose redirections matches `parsed.redirs` and not `parsed.redirs_unless` (#971).
+/// Fails closed: a list that can not be read, or no pipeline at all, exempts nothing.
 pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> bool {
     let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
     let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else { return false };
-    !parts.is_empty()
-        && parts.iter().all(|p| match p {
-            shellwords::Part::Read(t) => capacity_read_only(cfg, t),
-            shellwords::Part::Local(tail) => tail.is_empty() || capacity_read_only(cfg, tail) || capacity_tail_ok(cfg, tail),
-        })
+    !parts.is_empty() && parts.iter().all(|p| capacity_part_ok(cfg, p))
+}
+
+/// Whether one part of the parsed read exemption passes: a read the whole of which matches the read pattern, or an engine-local
+/// verb whose pipe tail does or is a `parsed.tail_ok` filter and whose redirections are harmless ([`capacity_redir_ok`]).
+fn capacity_part_ok(cfg: &defaults::V, part: &shellwords::Part) -> bool {
+    match part {
+        shellwords::Part::Read(t) => capacity_read_only(cfg, t),
+        shellwords::Part::Local(tail, redirs) => {
+            (tail.is_empty() || capacity_read_only(cfg, tail) || capacity_tail_ok(cfg, tail)) && redirs.iter().all(|r| capacity_redir_ok(cfg, r))
+        }
+    }
+}
+
+/// #971: `command` with each engine-local call that passes ([`shellwords::local_spans`], [`capacity_part_ok`]) replaced by
+/// `parsed.mask` (a no-op command), `None` when there is none (or `mask` is empty: off). The ah-hook launcher applies the same keys.
+fn capacity_mask(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> Option<String> {
+    let mask = cfg.get("parsed").and_then(|p| p.get("mask")).and_then(|v| v.as_str()).filter(|m| !m.is_empty())?;
+    let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+    let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?.into_iter().filter(|(_, p)| capacity_part_ok(cfg, p)).collect();
+    if spans.is_empty() {
+        return None;
+    }
+    let mut out = command.to_string();
+    for (range, _) in spans.iter().rev() {
+        out.replace_range(range.clone(), mask);
+    }
+    Some(out)
+}
+
+/// #971: whether a redirection of an engine-local verb (operator and target joined: `2>&1`, `>/dev/null`, `>>/tmp/x`) is harmless:
+/// it matches `parsed.redirs` and not `parsed.redirs_unless`. Fails closed: an empty or uncompilable `redirs`, or an uncompilable
+/// `redirs_unless`, passes none.
+fn capacity_redir_ok(cfg: &defaults::V, redir: &str) -> bool {
+    let pat = |k: &str| cfg.get("parsed").and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or_default();
+    let re = |p: &str| regex::RegexBuilder::new(p).case_insensitive(true).build();
+    let (ok, unless) = (pat("redirs"), pat("redirs_unless"));
+    !ok.is_empty() && re(ok).is_ok_and(|r| r.is_match(redir)) && (unless.is_empty() || re(unless).is_ok_and(|r| !r.is_match(redir)))
 }
 
 /// Whether the pipe tail of an engine-local verb is one of the filters `parsed.tail_ok` names (`jq`, `python3 -m json.tool`), the
@@ -1858,9 +1906,11 @@ mod tests {
         assert_eq!(got("gh co 12"), want("gh-unknown-subcommand", "gh_unknown"));
         assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
         assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
-        // #969: an engine call the exemption can not pass (here a redirection) is held as engine-unlisted, never as an unread script
-        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null");
+        // #969: an engine call the exemption can not pass (here a redirection into a config file; #971: /dev/null passes) is held as
+        // engine-unlisted, never as an unread script
+        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ~/.claude/settings.json");
         assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
+        assert_eq!(decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null").rule, None);
         // a script whose whole body the parsed read exemption passes (a local engine verb, a plain read) is no engine-unlisted call
         std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
         assert_eq!(got("bash eng.sh"), (None, None));
