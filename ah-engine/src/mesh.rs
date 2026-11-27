@@ -291,13 +291,7 @@ impl MeshReader {
     /// [`message_count_from_others`](Self::message_count_from_others) without the rows of chat kind `skip_kind` (GH #845: an ack-only
     /// message wakes no one). A store whose `messages` table has no `chat_kind` column yet (an older writer opened it) has no such
     /// rows: the plain count.
-    pub fn message_count_from_others_except(
-        &self,
-        id: &str,
-        senders: &std::collections::HashSet<String>,
-        skip_prefix: &str,
-        skip_kind: &str,
-    ) -> Res<u64> {
+    pub fn message_count_from_others_except(&self, id: &str, senders: &std::collections::HashSet<String>, skip_prefix: &str, skip_kind: &str) -> Res<u64> {
         let marks = if senders.is_empty() { "''".to_string() } else { vec!["?"; senders.len()].join(",") };
         let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND.replace("%s", &marks);
         let Ok(mut st) = self.conn.prepare(&q) else {
@@ -308,6 +302,13 @@ impl MeshReader {
         args.extend([skip_prefix; 3]);
         args.push(skip_kind);
         Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+    }
+
+    /// The seq and hash of every row of partition `id` whose chat kind is `kind`; none on a store without the column.
+    pub fn rows_of_kind(&self, id: &str, kind: &str) -> Res<Vec<(i64, Option<String>)>> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_ROWS_OF_KIND) else { return Ok(Vec::new()) };
+        let rows = st.query_map(params![id, kind], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// The GH #845 columns (`chat_kind`, `wake_audience`) of workspace `id`'s rows with seq above `since`, by seq; rows with neither

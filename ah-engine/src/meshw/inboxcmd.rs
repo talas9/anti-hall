@@ -321,7 +321,7 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
     // `inbox ack <id> --broadcast-to <seq>` acks through
     if c.unavail.is_none() {
         let st = common::open_store(inv, &c.store_key)?;
-        crate::meshw::read::put_broadcasts(&mut o, &crate::meshw::read::unread_broadcasts(&st, inv, id)?, true);
+        crate::meshw::read::put_broadcasts(&mut o, &crate::meshw::read::unread_broadcasts(st.reader(), inv, id)?, true);
     }
     let result = o.done();
     tick::emit_known_warning(defaults::text("mesh_write.action_read"), &result);

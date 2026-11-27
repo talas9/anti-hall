@@ -343,6 +343,8 @@ pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM mess
 /// [`MESH_MESSAGE_COUNT_FROM_OTHERS`] without the rows of one chat kind (the last placeholder; GH #845: an ack-only message wakes no
 /// one). Fails on a store whose `messages` table has no `chat_kind` column yet; the caller then counts without it.
 pub const MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR mtype IS NOT NULL OR substr(COALESCE(body, ''), 1, length(?)) <> ?) AND (chat_kind IS NULL OR chat_kind <> ?)";
+/// GH #845 review P1-4: the seq and hash of every row of a partition with chat kind `?2` (the explicit acks a tick does not wake on).
+pub const MESH_ROWS_OF_KIND: &str = "SELECT seq, hash FROM messages WHERE workspace_id = ?1 AND chat_kind = ?2";
 /// The GH #845 columns of one workspace's rows past seq `?2` that have any (fails on a store without them).
 pub const MESH_EXTRAS_OF: &str =
     "SELECT seq, chat_kind, wake_audience FROM messages WHERE workspace_id = ?1 AND seq > ?2 AND (chat_kind IS NOT NULL OR wake_audience IS NOT NULL)";

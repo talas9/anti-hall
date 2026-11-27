@@ -2008,7 +2008,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         && !o.repo_key.is_empty()
         && let Ok(bst) = common::open_store(inv, &o.repo_key)
     {
-        let u = crate::meshw::read::unread_broadcasts(&bst, inv, id)?;
+        let u = crate::meshw::read::unread_broadcasts(bst.reader(), inv, id)?;
         if let Some(op) = crate::meshw::read::broadcast_op(id, &u) {
             ops.push(op);
         }

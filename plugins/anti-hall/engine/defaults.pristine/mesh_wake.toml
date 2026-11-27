@@ -171,3 +171,21 @@ value = "--broadcast-to takes the broadcastAckTarget number that `inbox read` pr
 [mesh_wake.channel_broadcast_cursor]
 doc = "The `channel` of a cursorWriteFailures entry for a broadcast-cursor move an ack could not make."
 value = "broadcast-cursor"
+
+# ---- review P1-4: the Codex poll (`inbox tick`) wakes like the watcher ---------------------------------------------------------
+
+[mesh_wake.tick_field_wake]
+doc = "`inbox tick` result field: what should wake a polling workspace, the unread direct mail without explicit acks plus the broadcasts that wake it. A poll loop acts on this; `unreadTotal` stays the full count."
+value = "wake"
+
+[mesh_wake.tick_field_wake_direct]
+doc = "`inbox tick` result field: the unread direct mail without the explicit acks (`send --ack-only`) while `mesh_chat.ack_suppression` is on."
+value = "wakeDirect"
+
+[mesh_wake.tick_line_wake]
+doc = "Appended to the `inbox tick --quiet` line when the wake count differs from the unread count; `{wake}` is filled in."
+value = ", wake {wake}"
+
+[mesh_wake.msg_tick_broadcast_unread]
+doc = "Debug note when `inbox tick` cannot read the broadcasts that wake a workspace (the tick then counts none); `{id}` and `{why}`."
+value = "inbox tick {id}: the broadcast wake count did not read: {why}"

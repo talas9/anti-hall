@@ -83,6 +83,9 @@ Each tick, for the watched row, where `wake_watch.field_broadcast_seq` = `broadc
 - **The row lacks the key** (an old writer): fall back to today's legacy count channel (`wake_watch.field_broadcast` = `broadcastUnreadFromOthers`, rising edge, unchanged). A watcher that has the
   watermark field keeps `lastBroadcastUnread` in step silently, so switching between writers never fires a spurious line.
 - `wake_watch.seen_version` = 2. `lastBroadcastWakeSeq` is written only once known (never a placeholder 0).
+- **Every arm** (a fresh or restarted watcher, not only an upgrade): if `broadcastWakePending > 0`, print ONE wake line (review P1-2).
+- **A line that fails to print** does not move the watermark: the old one is kept and marked unknown (not saved), so the next tick prints again (review P1-2).
+- **Re-arm after an ack** (review P1-1): when `broadcastWakePending` drops but stays above 0 with `seq` not above the watermark (an ack left eligible rows unread), print one line. The previous pending count is kept in memory only.
 - Ambiguous mention on a plain (non-question) broadcast: the audience is every id it prefixes (never fewer). A legacy-row question
   with an ambiguous mention is read the same way.
 - `mesh_write.boolean_only_flags` gains `ack-only`. `inbox ack --broadcast-to` with a non-number is refused
@@ -122,12 +125,15 @@ The drain result keys are:
 
 Each listed row: `{from, message, kind:"broadcast", timestamp, urgency, seq, needsReply, addressed}`. `addressed` is the §3 verdict with `addressed_mode = on`.
 
+The cap (review P1-1): a drain lists the oldest `mesh_wake.inbox_broadcast_cap` unread rows, then, past the cap, only the rows that wake the reader, up to `mesh_wake.inbox_broadcast_eligible_cap`. The ack target is the last row before the first one held back, so a row listed past a gap stays unread and is listed again. `mesh read` / `roster --ack` ack through the last row they listed, never the live head (review P1-3).
+
 ## 7. Explicit ack-only (LAST; switch off)
 
 - `mesh send --to X --ack-only --message "here"`: flag `mesh_chat.flag_ack_only` = `ack-only`. It stores `chat_kind = 'ack'`. It is refused together with `--question` or `--answers`. There is no regex classification.
 - With `mesh_chat.ack_suppression` = 1, every reader does all of these:
   - leaves `chat_kind='ack'` rows out of `directTotalFromOthers` (Rust `message_count_from_others_except`; Node, both `messageCountFromOthers` copies), out of `inbox tick`'s wake count, and out of the NDJSON wake path;
   - skips the native wake for a send that inserted an ack row.
+- `inbox tick` (the Codex poll, review P1-4) adds `wakeDirect` (`mesh_wake.tick_field_wake_direct`: unread direct mail without unread ack rows, matched by store seq or, for an NDJSON line, by its `_h` hash), `broadcastWakePending`/`broadcastWakeSeq` (the same per-reader rule as the summary) and `wake` (`mesh_wake.tick_field_wake` = `wakeDirect` + `broadcastWakePending`). `unreadTotal` is unchanged. The `--quiet` line appends `mesh_wake.tick_line_wake` (`, wake N`) only when `wake` differs from `unreadTotal`. A poll loop acts on `wake`.
 - At 0, an ack row is ordinary mail everywhere.
 
 ## 8. Switches and config keys (plugin `engine/defaults/mesh_wake.toml`, `mesh_chat.toml`; pristine twins byte-identical)

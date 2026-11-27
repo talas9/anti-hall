@@ -667,7 +667,7 @@ wake fires on a per-reader watermark (`broadcastWakeSeq`), so mail arriving whil
 refused. `send --ack-only` marks an explicit ack (it wakes no one; `mesh_chat.ack_suppression`). The drain verbs
 list broadcasts, oldest first: `inbox read <id>` shows `broadcasts` (each with `addressed`) and `broadcastAckTarget`; ack them
 with `inbox ack <id> --broadcast-to <broadcastAckTarget>` (never further). `read-primary` lists them and its receipt acks exactly
-those. On Codex the poll verb `inbox tick` still counts direct mail only; read broadcasts with the drain verbs above. Rules:
+those. On Codex the poll verb `inbox tick` reports `wake` (the unread direct mail without explicit acks, plus the broadcasts that wake you; the `--quiet` line adds `, wake N` when it differs from `unread`): act on `wake`, then read with the drain verbs above. Rules:
 `engine/defaults/mesh_wake.toml`, `mesh_chat.toml`.
 
 `roster`, `diagnose`, and `healthcheck` are the three pure-read, no-id, project-scoped
