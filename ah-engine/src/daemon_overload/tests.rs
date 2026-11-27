@@ -192,3 +192,63 @@ fn under_an_advisory_flood_pre_tool_use_p99_stays_inside_the_deadline_and_advice
     let st = sh.overload_json();
     assert!(st["limit"].as_u64().unwrap_or(99) <= crate::overload::Aimd::max(4) as u64, "the limit stays under its bound: {st}");
 }
+
+/// One dispatch request for the entry `check` (its table id) alone on PreToolUse with tool `tool`, served on this thread with shed mode `shed`: the answer rows.
+fn dispatch_one(sh: &Shared, check: &str, tool: &str, input: &str, shed: bool) -> Vec<serde_json::Value> {
+    let payload = format!(
+        r#"{{"session_id":"s-ovl-{}","cwd":"/","hook_event_name":"PreToolUse","tool_name":"{tool}","tool_input":{input}}}"#,
+        std::process::id()
+    );
+    let meta = crate::dispatch::native::Meta {
+        host: "claude".into(),
+        event: "PreToolUse".into(),
+        tool: Some(tool.into()),
+        root: None,
+        env: Default::default(),
+        only: Some(vec![check.into()]),
+        plan: vec![],
+        cfg: String::new(),
+        payload_sha1: None,
+        deadline_ms: None,
+        load_permille: None,
+        notice: None,
+    };
+    let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
+    crate::overload::set_request_shed(shed);
+    let (reply, _) = handle_request(d.as_bytes(), sh);
+    crate::overload::set_request_shed(false);
+    crate::delivery::settle(&sh.telemetry, crate::deadline::in_time());
+    match reply {
+        Reply::Ok(s) => serde_json::from_str(&s).unwrap(),
+        other => panic!("not OK: {other:?}"),
+    }
+}
+
+/// Shed mode through the real dispatch path: an advisory (fail-open, not recorder) check of a guard event is skipped and counted lost
+/// once as overload_shed, never counted decided (then undelivered); a fail-closed check in shed mode still runs.
+#[test]
+fn shed_mode_skips_an_open_guard_check_counted_once_and_a_closed_one_still_runs() {
+    let rs = RuleSet::parse(r#"{"version":1,"rules":[]}"#).unwrap();
+    let sh = Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into());
+    let reason = defaults::text("overload.drop_reason");
+    let (open, closed) = ("swarm-guard", "command");
+    assert_ne!(crate::script::failure_mode(open), defaults::text("script.failure_mode_closed"), "precondition: {open} fails open");
+    assert!(defaults::raw("diagnostics.shed_never").get(open).is_none(), "precondition: {open} is not a recorder");
+    assert_eq!(crate::script::failure_mode(closed), defaults::text("script.failure_mode_closed"), "precondition: {closed} fails closed");
+    crate::metrics::reset_this_thread();
+    let rows = dispatch_one(&sh, open, "Agent", r#"{"prompt":"x"}"#, true);
+    let lost = |c: &str| crate::metrics::bumped_on_this_thread("delivery_lost", &[("check", c), ("reason", reason)]);
+    assert_eq!(lost(open), 1, "the skipped check is counted lost once, as {reason}: {rows:?}");
+    let row = rows.iter().find(|r| r[0] == open).expect("the skipped check answers its entry (quietly)");
+    assert_eq!((row[1].as_i64(), row[2].as_str(), row[3].as_str()), (Some(0), Some(""), Some("")), "skipped = nothing to say: {row}");
+    let (decided, undelivered) = sh.telemetry.with_metrics(|m| {
+        (
+            m.counter("delivery_stage", &[("check", open), ("stage", defaults::text("delivery.stage_decided"))]),
+            m.counter("delivery_lost", &[("check", open), ("reason", defaults::text("delivery.reason_undelivered"))]),
+        )
+    });
+    assert_eq!((decided, undelivered), (0, 0), "a skipped check is not counted decided, then undelivered");
+    let rows = dispatch_one(&sh, "command-guard", "Bash", r#"{"command":"echo hi"}"#, true);
+    assert_eq!(lost(closed), 0, "a fail-closed check is never shed: {rows:?}");
+    assert!(rows.iter().any(|r| r[0] == "command-guard"), "and it answered: {rows:?}");
+}
