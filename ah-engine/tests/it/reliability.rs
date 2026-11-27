@@ -2271,6 +2271,41 @@ fn a_live_daemon_that_shows_no_progress_fails_the_call_open_within_a_second() {
     }
 }
 
+/// #969: the progress gate judges the worker on the call's OWN request. Another worker silent for 5 s (the daemon-wide figure) no
+/// longer fails a call open whose own worker is making progress (`files.heartbeat_peers` names its pid with a fresh figure): the
+/// call waits and gets the late deny. Before, one slow check failed every waiting client open (423 of 484 client gives-ups live).
+#[test]
+fn a_call_whose_own_worker_progresses_is_not_failed_open_by_another_silent_worker() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("hbpeer", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+    let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+    fake_heartbeat_with(&e, stand_in.id(), true, Some(5000)); // the longest-silent worker: silent for 5 s
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let l = UnixListener::bind(e.eng().join("e.sock")).unwrap();
+    let peers = e.eng().join(ah_engine::defaults::text("files.heartbeat_peers"));
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let pid = ah_engine::limits::peer_pid(&s).unwrap_or(0);
+            let mut b = Vec::new();
+            ah_engine::discard::harmless(s.read_to_end(&mut b));
+            // the worker serving this request beats while it works, then answers late
+            let until = std::time::Instant::now() + Duration::from_millis(1500);
+            while std::time::Instant::now() < until {
+                ah_engine::discard::harmless(std::fs::write(&peers, format!("{pid} 0\n")));
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let r = ah_engine::frame::encode(ah_engine::frame::Kind::Ok, &format!("{}late deny", ah_engine::hookio::EXIT2));
+            ah_engine::discard::harmless(s.write_all(&r));
+        }
+    });
+    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    println!("TIMING own-worker progress late deny wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
+    ah_engine::discard::harmless(stand_in.kill());
+    ah_engine::discard::harmless(stand_in.wait());
+    assert_eq!(code, 2, "the call's own worker progressed, so its late deny blocks: out={out:?} {}", e.health_log());
+    assert!(!e.health_log().contains("not working on the request"), "no progress-gate fail-open: {}", e.health_log());
+}
+
 /// #684 (review of #690): the long wait is for Stop and SubagentStop only. SessionEnd (5 s hook timeout) with a daemon that shows
 /// progress forever still ends by itself: the CLIENT gives up at the short bound (`client.slow_fallback_max_ms` less its margin) and
 /// logs the slow call, before the launcher's watchdog could kill it.

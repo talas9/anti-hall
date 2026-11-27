@@ -165,7 +165,9 @@ fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
     if GATE_OFF.get() {
         return None;
     }
-    let limit = defaults::millis("client.progress_stale_ms");
+    // #969: a loaded machine stretches the progress bound by the factor the launcher fitted, as it does the late wait
+    let factor = CALL_EVENT.with(|e| crate::deadline::client_load_factor(&e.borrow()));
+    let limit = Duration::from_millis(crate::loadscale::scale(defaults::num("client.progress_stale_ms"), factor));
     if limit.is_zero() {
         return None;
     }
@@ -189,7 +191,9 @@ fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
         return Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &"idle"), ("limit", &limit.as_millis())])));
     }
     *idle_seen = None;
-    let age = hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age));
+    // #969: the worker serving THIS call's request, when the daemon names it (files.heartbeat_peers); else the longest-silent busy
+    // worker's figure (one slow check elsewhere then still fails this call open, as before)
+    let age = health::peer_progress(std::process::id()).or_else(|| hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age)));
     if age.is_some_and(|a| a < limit) {
         return None;
     }
@@ -1465,6 +1469,8 @@ fn env_advisory_output(raw: &str, existing: &str) -> Option<String> {
 
 /// `engine hook`: read stdin, print the result and exit with its code (0 when the engine answered or could not).
 pub fn hook_main(args: &[String]) -> i32 {
+    // #969: the hook call waits on the daemon's answer; on a loaded machine it runs in the daemon's QoS class (daemon.qos)
+    crate::qos::apply_self("client");
     let res = std::panic::catch_unwind(|| {
         let max = defaults::num("client.max_stdin");
         let mut raw = Vec::new();

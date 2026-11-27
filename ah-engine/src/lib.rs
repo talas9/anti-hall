@@ -82,6 +82,7 @@ pub mod proc;
 pub mod procid;
 /// Process watch: orphan sweep, resource and disk warnings.
 pub mod procwatch;
+pub mod qos;
 pub mod refresh;
 pub mod reqenv;
 pub mod roles;

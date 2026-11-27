@@ -158,6 +158,9 @@ pub struct Shared {
     /// per worker: 0 = idle, else (ms since `started`) + 1 at its last progress on the current request (picked up, a check
     /// started or finished, the interpreter ran: [`crate::deadline::beat`]); the watchdog's stuck rule measures from it
     busy_since: Vec<Arc<AtomicU64>>,
+    /// #969: per worker, the socket peer pid of the request it serves (0 = none known): the heartbeat's per-request progress
+    /// (`files.heartbeat_peers`), so a waiting client judges the worker on ITS request, not the longest-silent one
+    busy_peer: Vec<Arc<AtomicU64>>,
     /// A rules/config reload the accept loop asked for is running on its own thread ([`reload_off_loop`]); the loop asks for no other
     /// until it ends.
     reloading: Arc<AtomicBool>,
@@ -250,6 +253,7 @@ impl Shared {
             loop_beat: AtomicU64::new(0),
             loop_ended: AtomicBool::new(false),
             busy_since: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
+            busy_peer: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             reloading: Arc::new(AtomicBool::new(false)),
             reload_gate: Mutex::new(()),
             #[cfg(test)]
@@ -766,6 +770,8 @@ pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
 thread_local! {
     /// The socket peer of the request this thread is serving ([`serve_conn`] sets it, the request parse takes it).
     static REQUEST_PEER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    /// #969: this worker's slot of [`Shared::busy_peer`] (set by [`worker`]).
+    static PEER_SLOT: std::cell::RefCell<Option<Arc<AtomicU64>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Where the engine's CPU goes, for `status --json`: `by_event` (hook calls and the checks' CPU per hook event) and `top_checks`
@@ -1676,7 +1682,13 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         crate::deadline::watch_peer(s.as_raw_fd());
     }
     let acked_at = Instant::now();
-    REQUEST_PEER.with(|c| c.set(crate::limits::peer_pid(&s)));
+    let peer = crate::limits::peer_pid(&s);
+    REQUEST_PEER.with(|c| c.set(peer));
+    PEER_SLOT.with(|p| {
+        if let Some(slot) = p.borrow().as_ref() {
+            slot.store(u64::from(peer.unwrap_or(0)), SeqCst);
+        }
+    });
     let (request, event) = request_context(&req);
     let _breadcrumb = crate::crash::enter("request", &request, &event, "", "");
     health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
@@ -1821,9 +1833,11 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
 }
 
 fn worker(sh: Arc<Shared>, idx: usize) {
+    note_qos(&sh, crate::qos::apply_self("worker"));
     crate::script::prewarm_patterns();
     crate::script::prewarm();
     crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);
+    PEER_SLOT.with(|p| *p.borrow_mut() = Some(sh.busy_peer[idx].clone()));
     loop {
         let conn = {
             let mut q = lk(&sh.queue);
@@ -1851,6 +1865,7 @@ fn worker(sh: Arc<Shared>, idx: usize) {
         };
         sh.busy_since[idx].store(sh.ms() + 1, SeqCst);
         let after = serve_conn(conn, &sh, wait, in_flight);
+        sh.busy_peer[idx].store(0, SeqCst);
         sh.busy_since[idx].store(0, SeqCst);
         crate::script::maintain(false);
         crate::memdiag::worker_tick(idx);
@@ -1997,12 +2012,35 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
 
 /// How many ms the longest-silent busy worker has gone without progress (`None` = no worker is busy): what the heartbeat file carries,
 /// so a client waiting past its fail-fast deadline can tell a daemon that is working on its request from one that is not.
+/// #969: count the outcome of a request thread's QoS request (`daemon.qos`) per outcome.
+fn note_qos(sh: &Shared, r: crate::qos::Applied) {
+    let outcome = match r {
+        crate::qos::Applied::Set => "set",
+        crate::qos::Applied::Off => "off",
+        crate::qos::Applied::Refused(_) => "refused",
+    };
+    sh.telemetry.with_metrics(|m| m.inc("qos_threads", &[("outcome", outcome)]));
+}
+
+/// #969: each busy worker that knows its request's client: (the client's pid, ms since the worker's last progress on it).
+fn busy_peers(sh: &Shared) -> Vec<(u64, u64)> {
+    let now = sh.ms();
+    sh.busy_since
+        .iter()
+        .zip(&sh.busy_peer)
+        .map(|(b, p)| (b.load(SeqCst), p.load(SeqCst)))
+        .filter(|(since, pid)| *since != 0 && *pid != 0)
+        .map(|(since, pid)| (pid, now.saturating_sub(since - 1)))
+        .collect()
+}
+
 fn oldest_busy_silence(sh: &Shared) -> Option<u64> {
     let now = sh.ms();
     sh.busy_since.iter().map(|b| b.load(SeqCst)).filter(|since| *since != 0).map(|since| now.saturating_sub(since - 1)).max()
 }
 
 fn watchdog(sh: Arc<Shared>) {
+    note_qos(&sh, crate::qos::apply_self("watchdog"));
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
     let mut last_cpu_check = Instant::now();
@@ -2012,6 +2050,7 @@ fn watchdog(sh: Arc<Shared>) {
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
         health::heartbeat(oldest_busy_silence(&sh));
+        health::heartbeat_peers(&busy_peers(&sh));
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
         // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
         // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
@@ -2797,6 +2836,7 @@ fn shed_drain(mut read: impl FnMut(&mut Vec<u8>, Duration) -> std::io::Result<us
 }
 
 fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
+    note_qos(sh, crate::qos::apply_self("accept"));
     let me = limits::uid();
     let fd = listener.as_raw_fd();
     let mut last_check = Instant::now();

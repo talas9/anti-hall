@@ -1074,6 +1074,26 @@ fn a_workspace_with_an_unarmed_lock_and_the_switch_off_gets_the_off_notice_not_t
     assert!(t.contains("devswarm.wakeWatch=false") && !t.contains("--auto"), "{t}");
 }
 
+/// #969 (live, a DevSwarm Primary at load 50-100): the merged watcher (`agents wake-watch --auto`) was live and itself delivered
+/// "no live wake-watch covers this workspace" (the wake row's own delivery proves the process ran) while the tracker read the
+/// workspace's lock as not live. The agent half's fresh stamp is the same live process: the workspace is covered, and the order to
+/// arm a second watcher (which would only be refused as held) is not sent.
+#[test]
+fn a_workspace_whose_merged_watcher_stamp_is_fresh_is_covered_even_when_its_lock_reads_stale() {
+    let h = home("ws-stamp");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN)); // the DevSwarm half's lock reads stale
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let e = env(&h, t);
+        arm_wake(&e, "sessW"); // the agent half of the same process renews its stamp
+        tick(&e, &mut st);
+    }
+    assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(false), "the lock alone reads unarmed");
+    assert!(!agent(&st, "sessW").flags.contains_key("monitor_unarmed"), "the live merged watcher covers the workspace");
+    assert!(queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_unarmed"));
+}
+
 #[test]
 fn a_workspace_follows_devswarm_wake_watch_not_agents_wake_watch() {
     let h = home("ws-own-switch");
@@ -5759,8 +5779,10 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     let t = first[0]["text"].as_str().unwrap();
     assert!(t.contains("Do now: confirm or clear the blocker on Choose disk items"), "{t}");
     let mut at = n + max + MIN;
+    // #968: unanswered reminders back off (agent_tracker.cooldowns backoff_cap_ms), so step past the cap each time
+    let cap = defaults::raw("agent_tracker.cooldowns").get("hold_expired").and_then(|c| c.get("backoff_cap_ms")).and_then(V::as_integer).unwrap_or(0) as u64;
     for _ in 0..5 {
-        at += 31 * MIN;
+        at += cap.max(31 * MIN) + MIN;
         ticks(&h, &mut st, &[at]);
     }
     let all = rows(&h);
@@ -5774,6 +5796,44 @@ fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
     let cleared: u64 =
         ["acted_on", "condition_gone", "expired", "undelivered", "unexplained"].iter().map(|w| compliance_count("hold_expired", &format!("cleared:{w}"))).sum();
     assert_eq!(cleared, 1, "an unexplained or explained clear is always counted");
+}
+
+/// #968 (live: about 95 identical hold reminders over 2 days to a session idle on a real owner gate): reminders about an unchanged
+/// blocker back off, doubling up to agent_tracker.cooldowns.hold_expired.backoff_cap_ms, so an idle session hears it a bounded number
+/// of times a day; a rewritten reason starts again at the plain cooldown. Counted in agent_reminder_backoff.
+#[test]
+fn unanswered_hold_reminders_back_off_and_a_rewritten_reason_starts_over() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-backoff");
+    let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |m: Value| json!({"id": "1", "subject": "Flash the board", "status": "pending", "owner": "", "blockedBy": [], "metadata": m});
+    task_file(&h, SID, task(json!({"blockedOn": "waiting on the hardware step at the bench"})));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
+    let mut at = n + max + MIN;
+    ticks(&h, &mut st, &[at]);
+    assert_eq!(rows(&h).len(), 1, "the expired hold is reminded once");
+    // two days of ticks every 31 minutes (the plain cooldown is 30): without backoff about 93 reminders
+    for _ in 0..93 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    let backed = rows(&h).len();
+    assert!(backed <= 12, "an unchanged blocker on an idle session is reminded a bounded number of times: {backed}");
+    assert!(backed >= 5, "never silent: the capped cooldown still repeats: {backed}");
+    assert!(crate::metrics::bumped_on_this_thread("agent_reminder_backoff", &[("signal", "hold_expired")]) > 0, "the backoff is counted");
+    // a rewritten reason is a new blocker: its first reminder after hold_max_ms, then the plain cooldown again (not the backed-off one)
+    task_file(&h, SID, task(json!({"blockedOn": "bench step moved to Monday, owner confirmed"})));
+    at += MIN;
+    ticks(&h, &mut st, &[at]);
+    let before = rows(&h).len();
+    at += max + MIN;
+    ticks(&h, &mut st, &[at]);
+    at += 61 * MIN;
+    ticks(&h, &mut st, &[at]);
+    assert!(rows(&h).len() >= before + 2, "the new reason is reminded at the plain cooldown: {} -> {}", before, rows(&h).len());
 }
 
 /// Owner rule: every main session keeps a wake Monitor armed, even one with nothing running (monitor_unarmed stays silent there).

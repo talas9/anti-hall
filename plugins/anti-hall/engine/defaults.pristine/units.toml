@@ -252,8 +252,8 @@ min = 1
 unit = "s"
 
 [units.process_type]
-doc = "launchd ProcessType of the engine unit."
-value = "Background"
+doc = "launchd ProcessType of the engine unit. Interactive (#969): the daemon answers every guard a tool call waits on, so it runs with an app's resource limits; Background let macOS throttle its CPU and clamp every thread to the background QoS class, so daemon.qos could not raise it and guard answers missed their deadlines on a loaded machine."
+value = "Interactive"
 
 [units.plist_limits]
 doc = "The resource limits of the LaunchAgent: the open-file limit (soft and hard NumberOfFiles) of the daemon launchd starts. Without it launchd's default (256) applies and a file watcher over a large state directory ran the daemon out of descriptors (GH #912). {nofile} is daemon.nofile."
