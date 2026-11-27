@@ -387,6 +387,10 @@ value = "{kind}{detail} can't run in the main thread."
 doc = "The kind of a state-changing remote command."
 value = "a command that changes a shared remote"
 
+[command.msg_heavy_pull]
+doc = "The kind of a git pull or fetch that is held in the main thread (it reads from a shared remote and changes only local state, but can stall on network or credentials). `git pull --ff-only` is not held."
+value = "a git pull or fetch from a shared remote"
+
 [command.msg_heavy_plain]
 doc = "The kind of any other heavy command."
 value = "a heavy command"
