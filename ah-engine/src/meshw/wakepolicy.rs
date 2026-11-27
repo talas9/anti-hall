@@ -42,6 +42,8 @@ pub struct Bc<'a> {
     pub heartbeat: bool,
     /// The message body.
     pub body: &'a str,
+    /// The sender's stored kind (`sender_kind`), which alone grants a declared identity's rank.
+    pub kind: Option<&'a str>,
 }
 
 /// True when `id` is a Primary's mesh id.
@@ -99,7 +101,7 @@ pub fn resolve(b: &Bc<'_>, roster: &[&str]) -> Result<Audience, Ambiguous> {
     }
     // GH #845 (owner 2026-11-28): a sender ranked at or above `mesh_identity.privileged_rank` (admin, ah-engine, the Primary) has the
     // Primary's wake privilege, whatever its role
-    let privileged = crate::meshw::senders::privileged(b.sender);
+    let privileged = crate::meshw::senders::privileged_rank(crate::meshw::senders::rank_of(b.sender, b.kind));
     let all_allowed = at_all && (privileged || all_roles.contains(&role));
     if all_allowed {
         return Ok(Audience::All);
@@ -201,7 +203,7 @@ mod tests {
         let p = pm();
         let r = roster(&p);
         let refs: Vec<&str> = r.iter().map(String::as_str).collect();
-        resolve(&Bc { sender: Some(sender), urgency: Some(urgency), question, heartbeat: false, body }, &refs)
+        resolve(&Bc { sender: Some(sender), urgency: Some(urgency), question, heartbeat: false, body, kind: None }, &refs)
     }
 
     #[test]
@@ -245,7 +247,7 @@ mod tests {
         let p = pm();
         let r = roster(&p);
         let refs: Vec<&str> = r.iter().map(String::as_str).collect();
-        let b = Bc { sender: Some(B), urgency: Some("urgent"), question: false, heartbeat: true, body: &format!("@{A} wip") };
+        let b = Bc { sender: Some(B), urgency: Some("urgent"), question: false, heartbeat: true, body: &format!("@{A} wip"), kind: None };
         assert_eq!(resolve(&b, &refs), Ok(Audience::Nobody));
     }
 

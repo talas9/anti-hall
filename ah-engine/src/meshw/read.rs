@@ -165,7 +165,7 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
             if alias.is_some() {
                 b.put("fromLabel", s_or_null(sender));
             }
-            crate::meshw::senders::put_from(&mut b, sender);
+            crate::meshw::senders::put_from(&mut b, r);
             b.done()
         })
         .collect();
@@ -278,7 +278,8 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
         let (kind, stored) = extras.get(&q).map_or((None, None), |(k, a)| (k.as_deref(), a.as_deref()));
         let stored = crate::meshw::wakepolicy::decode(stored);
         let legacy = || {
-            let b = crate::meshw::wakepolicy::Bc { sender, urgency: m["urgency"].as_str(), question: needs_reply, heartbeat: false, body };
+            let kind = m[defaults::text("mesh_identity.row_kind_field")].as_str();
+            let b = crate::meshw::wakepolicy::Bc { sender, urgency: m["urgency"].as_str(), question: needs_reply, heartbeat: false, body, kind };
             crate::meshw::wakepolicy::resolve(&b, &roster_ids).unwrap_or_else(|e| crate::meshw::wakepolicy::Audience::Ids(e.ids))
         };
         let addressed = mode.wakes(stored.as_ref(), kind, reader, legacy, true);
@@ -313,7 +314,7 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
         if alias.is_some() {
             b.put("fromLabel", s_or_null(sender));
         }
-        crate::meshw::senders::put_from(&mut b, sender);
+        crate::meshw::senders::put_from(&mut b, &m);
         rows.push(b.done());
         if contiguous {
             target = Some(q);

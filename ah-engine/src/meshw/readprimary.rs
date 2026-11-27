@@ -126,7 +126,7 @@ fn store_msg(r: &Value, origin: bool) -> Msg {
         o.put(k, jv(&r[src]));
     }
     // GH #845: a declared sender (admin, ah-engine) is shown with its kind and rank
-    crate::meshw::senders::put_from(&mut o, r["sender"].as_str());
+    crate::meshw::senders::put_from(&mut o, r);
     Msg {
         sort_ts: r["ts"].as_f64().filter(|t| t.is_finite()).unwrap_or(f64::INFINITY),
         index: r["index"].as_f64(),

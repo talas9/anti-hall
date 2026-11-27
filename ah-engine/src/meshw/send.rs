@@ -726,16 +726,10 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let t_resolve = std::time::Instant::now();
     // GH #845 (owner 2026-11-28): a declared sender (`--as admin`, or the `mesh_identity.sender_env` variable) sends as itself, never
     // as the workspace it runs in (the owner is never stamped as the Primary)
-    let declared = match crate::meshw::senders::requested(&inv.env, a) {
-        None => None,
-        Some(name) => match crate::meshw::senders::declared(name) {
-            Some(d) => Some(d),
-            None => {
-                let known = crate::meshw::senders::names().join(", ");
-                let msg = defaults::render("mesh_identity.msg_unknown_sender", &[("name", &quote(name)), ("known", &known)]);
-                return Ok(refused(&[("error", s(&msg))]));
-            }
-        },
+    // (operator use only: an agent caller is refused, and ah-engine is never selectable from the CLI)
+    let declared = match crate::meshw::senders::cli_declared(&inv.env, a) {
+        Ok(d) => d,
+        Err(msg) => return Ok(refused(&[("error", s(&msg))])),
     };
     let from = declared.map_or_else(|| from_d.identity.clone(), |d| d.id.to_string());
     let id_kind: &str = declared.map_or(from_d.kind.as_str(), |d| d.kind);
@@ -910,7 +904,14 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     // several workspaces is refused (in the plan pass too, before anything is written)
     let audience = if broadcast {
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-        let b = crate::meshw::wakepolicy::Bc { sender: Some(&from), urgency: Some(&urgency), question, heartbeat: false, body: &message };
+        let b = crate::meshw::wakepolicy::Bc {
+            sender: Some(&from),
+            urgency: Some(&urgency),
+            question,
+            heartbeat: false,
+            body: &message,
+            kind: declared.map(|d| d.kind),
+        };
         match crate::meshw::wakepolicy::resolve(&b, &ids) {
             Ok(a) => Some(crate::meshw::wakepolicy::encode(&a)),
             Err(e) => {
@@ -960,6 +961,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         cwd: &cwd,
         ack_only,
         audience,
+        sender_kind: crate::meshw::senders::stored_kind(declared),
     };
     if broadcast {
         return do_append(&ctx);
@@ -1085,6 +1087,8 @@ struct AppendCtx<'a> {
     ack_only: bool,
     /// A broadcast's resolved audience, as its `wake_audience` text (GH #845); `None` for a direct.
     audience: Option<String>,
+    /// The `sender_kind` the row stores (GH #845 identities).
+    sender_kind: &'static str,
 }
 
 /// `doAppend()`: append, read it back, build the result, write the receipt. A failed INSERT wrote nothing (SQLite
@@ -1099,9 +1103,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     LAST_ACK.set(false);
     // GH #845 (contract §1): the explicit ack kind and the broadcast's audience are written in the INSERT's transaction
     let kind = c.ack_only.then(|| defaults::text("mesh_chat.kind_ack"));
-    let (inserted, seq) = match crate::meshw::stages::time("insert", || {
-        c.st.append_mesh_row_with(&row, kind, c.audience.as_deref(), Some(crate::meshw::senders::kind_of(Some(c.from))))
-    }) {
+    let (inserted, seq) = match crate::meshw::stages::time("insert", || c.st.append_mesh_row_with(&row, kind, c.audience.as_deref(), Some(c.sender_kind))) {
         Ok(r) => (r.inserted, r.seq),
         Err(e) => return ident::unavailable("mesh_write.what_append", &e),
     };

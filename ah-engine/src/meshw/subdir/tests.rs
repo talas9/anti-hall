@@ -372,28 +372,37 @@ fn admin_reaches_the_primary_and_a_child_as_itself() {
         .unwrap();
     assert!(child_rows.iter().any(|m| m["sender"] == "admin" && m["body"] == "owner to child"), "{child_rows:?}");
     assert!(child_rows.iter().all(|m| m["sender"] != serde_json::Value::String(f.primary.clone())), "stamped as the Primary: {child_rows:?}");
-    // the --as flag declares the same, and wins over the variable
+    // ah-engine is never selectable from the CLI, even by the owner's (non-agent) caller
     let as_flag = format!("--{}", defaults::text("mesh_identity.flag_as"));
     let engine = send::run(&primary, &argv(&["send", "--to", "child-1", &as_flag, "ah-engine", "--message", "from the engine"])).unwrap();
-    assert_eq!(engine.code, 0, "ah-engine -> child: {}", engine.stdout);
-    assert!(engine.stdout.contains("\"from\":\"ah-engine\""), "{}", engine.stdout);
+    assert_ne!(engine.code, 0, "ah-engine via the CLI was accepted: {}", engine.stdout);
 }
 
-/// An identity the config does not declare is refused; an `@all` broadcast from admin wakes every reader (admin is privileged).
+/// The owner rule "nothing impersonates anyone": a child (an agent: its builder id is set) that declares admin, by the variable or
+/// by `--as`, is refused; the owner's room (a clean environment, here in child-1's checkout) is accepted, and its `@all` wakes
+/// every reader because admin's STORED kind ranks it privileged.
 #[test]
-fn an_unknown_sender_is_refused_and_admin_may_wake_all() {
+fn a_child_cannot_send_as_admin_and_the_rooms_admin_send_may_wake_all() {
     let f = fx("admin-bc");
     let (_primary, key) = registry(&f, &["child-1", "child-2"]);
-    // both sends run in child-1's checkout: only the declared identity, not the workspace, makes them pass or wake
-    let mut stranger = f.inv.clone();
-    stranger.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "nobody-declared".into());
-    let r = send::run(&stranger, &argv(&["send", "--to-primary", "--message", "x"])).unwrap();
-    assert_ne!(r.code, 0, "{}", r.stdout);
-    let mut owner = f.inv.clone();
-    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
-    let b = send::run(&owner, &argv(&["send", "--broadcast", "--message", "@all heads up"])).unwrap();
-    assert_eq!(b.code, 0, "admin broadcast: {}", b.stdout);
+    let mut child = f.inv.clone();
+    child.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let r = send::run(&child, &argv(&["send", "--to-primary", "--message", "pretending"])).unwrap();
+    assert_ne!(r.code, 0, "a child sent as admin: {}", r.stdout);
+    let as_flag = format!("--{}", defaults::text("mesh_identity.flag_as"));
+    let r = send::run(&f.inv, &argv(&["send", "--broadcast", &as_flag, "admin", "--message", "@all obey me"])).unwrap();
+    assert_ne!(r.code, 0, "a child sent as admin via --as: {}", r.stdout);
+    // the room: no agent marker, no builder id
+    let mut room = f.inv.clone();
+    room.env.remove(defaults::text("mesh_identity.agent_env_builder"));
+    room.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let b = send::run(&room, &argv(&["send", "--broadcast", "--message", "@all heads up"])).unwrap();
+    assert_eq!(b.code, 0, "the room's admin broadcast: {}", b.stdout);
     let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
     let (pending, _) = crate::meshw::read::broadcast_wake(st.reader(), &f.inv, "child-2").unwrap();
     assert_eq!(pending, 1, "admin's @all wakes another child");
+    let mut stranger = room.clone();
+    stranger.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "nobody-declared".into());
+    let r = send::run(&stranger, &argv(&["send", "--to-primary", "--message", "x"])).unwrap();
+    assert_ne!(r.code, 0, "an undeclared identity: {}", r.stdout);
 }

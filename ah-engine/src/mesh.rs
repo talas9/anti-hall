@@ -344,16 +344,36 @@ impl MeshReader {
     /// with `sinceCursor`), one row at a time. `f` returns false to stop. Each message carries its 1-based positional
     /// `index`.
     pub fn for_each_message(&self, id: &str, since: u64, mut f: impl FnMut(Value) -> bool) -> Res<()> {
+        // GH #845: a row a declared identity (admin, ah-engine) sent carries its stored sender_kind, so its kind and rank are read
+        // from the store, never from the sender's name
+        let kinds = self.sender_kinds(id);
+        let kind_field = crate::defaults::text("mesh_identity.row_kind_field");
         let mut st = self.conn.prepare_cached(sql::MESH_MESSAGES)?;
         let mut rows = st.query(params![id, since as i64])?;
         let mut index = since;
         while let Some(r) = rows.next()? {
             index += 1;
-            if !f(Self::message(r, index)?) {
+            let mut m = Self::message(r, index)?;
+            if !kinds.is_empty()
+                && let Some(k) = m["storeSeq"].as_i64().and_then(|q| kinds.get(&q))
+                && let Value::Object(o) = &mut m
+            {
+                o.insert(kind_field.into(), Value::from(k.clone()));
+            }
+            if !f(m) {
                 break;
             }
         }
         Ok(())
+    }
+
+    /// The stored sender_kind of partition `id`'s rows that a declared identity sent, by seq; none on a store without the column.
+    fn sender_kinds(&self, id: &str) -> std::collections::HashMap<i64, String> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_SENDER_KINDS_OF) else { return std::collections::HashMap::new() };
+        let agent = crate::defaults::text("mesh_identity.kind_agent");
+        st.query_map(params![id, agent], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
     }
 
     /// The newest `n` messages of workspace `id`, oldest first, with their positional index.

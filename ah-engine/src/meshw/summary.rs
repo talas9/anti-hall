@@ -51,6 +51,8 @@ struct Msg {
     urgency: Option<String>,
     is_heartbeat: bool,
     needs_reply: bool,
+    /// The stored sender_kind of a declared identity's row (GH #845).
+    sender_kind: Option<String>,
 }
 
 /// A store read that failed: Node's `readAll` swallows it to an empty result (devswarm-store.js, "fail-open contract"), so
@@ -135,6 +137,7 @@ fn messages(st: &MeshStore, id: &str, since: f64) -> R<Vec<Msg>> {
                 urgency: sv(&m["urgency"]),
                 is_heartbeat: m["isHeartbeat"].as_bool().unwrap_or(false),
                 needs_reply: m["needsReply"].as_bool().unwrap_or(false),
+                sender_kind: sv(&m[defaults::text("mesh_identity.row_kind_field")]),
             });
             true
         })
@@ -846,6 +849,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
                             question: r.needs_reply,
                             heartbeat: false,
                             body: &r.body,
+                            kind: r.sender_kind.as_deref(),
                         };
                         crate::meshw::wakepolicy::resolve(&b, &roster_ids).unwrap_or_else(|e| crate::meshw::wakepolicy::Audience::Ids(e.ids))
                     })
