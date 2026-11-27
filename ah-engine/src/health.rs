@@ -52,6 +52,13 @@ pub fn watchdog_exit_kind(load: Option<f64>) -> &'static str {
     if ended_by_load(load_permille(load)) { defaults::text("health.load_exit_kind") } else { "watchdog" }
 }
 
+/// R0: the event-log kind of an rss-cap exit (`daemon.rss_cap_kb`) taken at `load` per core: under load ([`ended_by_load`]) it is
+/// `health.rss_load_kind`, which `health.crashy_kinds` does not list (more requests at once raise memory with the load, so a trip
+/// then is the machine's load, not a leak, and must not latch the crash-loop cooldown); otherwise the crash-loop `rss`.
+pub fn rss_exit_kind(load: Option<f64>) -> &'static str {
+    if ended_by_load(load_permille(load)) { defaults::text("health.rss_load_kind") } else { "rss" }
+}
+
 /// R0 second path: the client is about to end the hung daemon `pid` at `load` per core: leave a tombstone (`files.hung_kill`) so the
 /// next start's reap logs that end as what it was, not as an unexplained crash ([`reap_marker`]).
 pub fn note_hung_kill(pid: u32, load: Option<f64>) {
@@ -82,6 +89,7 @@ fn restart_kinds() -> Vec<&'static str> {
     let mut k = crashy();
     k.push(defaults::text("health.load_exit_kind"));
     k.push(defaults::text("health.hung_kill_kind"));
+    k.push(defaults::text("health.rss_load_kind"));
     k
 }
 
@@ -1269,6 +1277,39 @@ mod tests {
         assert!(idle_ev.iter().any(|e| e.kind == "crash" && e.code == hung), "an idle kill is a crash with the hung-kill code");
         assert!(untold, "a death with no tombstone is a crash as before");
         assert!(!defaults::list("health.crashy_kinds").contains(&hung));
+    }
+
+    /// R0 (#969 hardening): an rss-cap exit taken under load never latches the crash loop, the same exits on an idle machine still
+    /// do, and the degraded summary still names the load ones as restarts.
+    #[test]
+    fn rss_exits_under_load_never_latch_the_crash_loop_but_idle_ones_still_do() {
+        let _turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("AH_ENGINE_DIR");
+        let cfg = crate::config::ClientConfig::from_env();
+        let run = |name: &str, load: Option<f64>| -> bool {
+            let dir = crate::testtmp::path(format!("ah-r0-rss-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take STATE_TURN first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            for _ in 0..5 {
+                log_event(rss_exit_kind(load), "rss", "rss over cap");
+            }
+            let tripped = crashloop_tripped(&cfg);
+            crate::discard::harmless(std::fs::remove_dir_all(&dir));
+            tripped
+        };
+        let (loaded, idle, unread) = (run("loaded", Some(5.0)), run("idle", Some(0.5)), run("unread", None));
+        match &prev {
+            // SAFETY: as above
+            Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
+        }
+        let kind = defaults::text("health.rss_load_kind");
+        assert!(!loaded, "five rss exits at load 5/core latched the crash-loop cooldown");
+        assert!(idle && unread, "rss exits on an idle machine (or with no load reading) must still trip");
+        assert!(!defaults::list("health.crashy_kinds").contains(&kind));
+        let s = summary_from(&[ev(1_000, kind, "rss", "rss over cap")], 5_000, None, None);
+        assert!(s["degraded_reason"].as_str().unwrap_or("").contains(&format!("{kind}:rss")), "{s}");
     }
 
     /// R0 (#969 hardening): a watchdog exit taken under load never counts toward the crash loop, but it is still a restart the

@@ -1091,6 +1091,10 @@ value = "watchdog_load"
 doc = "R0 (#969 hardening): the event-log kind the reap of a daemon a client ended as hung (files.hung_kill) logs when the load per core at the kill was above health.load_exit_per_core_permille. Not in health.crashy_kinds: a client ending a daemon a starved machine made look hung must not latch the crash-loop cooldown. On an idle machine the same kill is logged as a crash with this code, so a daemon that really wedges still latches."
 value = "hung_kill"
 
+[health.rss_load_kind]
+doc = "R0 (#969 hardening): the event-log kind of an rss-cap exit (daemon.rss_cap_kb) taken while the load per core is above health.load_exit_per_core_permille: more requests run at once under load and memory rises with them, so the trip is the load, not a leak. Not in health.crashy_kinds, so it can not latch the crash-loop cooldown; the degraded summary still names it. At or under the bar (or with no load reading) the trip stays the crash-loop kind rss."
+value = "rss_load"
+
 [health.crashy_kinds]
 doc = "Event kinds that count toward the crash-loop threshold."
 value = ["crash", "panic", "start_fail", "watchdog", "rss"]

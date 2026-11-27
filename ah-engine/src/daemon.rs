@@ -2201,7 +2201,10 @@ fn watchdog(sh: Arc<Shared>) {
                 continue;
             }
             if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
-                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
+                // R0: under load more requests run at once and memory rises with them; a cap trip taken then is logged as a load
+                // exit (health.rss_load_kind, not crashy) so it can not latch the crash-loop cooldown; at low load it stays `rss`
+                let kind = health::rss_exit_kind(crate::loadscale::per_core());
+                health::log_event(kind, "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
                 crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_rss"));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
                 health::log_event("memory", "breakdown", &sh.memory_line());
