@@ -2564,10 +2564,16 @@ function scriptFileVerdict(tok, cdDir, byPath) {
   // a leading $HOME / ${HOME} is the user's home directory (as for a heredoc target): a path under it is literal
   const homeRe = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
   const raw = raw0.replace(homeRe, '~');
-  if (/[$`*?[]/.test(raw) || !tok.text) { S.scriptUnchecked = tok.text || raw0; return null; }
+  // a redirection (2>/dev/null) or a variable assignment / parameter expansion (d=${d%/}) is no script path
+  if (new RegExp(ah.cfg('git.script_not_path_re')).test(raw0)) return null;
+  // a program run directly by a path that is not literal or not there is no script the call is known to run: only an interpreter
+  // (bash x.sh, source x) names a script that is expected to exist
+  if (/[$`*?[]/.test(raw) || !tok.text) { if (!byPath) S.scriptUnchecked = tok.text || raw0; return null; }
   const path = scriptRealPath(tok.text.replace(homeRe, '~'), cdDir || S.procCwd);
-  if (path === null) { S.scriptUnchecked = tok.text; return null; }
+  if (path === null) { if (!byPath) S.scriptUnchecked = tok.text; return null; }
   const size = ah.fs.size(path);
+  // a path run directly that is not there is a script only when this very call writes it (cat > x.sh <<EOF ... ./x.sh)
+  if (size === null && byPath && !new RegExp(ah.cfg('git.script_written_prefix_re') + '(?:[^\\s\'"]*/)?' + tok.text.split('/').pop().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(S.raw)) return null;
   // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script
   const cap = Math.min(ah.cfgNum('git.script_scan_max_bytes'), ah.cfgNum('script.read_max_bytes'));
   const body = size === null || size > cap ? null : ah.fs.readText(path, cap);
