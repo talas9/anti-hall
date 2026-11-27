@@ -688,6 +688,7 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
         }
     }
     let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+    let mut late: Option<f64> = None;
     let mut at = prefix.len();
     at += c[at..].len() - trim_start(&c[at..]).len();
     while let Some(m) = pats().teammate_block.captures(&c[at..]) {
@@ -700,6 +701,12 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
             // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is quoted
             // text, never another teammate's report
             if body.contains(defaults::text("agent_scan.teammate_open")) {
+                // the teammate's own idle notice may follow the quoted text: it dates the report
+                if let Ok(Some(t)) = super::late_idle_ts(&c[at..], id, entry_ts)
+                    && t < entry_ts
+                {
+                    late = Some(t);
+                }
                 break;
             }
             continue;
@@ -725,13 +732,17 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
     }
     // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report text)
     // dates it, the entry's receipt time is its latest possible time
-    let idles: Vec<(String, f64)> = out
+    let mut idles: Vec<(String, f64)> = out
         .iter()
         .filter_map(|i| match (&i.ts, i.report) {
             (Got::Ok(Some(Ts(t))), false) if t.is_finite() => Some((i.id.clone(), *t)),
             _ => None,
         })
         .collect();
+    if let Some(t) = late {
+        let ids: Vec<String> = out.iter().filter(|i| i.report).map(|i| i.id.clone()).collect();
+        idles.extend(ids.into_iter().map(|id| (id, t)));
+    }
     for i in out.iter_mut().filter(|i| i.report) {
         if let Some((_, t)) = idles.iter().find(|(id, t)| *id == i.id && *t < entry_ts) {
             i.ts = Got::Ok(Some(Ts(*t)));
