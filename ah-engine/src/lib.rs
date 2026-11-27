@@ -118,8 +118,9 @@ pub fn version() -> String {
 pub const FEATURES: &[&str] = &["install-routine"];
 
 /// The build version the binary's `main` hands over ([`set_build_version`]). The library never reads `AH_BUILD_VERSION` itself:
-/// that compile-time variable changes on every commit and checkout, and a library that read it would be recompiled (and, through
-/// the compile cache, every test binary relinked against a new library) on each one. Only the small binary crate carries it.
+/// that compile-time variable changes on every commit and checkout, and a library that read it missed the compile cache on each
+/// one. Now the library stays a cache hit across commits. The package's test and binary targets are still rebuilt on a commit
+/// (the build script reruns, and cargo then rebuilds every target of the package; test and binary crates are not cacheable).
 static BUILD_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Record the version this binary was built as (`env!("AH_BUILD_VERSION")` in `main`). The first call wins; a later call is ignored.
