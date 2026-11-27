@@ -52,6 +52,9 @@ pub struct State {
     /// No watermark was saved (a fresh watcher, or a cursor file from a build before it): the first read with the watermark field
     /// reconciles instead of seeding silently, so pending eligible mail always wakes once.
     pub bc_seq_missing: bool,
+    /// The eligible unread broadcast count at the last read (memory only, `None` before the first): an ack that lowers it while
+    /// some stay unread wakes again (review P1-1), so a backlog the drain held back past its caps is drained too.
+    pub last_bc_pending: Option<f64>,
 }
 
 impl Default for State {
@@ -76,6 +79,7 @@ impl Default for State {
             woke_broadcast: 0,
             last_bc_seq: 0.0,
             bc_seq_missing: false,
+            last_bc_pending: None,
         }
     }
 }
@@ -347,6 +351,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         let pending = snap.bc_pending.unwrap_or(0.0);
         // the line shows how many unread broadcasts wake the workspace (`0 -> N`), in the legacy line text
         let line = || wake_line(snap, 0.0, pending.max(1.0), Some(text("wake_watch.label_broadcast")));
+        let reacked = st.last_bc_pending.is_some_and(|was| pending > 0.0 && pending < was);
         if st.bc_seq_missing {
             if pending > 0.0 {
                 lines.push(line());
@@ -358,7 +363,11 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
             lines.push(line());
             st.woke_broadcast += 1;
             st.last_bc_seq = s;
+        } else if reacked {
+            lines.push(line());
+            st.woke_broadcast += 1;
         }
+        st.last_bc_pending = Some(pending);
         // the legacy count stays in step silently, for a build that still reads it
         if let Some(t3) = total3 {
             st.last_broadcast = t3;

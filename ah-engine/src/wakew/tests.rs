@@ -447,3 +447,20 @@ fn the_watermark_round_trips_through_the_cursor_file() {
     assert!(read::save_seen(&h, "w2", &unknown, false));
     assert!(read::load_seen(&h, "w2", false).bc_seq_missing, "an unknown watermark is never saved as 0");
 }
+
+/// Review P1-1: an ack that leaves eligible broadcasts unread (the drain held some back past its caps) wakes again, so the
+/// backlog is drained; a drain that leaves the count unchanged (it listed the held rows) does not.
+#[test]
+fn an_ack_that_leaves_eligible_rows_unread_wakes_again() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 0.0, ..State::default() };
+    let (st, lines) = tick(&st, &bc(Some(120.0), 120.0));
+    assert_eq!(lines.len(), 1);
+    // the drain acked 100 of them, 20 remain unread at or under the watermark
+    let (st, lines) = tick(&st, &bc(Some(120.0), 20.0));
+    assert_eq!((lines.len(), st.woke_broadcast), (1, 1), "a re-wake for the rest: {lines:?}");
+    let (st, lines) = tick(&st, &bc(Some(120.0), 20.0));
+    assert!(lines.is_empty(), "no new ack, no new line");
+    let (_, lines) = tick(&st, &bc(None, 0.0));
+    assert!(lines.is_empty(), "all read");
+}
+

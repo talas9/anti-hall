@@ -211,13 +211,15 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
 /// GH #845 (contract §6): the unread broadcasts a drain verb lists beside the direct mail, with the exact boundary an ack may move
 /// the broadcast cursor through. A read never samples the live head to ack.
 pub(crate) struct UnreadBroadcasts {
-    /// The OLDEST `mesh_wake.inbox_broadcast_cap` unread non-heartbeat broadcasts of others, in seq order, each with `addressed`.
+    /// The OLDEST `mesh_wake.inbox_broadcast_cap` unread non-heartbeat broadcasts of others, in seq order, each with `addressed`;
+    /// past the cap, the unread rows that wake this reader (up to `mesh_wake.inbox_broadcast_eligible_cap`).
     pub rows: Vec<OVal>,
     /// More unread broadcasts wait past the cap (they stay unread for the next drain).
     pub more: bool,
     /// The cursor when the read was made.
     pub from: i64,
-    /// The seq of the last broadcast listed: the delivered boundary. `None` when nothing was listed (no ack op).
+    /// The seq of the last broadcast listed before the first one held back: the delivered boundary (rows listed past a held-back
+    /// row stay unread and are listed again). `None` when nothing was listed (no ack op).
     pub target: Option<i64>,
 }
 
@@ -234,6 +236,9 @@ pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, 
     let mut rows: Vec<OVal> = Vec::new();
     let mut more = false;
     let mut target: Option<i64> = None;
+    let extra_cap = defaults::num("mesh_wake.inbox_broadcast_eligible_cap") as usize;
+    let mut extra = 0usize;
+    let mut contiguous = true;
     st.reader()
         .for_each_message(bpart, 0, |m| {
             let Some(q) = m["storeSeq"].as_f64().filter(|q| q.is_finite() && *q as i64 > cursor).map(|q| q as i64) else { return true };
@@ -241,10 +246,6 @@ pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, 
             if m["isHeartbeat"].as_bool().unwrap_or(false) || sender == Some(reader) {
                 // passed over with the listed rows when an ack moves through them
                 return true;
-            }
-            if rows.len() >= cap {
-                more = true;
-                return false;
             }
             let body = m["body"].as_str().unwrap_or("");
             let needs_reply = m["needsReply"].as_bool().unwrap_or(false);
@@ -255,6 +256,20 @@ pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, 
                 crate::meshw::wakepolicy::resolve(&b, &roster_ids).unwrap_or_else(|e| crate::meshw::wakepolicy::Audience::Ids(e.ids))
             };
             let addressed = mode.wakes(stored.as_ref(), kind, reader, legacy, true);
+            // review P1-1: past the cap only the rows that wake this reader are still listed (the watcher woke for them), up to
+            // their own cap; the ack target stops at the last row before the first one held back, so nothing is acked unseen
+            if rows.len() >= cap {
+                more = true;
+                contiguous = false;
+                let wakes = mode.wakes(stored.as_ref(), kind, reader, legacy, false);
+                if !wakes {
+                    return true;
+                }
+                if extra >= extra_cap {
+                    return false;
+                }
+                extra += 1;
+            }
             let alias = sender.and_then(|sv| aliases.iter().find(|(k, _)| k == sv).map(|(_, v)| v.clone()));
             let mut b = Obj::default();
             b.put("from", alias.as_deref().map_or_else(|| s_or_null(sender), s))
@@ -269,7 +284,9 @@ pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, 
                 b.put("fromLabel", s_or_null(sender));
             }
             rows.push(b.done());
-            target = Some(q);
+            if contiguous {
+                target = Some(q);
+            }
             true
         })
         .map_err(|e| store_err("broadcasts", e))?;
@@ -380,6 +397,36 @@ mod tests {
         assert_eq!(rest.rows.len(), 3, "the own broadcast is not listed");
         assert_eq!(ack_broadcasts(&st, "w-a", 1).unwrap(), None, "an older target never moves the cursor back");
         assert_eq!(ack_broadcasts(&st, "w-a", i64::MAX).unwrap().map(|c| c <= st.broadcast_head().unwrap()), Some(true), "never past the head");
+    }
+
+    fn broadcast_to(st: &MeshStore, from: &str, body: &str, ts: i64, audience: &str) {
+        let h = mesh_message_hash(Some(from), None, defaults::text("mesh_write.mtype_broadcast"), "normal", body, &ts.to_string(), false);
+        st.append_mesh_row_with(&mesh_message_row(Some(from), None, true, body, ts, "normal", &h, false, None), None, Some(audience)).unwrap();
+    }
+
+    /// Review P1-1: a backlog past the cap of broadcasts that do not address the reader, then one that does. The watcher wakes
+    /// for the addressed row, so the drain must list it (past the cap), while the ack still stops at the last contiguous row.
+    #[test]
+    fn an_addressed_row_past_the_cap_is_listed_and_not_acked_past_the_gap() {
+        let (_d, st, inv) = scratch("cap-addressed");
+        let cap = defaults::num("mesh_wake.inbox_broadcast_cap") as i64;
+        for i in 0..cap + 10 {
+            broadcast_to(&st, "w-b", &format!("fyi {i}"), i + 1, defaults::text("mesh_wake.audience_none"));
+        }
+        broadcast_to(&st, "w-b", "@w-a please look", cap + 20, r#"["w-a"]"#);
+        let u = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        assert!(u.more, "unaddressed rows wait past the cap");
+        let last = u.rows.last().unwrap();
+        assert_eq!(last.get("message"), Some(&OVal::Str("@w-a please look".into())), "the addressed row is listed past the cap");
+        assert_eq!(last.get("addressed"), Some(&OVal::Bool(true)));
+        assert_eq!(u.rows.len() as i64, cap + 1);
+        let target = u.target.unwrap();
+        assert!(target < cap + 1 + 1, "the ack target stays at the last contiguous listed row, got {target}");
+        ack_broadcasts(&st, "w-a", target).unwrap();
+        let rest = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        assert_eq!(rest.rows.len(), 11, "the 10 unaddressed rows past the gap and the addressed row are still unread");
+        ack_broadcasts(&st, "w-a", rest.target.unwrap()).unwrap();
+        assert!(unread_broadcasts(&st, &inv, "w-a").unwrap().rows.is_empty());
     }
 
     /// The receipt op carries exactly the delivered boundary, and none is made when nothing was listed.
