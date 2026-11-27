@@ -4319,6 +4319,88 @@ mod afk_mode {
         assert_eq!(m.counter("afk_nostop", &[("action", "cleared")]), 1);
     }
 
+    fn task_rec(h: &str, id: &str, rec: Value) {
+        let d = format!("{h}/.claude/tasks/session-s1");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut r = json!({"id": id, "blockedBy": []});
+        for (k, v) in rec.as_object().cloned().unwrap_or_default() {
+            r[k] = v;
+        }
+        std::fs::write(format!("{d}/{id}.json"), r.to_string()).unwrap();
+    }
+
+    /// A transcript with one background `Agent` launch named `name` (description "integrate the train"), and the tracker's proof
+    /// that it is live: its tracker row is named by the description, never by the launch name.
+    fn live_teammate(h: &str, name: &str) {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ag0", "name": "Agent", "input": {"description": "integrate the train", "prompt": "p", "run_in_background": true, "name": name}}]}, "timestamp": ts});
+        let text = "Async agent launched successfully. (internal metadata)\nagentId: a000000000000001 (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/a000000000000001.output\n";
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_ag0", "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        std::fs::write(format!("{h}/t.jsonl"), format!("{launch}\n{res}\n")).unwrap();
+        let id = "a000000000000001";
+        let rel = format!("{h}/.claude/projects/p/s1/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+        std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let mut st = crate::agents::State::default();
+        st.agents.insert(
+            id.into(),
+            crate::agents::Agent { id: id.into(), kind: "subagent".into(), parent: "s1".into(), name: "integrate the train".into(), cwd: h.into(), path: rel, ..Default::default() },
+        );
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    /// #844 item 1: a task owned by a live teammate (by its launch name, which the tracker row does not carry), or whose blockedOn names
+    /// that teammate, is not idle work: no-stop does not hold it. A task nothing covers still is.
+    #[test]
+    fn no_stop_skips_tasks_owned_by_or_blocked_on_a_live_teammate() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-owned");
+        drained();
+        live_teammate(&h, "integ-0331");
+        task_rec(&h, "1", json!({"subject": "[P0] release all", "status": "pending", "owner": "integ-0331"}));
+        task_rec(&h, "2", json!({"subject": "[P0] hold fix", "status": "pending", "metadata": {"blockedOn": "waiting on integ-0331 to merge"}}));
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "every open task is owned by or blocked on a live teammate");
+        task_rec(&h, "3", json!({"subject": "[P1] free task", "status": "pending"}));
+        let o = stop();
+        assert!(o.contains("continue the work plan: [P1] free task"), "only the uncovered task is named: {o}");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// #844 item 1: plain holds within afk.nostop_burst_window_ms escalate once after afk.nostop_burst_max, then no-stop stays quiet for
+    /// afk.nostop_quiet_ms; the quiet ends by itself, and an owner prompt that is no phrase does not reset the burst.
+    #[test]
+    fn no_stop_holds_escalate_once_then_go_quiet() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-burst");
+        drained();
+        task(&h, "1", "[P1] a", "pending");
+        task(&h, "2", "[P1] b", "pending");
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let t0 = 1_900_000_000_000.0_f64;
+        let stop_at = |ms: f64| {
+            super::super::host::set_clock(Some(ms));
+            let o = out(&run(&h, "Stop", json!({}), &[]));
+            super::super::host::set_clock(None);
+            o
+        };
+        for i in 0..3 {
+            assert!(stop_at(t0 + f64::from(i) * 60_000.0).contains("continue the work plan"), "plain hold {i}");
+        }
+        run(&h, "UserPromptSubmit", json!({"prompt": "status?"}), &[]);
+        let o = stop_at(t0 + 200_000.0);
+        assert!(o.contains("no-stop held this session 3 times in 10 min") && o.contains("pause for 30 min"), "escalated once: {o}");
+        assert!(stop_at(t0 + 260_000.0).is_empty(), "quiet after the escalation");
+        assert!(stop_at(t0 + 200_000.0 + 1_799_000.0).is_empty(), "still quiet");
+        assert!(stop_at(t0 + 200_000.0 + 1_800_000.0).contains("continue the work plan"), "the quiet ends by itself");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "escalated")]), 1);
+        assert_eq!(m.counter("afk_nostop", &[("action", "quiet")]), 2);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
     /// GH #958 (a): no open work left ends the state; the hold count is capped per owner prompt and a new prompt restarts it.
     #[test]
     fn no_stop_ends_when_no_open_work_remains_and_is_capped_per_owner_prompt() {
@@ -4329,11 +4411,18 @@ mod afk_mode {
         run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
         std::fs::write(format!("{h}/.anti-hall/settings.json"), "{}").unwrap();
         let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        // holds spaced past afk.nostop_burst_window_ms never escalate (#844): only the per-prompt cap ends them
+        let spaced = |i: u32| {
+            super::super::host::set_clock(Some(1_900_000_000_000.0 + f64::from(i) * 601_000.0));
+            let o = stop();
+            super::super::host::set_clock(None);
+            o
+        };
         let cap = 30;
         for i in 0..cap {
-            assert!(stop().contains("only task"), "hold {i}");
+            assert!(spaced(i).contains("only task"), "hold {i}");
         }
-        assert!(stop().is_empty(), "capped after afk.nostop_max_holds");
+        assert!(spaced(cap).is_empty(), "capped after afk.nostop_max_holds");
         assert_eq!(nostop(&h)["on"], json!(true), "capped, not ended");
         run(&h, "UserPromptSubmit", json!({"prompt": "carry on"}), &[]);
         assert!(stop().contains("only task"), "an owner prompt restarts the count");

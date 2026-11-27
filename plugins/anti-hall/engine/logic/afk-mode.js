@@ -408,7 +408,7 @@ function afkNoStopCapture(p, now) {
     }
   } else if (off && cur !== null) {
     if (nostop.write(p, { on: false, since: cur.since, ended: now, holds: 0 })) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_cleared') });
-  } else if (cur !== null && cur.holds > 0) nostop.write(p, { on: true, since: cur.since, holds: 0 }); // an owner prompt restarts the hold count
+  } else if (cur !== null && cur.holds > 0) nostop.write(p, Object.assign({}, cur, { on: true, holds: 0 })); // an owner prompt restarts the hold count (the burst window and quiet stay: #844)
 }
 
 // A Stop while the session's no-stop state is on and open work nothing covers remains: held with the next task named (null = not held).
@@ -427,9 +427,19 @@ function afkNoStopHold(p, now) {
   if (unc.length === 0) return null;
   var holds = typeof s.holds === 'number' ? s.holds : 0;
   if (holds >= ah.cfgNum('afk.nostop_max_holds')) { afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_capped') }); return null; }
-  if (!nostop.write(p, { on: true, since: s.since, holds: holds + 1 })) return null; // the cap cannot be recorded: never hold
-  afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_held') });
-  var reason = afkR(ah.cfg('afk.msg_nostop_stop'), { subject: nostop.subject(nostop.next(unc)) });
+  // #844: holds that rotate over tasks every turn are a loop; after afk.nostop_burst_max in the window, escalate once, then stay quiet
+  if (typeof s.quietUntil === 'number' && now < s.quietUntil) { afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_quiet') }); return null; }
+  var win = ah.cfgNum('afk.nostop_burst_window_ms'), burstMax = ah.cfgNum('afk.nostop_burst_max');
+  var burst = (Array.isArray(s.burst) ? s.burst : []).filter(function (at) { return typeof at === 'number' && at <= now && now - at < win; });
+  var escalate = burstMax > 0 && burst.length >= burstMax, quiet = ah.cfgNum('afk.nostop_quiet_ms');
+  var next = { on: true, since: s.since, holds: holds + 1, burst: escalate ? [] : burst.concat([now]) };
+  if (escalate) next.quietUntil = now + quiet;
+  if (!nostop.write(p, next)) return null; // the cap cannot be recorded: never hold
+  afkMetric('afk_nostop', { action: ah.cfg(escalate ? 'afk.action_nostop_escalated' : 'afk.action_nostop_held') });
+  var subject = nostop.subject(nostop.next(unc));
+  var reason = escalate
+    ? afkR(ah.cfg('afk.msg_nostop_escalate'), { n: String(burst.length), min: String(Math.round(win / 60000)), subject: subject, quiet: String(Math.round(quiet / 60000)) })
+    : afkR(ah.cfg('afk.msg_nostop_stop'), { subject: subject });
   return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(reason) }), err: '' } };
 }
 

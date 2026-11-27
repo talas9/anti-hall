@@ -531,6 +531,36 @@ value = 30
 min = 0
 max = 1000
 
+[afk.nostop_burst_max]
+doc = "Most plain no-stop holds within afk.nostop_burst_window_ms (#844: a hold that rotates over tasks every turn is a loop, not a plan). The next Stop in that window is held once more with afk.msg_nostop_escalate, then no Stop is held for afk.nostop_quiet_ms. 0 = never escalate (only afk.nostop_max_holds bounds the holds)."
+value = 3
+min = 0
+max = 1000
+
+[afk.nostop_burst_window_ms]
+doc = "The window (milliseconds) afk.nostop_burst_max counts holds in."
+value = 600000
+min = 1000
+max = 86400000
+
+[afk.nostop_quiet_ms]
+doc = "How long (milliseconds) no Stop is held by no-stop after the escalated hold (afk.msg_nostop_escalate). An owner no-stop phrase ends the quiet at once."
+value = 1800000
+min = 0
+max = 86400000
+
+[afk.msg_nostop_escalate]
+doc = "The reason of the escalated no-stop hold, sent once after afk.nostop_burst_max holds within afk.nostop_burst_window_ms. Placeholders: {n} holds, {min} the window in minutes, {subject} the next open task, {quiet} afk.nostop_quiet_ms in minutes."
+value = "Do now: no-stop held this session {n} times in {min} min (now: {subject}). Work the next task, or set metadata.blockedOn on each open task naming the agent or person it waits on; no-stop holds pause for {quiet} min."
+
+[afk.action_nostop_escalated]
+doc = "Label of metric.afk_nostop for the escalated hold (afk.msg_nostop_escalate)."
+value = "escalated"
+
+[afk.action_nostop_quiet]
+doc = "Label of metric.afk_nostop for a Stop let through during afk.nostop_quiet_ms after an escalated hold."
+value = "quiet"
+
 [afk.nostop_subject_max]
 doc = "Longest task subject (characters) quoted in the no-stop hold."
 value = 120
@@ -566,7 +596,7 @@ doc = "Label of metric.afk_nostop for a Stop let through after afk.nostop_max_ho
 value = "capped"
 
 [metric.afk_nostop]
-doc = "No-stop state events (GH #958), by action: set, cleared (owner stop phrase), done (no open work left), held (a Stop held), capped (let through after afk.nostop_max_holds)."
+doc = "No-stop state events (GH #958), by action: set, cleared (owner stop phrase), done (no open work left), held (a Stop held), capped (let through after afk.nostop_max_holds), escalated (the hold after afk.nostop_burst_max in its window), quiet (let through during afk.nostop_quiet_ms)."
 value = { kind = "counter", unit = "events", labels = ["action"] }
 
 [afk.nostop_prompt_max]

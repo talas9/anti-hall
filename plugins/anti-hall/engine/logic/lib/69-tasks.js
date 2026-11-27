@@ -144,6 +144,48 @@ var tk = {
   // The task's blockedOn reason names the owner or a human ("owner", "NEEDS OWNER: x", "owner: deferred until y"): ah.ownerNamed, the
   // matcher the agent tracker shares (GH #959), never an exact-value compare.
   ownerHeld: function (t) { return ah.ownerNamed(t.blockedOn); },
+  // The agent rows every Stop gate reads task coverage from (#844: one source, so the idle-tasks check and the no-stop hold cannot
+  // disagree): the transcript scan's running agents (`scan`, ah.transcript.agents: id, description, spawnInput, shellKind) with the
+  // tracker's liveness, then every tracker row (`tracked`, ah.transcript.trackedAgents) by id and name. `scan` null or unsure: none.
+  coverRows: function (scan, tracked) {
+    var t = Array.isArray(tracked) ? tracked : [];
+    var rows = (scan === null || scan === undefined || scan.unsure ? [] : scan.rows || []).map(function (r) {
+      r.live = ah.transcript.trackedLiveness(r.id, t);
+      return r;
+    });
+    t.forEach(function (r) { rows.push({ id: r.id, description: r.name, kind: r.kind, live: ah.transcript.trackedLiveness(r.id, t) }); });
+    return rows;
+  },
+  // The rows whose agent `owner` names: its id, its whole description, the name it was launched with, or (owner at least
+  // task_guard.owner_match_min long) a part of its description. The orchestrator itself (task_guard.coordinator_owner_re) names none.
+  matchingOwners: function (owner, rows) {
+    var o = (owner || '').trim().toLowerCase();
+    if (!o || rows === null || rows === undefined || jx.re('task_guard.coordinator_owner_re', 'i').test(o)) return [];
+    var min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
+    return rows.filter(function (r) {
+      var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
+      var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
+      return o === id || (d !== '' && o === d) || (nm !== '' && o === nm) || (o.length >= min && d.indexOf(o) >= 0);
+    });
+  },
+  liveOwner: function (owner, rows) { return tk.matchingOwners(owner, rows).some(function (r) { return r.live === true; }); },
+  // A live background shell or Monitor among the rows (the transcript scan's shellKind; a tracker job row is kind
+  // agent_tracker.guard_job_kind): the work an in-progress task waits on.
+  bgLive: function (rows) {
+    var job = ah.cfg('agent_tracker.guard_job_kind');
+    return (rows || []).some(function (r) { return (typeof r.shellKind === 'string' && r.shellKind !== '' && r.live !== false) || (r.kind === job && r.live === true); });
+  },
+  // The task's blockedOn reason names a live agent row (its id or launch name, or a description of at least
+  // task_guard.owner_match_min characters): it waits on in-flight work, not on this session.
+  blockedOnLive: function (t, rows) {
+    var b = tk.blockedOnText(t), min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
+    if (b === '') return false;
+    return (rows || []).some(function (r) {
+      if (r.live !== true) return false;
+      var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
+      return [String(r.id || '').toLowerCase(), nm, String(r.description || '').toLowerCase()].some(function (k) { return k.length >= min && b.indexOf(k) >= 0; });
+    });
+  },
   // oneLine: control characters become spaces, white space runs collapse, the text is trimmed and cut to `max` UTF-16 units with an
   // ellipsis; a cut through a surrogate pair drops the half pair (a Rust string cannot hold one).
   oneLine: function (s, max) {
