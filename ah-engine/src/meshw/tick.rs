@@ -663,24 +663,6 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         }
     }
     let known = nd_known && unavail.is_none() && mesh_error.is_none();
-    // review P1-4 (contract §7 on Codex): the tick's wake count leaves explicit acks out and adds the broadcasts that wake this
-    // workspace; `unreadTotal` still counts every row, so reading is never hidden
-    let (mut ack_unread, mut bc_wake, mut bc_wake_seq) = (0, 0, None);
-    if let Some(o) = &opened {
-        if defaults::num("mesh_chat.ack_suppression") == 1 {
-            let pids: Vec<&str> = std::iter::once(id).chain(siblings.iter().map(|s| s.id.as_str())).collect();
-            let (acks, ack_hashes) = ack_rows(o, &pids);
-            if !acks.is_empty() {
-                let family = family_of(id, &o.rows);
-                let rows = u.store_only_unread.iter().chain(siblings.iter().flat_map(|s| s.delivered.iter()));
-                ack_unread = count_acks(&u.nd_unread_lines, u.provenance, rows, &acks, &ack_hashes, &family).min(unread + added_unread);
-            }
-        }
-        match crate::meshw::read::broadcast_wake(&o.reader, inv, id) {
-            Ok((p, q)) => (bc_wake, bc_wake_seq) = (p, q),
-            Err(Defer(why)) => crate::debug::violated("meshw", &defaults::render("mesh_wake.msg_tick_broadcast_unread", &[("id", &id), ("why", &why)])),
-        }
-    }
     Ok(Counted {
         repo_key,
         store_key,
@@ -702,10 +684,31 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         nd_target: if nd_known { nd_target } else { nd_cursor },
         unavail,
         mesh_error,
-        ack_unread,
-        bc_wake,
-        bc_wake_seq,
+        ack_unread: 0,
+        bc_wake: 0,
+        bc_wake_seq: None,
     })
+}
+
+/// Review P1-4 (contract §7 on Codex): the tick's wake count leaves explicit acks out and adds the broadcasts that wake this
+/// workspace; `unreadTotal` still counts every row, so reading is never hidden. Only `inbox tick` pays for these reads (a store that
+/// does not open leaves them 0).
+fn add_wake(inv: &Inv, id: &str, desc: &OVal, c: &mut Counted) {
+    // after the tick's writes: a read that fails here leaves the wake fields 0, it never fails the tick
+    let Ok(PartitionOpen::Open(o)) = open_partition_ex(inv, id, desc) else { return };
+    if defaults::num("mesh_chat.ack_suppression") == 1 {
+        let pids: Vec<&str> = std::iter::once(id).chain(c.siblings.iter().map(|s| s.id.as_str())).collect();
+        let (acks, ack_hashes) = ack_rows(&o, &pids);
+        if !acks.is_empty() || !ack_hashes.is_empty() {
+            let family = family_of(id, &o.rows);
+            let rows = c.store_rows.iter().chain(c.siblings.iter().flat_map(|s| s.delivered.iter()));
+            c.ack_unread = count_acks(&c.nd_lines, c.provenance, rows, &acks, &ack_hashes, &family).min(c.unread);
+        }
+    }
+    match crate::meshw::read::broadcast_wake(&o.reader, inv, id) {
+        Ok((p, q)) => (c.bc_wake, c.bc_wake_seq) = (p, q),
+        Err(Defer(why)) => crate::debug::violated("meshw", &defaults::render("mesh_wake.msg_tick_broadcast_unread", &[("id", &id), ("why", &why)])),
+    }
 }
 
 /// `pidIsAlive(pid)` without a start-time check: `Some(false)` only when the process is gone.
@@ -1132,6 +1135,10 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     tickarm::record_rearm_cue(inv, id, armed);
     // ---- the result: `count`'s (or its refusal) with the tick's fields after it ----
+    let mut counted = counted;
+    if let (Target::Count { id: rid, desc, .. }, Some(c)) = (&target, counted.as_mut()) {
+        add_wake(inv, rid, desc, c);
+    }
     let (code, obj) = match (&target, &counted) {
         (Target::Count { id: rid, resolved_from, redirected_from, .. }, Some(c)) => {
             let mut o = count_obj(inv, rid, c, verb, resolved_from.as_deref(), redirected_from.as_deref());
