@@ -661,7 +661,7 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
         }
         match crate::meshw::read::ack_broadcasts(&st, &who, target) {
             Ok(moved) => bc_cursor = moved.or(bc_cursor),
-            Err(ident::Defer(e)) => failures.push(failure(&who, defaults::text("mesh_wake.channel_broadcast_cursor"), &e)),
+            Err(ident::Defer(reason)) => failures.push(failure(&who, defaults::text("mesh_wake.channel_broadcast_cursor"), &reason)),
         }
     }
     if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {

@@ -225,7 +225,7 @@ pub(crate) struct UnreadBroadcasts {
 pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, reader: &str) -> R<UnreadBroadcasts> {
     let bpart = defaults::text("mesh_write.broadcast_partition");
     let cursor = st.reader().broadcast_cursor(reader).map_err(|e| store_err("cursor", e))? as i64;
-    let extras = st.reader().extras_of(bpart, cursor).map_err(|e| store_err("broadcast-extras", e))?;
+    let extras = st.reader().extras_of(bpart, cursor).map_err(|e| store_err("broadcasts", e))?;
     let roster = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
     let roster_ids: Vec<&str> = roster.iter().map(|r| r.id.as_str()).collect();
     let mode = crate::meshw::wakepolicy::Mode::load();
@@ -309,7 +309,7 @@ pub(crate) fn broadcast_op(reader: &str, u: &UnreadBroadcasts) -> Option<OVal> {
 /// new cursor, or `None` when it did not move.
 pub(crate) fn ack_broadcasts(st: &crate::meshw::store::MeshStore, reader: &str, target: i64) -> R<Option<i64>> {
     let now = st.reader().broadcast_cursor(reader).map_err(|e| store_err("cursor", e))? as i64;
-    let head = st.broadcast_head().map_err(|e| store_err("head", e))?;
+    let head = st.broadcast_head().map_err(|e| store_err("broadcasts", e))?;
     let to = target.min(head);
     if to <= now {
         return Ok(None);

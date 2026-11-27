@@ -224,7 +224,11 @@ fn a_cursor_file_round_trips_per_role_and_carries_a_newer_builds_members_through
     let st = State { last_total: 4.0, last_total2: 9.0, last_broadcast: 2.0, ..State::default() };
     assert!(read::save_seen(&h, "w1", &st, false));
     let text = std::fs::read_to_string(read::seen_path(&h, "w1")).unwrap();
-    assert_eq!(text, "{\"lastTotal\":4,\"lastTotal2\":9,\"lastBroadcastUnread\":2,\"meshTotal\":9,\"ndjsonTotal\":4}");
+    // GH #845: a known broadcast watermark is written with the cursor file version (the default state knows it: 0)
+    assert_eq!(
+        text,
+        "{\"lastTotal\":4,\"lastTotal2\":9,\"lastBroadcastUnread\":2,\"lastBroadcastWakeSeq\":0,\"seenVersion\":2,\"meshTotal\":9,\"ndjsonTotal\":4}"
+    );
     let back = read::load_seen(&h, "w1", false);
     assert_eq!((back.last_total, back.last_total2, back.last_broadcast), (4.0, 9.0, 2.0));
     assert!(!back.total_missing && !back.total2_missing && !back.broadcast_missing);
