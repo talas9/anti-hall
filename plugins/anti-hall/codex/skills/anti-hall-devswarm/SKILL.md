@@ -657,6 +657,17 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `auto-archive` | none | **v0.108.0.** Prints the supervisor's auto-archive plan: each tracked child with its proof or its blockers (a done … g idle). Archiving itself only happens in the supervisor sweep (default `devswarm.autoArchive.mode: "on"`) on DevSwarm >= 2.5.3. | "Which done workspaces would be archived, and why not the others?" | **Read-only.** |
 | `ah-engine devswarm plan-prune --older-than <days>` / `ah-engine devswarm prune --confirm-ids <ids> --plan <nonce>` (the old `mesh prune-archived` moved here) | `--older-than` (dry run) or both confirm flags | **v0.108.0.** The dry run lists archived workspaces with evidence and stores a 15-min plan nonce. `--confirm-ids` DELETES exactly the plan's eligible ids through `hivecontrol workspace delete` (DevSwarm >= 2.5.3). Only after the owner approves that exact list; refuses automated callers. | Cleaning up old archived workspaces, following the owner-approved flow in "Auto-archive and prune". | **Dry run writes a plan file; `--confirm-ids` is destructive.** |
 
+**Who a broadcast wakes, and reading broadcasts (GH #845).** A broadcast wakes only the workspaces it addresses:
+an `@<id or id prefix>` mention (`@primary` for the Primary), a `--question` (allowed on `--broadcast` now; it wakes
+everyone), a `high`/`urgent` broadcast from the Primary, or `@all` from the Primary. Any other broadcast is stored and
+readable but wakes no one (`[@admin]` / `@admin` address no one). A Primary reader still wakes on every broadcast unless
+`mesh_wake.primary_reader = "addressed"`. A short ack-only reply (`here`, `ok`, `thanks`, an emoji) is stored with
+`chat_kind = ack` and never wakes its recipient. The drain verbs return broadcasts too: `inbox read <id>` lists the unread
+ones under `broadcasts` (each with `addressed`), `inbox ack <id>` acks them with the direct mail, and `read-primary` lists and
+acks them in the same call (`broadcastCursor` = where the cursor moved). No sqlite3 needed. On Codex the poll verb
+`inbox tick` still counts direct mail only (acks included); broadcasts are read with the drain verbs above. Rules and texts:
+`engine/defaults/mesh_wake.toml`, `engine/defaults/mesh_chat.toml`.
+
 `roster`, `diagnose`, and `healthcheck` are the three pure-read, no-id, project-scoped
 verbs — reach for these together for mesh state without touching anything.
 
