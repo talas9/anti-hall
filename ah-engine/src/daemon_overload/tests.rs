@@ -428,7 +428,7 @@ fn all_entries(sh: &Shared, tool: &str, input: &str, shed: bool, home: &std::pat
 }
 
 /// P1-5: the time bounds nest: a script's wall interrupt < the guard queue-wait shed bound < the client's deadline at its largest load
-/// factor < the watchdog's stuck bound < the shortest hook timeout of a guard event's entries.
+/// factor < the watchdog's stuck bound (no hook-timeout bound: a stuck worker's client has already failed open).
 #[test]
 fn the_time_bounds_nest() {
     // the interrupt of a script call: its HARD CPU limit (the wall backstop above it only ends a script starved of CPU, and the
@@ -443,18 +443,10 @@ fn the_time_bounds_nest() {
         .collect();
     let (wait_lo, wait_hi) = (waits.iter().copied().min().unwrap_or(0), waits.iter().copied().max().unwrap_or(0));
     let client = ship("client.deadline_ms") * ship("daemon.load_scale_max_permille") / 1000;
-    // R0: the watchdog stretches stuck_ms by its load factor up to daemon.watchdog_load_scale_max_permille; the bound nests at that largest value
-    let stuck = ship("daemon.stuck_ms") * ship("daemon.watchdog_load_scale_max_permille").max(1000) / 1000;
-    let hook = ["claude", "codex"]
-        .iter()
-        .flat_map(|h| defaults::list("dispatch.guard_events").into_iter().map(move |e| (h, e)))
-        .flat_map(|(h, e)| crate::dispatch::table::entries(h, e))
-        .map(|e| e.timeout_s * 1000)
-        .min()
-        .unwrap_or(0);
-    let chain = [script_hard, wait_lo, wait_hi, client, stuck, hook];
+    let stuck = ship("daemon.stuck_ms");
+    let chain = [script_hard, wait_lo, wait_hi, client, stuck];
     assert!(
-        chain.windows(2).all(|w| w[0] <= w[1]) && script_hard < wait_lo && wait_hi < client && client < stuck && stuck < hook,
-        "script hard limit < shed waits < client deadline x load < stuck < shortest guard hook timeout (ms): {chain:?}"
+        chain.windows(2).all(|w| w[0] <= w[1]) && script_hard < wait_lo && wait_hi < client && client < stuck,
+        "script hard limit < shed waits < client deadline x load < stuck (ms); no hook bound: past the deadline a call waits only while the daemon shows progress, so a stuck worker's client has already failed open: {chain:?}"
     );
 }

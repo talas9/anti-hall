@@ -23,7 +23,7 @@ the update.
 ## Engine 0.3.32 (local integration build, wave A)
 
 - Hardening: crash-latch load exits, hung-worker kill with tombstone, RSS load rule, crash-loop hold, HdrHistogram p99 (feat/harden-latch-p99); overload priority queue, AIMD, session barrier (feat/harden-tower); build profiles test-fast and release-fast, OnceLock version (chore/split-step0-build).
-- Watchdog load scaling is bounded: `daemon.stuck_ms` 5000 x `daemon.watchdog_load_scale_max_permille` 1750 = 8750 ms stays under the shortest guard hook timeout (10 s); test `the_time_bounds_nest` includes the factor.
+- Watchdog load scaling keeps `daemon.stuck_ms` 8000 x `daemon.watchdog_load_scale_max_permille` 4000: a call past the client deadline waits only while the daemon shows progress, so a stuck worker never holds a hook to its timeout; `the_time_bounds_nest` now requires only client deadline x load < stuck.
 
 ## Engine 0.3.31 (local integration build)
 

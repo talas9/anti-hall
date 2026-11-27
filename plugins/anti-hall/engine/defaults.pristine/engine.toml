@@ -476,7 +476,7 @@ unit = "ms"
 
 [daemon.stuck_ms]
 doc = "A worker that makes no progress on its request for longer than this trips a drain and exit (a hung worker). Progress is a check starting or finishing and the script interpreter running, so a worker a loaded machine only slows down is not stuck; the time without progress is what a blocked host call (a lock, a child process, a disk sync) adds. R0: multiplied by the watchdog's load factor (daemon.watchdog_load_scale_max_permille); an exit taken under load (health.load_exit_per_core_permille) does not count toward the crash-loop rule."
-value = 5000
+value = 8000
 env = "AH_ENGINE_STUCK_MS"
 unit = "ms"
 
@@ -586,8 +586,8 @@ max = 3000
 unit = "permille"
 
 [daemon.watchdog_load_scale_max_permille]
-doc = "R0 (#969 hardening): the most a loaded machine stretches the watchdog's daemon.stall_ms and daemon.stuck_ms, in permille (1750 = 1.75 times). The watchdog samples the 1-minute load average per core itself on every tick (it serves no request, so no launcher factor reaches it), clamps it to [1000, this] and rounds it down to daemon.load_scale_step_permille. A worker a starved machine only slows is then not called stuck: at load 80 on 16 cores a host call blocked for 8 s no longer drains the daemon. Bounded by the hook timeout (test the_time_bounds_nest): daemon.stuck_ms x this must stay below the shortest guard hook timeout (10 s), so a hung worker is drained before the hook that waits on it is killed; with 5000 ms x 1.75 = 8750 ms it still outlasts the 8 s host-call stall seen at load 80 on 16 cores. 1000 (or less) = off."
-value = 1750
+doc = "R0 (#969 hardening): the most a loaded machine stretches the watchdog's daemon.stall_ms and daemon.stuck_ms, in permille (4000 = four times). The watchdog samples the 1-minute load average per core itself on every tick (it serves no request, so no launcher factor reaches it), clamps it to [1000, this] and rounds it down to daemon.load_scale_step_permille. A worker a starved machine only slows is then not called stuck: at load 80 on 16 cores a host call blocked for 8 s no longer drains the daemon. Not bounded by any hook timeout: past client.deadline_ms a call keeps waiting only while the daemon shows progress (client.progress_stale_ms), so a stuck worker's client has already failed open (client.rs stalled()); it must stay above client.deadline_ms x daemon.load_scale_max_permille (test the_time_bounds_nest). 1000 (or less) = off."
+value = 4000
 min = 0
 max = 10000
 unit = "permille"
