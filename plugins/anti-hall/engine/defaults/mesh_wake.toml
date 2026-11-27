@@ -155,3 +155,11 @@ value = "broadcastCursor"
 [metric.mesh_extras_dropped]
 doc = "Sends whose GH #845 columns (chat_kind, wake_audience) could not be set because the store lacks them (its ALTER at open failed): the row is kept and read as a legacy row."
 value = { kind = "counter", unit = "messages", labels = [] }
+
+[mesh_wake.msg_broadcast_to_not_number]
+doc = "The refusal text of `inbox ack --broadcast-to` with a value that is not a non-negative number."
+value = "--broadcast-to takes the broadcastAckTarget number that `inbox read` printed."
+
+[mesh_wake.channel_broadcast_cursor]
+doc = "The `channel` of a cursorWriteFailures entry for a broadcast-cursor move an ack could not make."
+value = "broadcast-cursor"

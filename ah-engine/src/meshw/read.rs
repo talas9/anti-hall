@@ -208,40 +208,53 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     let effect = if peek { Effect::None } else { Effect::BroadcastCursor(cursor_key) };
     Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect })
 }
-
-/// GH #845: the unread broadcasts the drain verbs (`inbox read` / `inbox ack`, `read-primary`) return beside the direct mail.
+/// GH #845 (contract §6): the unread broadcasts a drain verb lists beside the direct mail, with the exact boundary an ack may move
+/// the broadcast cursor through. A read never samples the live head to ack.
 pub(crate) struct UnreadBroadcasts {
-    /// The newest `mesh_wake.inbox_broadcast_cap` unread non-heartbeat broadcasts of others, oldest first, each with `addressed`
-    /// (whether it addresses the reader, the rule of [`crate::meshw::wakepolicy`]).
+    /// The OLDEST `mesh_wake.inbox_broadcast_cap` unread non-heartbeat broadcasts of others, in seq order, each with `addressed`.
     pub rows: Vec<OVal>,
-    /// Unread broadcasts left out by the cap (they are acked with the rest).
-    pub omitted: usize,
-    /// The highest broadcast seq the read saw (heartbeats and own sends included): where an ack moves the cursor. `None`: nothing new.
-    pub head: Option<i64>,
+    /// More unread broadcasts wait past the cap (they stay unread for the next drain).
+    pub more: bool,
+    /// The cursor when the read was made.
+    pub from: i64,
+    /// The seq of the last broadcast listed: the delivered boundary. `None` when nothing was listed (no ack op).
+    pub target: Option<i64>,
 }
 
 /// The unread broadcasts of reader `reader` (its broadcast-cursor key, a registry id), read only.
 pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, reader: &str) -> R<UnreadBroadcasts> {
     let bpart = defaults::text("mesh_write.broadcast_partition");
-    let cursor = st.reader().broadcast_cursor(reader).map_err(|e| store_err("cursor", e))? as f64;
-    let ack_kind = defaults::text("mesh_chat.kind_ack");
-    let acks = st.reader().seqs_of_kind(bpart, ack_kind).map_err(|e| store_err("broadcast-acks", e))?;
-    let policy = crate::meshw::wakepolicy::Policy::load();
+    let cursor = st.reader().broadcast_cursor(reader).map_err(|e| store_err("cursor", e))? as i64;
+    let extras = st.reader().extras_of(bpart, cursor).map_err(|e| store_err("broadcast-extras", e))?;
+    let roster = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
+    let roster_ids: Vec<&str> = roster.iter().map(|r| r.id.as_str()).collect();
+    let mode = crate::meshw::wakepolicy::Mode::load();
     let aliases = common::read_aliases(&inv.home, &inv.env);
-    let mut head: Option<i64> = None;
+    let cap = defaults::num("mesh_wake.inbox_broadcast_cap") as usize;
     let mut rows: Vec<OVal> = Vec::new();
+    let mut more = false;
+    let mut target: Option<i64> = None;
     st.reader()
         .for_each_message(bpart, 0, |m| {
-            let Some(q) = m["storeSeq"].as_f64().filter(|q| q.is_finite() && *q > cursor) else { return true };
-            head = Some(head.map_or(q as i64, |h| h.max(q as i64)));
+            let Some(q) = m["storeSeq"].as_f64().filter(|q| q.is_finite() && *q as i64 > cursor).map(|q| q as i64) else { return true };
             let sender = m["sender"].as_str();
             if m["isHeartbeat"].as_bool().unwrap_or(false) || sender == Some(reader) {
+                // passed over with the listed rows when an ack moves through them
                 return true;
+            }
+            if rows.len() >= cap {
+                more = true;
+                return false;
             }
             let body = m["body"].as_str().unwrap_or("");
             let needs_reply = m["needsReply"].as_bool().unwrap_or(false);
-            let kind = acks.contains(&(q as i64)).then_some(ack_kind);
-            let p = policy.parse(&crate::meshw::wakepolicy::Bc { sender, urgency: m["urgency"].as_str(), needs_reply, chat_kind: kind, body });
+            let (kind, stored) = extras.get(&q).map_or((None, None), |(k, a)| (k.as_deref(), a.as_deref()));
+            let stored = crate::meshw::wakepolicy::decode(stored);
+            let legacy = || {
+                let b = crate::meshw::wakepolicy::Bc { sender, urgency: m["urgency"].as_str(), question: needs_reply, heartbeat: false, body };
+                crate::meshw::wakepolicy::resolve(&b, &roster_ids).unwrap_or_else(|e| crate::meshw::wakepolicy::Audience::Ids(e.ids))
+            };
+            let addressed = mode.wakes(stored.as_ref(), kind, reader, legacy, true);
             let alias = sender.and_then(|sv| aliases.iter().find(|(k, _)| k == sv).map(|(_, v)| v.clone()));
             let mut b = Obj::default();
             b.put("from", alias.as_deref().map_or_else(|| s_or_null(sender), s))
@@ -249,43 +262,59 @@ pub(crate) fn unread_broadcasts(st: &crate::meshw::store::MeshStore, inv: &Inv, 
                 .put("kind", s(defaults::text("mesh_write.mtype_broadcast")))
                 .put("timestamp", n(m["ts"].as_f64().unwrap_or(f64::NAN)))
                 .put("urgency", s_or_null(m["urgency"].as_str()))
-                .put("seq", n(q))
+                .put("seq", n(q as f64))
                 .put("needsReply", OVal::Bool(needs_reply))
-                .put("addressed", OVal::Bool(policy.wakes(&p, reader)));
+                .put("addressed", OVal::Bool(addressed));
             if alias.is_some() {
                 b.put("fromLabel", s_or_null(sender));
             }
             rows.push(b.done());
+            target = Some(q);
             true
         })
         .map_err(|e| store_err("broadcasts", e))?;
-    let cap = defaults::num("mesh_wake.inbox_broadcast_cap") as usize;
-    let omitted = rows.len().saturating_sub(cap);
-    rows.drain(..omitted);
-    Ok(UnreadBroadcasts { rows, omitted, head })
+    Ok(UnreadBroadcasts { rows, more, from: cursor, target })
 }
 
-/// Put the unread broadcasts of `u` into a drain verb's result: `broadcasts`, and `broadcastsOmitted` when the cap left some out.
-/// Nothing is added when there are none, so a reader with no broadcasts sees the result it always did.
-pub(crate) fn put_broadcasts(o: &mut OVal, u: &UnreadBroadcasts) {
-    if u.rows.is_empty() && u.omitted == 0 {
+/// Put the unread broadcasts into a drain verb's result: `broadcasts`, `broadcastsMore` when the cap held some back, and (for
+/// `inbox read`, whose ack is a separate call) `broadcastAckTarget`. Nothing is added when there are none, so a reader with no
+/// broadcasts sees the result it always did.
+pub(crate) fn put_broadcasts(o: &mut Obj, u: &UnreadBroadcasts, with_target: bool) {
+    if u.rows.is_empty() {
         return;
     }
-    o.set(defaults::text("mesh_wake.key_broadcasts"), OVal::Arr(u.rows.clone()));
-    if u.omitted > 0 {
-        o.set(defaults::text("mesh_wake.key_broadcasts_omitted"), n(u.omitted as f64));
+    o.put(defaults::text("mesh_wake.key_broadcasts"), OVal::Arr(u.rows.clone()));
+    if u.more {
+        o.put(defaults::text("mesh_wake.key_broadcasts_more"), OVal::Bool(true));
+    }
+    if with_target && let Some(t) = u.target {
+        o.put(defaults::text("mesh_wake.key_broadcast_ack_target"), n(t as f64));
     }
 }
 
-/// Ack what [`unread_broadcasts`] saw: move reader `reader`'s broadcast cursor to `u.head` (never back). The new cursor, or `None`
-/// when there was nothing to move.
-pub(crate) fn ack_broadcasts(st: &crate::meshw::store::MeshStore, reader: &str, u: &UnreadBroadcasts) -> R<Option<i64>> {
-    let Some(head) = u.head else { return Ok(None) };
+/// The read-receipt op that acks what [`unread_broadcasts`] listed (contract §6), `None` when nothing was listed.
+pub(crate) fn broadcast_op(reader: &str, u: &UnreadBroadcasts) -> Option<OVal> {
+    let t = u.target?;
+    let mut op = Obj::default();
+    op.put("k", s(defaults::text("mesh_write.op_broadcast")))
+        .put("opv", n(1.0))
+        .put("reader", s(reader))
+        .put("from", n(u.from as f64))
+        .put("target", n(t as f64))
+        .put("delivered", n(u.rows.len() as f64));
+    Some(op.done())
+}
+
+/// Move reader `reader`'s broadcast cursor through `target` (the delivered boundary): never back, never past the live head. The
+/// new cursor, or `None` when it did not move.
+pub(crate) fn ack_broadcasts(st: &crate::meshw::store::MeshStore, reader: &str, target: i64) -> R<Option<i64>> {
     let now = st.reader().broadcast_cursor(reader).map_err(|e| store_err("cursor", e))? as i64;
-    if head <= now {
+    let head = st.broadcast_head().map_err(|e| store_err("head", e))?;
+    let to = target.min(head);
+    if to <= now {
         return Ok(None);
     }
-    st.set_broadcast_cursor(reader, head, common::now_ms()).map_err(|e| store_err("advance", e))?;
+    st.set_broadcast_cursor(reader, to, common::now_ms()).map_err(|e| store_err("advance", e))?;
     crate::meshw::mark_committed();
-    Ok(Some(head))
+    Ok(Some(to))
 }

@@ -362,6 +362,12 @@ impl MeshStore {
         Ok(head)
     }
 
+    /// The highest broadcast seq in the store (0 when none).
+    pub fn broadcast_head(&self) -> Res<i64> {
+        let head: Option<f64> = self.conn().prepare_cached(sql::MESHW_BROADCAST_HEAD)?.query_row([], |r| r.get::<_, Option<f64>>(0))?;
+        Ok(head.filter(|f| f.is_finite()).map_or(0, |f| f as i64))
+    }
+
     /// Set workspace `id`'s broadcast cursor to `seq` (GH #845: a drain verb acks exactly the broadcasts it read, not the live head).
     pub fn set_broadcast_cursor(&self, id: &str, seq: i64, now: i64) -> Res<()> {
         retry_busy(|| self.conn().prepare_cached(sql::MESHW_SET_BROADCAST_CURSOR)?.execute(params![id, seq, now]))?;

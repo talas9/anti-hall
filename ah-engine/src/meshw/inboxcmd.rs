@@ -317,12 +317,13 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
         );
     }
     o.put("count", n(c.unread as f64)).put("cursor", n(c.nd_cursor)).put("storeCursor", n(c.store_cursor));
-    let mut result = o.done();
-    // GH #845: the unread broadcasts are listed beside the direct mail (read only; `inbox ack` acks them)
+    // GH #845 (contract §6): the unread broadcasts are listed beside the direct mail, read only, with the boundary
+    // `inbox ack <id> --broadcast-to <seq>` acks through
     if c.unavail.is_none() {
         let st = common::open_store(inv, &c.store_key)?;
-        crate::meshw::read::put_broadcasts(&mut result, &crate::meshw::read::unread_broadcasts(&st, inv, id)?);
+        crate::meshw::read::put_broadcasts(&mut o, &crate::meshw::read::unread_broadcasts(&st, inv, id)?, true);
     }
+    let result = o.done();
     tick::emit_known_warning(defaults::text("mesh_write.action_read"), &result);
     Ok(Answer { code: 0, stdout: format!("{}\n", result.stringify()), effect: Effect::None })
 }
@@ -395,6 +396,19 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
                 return Ok(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None });
             }
             Some(x)
+        }
+    };
+    // GH #845: `--broadcast-to <seq>` (the `broadcastAckTarget` of `inbox read`), a non-negative whole number
+    let bc_to: Option<i64> = match a.one(defaults::text("mesh_write.flag_broadcast_to")) {
+        None => None,
+        Some(raw) => {
+            let x = crate::checks::guardkit::text::js_number_of_str(raw);
+            if !x.is_finite() || x < 0.0 {
+                let mut o = Obj::default();
+                o.put("ok", OVal::Bool(false)).put("error", s(defaults::text("mesh_wake.msg_broadcast_to_not_number")));
+                return Ok(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None });
+            }
+            Some(x.floor() as i64)
         }
     };
     // a store the count could not use is not written either: the NDJSON position alone moves
@@ -577,10 +591,11 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
                 failures.push(f.done());
             }
         }
-        // GH #845: the broadcasts `inbox read` listed are acked with the direct mail (before the summary is derived, so the
-        // broadcast wake count drops with them)
-        let ub = crate::meshw::read::unread_broadcasts(st, inv, id)?;
-        bc_moved = crate::meshw::read::ack_broadcasts(st, id, &ub)?;
+        // GH #845 (contract §6): `--broadcast-to <seq>` acks the broadcasts `inbox read` listed, through the boundary it printed and
+        // never further (before the summary is derived, so the broadcast wake state follows); without it the cursor stays
+        if let Some(t) = bc_to {
+            bc_moved = crate::meshw::read::ack_broadcasts(st, id, t)?;
+        }
         if let Some(why) = crate::meshw::summary::derive_after_write(st, inv, &c.store_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_ack"), &why);
         }

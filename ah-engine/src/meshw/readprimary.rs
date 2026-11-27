@@ -350,26 +350,6 @@ fn receipt_record(rid: &str, id: &str, reader: Option<&str>, now: i64, ops: Vec<
 }
 
 /// Record the project's summary file as it stands now (the witness compares it with Node's).
-/// GH #845: an acking read lists the reader's unread broadcasts (`broadcasts`) and acks them (`broadcastCursor`), then refreshes the
-/// summary so the broadcast wake count drops with them. A text rendering (`--format text`) does not show them, so it lists and acks
-/// none. A store that cannot be opened here leaves the result as it was (the direct read already answered).
-fn with_broadcasts(inv: &Inv, repo_key: &str, id: &str, result: &mut OVal, text: bool) -> R<()> {
-    if text || repo_key.is_empty() {
-        return Ok(());
-    }
-    let Ok(st) = common::open_store(inv, repo_key) else { return Ok(()) };
-    let u = crate::meshw::read::unread_broadcasts(&st, inv, id)?;
-    crate::meshw::read::put_broadcasts(result, &u);
-    if let Some(head) = crate::meshw::read::ack_broadcasts(&st, id, &u)? {
-        result.set(defaults::text("mesh_wake.key_broadcast_cursor"), n(head as f64));
-        if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, repo_key) {
-            crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_read_primary"), &why);
-        }
-        note_summary(inv, repo_key);
-    }
-    Ok(())
-}
-
 fn note_summary(inv: &Inv, repo_key: &str) {
     let rel = format!(
         "{}/{}/{}/{repo_key}{}",
@@ -1492,10 +1472,8 @@ fn run_inner(inv: &Inv, a: &Args, peek: bool, hist: bool) -> R<Answer> {
         let stdout = planned.result.stringify();
         return Ok(Answer { code: 0, stdout: format!("{stdout}\n"), effect: Effect::None });
     }
-    let read_id = a.positionals.get(2).map(String::as_str).unwrap_or_default().to_string();
     if planned.legacy {
         let mut result = planned.result;
-        with_broadcasts(inv, &planned.repo_key, &read_id, &mut result, planned.text.is_some())?;
         match planned.ack {
             Some(crate::meshw::inbox::AckStep::Go(plan)) => {
                 let applied = crate::meshw::inbox::apply_ack(inv, *plan);
@@ -1539,7 +1517,6 @@ fn run_inner(inv: &Inv, a: &Args, peek: bool, hist: bool) -> R<Answer> {
     crate::meshw::mark_committed();
     crate::meshw::note_written(&planned.rel, planned.record.as_bytes());
     let mut result = planned.result;
-    with_broadcasts(inv, &planned.repo_key, &read_id, &mut result, planned.text.is_some())?;
     if let Some(ack) = planned.ack {
         // the ack (cmdInboxAckPrimary on the receipt just filed) is part of the printed result, as `autoAck`
         // an ack Node would refuse is the `autoAck` it prints (`ok: false`)
@@ -2023,6 +2000,19 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
             receipt_error: None,
             legacy: false,
         });
+    }
+    // GH #845 (contract §6): an acking read lists the reader's unread broadcasts and files a `bc` op that acks exactly through the
+    // last one listed, with the direct mail. A text rendering does not show them, so it lists and acks none.
+    if !hist
+        && !(format_text && !json_flag)
+        && !o.repo_key.is_empty()
+        && let Ok(bst) = common::open_store(inv, &o.repo_key)
+    {
+        let u = crate::meshw::read::unread_broadcasts(&bst, inv, id)?;
+        if let Some(op) = crate::meshw::read::broadcast_op(id, &u) {
+            ops.push(op);
+        }
+        crate::meshw::read::put_broadcasts(&mut out, &u, false);
     }
     if legacy {
         // `read-primary --legacy-ack-now`: the old same-call read-and-ack. The ops are applied here instead of filed, and the
