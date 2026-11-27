@@ -487,7 +487,7 @@ env = "AH_ENGINE_STALL_MS"
 unit = "ms"
 
 [daemon.start_stall_ms]
-doc = "How long a starting daemon may take from its start to the accept loop's first round (database open, spool drain, scheduler and wiring start) before the watchdog calls it stalled and restarts it. Longer than daemon.stall_ms because start-up work is not the accept loop and a loaded machine slows it; once the loop has run, daemon.stall_ms applies, and a loop that has returned (a clean drain) is never judged."
+doc = "How long a starting daemon may take from its start to the accept loop's first round (database open, spool drain, scheduler and wiring start) before the watchdog calls it stalled and restarts it. Longer than daemon.stall_ms because start-up work is not the accept loop and a loaded machine slows it; once the loop has run, daemon.stall_ms applies, and a loop that has returned (a clean drain) is never judged. R0: multiplied by the watchdog load factor (daemon.watchdog_load_scale_max_permille), as daemon.stall_ms is."
 value = 60000
 env = "AH_ENGINE_START_STALL_MS"
 unit = "ms"

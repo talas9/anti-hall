@@ -2090,7 +2090,8 @@ fn watchdog(sh: Arc<Shared>) {
         let load = crate::loadscale::per_core();
         let factor = watchdog_factor(load);
         let (stall_ms, stuck_ms) = (crate::loadscale::scale(cfg.stall.as_millis() as u64, factor), crate::loadscale::scale(cfg.stuck.as_millis() as u64, factor));
-        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, stall_ms, cfg.start_stall.as_millis() as u64) {
+        let start_stall_ms = crate::loadscale::scale(cfg.start_stall.as_millis() as u64, factor);
+        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, stall_ms, start_stall_ms) {
             let kind = watchdog_exit(load, "stall", defaults::text("msg.log_stall"), defaults::text("msg.failure_stall"));
             sh.telemetry.with_metrics(|m| m.inc("watchdog_exits", &[("kind", kind), ("code", "stall")]));
             begin_drain(&sh, "stall", defaults::text("msg.exit_reason_stall"), true);
