@@ -498,7 +498,7 @@ pub fn identity() -> &'static serde_json::Value {
             0
         };
         serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": crate::crate_version(),
             "build_id": id.as_ref().map(|i| i.id.clone()),
             "build_id_kind": id.as_ref().map(|i| i.kind.name()),
             "image_base": format!("{base:#x}"),

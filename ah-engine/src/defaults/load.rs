@@ -323,7 +323,7 @@ impl Dirs {
 fn stamp(root: &Path) -> String {
     let manifest = std::fs::read_to_string(root.join(bootstrap::PLUGIN_MANIFEST)).ok().and_then(|t| serde_json::from_str::<Json>(&t).ok());
     let version = manifest.as_ref().and_then(|m| m.get("version")).and_then(Json::as_str).unwrap_or("-").to_string();
-    format!("{}\t{}\t{version}", env!("CARGO_PKG_VERSION"), root.display())
+    format!("{}\t{}\t{version}", crate::crate_version(), root.display())
 }
 
 /// The subdirectory of the last-known-good base that holds the copy for `stamp`.
@@ -883,7 +883,7 @@ const END: &str = "AHDC-END";
 
 /// Write `data` to `path` atomically (a temporary file in the same directory, then a rename). Entries are sorted by key.
 pub fn write_cache(data: &Data, path: &Path) -> std::io::Result<()> {
-    let mut out = format!("{MAGIC}\t{}\t{}\t{}\n", env!("CARGO_PKG_VERSION"), data.print, data.root.display());
+    let mut out = format!("{MAGIC}\t{}\t{}\t{}\n", crate::crate_version(), data.print, data.root.display());
     for (key, e) in &data.index {
         let mut o = serde_json::Map::new();
         o.insert("v".into(), e.value.to_json());
@@ -968,7 +968,7 @@ impl Lazy {
         let text = std::fs::read_to_string(path).ok()?;
         let (head, rest) = text.split_once('\n')?;
         let mut f = head.splitn(4, '\t');
-        if f.next()? != MAGIC || f.next()? != env!("CARGO_PKG_VERSION") {
+        if f.next()? != MAGIC || f.next()? != crate::crate_version() {
             return None;
         }
         let print = f.next()?;

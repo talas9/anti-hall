@@ -118,10 +118,30 @@ pub fn version() -> String {
 /// `install-routine`: `update --from-local <dir>` / `update --rollback` are the ONE install routine.
 pub const FEATURES: &[&str] = &["install-routine"];
 
-/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` (the crate's own
-/// version when the build had no checkout to read).
+/// The build version the binary's `main` hands over ([`set_build_version`]). The library never reads `AH_BUILD_VERSION` itself:
+/// that compile-time variable changes on every commit and checkout, and a library that read it missed the compile cache on each
+/// one. Now the library stays a cache hit across commits. The package's test and binary targets are still rebuilt on a commit
+/// (the build script reruns, and cargo then rebuilds every target of the package; test and binary crates are not cacheable).
+static BUILD_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Record the version this binary was built as (`env!("AH_BUILD_VERSION")` in `main`). The first call wins; a later call is ignored.
+pub fn set_build_version(v: &'static str) {
+    // already set by an earlier call: the first version stays (one binary, one build version)
+    discard::harmless(BUILD_VERSION.set(v));
+}
+
+/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` and set by `main`
+/// ([`set_build_version`]). Without it (the library's own tests, a caller that is not the `ah-engine` binary) it is the crate's own
+/// version.
 pub fn build_version() -> &'static str {
-    env!("AH_BUILD_VERSION")
+    BUILD_VERSION.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+/// The engine's release version without the build suffix (`0.3.30` of `0.3.30+branch.sha`): the one accessor for code that stamps or
+/// compares the engine version (defaults cache, burst profile), so no module but this one reads `CARGO_PKG_VERSION` itself.
+pub fn crate_version() -> &'static str {
+    let v = build_version();
+    v.split('+').next().unwrap_or(v)
 }
 
 /// Numeric dotted-version compare ("0.10.0" > "0.9.0"); non-numeric parts count as 0, a pre-release
