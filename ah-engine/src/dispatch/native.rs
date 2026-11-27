@@ -176,6 +176,12 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
             Answer::Defer
+        } else if crate::overload::sheds_check(check) {
+            // #969 shed mode (sustained overload, or a request that waited past its class bound): advice is skipped, as a check with
+            // nothing to say (no guard-down notice, no Node hook); fail-closed checks, recorders and kept checks run below
+            crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
+            crate::budget::note_dropped(guard_event, check, &meta.event, crate::defaults::text("overload.drop_reason"));
+            Answer::Decided(HookResult::quiet(&e.id), Vec::new())
         } else if crate::deadline::client_gone() {
             // the client closed its connection: nobody reads this reply, so the check is not worth running.
             // live19: 478 replies in 1000 s hit a closed pipe after their work was done.
