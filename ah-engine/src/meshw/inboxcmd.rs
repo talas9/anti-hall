@@ -238,6 +238,33 @@ pub(crate) fn decode_through(raw: &str) -> Option<std::collections::HashMap<Stri
     (!out.is_empty()).then_some(out)
 }
 
+/// Re-review N-6: where `inbox read` keeps the boundary it delivered for workspace `id`, so a bare `inbox ack` acks exactly that.
+fn through_file(inv: &Inv, id: &str) -> std::path::PathBuf {
+    crate::meshw::idlock::devswarm_root(&inv.home)
+        .join(defaults::text("mesh_wake.dir_ack_through"))
+        .join(format!("{id}{}", defaults::text("mesh_write.json_suffix")))
+}
+
+/// Keep the boundary `inbox read` delivered (best effort: a read never fails on it; an ack with no record acks nothing).
+fn save_through(inv: &Inv, id: &str, token: &str) {
+    let f = through_file(inv, id);
+    if let Some(dir) = f.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: a missing record only makes a bare ack ack nothing
+    }
+    let mut o = Obj::default();
+    o.put(defaults::text("mesh_wake.key_ack_through"), s(token)).put("ts", n(inv.now as f64));
+    crate::discard::harmless(std::fs::write(&f, o.done().stringify())); // keep: same
+}
+
+/// The boundary the last `inbox read` of `id` delivered, if one is kept.
+fn load_through(inv: &Inv, id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(through_file(inv, id)).ok()?;
+    match OVal::parse(&text)?.get(defaults::text("mesh_wake.key_ack_through")) {
+        Some(OVal::Str(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
 /// An ack's target for one cursor: what the ack-time count would move it to, held to the read's boundary when the ack names one (a
 /// cursor the read did not name stays where it is).
 fn held(through: Option<&std::collections::HashMap<String, f64>>, key: &str, computed: f64, now: f64) -> f64 {
@@ -359,6 +386,7 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
     let (nd_to, store_to, sib_to) = ack_points(&c);
     let through = encode_through(nd_to, store_to, &sib_to);
     o.put(defaults::text("mesh_wake.key_ack_through"), s(&through));
+    save_through(inv, id, &through);
     if c.unread > 0 {
         o.put("cursorAdvanced", OVal::Bool(false)).put(
             "ackHint",
@@ -475,9 +503,16 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
         }
     };
     // review (direct-mail ack race): `--through <ackThrough of inbox read>` holds every cursor to what that read delivered
-    let through = match a.one(defaults::text("mesh_wake.flag_ack_through")) {
+    // re-review N-6: a bare ack (no --through, no --to) is held to the boundary the last `inbox read` delivered; with no read on
+    // record it acks nothing, so mail nobody was shown is never acked
+    let given = a.one(defaults::text("mesh_wake.flag_ack_through")).map(str::to_string);
+    let bare = given.is_none() && a.one(defaults::text("mesh_write.flag_to")).is_none();
+    let recorded = if bare { load_through(inv, id) } else { None };
+    let no_read = bare && recorded.is_none();
+    let through = match given.or(recorded) {
+        None if no_read => Some(std::collections::HashMap::new()),
         None => None,
-        Some(raw) => match decode_through(raw) {
+        Some(raw) => match decode_through(&raw) {
             Some(m) => Some(m),
             None => {
                 let mut o = Obj::default();
@@ -712,6 +747,9 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     }
     if let Some(head) = bc_moved {
         out.put(defaults::text("mesh_wake.key_broadcast_cursor"), n(head as f64));
+    }
+    if no_read {
+        out.put(defaults::text("mesh_wake.key_ack_no_read"), s(defaults::text("mesh_wake.msg_ack_no_read")));
     }
     let result = out.done();
     tick::emit_known_warning(defaults::text("mesh_write.verb_ack"), &result);

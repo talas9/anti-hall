@@ -295,6 +295,48 @@ fn an_ack_only_broadcast_is_refused() {
     assert!(r.stdout.contains(defaults::text("mesh_chat.msg_ack_only_broadcast")), "{}", r.stdout);
 }
 
+fn child_with_inbox(f: &Fx) {
+    let inbox = f.inv.home.join("child-1.ndjson");
+    let cursor = f.inv.home.join("child-1.cursor");
+    std::fs::write(&inbox, "").unwrap();
+    std::fs::write(&cursor, "0").unwrap();
+    let dir = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+    let q = |p: &std::path::Path| crate::checks::guardkit::ojson::OVal::Str(p.to_string_lossy().into_owned()).stringify();
+    std::fs::write(
+        dir.join("child-1.json"),
+        format!(
+            r#"{{"id":"child-1","worktreePath":{},"inboxPath":{},"cursorPath":{}}}"#,
+            crate::checks::guardkit::ojson::OVal::Str(f.sub.clone()).stringify(),
+            q(&inbox),
+            q(&cursor)
+        ),
+    )
+    .unwrap();
+}
+
+/// Re-review N-6: a bare `inbox ack` is safe by default. With no read on record it acks nothing; after a read it acks exactly what
+/// that read showed, so mail that landed in between stays unread.
+#[test]
+fn a_bare_ack_acks_only_what_the_last_read_showed() {
+    let f = fx("bareack");
+    let (primary, _) = registry(&f, &["child-1"]);
+    child_with_inbox(&f);
+    let sent = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "first"])).unwrap();
+    assert_eq!(sent.code, 0, "send: {}", sent.stdout);
+    let blind = crate::meshw::inboxcmd::run_ack(&f.inv, &argv(&["inbox", "ack", "child-1"])).unwrap();
+    assert_eq!(blind.code, 0, "{}", blind.stdout);
+    assert!(blind.stdout.contains(defaults::text("mesh_wake.key_ack_no_read")), "{}", blind.stdout);
+    let read = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(read.contains("first"), "a blind ack acked unseen mail: {read}");
+    let late = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "late"])).unwrap();
+    assert_eq!(late.code, 0, "send: {}", late.stdout);
+    let ack = crate::meshw::inboxcmd::run_ack(&f.inv, &argv(&["inbox", "ack", "child-1"])).unwrap();
+    assert_eq!(ack.code, 0, "ack: {}", ack.stdout);
+    let again = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(again.contains("late"), "the bare ack acked the late mail unseen: {again}");
+    assert!(!again.contains("\"first\""), "the read mail is still unread: {again}");
+}
+
 /// GH #845 review (the direct-mail ack race): mail that lands between `inbox read` and `inbox ack --through <ackThrough>` stays
 /// unread; the ack moves only through what the read delivered.
 #[test]

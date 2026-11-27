@@ -214,7 +214,7 @@ value = 160
 # ---- review: the direct-mail ack race (`inbox read` -> `inbox ack --through`) ----------------------------------------------------
 
 [mesh_wake.flag_ack_through]
-doc = "`inbox ack --through <ackThrough>`: hold every cursor to the boundary the `inbox read` delivered, so mail that arrived after it stays unread. Without it the ack moves through everything unread at ack time (the old behavior)."
+doc = "`inbox ack --through <ackThrough>`: hold every cursor to the boundary the `inbox read` delivered, so mail that arrived after it stays unread. A bare `inbox ack` (no --through, no --to) uses the boundary the last `inbox read` kept (`dir_ack_through`), and acks nothing when no read is on record."
 value = "through"
 
 [mesh_wake.key_ack_through]
@@ -240,3 +240,15 @@ value = "store"
 [mesh_wake.msg_ack_through_invalid]
 doc = "The refusal text of `inbox ack --through` with a token that is not `<key>:<number>` parts."
 value = "--through takes the ackThrough value that `inbox read` printed."
+
+[mesh_wake.dir_ack_through]
+doc = "Directory under the DevSwarm state root where `inbox read` keeps the boundary it delivered per workspace (`<id>.json`), for a bare `inbox ack` (re-review N-6)."
+value = "ack-through"
+
+[mesh_wake.key_ack_no_read]
+doc = "`inbox ack` result key, set when a bare ack found no `inbox read` on record and so acked nothing."
+value = "ackedNothing"
+
+[mesh_wake.msg_ack_no_read]
+doc = "The note under `key_ack_no_read`."
+value = "no inbox read on record for this workspace: nothing was acked. Run `inbox read` first, then `inbox ack` (it acks exactly what that read showed)."
