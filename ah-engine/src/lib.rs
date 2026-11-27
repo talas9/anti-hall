@@ -117,10 +117,22 @@ pub fn version() -> String {
 /// `install-routine`: `update --from-local <dir>` / `update --rollback` are the ONE install routine.
 pub const FEATURES: &[&str] = &["install-routine"];
 
-/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` (the crate's own
-/// version when the build had no checkout to read).
+/// The build version the binary's `main` hands over ([`set_build_version`]). The library never reads `AH_BUILD_VERSION` itself:
+/// that compile-time variable changes on every commit and checkout, and a library that read it would be recompiled (and, through
+/// the compile cache, every test binary relinked against a new library) on each one. Only the small binary crate carries it.
+static BUILD_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Record the version this binary was built as (`env!("AH_BUILD_VERSION")` in `main`). The first call wins; a later call is ignored.
+pub fn set_build_version(v: &'static str) {
+    // already set by an earlier call: the first version stays (one binary, one build version)
+    discard::harmless(BUILD_VERSION.set(v));
+}
+
+/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` and set by `main`
+/// ([`set_build_version`]). Without it (the library's own tests, a caller that is not the `ah-engine` binary) it is the crate's own
+/// version.
 pub fn build_version() -> &'static str {
-    env!("AH_BUILD_VERSION")
+    BUILD_VERSION.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
 /// Numeric dotted-version compare ("0.10.0" > "0.9.0"); non-numeric parts count as 0, a pre-release
