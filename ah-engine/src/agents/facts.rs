@@ -550,7 +550,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         let r = defaults::raw("agent_tracker.report_to");
         let body: String = str_of(&input, r.str_field("body_field")).split_whitespace().collect::<Vec<_>>().join(" ");
         let key = format!("{:x}", crate::health::fnv(&body));
-        if a.report_keys.iter().any(|k| *k == key) {
+        if a.report_keys.contains(&key) {
             crate::metrics::bump("agent_report_repeat", &[]);
         } else {
             push_ring(&mut a.report_keys, key, r.get("dedupe_max").and_then(V::as_integer).unwrap_or(0).max(1) as u64);

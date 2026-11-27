@@ -7092,7 +7092,7 @@ fn n972r_an_unrelated_task_write_does_not_confirm_the_hold() {
     touch_task_at(&h, SID, "75", n + max + 5 * MIN);
     append(&sess(&h, SID), &[tool(n + max + 5 * MIN, "m1", 5, "tu1", "TaskUpdate", json!({"taskId": "75", "subject": "Task 75 (renamed)"})), result(n + max + 5 * MIN + 500, "tu1", "Updated task", false)]);
     ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
-    assert!(agent(&st, SID).hold_confirmed.get("75").is_none(), "no blocker field was written");
+    assert!(!agent(&st, SID).hold_confirmed.contains_key("75"), "no blocker field was written");
     assert_eq!(n972_hold_rows(&h).len(), 2, "unanswered: reminded again after the cooldown");
 }
 

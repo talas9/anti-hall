@@ -371,7 +371,7 @@ fn drift(a: &Agent, st: &State, tasks: &[Task]) -> Option<Raised> {
     let work: BTreeSet<&String> = a.work.iter().collect();
     let hit = goal.iter().filter(|w| work.contains(w)).count() as u64;
     let pct = hit * fmtn("pct") / goal.len() as u64;
-    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then(|| (pct, step_text))
+    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then_some((pct, step_text))
 }
 
 fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
