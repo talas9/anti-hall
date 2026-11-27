@@ -53,6 +53,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "an empty thread-local high-water mark of the bytes this thread held for transcript reads until the check's cost is observed: an initial zero, not a tunable",
     ),
     (
+        "src/overload.rs",
+        "static SHED",
+        "a thread-local flag: whether the request this worker serves runs in shed mode (#969), set per request; an initial false, not a tunable",
+    ),
+    (
         "src/transcript/scan.rs",
         "static TEST_MAX",
         "a test-only thread-local that keeps the concurrency bound off for the lib's unit tests unless one sets it: an initial zero, not a tunable",

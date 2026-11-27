@@ -115,6 +115,7 @@ files = [
     "omc_coexist.toml",
     "codex_scripts.toml",
     "diagnostics.toml",
+    "overload.toml",
     "mem.toml",
     "wire.toml",
     "devswarm_parent.toml",

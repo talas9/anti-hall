@@ -280,6 +280,10 @@ value = { kind = "counter", unit = "starts", labels = ["reason"] }
 doc = "Asks of a hook client with no daemon to the service manager to start the engine unit, by outcome code (asked, ok, miss, failed); counted by the daemon that starts next, from the event log."
 value = { kind = "counter", unit = "asks", labels = ["code"] }
 
+[metric.overload]
+doc = "Overload outcomes of daemon requests (#969, defaults/overload.toml), by what happened (evicted, rejected, limited, shed_mode, timed_out), the request's admission class and its event (`-` when not read at admission). Checks skipped in shed mode are counted per check and event in answers_dropped and delivery_lost under reason overload.drop_reason."
+value = { kind = "counter", unit = "requests", labels = ["what", "class", "event"] }
+
 [metric.busy_replies]
 doc = "Requests answered BUSY (queue full or rate limited), which made the client fall back."
 value = { kind = "counter", unit = "requests", labels = [] }
