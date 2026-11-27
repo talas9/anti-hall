@@ -464,5 +464,6 @@ fn task(id: &str, content: String, status: Option<String>, priority: Option<Stri
         unknown,
         block_unknown: false,
         since: Default::default(),
+        blocked_on_at: Default::default(),
     }
 }

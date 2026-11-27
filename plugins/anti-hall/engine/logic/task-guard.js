@@ -30,6 +30,20 @@ function tgHoldsOpen(home, safeSession, now) {
   tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms };
 }
 
+// When this session's own transcript last wrote `blockedOn` of task `t` with a TaskUpdate (ms), else null. With a task store the list holds no
+// transcript facts, so the transcript is read once for them (the 'guard' variant of the shared reader).
+var tgAtPath = null, tgAtSid = null, tgAtMap = null;
+function tgBlockedOnAt(t) {
+  if (typeof t.blockedOnAtMs === 'number' && isFinite(t.blockedOnAtMs)) return t.blockedOnAtMs;
+  if (tgAtPath === null) return null;
+  if (tgAtMap === null) {
+    tgAtMap = {};
+    var r = ah.transcript.tasks(tgAtPath, 'guard', ah.cfgNum('taskstate.tail_bytes'), 0);
+    if (r && Array.isArray(r.tasks)) r.tasks.forEach(function (x) { if (typeof x.blockedOnAtMs === 'number' && isFinite(x.blockedOnAtMs)) tgAtMap[x.id] = x.blockedOnAtMs; });
+  }
+  return typeof tgAtMap[t.id] === 'number' ? tgAtMap[t.id] : null;
+}
+
 // Whether the `kind` exemption of task `t` (marker text `marker`) is still in force.
 function tgHeld(t, kind, marker) {
   if (tgHolds === null) return true;
@@ -39,16 +53,12 @@ function tgHeld(t, kind, marker) {
     first = typeof was === 'number' && isFinite(was) && was <= tgHolds.now ? was : tgHolds.now;
     tgHolds.seen[key] = first;
   }
-  // A TaskUpdate that re-saves the marker as it stands rewrites the task's store file with the same content: the file is newer and its
-  // content hash is the one seen at the last Stop. A write that changed anything else (an activeForm, a status) changes the hash and renews
-  // nothing; so does a first sight of the file (no signature kept yet).
-  if (typeof t.touchedMs === 'number' && isFinite(t.touchedMs) && typeof t.touchedSig === 'string') {
-    var sk = key + '#sig', prevSig = tgHolds.prior[sk], parts = typeof prevSig === 'string' ? prevSig.split('|') : null;
-    if (parts !== null && parts.length === 2 && parts[1] === t.touchedSig && t.touchedMs > Number(parts[0]) && t.touchedMs > first && t.touchedMs <= tgHolds.now) {
-      first = t.touchedMs;
-      tgHolds.seen[key] = first;
-    }
-    tgHolds.seen[sk] = (parts !== null && parts[1] === t.touchedSig ? Math.max(Number(parts[0]), t.touchedMs) : t.touchedMs) + '|' + t.touchedSig;
+  // The session's own TaskUpdate that writes metadata.blockedOn again (even with the same text) is the re-confirmation the hint asks for: the
+  // hold runs from it. Only this transcript's tool calls count (blockedOnAtMs); a task file another session rewrites renews nothing.
+  var at = tgBlockedOnAt(t);
+  if (at !== null && at > first && at <= tgHolds.now) {
+    first = at;
+    tgHolds.seen[key] = first;
   }
   if (tgHolds.now - first < tgHolds.max) return true;
   if (tgHolds.lapsed[key] === undefined) { tgHolds.lapsed[key] = kind; ah.metric('idle_rule_hold_lapsed', ['reason', kind]); }
@@ -521,6 +531,7 @@ function tgDecideCore(p) {
   var sessionId = given === '' ? ah.sha1(transcript).slice(0, ah.cfgNum('task_guard.session_hash_len')) : given;
   var safeSession = tk.safeKey(sessionId);
   var stateRel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.state_prefix') + safeSession;
+  tgAtPath = transcript; tgAtSid = given === '' ? undefined : given; tgAtMap = null;
   var tasks = tk.tasks(transcript, home, given === '' ? undefined : given);
   // the prune-the-list advisory is NOT here: a Stop hook's stderr at exit 0 never reaches the model (KB-claude-code-hooks.md, Stop row), so
   // it is delivered by task-tracker on UserPromptSubmit (additionalContext) instead
@@ -639,6 +650,7 @@ function tgEnforce(p, out) {
   if (!transcript || typeof transcript !== 'string' || !home) return null;
   var given = p.session_id ? String(p.session_id) : '';
   var sessionId = given === '' ? ah.sha1(transcript).slice(0, ah.cfgNum('task_guard.session_hash_len')) : given;
+  tgAtPath = transcript; tgAtSid = given === '' ? undefined : given; tgAtMap = null;
   var tasks = tk.tasks(transcript, home, given === '' ? undefined : given);
   if (tasks.unsure) return null;
   var stateRel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.enforce_state_prefix') + tk.safeKey(sessionId);

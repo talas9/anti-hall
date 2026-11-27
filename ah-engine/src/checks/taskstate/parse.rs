@@ -340,6 +340,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                         unknown: None,
                                         block_unknown: false,
                                         since,
+                                        blocked_on_at: Since::Unknown,
                                     },
                                 );
                             }
@@ -412,6 +413,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             block_unknown: false,
                             // `String(inp.status || '')` against the pending / in-progress pattern
                             since: if guard && res().since_status.is_match(&status_text(get(inp, "status"))?) { since } else { ex.since },
+                            blocked_on_at: if guard && has_blocked_on_update(inp) { since } else { ex.blocked_on_at },
                         };
                         tasks.set(&id, upd);
                     }
@@ -500,6 +502,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                     unknown: None,
                     block_unknown: false,
                     since: rec.since,
+                    blocked_on_at: Since::Unknown,
                 },
             ),
             (Variant::Guard, Some(e)) => {
@@ -520,6 +523,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             unknown: None,
                             block_unknown: false,
                             since: e.since,
+                            blocked_on_at: e.blocked_on_at,
                         },
                     );
                 }
@@ -541,6 +545,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             unknown: None,
                             block_unknown: false,
                             since: Since::Unknown,
+                            blocked_on_at: Since::Unknown,
                         },
                     );
                 }
