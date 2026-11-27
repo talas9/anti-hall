@@ -5,11 +5,19 @@
 # and snapshotted to hot.db with rollups in archive.db (D51); impact events are stored in hot.db (D52).
 
 [telemetry.hdr_sigfig]
-doc = "#969 hardening: significant digits of the HdrHistogram each latency metric (unit us) keeps beside its buckets, from which status (phases) and metrics report p50/p95/p99 (2 = within 1 %). Each histogram holds about 10 KB of counts at 2 over the shipped bounds (2560 u32 counters), about 70 KB at 3. 0 = off: percentiles are the bucket bounds of telemetry.latency_buckets_us again."
+doc = "#969 hardening: significant digits of the HdrHistogram each metric in telemetry.hdr_metrics keeps beside its buckets, from which status (phases) and metrics report p50/p95/p99 (2 = within 1 %). Each histogram holds about 10 KB of counts at 2 over the shipped bounds (2560 u32 counters), about 70 KB at 3. 0 = off: percentiles are the bucket bounds of telemetry.latency_buckets_us again."
 value = 2
 min = 0
 max = 5
 unit = "digits"
+
+[telemetry.hdr_metrics]
+doc = "#969 hardening: the latency histograms (unit us) that keep an HdrHistogram (telemetry.hdr_sigfig): per hook event, per check, per hook phase and the dispatch overhead, which status (phases) and metrics report. check_latency_by_size_us (checks x size classes, about 220 live series) is left out: it would double the memory for a split the per-check row already answers. A metric not listed reports its bucket bounds."
+value = ["hook_latency_us", "check_latency_us", "hook_phase_us", "dispatch_overhead_us"]
+
+[telemetry.hdr_persist]
+doc = "#969 hardening: store each HdrHistogram's recorded (value, count) pairs in the metrics snapshot (telemetry.snapshot_ms), so its exact percentiles survive a daemon restart. Off: a restart starts them empty (exact_count says how many observations the percentiles rest on; until then they are the bucket bounds of the restored counts). A busy series holds about 2000 pairs (about 25 KB of JSON), so with about 200 series the snapshot written every minute grows from about 60 KB to 1 to 2 MB of JSON and SQLite work on a daemon that is short of CPU when it matters."
+value = false
 
 [telemetry.hdr_lowest_us]
 doc = "#969 hardening: the smallest latency the HdrHistogram tells apart (telemetry.hdr_sigfig), in microseconds; smaller values count as this."
