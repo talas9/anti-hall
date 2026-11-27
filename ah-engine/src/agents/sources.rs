@@ -419,7 +419,29 @@ fn stopped_subagents(env: &Env, st: &mut State) {
             && let Some(a) = st.agents.get_mut(&id)
         {
             a.running = false;
+            if a.stopped_at == 0 {
+                a.stopped_at = env.now_ms;
+                crate::metrics::bump("agent_stop_sticky", &[("how", "recorded")]);
+            }
         }
+    }
+}
+
+/// A child once seen stopped stays stopped (#972 class 1): the stop shows only while it is inside the launching transcript's tail window,
+/// and the discovery pass resets `finished` every tick, so a stopped child came back as idle or "claims running work" once the window
+/// moved on, and its rows and nags with it. It is resumed only by output written past `limits.stop_resume_ms` after the stop.
+fn sticky_stops(st: &mut State) {
+    for a in st.agents.values_mut().filter(|a| super::is_child(a) && a.stopped_at > 0) {
+        if a.last_output_ms > a.stopped_at.saturating_add(lim("stop_resume_ms")) {
+            a.stopped_at = 0;
+            crate::metrics::bump("agent_stop_sticky", &[("how", "resumed")]);
+            continue;
+        }
+        if !a.finished {
+            crate::metrics::bump("agent_stop_sticky", &[("how", "held")]);
+        }
+        a.finished = true;
+        a.running = false;
     }
 }
 
@@ -499,8 +521,12 @@ fn stopped_teammates(st: &mut State) {
         let parent = format!("{}{}", dir.to_string_lossy(), pth("transcript_ext"));
         let stops = seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent));
         let started = mtime_ms(Path::new(&meta_file)).map_or(0, |m| m as u64);
-        if stops.get(&desc).is_some_and(|t| *t >= started) {
+        if let Some(t) = stops.get(&desc).filter(|t| **t >= started) {
             a.finished = true;
+            if a.stopped_at == 0 {
+                a.stopped_at = if *t == u64::MAX { a.last_output_ms } else { *t };
+                crate::metrics::bump("agent_stop_sticky", &[("how", "recorded")]);
+            }
         }
     }
 }
@@ -581,6 +607,7 @@ pub(super) fn reconcile_children(env: &Env, st: &mut State) {
     stopped_subagents(env, st);
     stopped_teammates(st);
     off_roster(env, st);
+    sticky_stops(st);
 }
 
 /// Discover and ingest every source; drop agents that disappeared.

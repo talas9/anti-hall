@@ -727,7 +727,8 @@ fn idle_no_agents(env: &Env, a: &Agent, st: &State, tasks: &[Task], now: u64) ->
 /// GH #515: an idle child whose last line claims running or background work, with no call in flight, no build or background shell
 /// and no output for `claim_ms`. Evidence: the idle seconds; text: the line.
 fn false_claim(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
-    if !super::is_child(a) || !env.switch("agent_tracker.idle_wake_sw") || a.running || a.gone || a.last_output_ms == 0 {
+    // a finished, stopped or dead child claims nothing any more (#972 class 1)
+    if !super::is_child(a) || !env.switch("agent_tracker.idle_wake_sw") || a.running || a.gone || a.finished || a.dead || a.last_output_ms == 0 {
         return None;
     }
     let line = a.said.last()?;
@@ -1099,6 +1100,12 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
         return;
     }
     let now = env.now_ms;
+    // a snooze its parent gave this child (`agents nudge <child> snooze`) holds every reminder about the child, not only the nudge
+    // loop's own (#972 class 1: a snoozed teammate's false_claim fired again within the hour)
+    if super::is_child(a) && super::nudge::snoozed(env, st, a, now) {
+        compliance::suppressed_any(sig, "snoozed");
+        return;
+    }
     let cd = defaults::raw("agent_tracker.cooldowns").get(sig);
     let cool = cd.and_then(|c| c.get("cooldown_ms")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let per_day = cd.and_then(|c| c.get("max_per_day")).and_then(V::as_integer).unwrap_or(0).max(0) as u64;

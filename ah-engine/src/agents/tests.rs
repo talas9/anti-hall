@@ -6838,3 +6838,79 @@ fn n972_an_unanswered_hold_keeps_its_cooldown_and_a_new_reason_runs_the_plain_cl
     assert_eq!(agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()), Some(k), "the confirmation stays tied to the reason it confirmed");
     assert_eq!(n972_hold_rows(&h).len(), before + 1, "the new reason expired on the plain clock and was reminded");
 }
+
+// ---- #972 class 1: a stopped or snoozed child stays stopped or snoozed --------------------------------------------------------
+
+/// A parent that stopped subagent `abc` 30 min ago (answered TaskStop) and a child transcript that ended mid-turn.
+fn stopped_child(h: &Path, n: u64) {
+    write(
+        &sess(h, "parent"),
+        &[
+            prompt(n - 60 * MIN, "/w"),
+            tool(n - 30 * MIN, "p1", 5, "toolu_stop1", "TaskStop", json!({"task_id": "abc"})),
+            result(n - 30 * MIN + 1000, "toolu_stop1", "Successfully stopped task: abc (Docs-drift review)", false),
+        ],
+    );
+    write(
+        &h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl"),
+        &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "The gate is still running in the background, I will report."}]), None)],
+    );
+    register(h, std::process::id(), "parent", "busy", n);
+}
+
+#[test]
+fn n972_a_stop_outlives_the_launching_transcripts_tail_window() {
+    let h = home("n972-sticky-stop");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "the answered stop ends it");
+    // the parent keeps working: its transcript grows far past the scan's tail window, so the stop is no longer visible there
+    let filler: Vec<String> = (0..400).map(|i| asst(n + 2 * MIN + i, &format!("f{i}"), 5, 5, json!([{"type": "text", "text": "x".repeat(2000)}]), None)).collect();
+    let mut tb = defaults::raw("agent_scan.tail_bytes").to_json();
+    tb = json!(tb.as_u64().unwrap().min(200_000));
+    defaults::set_overlay(&[("agent_scan.tail_bytes", tb)]);
+    append(&sess(&h, "parent"), &filler);
+    ticks(&h, &mut st, &[n + 10 * MIN, n + 40 * MIN, n + 80 * MIN]);
+    let (state, flags) = (signals::state_of(agent(&st, "abc")), agent(&st, "abc").flags.keys().cloned().collect::<Vec<_>>());
+    defaults::set_overlay(&[]);
+    assert_eq!(state, "done", "the stop is kept after it left the window");
+    assert!(flags.iter().all(|f| !["hung", "false_claim", "idle_open_task", "stalled"].contains(&f.as_str())), "no live-agent row about a stopped child: {flags:?}");
+}
+
+#[test]
+fn n972_a_stopped_child_that_writes_again_is_tracked_again() {
+    let h = home("n972-resume");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(agent(&st, "abc").stopped_at > 0);
+    append(&h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl"), &[asst(n + 5 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "resumed"}]), None)]);
+    ticks(&h, &mut st, &[n + 6 * MIN]);
+    assert_eq!(agent(&st, "abc").stopped_at, 0, "output written well after the stop resumes it");
+}
+
+#[test]
+fn n972_a_snoozed_teammate_gets_no_false_claim_until_the_snooze_runs_out() {
+    let n = now0();
+    let h = home("n972-snooze-claim");
+    main_session(&h, "parent", n, 1, "waiting");
+    write(
+        &sub_path(&h, "parent"),
+        &[
+            prompt(n - 30 * MIN, "/w"),
+            tool(n - 20 * MIN, "s1", 5, "t1", "Read", json!({"file_path": "/w/a"})),
+            result(n - 20 * MIN + 500, "t1", "ok", false),
+            asst(n - 10 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "The gate is still running in the background, I will report."}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    st.nudge_snooze.insert("w1|false_claim".into(), nudge::Snooze { until: n + 240 * MIN, snoozes: 1, min: 240, held: 0 });
+    let claims = |h: &Path| queue(h, "parent").into_iter().filter(|r| r["signal"] == "false_claim").count();
+    ticks(&h, &mut st, &[n, n + MIN, n + 60 * MIN]);
+    assert_eq!(claims(&h), 0, "snoozed by its parent");
+    ticks(&h, &mut st, &[n + 241 * MIN, n + 242 * MIN]);
+    assert_eq!(claims(&h), 1, "bounded: once the snooze runs out the claim is reported");
+}

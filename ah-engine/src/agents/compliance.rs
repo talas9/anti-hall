@@ -558,6 +558,11 @@ pub(super) fn count(sig: &str, outcome: &str) {
     }
 }
 
+/// A held reminder, counted for any signal: `suppressed:<reason>` (#972).
+pub(super) fn suppressed_any(sig: &str, reason: &str) {
+    suppressed_outcome(sig, reason);
+}
+
 /// A held reminder, counted for any signal: `suppressed:<reason>` (#972: a hold confirmed by the session's answer).
 fn suppressed_outcome(sig: &str, reason: &str) {
     let o = defaults::raw("nudges.compliance_outcomes");
