@@ -125,5 +125,6 @@ files = [
     "tool_advisory.toml",
     "mesh_wake.toml",
     "mesh_chat.toml",
+    "mesh_identity.toml",
 ]
 extra_dir = "hooks.d"

@@ -343,3 +343,57 @@ fn the_ack_through_token_round_trips() {
     assert!(crate::meshw::inboxcmd::decode_through("nd:x").is_none());
     assert!(crate::meshw::inboxcmd::decode_through("").is_none());
 }
+
+/// GH #845 (owner 2026-11-28): the owner, declared as `admin` from the Primary's own checkout, reaches the Primary (it used to be
+/// refused as a self-send, because the room's sends resolved AS the Primary) and a child; the rows carry `admin`, never the Primary,
+/// and are listed with the human kind and rank.
+#[test]
+fn admin_reaches_the_primary_and_a_child_as_itself() {
+    let f = fx("admin");
+    let (primary, key) = registry(&f, &["child-1"]);
+    let mut owner = primary.clone();
+    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let to_primary = send::run(&owner, &argv(&["send", "--to-primary", "--message", "owner to primary"])).unwrap();
+    assert_eq!(to_primary.code, 0, "admin -> primary: {}", to_primary.stdout);
+    assert!(to_primary.stdout.contains("\"from\":\"admin\""), "{}", to_primary.stdout);
+    let to_child = send::run(&owner, &argv(&["send", "--to", "child-1", "--message", "owner to child"])).unwrap();
+    assert_eq!(to_child.code, 0, "admin -> child: {}", to_child.stdout);
+    let peek = crate::meshw::readprimary::run_peek(&primary, &argv(&["inbox", "peek-primary", &f.primary])).unwrap().stdout;
+    assert!(peek.contains("owner to primary"), "the Primary missed the owner's mail: {peek}");
+    let kind = format!("\"{}\":\"human\"", defaults::text("mesh_identity.key_from_kind"));
+    assert!(peek.contains(&kind), "no human kind on the owner's row: {peek}");
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let mut child_rows = Vec::new();
+    st.reader()
+        .for_each_message("child-1", 0, |m| {
+            child_rows.push(m);
+            true
+        })
+        .unwrap();
+    assert!(child_rows.iter().any(|m| m["sender"] == "admin" && m["body"] == "owner to child"), "{child_rows:?}");
+    assert!(child_rows.iter().all(|m| m["sender"] != serde_json::Value::String(f.primary.clone())), "stamped as the Primary: {child_rows:?}");
+    // the --as flag declares the same, and wins over the variable
+    let as_flag = format!("--{}", defaults::text("mesh_identity.flag_as"));
+    let engine = send::run(&primary, &argv(&["send", "--to", "child-1", &as_flag, "ah-engine", "--message", "from the engine"])).unwrap();
+    assert_eq!(engine.code, 0, "ah-engine -> child: {}", engine.stdout);
+    assert!(engine.stdout.contains("\"from\":\"ah-engine\""), "{}", engine.stdout);
+}
+
+/// An identity the config does not declare is refused; an `@all` broadcast from admin wakes every reader (admin is privileged).
+#[test]
+fn an_unknown_sender_is_refused_and_admin_may_wake_all() {
+    let f = fx("admin-bc");
+    let (_primary, key) = registry(&f, &["child-1", "child-2"]);
+    // both sends run in child-1's checkout: only the declared identity, not the workspace, makes them pass or wake
+    let mut stranger = f.inv.clone();
+    stranger.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "nobody-declared".into());
+    let r = send::run(&stranger, &argv(&["send", "--to-primary", "--message", "x"])).unwrap();
+    assert_ne!(r.code, 0, "{}", r.stdout);
+    let mut owner = f.inv.clone();
+    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let b = send::run(&owner, &argv(&["send", "--broadcast", "--message", "@all heads up"])).unwrap();
+    assert_eq!(b.code, 0, "admin broadcast: {}", b.stdout);
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let (pending, _) = crate::meshw::read::broadcast_wake(st.reader(), &f.inv, "child-2").unwrap();
+    assert_eq!(pending, 1, "admin's @all wakes another child");
+}

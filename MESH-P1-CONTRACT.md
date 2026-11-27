@@ -185,3 +185,12 @@ The races:
 - Cmd events `mesh-send-stage.<stage>`.
 - The `stages` map on the mesh shadow log.
 - Counters `mesh_wake_lines{channel,role}` and `mesh_wake_suppressed{reason}`.
+
+## 11. Sender identities (owner 2026-11-28; `engine/defaults/mesh_identity.toml`)
+
+- Declared senders (`mesh_identity.identities`): `admin` = `{display "admin", kind "human", rank 100}`; `ah-engine` = `{display "ah-engine", kind "human-proxy", on_behalf_of "admin", rank 90}`. A Primary ranks `rank_primary` = 50, a child `rank_child` = 10.
+- A send declares one with `--as <id>` (`mesh_identity.flag_as`) or the variable `mesh_identity.sender_env` (`AH_MESH_SENDER`); the flag wins. An id not in `identities` is refused (`msg_unknown_sender`). The row's sender is the declared id, never the workspace the send runs in, and no alias is written. `--to-primary` from the Primary's own checkout is not a self-send for a declared sender.
+- Every new row stores `sender_kind` (a new additive `messages` column, `mesh_write.messages_added_columns`): the declared kind, else `kind_agent` ("agent").
+- Wake privilege: a sender with rank >= `privileged_rank` (50) wakes every reader on `@all`, an unmentioned question or an urgent broadcast, exactly as the Primary (wakepolicy §2).
+- Display and precedence: drain rows (direct and broadcast) from a declared sender carry `fromKind`, `fromRank`, `fromDisplay` (when it differs from the id) and `onBehalfOf`. When instructions conflict, the higher rank wins.
+- Node parity (mesh-node): the same config keys; Node writers may leave `sender_kind` NULL (read as unknown, never an error).

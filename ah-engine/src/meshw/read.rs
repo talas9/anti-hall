@@ -165,6 +165,7 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
             if alias.is_some() {
                 b.put("fromLabel", s_or_null(sender));
             }
+            crate::meshw::senders::put_from(&mut b, sender);
             b.done()
         })
         .collect();
@@ -312,6 +313,7 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
         if alias.is_some() {
             b.put("fromLabel", s_or_null(sender));
         }
+        crate::meshw::senders::put_from(&mut b, sender);
         rows.push(b.done());
         if contiguous {
             target = Some(q);
@@ -459,7 +461,7 @@ mod tests {
 
     fn broadcast_to(st: &MeshStore, from: &str, body: &str, ts: i64, audience: &str) {
         let h = mesh_message_hash(Some(from), None, defaults::text("mesh_write.mtype_broadcast"), "normal", body, &ts.to_string(), false);
-        st.append_mesh_row_with(&mesh_message_row(Some(from), None, true, body, ts, "normal", &h, false, None), None, Some(audience)).unwrap();
+        st.append_mesh_row_with(&mesh_message_row(Some(from), None, true, body, ts, "normal", &h, false, None), None, Some(audience), None).unwrap();
     }
 
     /// Review P1-1: a backlog past the cap of broadcasts that do not address the reader, then one that does. The watcher wakes

@@ -1211,7 +1211,7 @@ mod tests {
             let h = mesh_message_hash(Some("other"), Some("X"), defaults::text("mesh_write.mtype_direct"), "normal", &body, &ts.to_string(), false);
             let row = mesh_message_row(Some("other"), Some("X"), false, &body, ts, "normal", &h, false, None);
             let kind = (i == 2).then(|| defaults::text("mesh_chat.kind_ack"));
-            st.append_mesh_row_with(&row, kind, None).unwrap();
+            st.append_mesh_row_with(&row, kind, None, None).unwrap();
         }
         assert_eq!(st.reader().rows_of_kind("X", defaults::text("mesh_chat.kind_ack")).unwrap().len(), 1);
         let sum = compute(&st, &inv_in(&dir), None).unwrap();

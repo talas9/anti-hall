@@ -222,11 +222,11 @@ impl MeshStore {
         Ok(Appended { inserted: true, seq })
     }
 
-    /// [`append_mesh_row`](Self::append_mesh_row) with the GH #845 columns (`chat_kind`, `wake_audience`) set in the SAME
+    /// [`append_mesh_row`](Self::append_mesh_row) with the GH #845 columns (`chat_kind`, `wake_audience`, `sender_kind`) set in the SAME
     /// transaction, so no reader ever sees the row without them. A store whose ALTER at open failed has no such columns: the row is
     /// kept (the extras are dropped, counted as `mesh_extras_dropped`), as a legacy row every reader classifies on read.
-    pub fn append_mesh_row_with(&self, m: &MeshRow, chat_kind: Option<&str>, audience: Option<&str>) -> Res<Appended> {
-        if chat_kind.is_none() && audience.is_none() {
+    pub fn append_mesh_row_with(&self, m: &MeshRow, chat_kind: Option<&str>, audience: Option<&str>, sender_kind: Option<&str>) -> Res<Appended> {
+        if chat_kind.is_none() && audience.is_none() && sender_kind.is_none() {
             return self.append_mesh_row(m);
         }
         let c = self.conn();
@@ -252,7 +252,7 @@ impl MeshStore {
                     return Ok(Appended { inserted: false, seq: None });
                 }
                 let id = c.last_insert_rowid();
-                match c.prepare_cached(sql::MESHW_SET_EXTRAS).and_then(|mut s| s.execute(params![chat_kind, audience, id])) {
+                match c.prepare_cached(sql::MESHW_SET_EXTRAS).and_then(|mut s| s.execute(params![chat_kind, audience, sender_kind, id])) {
                     Ok(_) => {}
                     Err(e) if is_busy(&e) => return Err(e),
                     Err(_) => crate::metrics::bump_shared("mesh_extras_dropped", &[]),

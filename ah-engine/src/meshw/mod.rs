@@ -57,6 +57,7 @@ pub mod roster;
 pub mod rosterrows;
 pub mod rostertail;
 pub mod send;
+pub mod senders;
 pub mod simple;
 pub mod spawnverb;
 pub mod stages;

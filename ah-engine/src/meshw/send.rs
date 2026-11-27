@@ -724,10 +724,24 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let from_d = ident::sender_identity_detailed(&inv.env, &cwd, &rows, home)?;
     crate::meshw::stages::since("ident", t_ident);
     let t_resolve = std::time::Instant::now();
-    let from = from_d.identity.clone();
+    // GH #845 (owner 2026-11-28): a declared sender (`--as admin`, or the `mesh_identity.sender_env` variable) sends as itself, never
+    // as the workspace it runs in (the owner is never stamped as the Primary)
+    let declared = match crate::meshw::senders::requested(&inv.env, a) {
+        None => None,
+        Some(name) => match crate::meshw::senders::declared(name) {
+            Some(d) => Some(d),
+            None => {
+                let known = crate::meshw::senders::names().join(", ");
+                let msg = defaults::render("mesh_identity.msg_unknown_sender", &[("name", &quote(name)), ("known", &known)]);
+                return Ok(refused(&[("error", s(&msg))]));
+            }
+        },
+    };
+    let from = declared.map_or_else(|| from_d.identity.clone(), |d| d.id.to_string());
+    let id_kind: &str = declared.map_or(from_d.kind.as_str(), |d| d.kind);
     if let Some(ff) = a.one(defaults::text("mesh_write.flag_from"))
         && ff != from
-        && Some(ff) != from_d.mesh_id.as_deref()
+        && (declared.is_some() || Some(ff) != from_d.mesh_id.as_deref())
     {
         let msg = defaults::render("devswarm_cli.msg_send_from_mismatch", &[("from_flag", &quote(ff)), ("from", &quote(&from))]);
         return Ok(refused(&[("error", s(&msg))]));
@@ -816,7 +830,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     if !broadcast {
         let self_target = if to_primary { primary_mesh.clone() } else { to_flag.map(str::to_string) };
-        if self_target.as_deref() == Some(from.as_str()) || (from_d.mesh_id.is_some() && self_target == from_d.mesh_id) {
+        if self_target.as_deref() == Some(from.as_str()) || (declared.is_none() && from_d.mesh_id.is_some() && self_target == from_d.mesh_id) {
             let suffix = if to_primary { defaults::text("devswarm_cli.send_self_primary_suffix") } else { "" };
             return Ok(refused(&[("error", s(&defaults::render("devswarm_cli.msg_send_self", &[("suffix", &suffix)])))]));
         }
@@ -914,7 +928,9 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     // ---- commit: everything below writes ----
     // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so; only once the target is validated (#767)
-    common::ensure_alias(inv, &from_d, &cwd);
+    if declared.is_none() {
+        common::ensure_alias(inv, &from_d, &cwd);
+    }
     let to_out: Option<String> = if broadcast {
         None
     } else if to_primary {
@@ -926,7 +942,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         inv,
         st: &st,
         from: &from,
-        kind: &from_d.kind,
+        kind: id_kind,
         to_out: to_out.as_deref(),
         partition: partition.as_deref(),
         broadcast,
@@ -1083,7 +1099,9 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     LAST_ACK.set(false);
     // GH #845 (contract §1): the explicit ack kind and the broadcast's audience are written in the INSERT's transaction
     let kind = c.ack_only.then(|| defaults::text("mesh_chat.kind_ack"));
-    let (inserted, seq) = match crate::meshw::stages::time("insert", || c.st.append_mesh_row_with(&row, kind, c.audience.as_deref())) {
+    let (inserted, seq) = match crate::meshw::stages::time("insert", || {
+        c.st.append_mesh_row_with(&row, kind, c.audience.as_deref(), Some(crate::meshw::senders::kind_of(Some(c.from))))
+    }) {
         Ok(r) => (r.inserted, r.seq),
         Err(e) => return ident::unavailable("mesh_write.what_append", &e),
     };

@@ -97,7 +97,10 @@ pub fn resolve(b: &Bc<'_>, roster: &[&str]) -> Result<Audience, Ambiguous> {
             ids.extend(hits.into_iter().map(str::to_string));
         }
     }
-    let all_allowed = at_all && all_roles.contains(&role);
+    // GH #845 (owner 2026-11-28): a sender ranked at or above `mesh_identity.privileged_rank` (admin, ah-engine, the Primary) has the
+    // Primary's wake privilege, whatever its role
+    let privileged = crate::meshw::senders::privileged(b.sender);
+    let all_allowed = at_all && (privileged || all_roles.contains(&role));
     if all_allowed {
         return Ok(Audience::All);
     }
@@ -108,7 +111,7 @@ pub fn resolve(b: &Bc<'_>, roster: &[&str]) -> Result<Audience, Ambiguous> {
         return Ok(Audience::Ids(ids));
     }
     let urgent = b.urgency.is_some_and(|u| defaults::list("mesh_wake.broadcast_wake_urgency").contains(&u))
-        && defaults::list("mesh_wake.broadcast_wake_roles").contains(&role);
+        && (privileged || defaults::list("mesh_wake.broadcast_wake_roles").contains(&role));
     Ok(if b.question || urgent { Audience::All } else { Audience::Nobody })
 }
 

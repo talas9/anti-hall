@@ -1,0 +1,55 @@
+# ah-engine shipped defaults for mesh sender identities (GH #845, owner 2026-11-28). Format: see the header of engine.toml.
+#
+# The owner writes to the mesh as `admin` (a human) and anti-hall's own messages go out as `ah-engine` (a proxy acting on the
+# owner's behalf); neither is ever stamped as the Primary. A send declares one with `--as <id>` or the `sender_env` variable. Every
+# sender has a kind and a rank: a declared identity's from `identities`, a Primary's and a child's from `rank_primary` /
+# `rank_child`. The rank drives wake privilege (`privileged_rank`), precedence when instructions conflict (the higher rank wins)
+# and display (`fromKind` / `fromRank` on listed rows).
+
+[mesh_identity.identities]
+doc = "The declared (non-workspace) senders, by the id stored on their messages: `display` (the name shown), `kind`, `rank`, and for a proxy `on_behalf_of` (the identity it acts for)."
+value = { admin = { display = "admin", kind = "human", rank = 100 }, ah-engine = { display = "ah-engine", kind = "human-proxy", on_behalf_of = "admin", rank = 90 } }
+
+[mesh_identity.sender_env]
+doc = "The environment variable that declares the sender of a send (an id of `identities`), e.g. the owner's chat room sets it to `admin`. `--as` wins over it."
+value = "AH_MESH_SENDER"
+
+[mesh_identity.flag_as]
+doc = "`send --as <id>`: send as a declared identity (an id of `identities`) instead of the caller's workspace."
+value = "as"
+
+[mesh_identity.rank_primary]
+doc = "The rank of a Primary workspace."
+value = 50
+
+[mesh_identity.rank_child]
+doc = "The rank of a child workspace (and of any sender that is not declared or a Primary)."
+value = 10
+
+[mesh_identity.privileged_rank]
+doc = "A sender at or above this rank may wake every reader (an `@all`, a question or an urgent broadcast), as the Primary may."
+value = 50
+
+[mesh_identity.kind_agent]
+doc = "The kind of a workspace sender (stored in `sender_kind`)."
+value = "agent"
+
+[mesh_identity.msg_unknown_sender]
+doc = "The refusal text of a send that declares an identity `identities` does not have; `{name}` and `{known}` are filled in."
+value = "unknown mesh sender {name}: declare one of {known} (--as or the sender variable), or unset it to send as this workspace."
+
+[mesh_identity.key_from_kind]
+doc = "Listed-row key: the kind of a declared sender."
+value = "fromKind"
+
+[mesh_identity.key_from_rank]
+doc = "Listed-row key: the rank of a declared sender (the higher rank wins when instructions conflict)."
+value = "fromRank"
+
+[mesh_identity.key_from_display]
+doc = "Listed-row key: a declared sender's display name, when it differs from its id."
+value = "fromDisplay"
+
+[mesh_identity.key_on_behalf_of]
+doc = "Listed-row key: the identity a proxy sender acts for."
+value = "onBehalfOf"

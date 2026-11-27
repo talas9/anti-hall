@@ -410,7 +410,7 @@ pub const MESHW_TABLE_INFO_REGISTRY: &str = "PRAGMA table_info(registry);";
 pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// Set the GH #845 columns of row `?3` (chat kind `?1`, wake audience `?2`); fails on a store with neither column, which the
 /// caller tolerates.
-pub const MESHW_SET_EXTRAS: &str = "UPDATE messages SET chat_kind = ?1, wake_audience = ?2 WHERE id = ?3";
+pub const MESHW_SET_EXTRAS: &str = "UPDATE messages SET chat_kind = ?1, wake_audience = ?2, sender_kind = ?3 WHERE id = ?4";
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
