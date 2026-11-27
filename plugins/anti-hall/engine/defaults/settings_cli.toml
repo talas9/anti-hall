@@ -35,6 +35,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"parkedMaxWaitMin\",\"type\":\"number\",\"default\":60,\"advanced\":true,\"description\":\"Maximum human-wait age in minutes before roster status flags return.\",\"min\":0}",
   "{\"section\":\"devswarm\",\"key\":\"tokenOffsetToleranceBytes\",\"type\":\"number\",\"default\":4096,\"advanced\":true,\"description\":\"Maximum unsampled transcript bytes before roster tokens become unknown.\",\"min\":0}",
   "{\"section\":\"devswarm\",\"key\":\"parkedDisplay\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Compact parked roster display and suppression of stale status/not-draining nudges; actual unread mail remains visible.\"}",
+  "{\"section\":\"devswarm\",\"key\":\"rosterOrders\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Name flagged working children (straying, stale progress, long-unpushed commits) in a Do-now order and count them in the Primary Stop gate.\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenUnknown\",\"type\":\"boolean\",\"default\":true,\"advanced\":true,\"description\":\"Show tok ? when a roster token source cannot be verified.\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenFreshMs\",\"type\":\"number\",\"default\":1800000,\"advanced\":true,\"description\":\"Maximum age in milliseconds of a known roster token sample.\",\"min\":0}",
   "{\"section\":\"autoHandover\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"description\":\"Write an automatic handover before context runs out.\"}",

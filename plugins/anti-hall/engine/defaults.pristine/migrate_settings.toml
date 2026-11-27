@@ -8,6 +8,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"parkedMaxWaitMin\",\"type\":\"number\",\"default\":60,\"min\":0}",
   "{\"section\":\"devswarm\",\"key\":\"tokenOffsetToleranceBytes\",\"type\":\"number\",\"default\":4096,\"min\":0}",
   "{\"section\":\"devswarm\",\"key\":\"parkedDisplay\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_PARKED_DISPLAY\"}",
+  "{\"section\":\"devswarm\",\"key\":\"rosterOrders\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_ROSTER_ORDERS\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenUnknown\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_TOKEN_UNKNOWN\"}",
   "{\"section\":\"devswarm\",\"key\":\"tokenFreshMs\",\"type\":\"number\",\"default\":1800000,\"env\":\"ANTIHALL_DEVSWARM_TOKEN_FRESH_MS\",\"min\":0}",
   "{\"section\":\"autoHandover\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"auto_handover_enabled\",\"headline\":true}",

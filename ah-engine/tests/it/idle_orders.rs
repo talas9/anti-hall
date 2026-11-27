@@ -443,3 +443,22 @@ fn a_worktree_git_cannot_date_is_unknown_never_stalled_gh876() {
     let out = turn(&e, "stall-6", &[]);
     assert!(!out.contains(STALL_FIRST), "no commit date: unknown, not stalled, got: {out}");
 }
+
+// ---- #844 item 4: roster flags become an order line and a parent Stop-gate count ----
+
+/// A child still working (recent transcript activity) whose last heartbeat is 20 min old: its progress is stale
+/// (devswarm_parent.flag_stale_ms, 15 min). The prompt names it in a "Do now: ask" order and writes the record the Stop gate counts.
+#[test]
+fn a_working_child_with_a_stale_heartbeat_is_ordered_and_recorded_for_the_gate() {
+    let e = stalled_child("flag-stale");
+    beat(&e, 20);
+    let out = turn(&e, "flag-1", &[]);
+    assert!(out.contains("Do now: ask") && out.contains("no progress report for 20 min") && out.contains(CHILD), "got: {out}");
+    let dir = e.dir.join("home/.anti-hall/devswarm/roster-flags");
+    let rec = std::fs::read_dir(&dir).unwrap().next().expect("a flag record").unwrap().path();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(rec).unwrap()).unwrap();
+    assert_eq!(v["ws"][0]["id"], CHILD, "{v}");
+    // the switch turns it off
+    std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"devswarm":{"rosterOrders":false}}"#).unwrap();
+    assert!(!turn(&e, "flag-2", &[]).contains("Do now: ask"), "switched off");
+}
