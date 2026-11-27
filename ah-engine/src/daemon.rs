@@ -2010,6 +2010,32 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
     now.saturating_sub(beat) > stall_ms
 }
 
+/// R0 (#969 hardening): the watchdog's load factor (permille) for `daemon.stall_ms` and `daemon.stuck_ms`. The watchdog serves no
+/// request, so unlike a request's deadlines (which take the factor the launcher fitted and passed down) it samples the load
+/// itself, once per tick; its ceiling is its own (`daemon.watchdog_load_scale_max_permille`), since no hook bound limits how
+/// long it may wait before it drains the daemon. Same step as the request deadlines.
+fn watchdog_factor(load: Option<f64>) -> u64 {
+    crate::loadscale::factor_permille(load, defaults::num("daemon.watchdog_load_scale_max_permille"), defaults::num("daemon.load_scale_step_permille"))
+}
+
+/// R0: the event-log kind of a stall or stuck exit taken at `load` per core. Above `health.load_exit_per_core_permille` it is
+/// `health.load_exit_kind`, which `health.crashy_kinds` does not list: a starved machine is not a crashing binary, and four
+/// such exits in ten minutes must not latch the engine off for the crash-loop cooldown (every guard passing meanwhile). The
+/// spawn-rate rule (`client.spawn_n`) still counts the restarts. At or under the threshold, or with no load reading, it stays
+/// a crash-loop `watchdog` exit, so a daemon that wedges on an idle machine still latches.
+fn watchdog_exit_kind(load: Option<f64>) -> &'static str {
+    let per_core_permille = load.filter(|l| l.is_finite() && *l > 0.0).map_or(0, |l| (l * 1000.0) as u64);
+    if per_core_permille > defaults::num("health.load_exit_per_core_permille") { defaults::text("health.load_exit_kind") } else { "watchdog" }
+}
+
+/// R0 (#969 hardening): log and record one watchdog exit (`code` = stall or stuck) taken at `load` per core; returns the kind logged.
+fn watchdog_exit(load: Option<f64>, code: &str, log_detail: &str, failure: &str) -> &'static str {
+    let kind = watchdog_exit_kind(load);
+    health::log_event(kind, code, log_detail);
+    health::record_failure(kind, code, failure);
+    kind
+}
+
 /// How many ms the longest-silent busy worker has gone without progress (`None` = no worker is busy): what the heartbeat file carries,
 /// so a client waiting past its fail-fast deadline can tell a daemon that is working on its request from one that is not.
 /// #969: count the outcome of a request thread's QoS request (`daemon.qos`) per outcome.
@@ -2075,17 +2101,22 @@ fn watchdog(sh: Arc<Shared>) {
             sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() <= cfg.workers,
             defaults::render("msg.inv_busy_workers", &[("workers", &cfg.workers)])
         );
-        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, cfg.stall.as_millis() as u64, cfg.start_stall.as_millis() as u64) {
-            health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
-            health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
+        // R0: a starved machine slows the accept loop and blocks host calls; both bounds stretch with the load, and an exit taken
+        // under load is logged as a load exit, which never counts toward the crash-loop rule
+        let load = crate::loadscale::per_core();
+        let factor = watchdog_factor(load);
+        let (stall_ms, stuck_ms) = (crate::loadscale::scale(cfg.stall.as_millis() as u64, factor), crate::loadscale::scale(cfg.stuck.as_millis() as u64, factor));
+        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, stall_ms, cfg.start_stall.as_millis() as u64) {
+            let kind = watchdog_exit(load, "stall", defaults::text("msg.log_stall"), defaults::text("msg.failure_stall"));
+            sh.telemetry.with_metrics(|m| m.inc("watchdog_exits", &[("kind", kind), ("code", "stall")]));
             begin_drain(&sh, "stall", defaults::text("msg.exit_reason_stall"), true);
             continue;
         }
         for (i, b) in sh.busy_since.iter().enumerate() {
             let since = b.load(SeqCst);
-            if since != 0 && now.saturating_sub(since - 1) > cfg.stuck.as_millis() as u64 {
-                health::log_event("watchdog", "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]));
-                health::record_failure("watchdog", "stuck", defaults::text("msg.failure_stuck"));
+            if since != 0 && now.saturating_sub(since - 1) > stuck_ms {
+                let kind = watchdog_exit(load, "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]), defaults::text("msg.failure_stuck"));
+                sh.telemetry.with_metrics(|m| m.inc("watchdog_exits", &[("kind", kind), ("code", "stuck")]));
                 begin_drain(&sh, "stuck", defaults::text("msg.exit_reason_stuck"), true);
                 break;
             }
@@ -2969,6 +3000,46 @@ mod tests {
         let both = block_text_of(&hook(2, r#"{"decision":"block","reason":"json says"}"#, "stderr says\n"));
         assert_eq!(both, format!("json says{}stderr says", defaults::text("telemetry.block_channel_joiner")));
         assert_eq!(block_text_of(&hook(2, r#"{"decision":"block","reason":"same"}"#, "same\n")), "same");
+    }
+
+    /// R0 (#969 hardening): at load 80 on 16 cores a host call blocked past stuck_ms produced a watchdog exit that counted as a
+    /// crash; client.crash_n of them within client.crash_window_s latched the engine off for client.crash_cooldown_s, every guard
+    /// passing meanwhile. Exits taken under load must not latch; the same exits on an idle machine still must.
+    #[test]
+    fn watchdog_exits_under_load_never_latch_the_crash_loop_but_idle_ones_still_do() {
+        let _turn = health::STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("AH_ENGINE_DIR");
+        let cfg = crate::config::ClientConfig::from_env();
+        let run = |name: &str, load: Option<f64>| -> bool {
+            let dir = crate::testtmp::path(format!("ah-r0-latch-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take STATE_TURN first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            for code in std::iter::repeat_n(["stuck", "stall"], cfg.crash_n + 1).flatten() {
+                watchdog_exit(load, code, "test", "test");
+            }
+            let tripped = health::crashloop_tripped(&cfg);
+            crate::discard::harmless(std::fs::remove_dir_all(&dir));
+            tripped
+        };
+        let loaded = run("loaded", Some(5.0));
+        let idle = run("idle", None);
+        let low = run("low", Some(0.5));
+        match &prev {
+            // SAFETY: as above
+            Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
+        }
+        assert!(!loaded, "watchdog exits on a loaded machine (5 per core) latched the crash-loop cooldown");
+        assert!(idle && low, "watchdog exits on an idle machine must still trip the crash loop");
+        // the bounds stretch with the load, never shrink, and stay put on an idle machine
+        let max = defaults::num("daemon.watchdog_load_scale_max_permille");
+        assert_eq!(watchdog_factor(None), 1000);
+        assert_eq!(watchdog_factor(Some(0.5)), 1000);
+        assert_eq!(watchdog_factor(Some(50.0)), max.max(1000), "clamped to its own ceiling");
+        assert!(watchdog_factor(Some(5.0)) > 1000, "a loaded machine gives a stuck worker longer");
+        assert_eq!(watchdog_exit_kind(Some(5.0)), defaults::text("health.load_exit_kind"));
+        assert!(!defaults::list("health.crashy_kinds").contains(&defaults::text("health.load_exit_kind")), "a load exit is not crashy");
     }
 
     #[test]

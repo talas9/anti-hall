@@ -477,7 +477,7 @@ env = "AH_ENGINE_STUCK_MS"
 unit = "ms"
 
 [daemon.stall_ms]
-doc = "An accept loop silent for longer than this trips a drain and exit."
+doc = "An accept loop silent for longer than this trips a drain and exit. R0: multiplied by the watchdog's load factor (daemon.watchdog_load_scale_max_permille), as daemon.stuck_ms is."
 value = 5000
 env = "AH_ENGINE_STALL_MS"
 unit = "ms"
@@ -579,6 +579,13 @@ doc = "#969: the most a loaded machine stretches a guard's wall time, in permill
 value = 2000
 min = 0
 max = 3000
+unit = "permille"
+
+[daemon.watchdog_load_scale_max_permille]
+doc = "R0 (#969 hardening): the most a loaded machine stretches the watchdog's daemon.stall_ms and daemon.stuck_ms, in permille (4000 = four times). The watchdog samples the 1-minute load average per core itself on every tick (it serves no request, so no launcher factor reaches it), clamps it to [1000, this] and rounds it down to daemon.load_scale_step_permille. A worker a starved machine only slows is then not called stuck: at load 80 on 16 cores a host call blocked for 8 s no longer drains the daemon. Not bounded by any hook timeout: a stuck worker's client has already failed open. 1000 (or less) = off."
+value = 4000
+min = 0
+max = 10000
 unit = "permille"
 
 [daemon.load_scale_step_permille]
@@ -1058,6 +1065,16 @@ value = ["client_spawn_attempt", "supervised_start"]
 [health.judged_kinds]
 doc = "Event kinds that mark a crash-loop judgement (a trip, a reset by a new binary, an operator reset): crashes and daemon starts logged before the latest of them no longer count toward the next trip."
 value = ["crashloop", "crashloop_reset", "reset"]
+
+[health.load_exit_per_core_permille]
+doc = "R0 (#969 hardening): a watchdog stall or stuck exit taken while the 1-minute load average per core is above this (permille; 1500 = 1.5 runnable threads per core) is logged as health.load_exit_kind instead of watchdog. It is still a restart (the degraded summary shows it; metric watchdog_exits counts it by kind and code) but it never counts toward the crash-loop rule (client.crash_n): four such exits in ten minutes used to latch the engine off for client.crash_cooldown_s with every guard passing. The spawn-rate rule (client.spawn_n) still applies. No load reading = not a load exit."
+value = 1500
+min = 0
+unit = "permille"
+
+[health.load_exit_kind]
+doc = "R0 (#969 hardening): the event-log kind of a watchdog exit taken under load (health.load_exit_per_core_permille). It must not be listed in health.crashy_kinds."
+value = "watchdog_load"
 
 [health.crashy_kinds]
 doc = "Event kinds that count toward the crash-loop threshold."
@@ -2952,6 +2969,10 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.sigint_drains]
 doc = "Graceful drains started by SIGINT (the same drain as SIGTERM)."
 value = { kind = "counter", unit = "drains", labels = [] }
+
+[metric.watchdog_exits]
+doc = "R0 (#969 hardening): watchdog-forced exits by kind (watchdog = counts toward the crash-loop rule; health.load_exit_kind = taken under load, does not) and code (stall, stuck)."
+value = { kind = "counter", unit = "exits", labels = ["kind", "code"] }
 
 [metric.daemon_exits]
 doc = "Daemon exits begun, by kind (health.exit_kinds): idle, rss, memory, handoff, sigterm, stall, and the rest. Counted when the drain begins."

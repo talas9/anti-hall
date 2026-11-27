@@ -23,6 +23,14 @@ fn crashy() -> Vec<&'static str> {
     defaults::list("health.crashy_kinds")
 }
 
+/// Event kinds that are daemon restarts for the degraded summary: the crashy kinds plus a watchdog exit taken under load
+/// (`health.load_exit_kind`, R0), which is still an outage even though it never counts toward the crash-loop rule.
+fn restart_kinds() -> Vec<&'static str> {
+    let mut k = crashy();
+    k.push(defaults::text("health.load_exit_kind"));
+    k
+}
+
 /// Milliseconds since the Unix epoch (0 if the clock is before it).
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -894,7 +902,7 @@ pub fn summary() -> Value {
 fn degraded_reasons(ev: &[Event], now: u64, window: Duration, loop_left: Option<Duration>, breaker_left: Option<Duration>) -> Vec<Value> {
     let floor = now.saturating_sub(window.as_millis() as u64);
     let started = ev.iter().rev().find(|e| e.kind == defaults::text("health.start_kind")).map_or(0, |e| e.ts);
-    let (crashy, kinds, resolved) = (crashy(), defaults::list("health.degraded_kinds"), defaults::list("health.resolved_by_start_kinds"));
+    let (crashy, kinds, resolved) = (restart_kinds(), defaults::list("health.degraded_kinds"), defaults::list("health.resolved_by_start_kinds"));
     // (group, kind, code) -> (count, first_ts, last_ts, last detail)
     type Key<'a> = (&'a str, String, String);
     type Tally = (u64, u64, u64, String);
@@ -940,7 +948,7 @@ fn summary_from(ev: &[Event], now: u64, loop_left: Option<Duration>, breaker_lef
         }
         m.into_iter().map(|(k, v)| (k, json!(v))).collect()
     };
-    let crashy = crashy();
+    let crashy = restart_kinds();
     // a crash-loop trip is the consequence of the restarts, not one of them
     let restarts = tally(&|e| (crashy.contains(&e.kind.as_str()) && e.kind != "crashloop").then(|| format!("{}:{}", e.kind, e.code)));
     let system_restarts = recent.iter().filter(|e| e.kind == "system_restart").count();
@@ -1155,6 +1163,17 @@ mod tests {
         assert_eq!(s["defaults"]["by_reason"]["defaults_fallback:parse"], 2, "{s}");
         let row = s["reasons"].as_array().unwrap().iter().find(|r| r["code"] == "parse").unwrap();
         assert_eq!((row["count"].as_u64(), row["first_ts"].as_u64(), row["last_ts"].as_u64()), (Some(2), Some(9_500), Some(9_600)));
+    }
+
+    /// R0 (#969 hardening): a watchdog exit taken under load never counts toward the crash loop, but it is still a restart the
+    /// degraded summary names.
+    #[test]
+    fn a_load_exit_is_still_a_named_restart() {
+        let kind = defaults::text("health.load_exit_kind");
+        let log = vec![ev(1_000, kind, "stuck", "worker 0 stuck"), ev(2_000, "start", "-", "v0 pid 1")];
+        let s = summary_from(&log, 5_000, None, None);
+        assert_eq!(s["degraded"], true, "{s}");
+        assert!(s["degraded_reason"].as_str().unwrap().contains(&format!("{kind}:stuck")), "{s}");
     }
 
     /// Prevention: whatever the log holds, `degraded: true` never ships without a reason, a first-seen time and an evidence count,
