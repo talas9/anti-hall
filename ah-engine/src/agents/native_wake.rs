@@ -72,7 +72,8 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if no_mail && super::sinks::Sink::backlog(&super::sinks::SessionQueue, &tr, &desc.session) == 0 {
         return None;
     }
-    let call = |argv: &[&str]| hivecontrol::call_full(argv, env, cwd, Duration::from_millis(num("timeout_ms")));
+    // GH #845 phase 0: the subprocesses are timed as their own send stage (nothing is recorded outside a timed mesh send)
+    let call = |argv: &[&str]| crate::meshw::stages::time("hivecontrol", || hivecontrol::call_full(argv, env, cwd, Duration::from_millis(num("timeout_ms"))));
     let info = call(&[args("info_args").as_slice(), &[desc.id.as_str()]].concat());
     let branch = serde_json::from_str::<Value>(&info.call.raw).ok().and_then(|v| v["branch"].as_str().map(str::to_string)).filter(|b| !b.is_empty());
     let Some(branch) = branch else {

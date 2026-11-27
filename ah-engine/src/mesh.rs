@@ -288,6 +288,35 @@ impl MeshReader {
         Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
     }
 
+    /// [`message_count_from_others`](Self::message_count_from_others) without the rows of chat kind `skip_kind` (GH #845: an ack-only
+    /// message wakes no one). A store whose `messages` table has no `chat_kind` column yet (an older writer opened it) has no such
+    /// rows: the plain count.
+    pub fn message_count_from_others_except(
+        &self,
+        id: &str,
+        senders: &std::collections::HashSet<String>,
+        skip_prefix: &str,
+        skip_kind: &str,
+    ) -> Res<u64> {
+        let marks = if senders.is_empty() { "''".to_string() } else { vec!["?"; senders.len()].join(",") };
+        let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND.replace("%s", &marks);
+        let Ok(mut st) = self.conn.prepare(&q) else {
+            return self.message_count_from_others(id, senders, skip_prefix);
+        };
+        let mut args: Vec<&str> = vec![id];
+        args.extend(senders.iter().map(String::as_str));
+        args.extend([skip_prefix; 3]);
+        args.push(skip_kind);
+        Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+    }
+
+    /// The mesh seqs of workspace `id`'s rows of chat kind `kind`; none on a store with no `chat_kind` column.
+    pub fn seqs_of_kind(&self, id: &str, kind: &str) -> Res<std::collections::HashSet<i64>> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_SEQS_OF_KIND) else { return Ok(std::collections::HashSet::new()) };
+        let rows = st.query_map(params![id, kind], |r| r.get::<_, i64>(0))?;
+        Ok(rows.collect::<Result<std::collections::HashSet<i64>, _>>()?)
+    }
+
     fn message(r: &Row<'_>, index: u64) -> Res<Value> {
         let mut m = Map::new();
         let seq = js_number_or_null(r.get_ref(12)?)?;

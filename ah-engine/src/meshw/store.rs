@@ -222,6 +222,12 @@ impl MeshStore {
         Ok(Appended { inserted: true, seq })
     }
 
+    /// Mark the row with hash `hash` as chat kind `kind` (GH #845). `false` when the store has no `chat_kind` column (its ALTER at
+    /// open failed) or the update failed: the row then stays a plain message, as before.
+    pub fn set_chat_kind(&self, hash: &str, kind: &str) -> bool {
+        retry_busy(|| self.conn().prepare_cached(sql::MESHW_SET_CHAT_KIND)?.execute(params![kind, hash])).is_ok_and(|n| n > 0)
+    }
+
     /// `appendMessage(m)` (the native-ingest insert): `Ok(true)` when a row was inserted, `Ok(false)` for a duplicate hash.
     pub fn append_message(&self, workspace_id: &str, ts: i64, hash: Option<&str>, body: &str) -> Res<bool> {
         self.append_message_from(workspace_id, ts, hash, body, None)

@@ -410,7 +410,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return run_multi(inv, a, &recipients);
     }
     let a = &norm;
-    let heal = common::self_heal(inv)?;
+    let heal = crate::meshw::stages::time("heal", || common::self_heal(inv))?;
     let to = a.one(to_key);
     if !a.has(defaults::text("mesh_write.flag_cc_primary")) {
         let mut out = finish_send(inv, defaults::text("mesh_write.action_send"), to, cmd_send_mode(inv, a, false)?, &heal)?;
@@ -473,7 +473,12 @@ fn wake_target(inv: &Inv, out: &mut Obj) {
         return;
     }
     let Some(OVal::Str(to)) = out.0.iter().find(|(k, _)| k == "toId").map(|(_, v)| v.clone()) else { return };
-    if let Some(w) = crate::agents::native_wake::wake(&inv.home, &to, "", &inv.env, Some(&inv.cwd))
+    // GH #845: an ack-only message never wakes its recipient
+    if LAST_ACK.take() {
+        crate::metrics::bump_shared("mesh_wake_suppressed", &[("reason", defaults::text("mesh_wake.suppressed_ack"))]);
+        return;
+    }
+    if let Some(w) = crate::meshw::stages::time("wake", || crate::agents::native_wake::wake(&inv.home, &to, "", &inv.env, Some(&inv.cwd)))
         && let Some(v) = OVal::parse(&w.to_string())
     {
         out.put("nativeWake", v);
@@ -540,7 +545,7 @@ fn run_multi(inv: &Inv, a: &Args, recipients: &[String]) -> R<Answer> {
         per.flags.remove(defaults::text("mesh_write.flag_message_file"));
         per.flags.insert(defaults::text("mesh_write.flag_message_stdin").to_string(), vec![crate::meshw::args::FlagVal::True]);
     }
-    let heal = common::self_heal(inv)?;
+    let heal = crate::meshw::stages::time("heal", || common::self_heal(inv))?;
     let mut args_for: Vec<Args> = Vec::new();
     for to in recipients {
         let mut x = per.clone();
@@ -713,9 +718,12 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         ]));
     };
     // registrySnapshot opens the store as a writer; the engine opens it once, below, and refuses what Node would create
-    let st = common::open_store(inv, &repo_key)?;
+    let st = crate::meshw::stages::time("open", || common::open_store(inv, &repo_key))?;
+    let t_ident = std::time::Instant::now();
     let rows = ident::rows_of(&st.reader().roster().or_else(|e| ident::unavailable("mesh_write.what_registry", &e))?);
     let from_d = ident::sender_identity_detailed(&inv.env, &cwd, &rows, home)?;
+    crate::meshw::stages::since("ident", t_ident);
+    let t_resolve = std::time::Instant::now();
     let from = from_d.identity.clone();
     if let Some(ff) = a.one(defaults::text("mesh_write.flag_from"))
         && ff != from
@@ -742,7 +750,8 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     let question = a.has(defaults::text("mesh_write.flag_question"));
     let answers = a.has(defaults::text("mesh_write.flag_answers"));
-    if broadcast && question {
+    // GH #845: a broadcast question is stored with needs_reply and wakes every reader (mesh_wake.allow_broadcast_question)
+    if broadcast && question && defaults::num("mesh_wake.allow_broadcast_question") == 0 {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_question_broadcast")))]));
     }
     if broadcast && answers {
@@ -870,6 +879,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     };
     let partition = target.as_ref().map(|t| t.id.clone());
     let no_reader = !broadcast && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
+    crate::meshw::stages::since("resolve", t_resolve);
     // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
     crate::meshw::summary::check(&st, inv, partition.as_deref())?;
     if plan {
@@ -913,8 +923,10 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     let pid = partition.clone().unwrap_or_default();
     let attempts = defaults::num("mesh_write.send_lock_attempts").max(1);
+    let t_lock = std::time::Instant::now();
     for attempt in 0..attempts {
         if let Some(lock) = crate::meshw::idlock::acquire(&inv.write_home, &pid) {
+            crate::meshw::stages::since("lock", t_lock);
             let still = st.reader().roster().map(|r| ident::rows_of(&r).iter().any(|x| x.id == pid)).unwrap_or(false);
             let r = if still {
                 do_append(&ctx)
@@ -940,6 +952,11 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         .put("error", s(&defaults::render("devswarm_cli.msg_lock_busy", &[("id", &quote(&pid))])))
         .put(keys[2], n(attempts as f64));
     Ok(o)
+}
+
+thread_local! {
+    /// The last append on this thread stored an ack-only message (GH #845): the wake that follows it is skipped.
+    static LAST_ACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Set by a plan pass that re-homed the Primary, taken by the real pass that reports it (`rehomedFromHashBucket`): a send with
@@ -1032,15 +1049,25 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     let hash = store::mesh_message_hash(Some(c.from), to_field, mtype, c.urgency, c.message, &ts, c.question);
     let nonce = ident::reader_nonce(&c.inv.home);
     let row = store::mesh_message_row(Some(c.from), to_field, c.broadcast, c.message, c.now, c.urgency, &hash, c.question, nonce.as_deref());
-    let (inserted, seq) = match c.st.append_mesh_row(&row) {
+    LAST_ACK.set(false);
+    let (inserted, seq) = match crate::meshw::stages::time("insert", || c.st.append_mesh_row(&row)) {
         Ok(r) => (r.inserted, r.seq),
         Err(e) => return ident::unavailable("mesh_write.what_append", &e),
     };
     crate::meshw::mark_committed();
+    // GH #845: an ack-only message is marked before the summary is derived, so it never raises the count a wake fires on
+    if inserted
+        && crate::meshw::wakepolicy::is_ack(c.message, c.question, c.answers)
+        && c.st.set_chat_kind(&hash, defaults::text("mesh_chat.kind_ack"))
+    {
+        LAST_ACK.set(true);
+        crate::metrics::bump_shared("mesh_chat_ack", &[]);
+    }
     // deriveSummary(s, {home, env, now}), in the same call as the append (the wake watcher reads it)
-    if let Some(why) = crate::meshw::summary::derive_after_write(c.st, c.inv, c.repo_key) {
+    if let Some(why) = crate::meshw::stages::time("summary", || crate::meshw::summary::derive_after_write(c.st, c.inv, c.repo_key)) {
         crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_send"), &why);
     }
+    let t_readback = std::time::Instant::now();
     let verify_partition = if c.broadcast { defaults::text("mesh_write.broadcast_partition").to_string() } else { c.partition.unwrap_or_default().to_string() };
     let mut verified = false;
     let mut verify_error: Option<String> = None;
@@ -1060,6 +1087,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
             Err(e) => verify_error = Some(e.to_string()),
         }
     }
+    crate::meshw::stages::since("readback", t_readback);
     let ok = verified || verify_error.is_some();
     let bytes = c.message.len() as f64;
     let mut out = Obj::default();
@@ -1109,6 +1137,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
         ("cwd".into(), s(c.cwd)),
     ])
     .done();
+    let t_receipt = std::time::Instant::now();
     common::write_send_receipt(&c.inv.write_home, c.now, &hash, &receipt);
     // LABEL AT ARRIVAL: a freshly inserted un-flagged direct message is queued for Jev triage (see `jev_enqueue_arrival`)
     if inserted && !c.broadcast && !c.question && common::jev_maybe_enabled(c.inv) {
@@ -1118,6 +1147,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     if inserted {
         common::note_sender_activity(c.inv, c.from, c.message, c.now as f64);
     }
+    crate::meshw::stages::since("receipt", t_receipt);
     if let Some(e) = verify_error {
         out.put("verifyError", s(&e));
     }

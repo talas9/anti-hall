@@ -340,6 +340,11 @@ pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE w
 /// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
 /// message with no sender counts.
 pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR mtype IS NOT NULL OR substr(COALESCE(body, ''), 1, length(?)) <> ?)";
+/// [`MESH_MESSAGE_COUNT_FROM_OTHERS`] without the rows of one chat kind (the last placeholder; GH #845: an ack-only message wakes no
+/// one). Fails on a store whose `messages` table has no `chat_kind` column yet; the caller then counts without it.
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR mtype IS NOT NULL OR substr(COALESCE(body, ''), 1, length(?)) <> ?) AND (chat_kind IS NULL OR chat_kind <> ?)";
+/// The mesh seqs of one workspace's rows of one chat kind (fails on a store with no `chat_kind` column).
+pub const MESH_SEQS_OF_KIND: &str = "SELECT seq FROM messages WHERE workspace_id = ?1 AND chat_kind = ?2 AND seq IS NOT NULL";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.
@@ -400,6 +405,8 @@ pub const MESHW_TABLE_INFO_MESSAGES: &str = "PRAGMA table_info(messages);";
 pub const MESHW_TABLE_INFO_REGISTRY: &str = "PRAGMA table_info(registry);";
 /// `appendMeshRow` with a hash: a duplicate hash is ignored; the mesh seq is computed inside the statement.
 pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
+/// Mark the row with hash `?2` as chat kind `?1` (GH #845; fails on a store with no `chat_kind` column, which the caller tolerates).
+pub const MESHW_SET_CHAT_KIND: &str = "UPDATE messages SET chat_kind = ?1 WHERE hash = ?2";
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.

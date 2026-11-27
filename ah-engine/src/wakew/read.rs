@@ -171,7 +171,10 @@ pub fn read_broadcast(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
         b = h.fallback.as_deref().and_then(|k| read_summary(home, k));
         row = workspace_row(&b, id).filter(|w| finite(w.get("total")).is_some());
     }
-    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None }
+    // GH #845: a summary written by a writer that predates the addressed count (the Node backup's) has only the older field; the
+    // channel then reads that one, which wakes on every broadcast as before, instead of going silent
+    let total = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast"))).or_else(|| finite(w.get(text("wake_watch.field_broadcast_fallback")))));
+    Part { ok: true, error: None, total, unread: None }
 }
 
 /// `attachBroadcastChannel`: fold the broadcast channel into a snapshot, failing closed with whatever the direct channels said.

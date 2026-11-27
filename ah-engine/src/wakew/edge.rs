@@ -42,6 +42,10 @@ pub struct State {
     pub held_pending: bool,
     /// New-mail wake lines held back by the last tick (coalesced into the outstanding wake), for the caller's counter.
     pub held: u32,
+    /// Wake lines the last tick printed for new mail (direct or inbox), for the caller's `mesh_wake_lines` counter (GH #845).
+    pub woke_mail: u32,
+    /// Wake lines the last tick printed for broadcasts, same counter.
+    pub woke_broadcast: u32,
 }
 
 impl Default for State {
@@ -62,6 +66,8 @@ impl Default for State {
             woke_unread: 0.0,
             held_pending: false,
             held: 0,
+            woke_mail: 0,
+            woke_broadcast: 0,
         }
     }
 }
@@ -201,6 +207,8 @@ fn note_wake(st: &mut State, snap: &Snapshot) {
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
     st.held = 0;
+    st.woke_mail = 0;
+    st.woke_broadcast = 0;
     let mut lines = Vec::new();
     let now = snap.now_ms;
     let arming = !st.armed;
@@ -280,6 +288,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
             st.held_pending = true;
         } else {
             lines.push(line);
+            st.woke_mail += 1;
             note_wake(&mut st, snap);
         }
     } else if st.held_pending
@@ -288,6 +297,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     {
         // held mail still unread after the re-wake window: one wake for all of it
         lines.push(wake_line(snap, st.woke_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        st.woke_mail += 1;
         note_wake(&mut st, snap);
     }
     // A (re)started watcher keeps no wake in memory, while the cursor a held wake moved past is saved: unread direct mail found
@@ -322,6 +332,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         && t3 > st.last_broadcast
     {
         lines.push(wake_line(snap, st.last_broadcast, t3, Some(text("wake_watch.label_broadcast"))));
+        st.woke_broadcast += 1;
     }
     if snap.total3.is_some()
         && let Some(t3) = total3

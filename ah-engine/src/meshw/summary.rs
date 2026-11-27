@@ -50,6 +50,7 @@ struct Msg {
     mtype: Option<String>,
     urgency: Option<String>,
     is_heartbeat: bool,
+    needs_reply: bool,
 }
 
 /// A store read that failed: Node's `readAll` swallows it to an empty result (devswarm-store.js, "fail-open contract"), so
@@ -133,6 +134,7 @@ fn messages(st: &MeshStore, id: &str, since: f64) -> R<Vec<Msg>> {
                 mtype: sv(&m["mtype"]),
                 urgency: sv(&m["urgency"]),
                 is_heartbeat: m["isHeartbeat"].as_bool().unwrap_or(false),
+                needs_reply: m["needsReply"].as_bool().unwrap_or(false),
             });
             true
         })
@@ -643,6 +645,11 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let pq_cap = defaults::num("mesh_write.summary_pending_questions_cap") as usize;
     let bpart = defaults::text("mesh_write.broadcast_partition");
     let broadcast_all = messages(st, bpart, 0.0)?;
+    // GH #845: who each unread broadcast wakes. A broadcast is parsed once per call, the first time some reader has it unread.
+    let policy = crate::meshw::wakepolicy::Policy::load();
+    let ack_kind = defaults::text("mesh_chat.kind_ack");
+    let bc_acks = st.reader().seqs_of_kind(bpart, ack_kind).unwrap_or_else(|e| soft("broadcast-acks", e));
+    let mut bc_parsed: HashMap<usize, crate::meshw::wakepolicy::Parsed> = HashMap::new();
     let rows = registry(st)?;
     let archived = archive_complete_ids(home);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
@@ -794,10 +801,33 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         let own_unread = own_unread.unwrap_or_else(|| unread_rows.iter().filter(|r| r.sender.as_ref().is_some_and(|x| family.contains(x))).count());
         let direct_unread = (unread - own_unread as f64).max(0.0);
         // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
-        let direct_from_others =
-            st.reader().message_count_from_others(&d.id, &family, defaults::text("agent_tracker.wake_prefix")).unwrap_or_else(|e| soft("count", e)) as f64;
-        let unread_bc: Vec<&Msg> = broadcast_all.iter().filter(|r| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
-        let bc_from_others = unread_bc.iter().filter(|r| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)))).count();
+        // (an ack-only message is left out: it wakes no one, GH #845)
+        let direct_from_others = st
+            .reader()
+            .message_count_from_others_except(&d.id, &family, defaults::text("agent_tracker.wake_prefix"), ack_kind)
+            .unwrap_or_else(|e| soft("count", e)) as f64;
+        let unread_bc: Vec<(usize, &Msg)> =
+            broadcast_all.iter().enumerate().filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
+        let from_others = |r: &Msg| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)));
+        let bc_from_others = unread_bc.iter().filter(|(_, r)| from_others(r)).count();
+        // broadcastWakeFromOthers: the unread broadcasts of others that address this workspace (the wake-watch's broadcast channel)
+        let bc_wake = unread_bc
+            .iter()
+            .filter(|(_, r)| from_others(r))
+            .filter(|(i, r)| {
+                let p = bc_parsed.entry(*i).or_insert_with(|| {
+                    let kind = r.store_seq.filter(|q| bc_acks.contains(&(*q as i64))).map(|_| ack_kind);
+                    policy.parse(&crate::meshw::wakepolicy::Bc {
+                        sender: r.sender.as_deref(),
+                        urgency: r.urgency.as_deref(),
+                        needs_reply: r.needs_reply,
+                        chat_kind: kind,
+                        body: &r.body,
+                    })
+                });
+                policy.wakes(p, &d.id)
+            })
+            .count();
         let mut working_on = OVal::Null;
         for r in &broadcast_all {
             if r.is_heartbeat && r.sender.as_deref() == Some(d.id.as_str()) {
@@ -820,8 +850,9 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             ("oldestDirectUnreadSender".into(), s_or_null(oldest_sender.as_deref())),
             ("broadcastUnread".into(), n(unread_bc.len() as f64)),
             ("broadcastUnreadFromOthers".into(), n(bc_from_others as f64)),
+            (defaults::text("mesh_wake.summary_field").into(), n(bc_wake as f64)),
             ("urgencyMax".into(), urgency_max),
-            ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().copied())),
+            ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().map(|(_, r)| *r))),
             ("working_on".into(), working_on),
             ("gates".into(), gate_vals.clone()),
             ("archive_ready".into(), OVal::Bool(archive_ready)),

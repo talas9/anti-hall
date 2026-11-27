@@ -374,3 +374,20 @@ fn a_restarted_watcher_still_re_wakes_mail_that_was_held_before_the_restart() {
     let (st, _) = tick(&saved, &mail(5.0, Some(2.0), 1_000.0, None));
     assert!(!st.held_pending);
 }
+
+/// GH #845 phase 0: each tick reports how many wake lines it printed per channel (mail, broadcast) for the `mesh_wake_lines` counter;
+/// the arm line and a held (coalesced) wake are not counted, and the counts reset every tick.
+#[test]
+fn each_tick_counts_its_wake_lines_per_channel() {
+    let armed = State { armed: true, last_total: 1.0, last_total2: 2.0, last_broadcast: 0.0, ..State::default() };
+    let (st, lines) = tick(&armed, &child(1.0, Some(3.0), Some(2.0)));
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!((st.woke_mail, st.woke_broadcast), (1, 1));
+    let (st, lines) = tick(&st, &child(1.0, Some(3.0), Some(2.0)));
+    assert!(lines.is_empty());
+    assert_eq!((st.woke_mail, st.woke_broadcast), (0, 0), "nothing moved: the counts reset");
+    let fresh = State { total_missing: true, total2_missing: true, broadcast_missing: true, ..State::default() };
+    let (st, lines) = tick(&fresh, &child(1.0, Some(3.0), Some(2.0)));
+    assert_eq!(lines.len(), 1, "only the arm line: {lines:?}");
+    assert_eq!((st.woke_mail, st.woke_broadcast), (0, 0), "the arm line is not a wake");
+}

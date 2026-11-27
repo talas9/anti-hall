@@ -260,7 +260,11 @@ doc = "The members of a cursor file this build owns and always rewrites; any oth
 value = ["lastTotal", "lastTotal2", "lastBroadcastUnread", "meshTotal", "ndjsonTotal"]
 
 [wake_watch.field_broadcast]
-doc = "The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded)."
+doc = "The summary member the broadcast channel wakes on: the unread broadcasts of others that address this workspace (a mention, a question, an urgent Primary broadcast; GH #845, see mesh_wake.toml). Heartbeats, acks and the workspace's own sends are excluded."
+value = "broadcastWakeFromOthers"
+
+[wake_watch.field_broadcast_fallback]
+doc = "The summary member the broadcast channel reads when wake_watch.field_broadcast is absent (a summary written by the Node backup, which predates it): every unread broadcast of others, heartbeats and own sends excluded."
 value = "broadcastUnreadFromOthers"
 
 # ---- words -------------------------------------------------------------------------------------------------------------------

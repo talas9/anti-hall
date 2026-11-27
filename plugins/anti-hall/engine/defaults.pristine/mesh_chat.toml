@@ -1,0 +1,24 @@
+# ah-engine shipped defaults for mesh chat kinds (GH #845 phase 1). Format: see the header of engine.toml.
+#
+# A short acknowledgement ("here", "ok", "thanks") is stored like any message but marked `chat_kind = ack` at send: it never wakes
+# its recipient and is left out of the direct count the wake-watch fires on. A question (`--question`) is never an ack, and neither
+# is a body holding a question mark or more than a few words after the acknowledgement (a status report such as "done: merged #12"
+# is not an ack: `done` is not an ack word).
+
+[mesh_chat.kind_ack]
+doc = "The chat_kind stored on an ack-only message."
+value = "ack"
+
+[mesh_chat.ack_re]
+doc = "An ack-only body (case-insensitive, matched against the trimmed body): an acknowledgement word, then at most a few characters with no question mark (a name, an emoji)."
+value = '^(?:here|present|ok|okay|ack|acked|thanks|thank you|thx|noted|got it|roger|👍|✅|👋)(?:[^A-Za-z0-9_?][^?]{0,24})?$'
+
+[mesh_chat.ack_max_chars]
+doc = "Longest trimmed body, in characters, that may be classified ack-only."
+value = 40
+min = 1
+max = 1000
+
+[metric.mesh_chat_ack]
+doc = "Sends stored as ack-only (chat_kind = ack): each would have raised a wake before GH #845."
+value = { kind = "counter", unit = "messages", labels = [] }

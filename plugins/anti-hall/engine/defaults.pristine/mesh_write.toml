@@ -26,8 +26,8 @@ doc = "Prefix of a store-direct mesh message's dedupe hash (Node's meshMessageHa
 value = "mesh:"
 
 [mesh_write.messages_added_columns]
-doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`."
-value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT"]
+doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`, then the engine's own (chat_kind, GH #845: Node never reads or writes it)."
+value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT", "chat_kind TEXT"]
 
 [mesh_write.write_seq_column]
 doc = "The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn)."

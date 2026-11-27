@@ -491,6 +491,10 @@ impl Run<'_> {
         if state.held > 0 {
             crate::metrics::bump_by_shared("wake_watch_coalesced", &[("role", a.id.role())], u64::from(state.held));
         }
+        // GH #845 baseline: the woken turns per channel
+        for (key, by) in [("mesh_wake.channel_mail", state.woke_mail), ("mesh_wake.channel_broadcast", state.woke_broadcast)] {
+            crate::metrics::bump_by_shared("mesh_wake_lines", &[("channel", defaults::text(key)), ("role", a.id.role())], u64::from(by));
+        }
         let changed = (state.last_total, state.last_total2, state.last_broadcast) != self.saved;
         locked(self.cell).state = state.clone();
         if changed && read::save_seen(&p.home, &a.id.id, &state, a.id.primary) {

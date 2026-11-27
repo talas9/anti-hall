@@ -1,0 +1,101 @@
+# ah-engine shipped defaults for the mesh wake policy and send-path timing (GH #845, phases 0 and 1). Format: see the header of
+# engine.toml.
+#
+# Phase 0 times each stage of one `ah-engine mesh send` (the 4-20 s a send costs under load) and reports it as telemetry, so the
+# gain of later phases is measured against a baseline. Phase 1 wakes only the addressee of a broadcast: the summary carries
+# `broadcastWakeFromOthers`, the unread broadcasts of others that address this workspace, and the wake-watch's broadcast channel
+# (`wake_watch.field_broadcast`) reads it instead of every unread broadcast.
+
+# ---- phase 0: send stage timer ----------------------------------------------------------------------------------------------
+
+[mesh_wake.stage_labels]
+doc = "The stage names of one mesh send, as the telemetry and the shadow log label them (key = the stage the code times, value = its label): total (the whole verb), heal (self-heal and daemon probe), open (store open with its DDL), ident (roster read and sender identity), resolve (target resolution), lock (per-recipient lock wait), insert (the INSERT), summary (the summary projection and its write), readback (the read-back verify), receipt (receipt, Jev enqueue, sender activity), wake (the native wake of an idle child), hivecontrol (the hivecontrol subprocesses inside it)."
+value = { total = "total", heal = "heal", open = "store_open", ident = "roster_ident", resolve = "resolve", lock = "lock_wait", insert = "insert", summary = "summary", readback = "readback", receipt = "receipt", wake = "native_wake", hivecontrol = "hivecontrol" }
+
+[mesh_wake.stage_event_prefix]
+doc = "Prefix of the telemetry event name of one send stage (`<prefix><stage>`, kind cmd): `ah-engine telemetry` reports p50/p95/p99 per name."
+value = "mesh-send-stage."
+
+[mesh_wake.stage_log_field]
+doc = "The member of the mesh shadow-log line that holds a send's stage times in milliseconds."
+value = "stages"
+
+# ---- phase 0: wake lines per channel ----------------------------------------------------------------------------------------
+
+[mesh_wake.channel_mail]
+doc = "The `channel` label of a wake-watch line for new direct or inbox mail."
+value = "mail"
+
+[mesh_wake.channel_broadcast]
+doc = "The `channel` label of a wake-watch line for a broadcast."
+value = "broadcast"
+
+[metric.mesh_wake_lines]
+doc = "Wake lines the wake-watch printed, by channel (mail or broadcast) and watcher role: each is a woken turn (GH #845 baseline)."
+value = { kind = "counter", unit = "lines", labels = ["channel", "role"] }
+
+# ---- phase 1: who a broadcast wakes -----------------------------------------------------------------------------------------
+
+[mesh_wake.summary_field]
+doc = "The summary member that counts, per workspace, the unread broadcasts of others that address it (the wake-watch's broadcast channel reads it through wake_watch.field_broadcast)."
+value = "broadcastWakeFromOthers"
+
+[mesh_wake.broadcast_wake_urgency]
+doc = "Urgencies at which a broadcast from a role in mesh_wake.broadcast_wake_roles wakes every reader."
+value = ["high", "urgent"]
+
+[mesh_wake.broadcast_wake_roles]
+doc = "Sender roles whose urgent broadcast wakes every reader (phase 1 has no admin role: the owner's word comes through the Primary)."
+value = ["primary"]
+
+[mesh_wake.role_primary]
+doc = "The role word of a Primary sender in the wake rule."
+value = "primary"
+
+[mesh_wake.role_child]
+doc = "The role word of any other sender in the wake rule."
+value = "child"
+
+[mesh_wake.mention_re]
+doc = "A mention in a broadcast body (case-insensitive; group 1 is the token): an @ not preceded by a letter, digit or underscore (so an e-mail address is not one)."
+value = '(?:^|[^A-Za-z0-9_])@([A-Za-z0-9][A-Za-z0-9_-]*)'
+
+[mesh_wake.mention_all]
+doc = "Mention tokens that address every reader (honoured only from a role in mesh_wake.mention_all_roles)."
+value = ["all", "everyone"]
+
+[mesh_wake.mention_all_roles]
+doc = "Sender roles whose @all wakes every reader; from anyone else it addresses no one."
+value = ["primary"]
+
+[mesh_wake.mention_primary]
+doc = "Mention tokens that address the Primary."
+value = ["primary"]
+
+[mesh_wake.mention_min_prefix]
+doc = "Shortest id prefix a mention may use to address a workspace (a shorter token, or one that is no id prefix, such as @admin, addresses no one)."
+value = 6
+min = 1
+max = 64
+
+[mesh_wake.primary_reader]
+doc = "What wakes a Primary reader: `all` (every unread broadcast of others, the rule before GH #845) or `addressed` (the same rule as a child: a mention, a question or an urgent Primary broadcast)."
+value = "all"
+
+[mesh_wake.primary_reader_addressed]
+doc = "The mesh_wake.primary_reader value that applies the addressed rule to a Primary."
+value = "addressed"
+
+[mesh_wake.allow_broadcast_question]
+doc = "1 = `mesh send --broadcast --question` is allowed: the row is stored with needs_reply and wakes every reader (it never becomes a per-workspace pending question, which stays direct-only); 0 = refused as before GH #845."
+value = 1
+min = 0
+max = 1
+
+[mesh_wake.suppressed_ack]
+doc = "The `reason` label of a native wake skipped because the message was ack-only."
+value = "ack"
+
+[metric.mesh_wake_suppressed]
+doc = "Native wakes (DevSwarm reactivate) a send skipped, by reason (GH #845)."
+value = { kind = "counter", unit = "wakes", labels = ["reason"] }
