@@ -160,7 +160,11 @@ fn heartbeats(env: &Env, st: &mut State) {
 fn devswarm(env: &Env, st: &mut State) {
     let root = env.base().join(pth("devswarm"));
     let descs = read_dir(&root.join(pth("workspaces")));
+    // the rows whose workspace facts were judged this tick: any other row's `ws` is dropped below, never kept from an older tick (#972:
+    // a row bound once kept `armed: false` for days while the watcher's lock was live)
+    let mut bound: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if descs.is_empty() {
+        unbind(st, &bound);
         return;
     }
     let f = defaults::raw("agent_tracker.devswarm_fields");
@@ -175,25 +179,38 @@ fn devswarm(env: &Env, st: &mut State) {
             a.name = super::cap(&title, lim("text_cap"));
         }
     }
-    for p in descs {
-        let Some(d) = json_of(&p) else { continue };
+    // a descriptor that names a tracked session binds it first; a row with no session (the app's own row for a checkout) only binds a
+    // session no descriptor names, by its directory, so the read order of the rows never decides which one a session gets (#972)
+    let mut rows: Vec<(PathBuf, Value, bool)> =
+        descs.into_iter().filter_map(|p| json_of(&p).map(|d| (p, d))).map(|(p, d)| (p, d.clone(), st.agents.contains_key(&g(&d, "session")))).collect();
+    rows.sort_by_key(|r| !r.2);
+    for (p, d, by_session) in rows {
         let (id, session, wt) = (g(&d, "id"), g(&d, "session"), g(&d, "worktree"));
         if id.is_empty() {
             continue;
         }
-        let key = if st.agents.contains_key(&session) {
+        let key = if by_session {
             Some(session)
         } else {
-            st.agents.iter().find(|(_, a)| a.kind == kind_name("main") && !wt.is_empty() && a.cwd == wt).map(|(k, _)| k.clone())
+            // a main session, or a session already a workspace (the kind sticks after the first binding, so matching only `main` froze
+            // the row at its first sight, #972)
+            st.agents
+                .iter()
+                .find(|(k, a)| {
+                    !bound.contains(*k) && !super::is_child(a) && (a.kind == kind_name("main") || a.kind == kind_name("workspace")) && !wt.is_empty() && a.cwd == wt
+                })
+                .map(|(k, _)| k.clone())
         };
-        let Some(a) = key.and_then(|k| st.agents.get_mut(&k)) else { continue };
+        let Some(key) = key.filter(|k| !bound.contains(k)) else { continue };
+        let Some(a) = st.agents.get_mut(&key) else { continue };
         let title = title_of(&id);
         if !title.is_empty() {
             a.name = super::cap(&title, lim("text_cap"));
         }
-        if root.join(pth("archived")).join(format!("{id}{}", pth("json_ext"))).exists() {
+        if archived_shadow(env, &root, &id, &p) {
             continue;
         }
+        bound.insert(key.clone());
         a.kind = kind_name("workspace").into();
         let (mut step, mut done) = (String::new(), 0u64);
         if let Some(plan) = plans.iter().find(|pl| g(pl, "worktree") == wt) {
@@ -220,10 +237,39 @@ fn devswarm(env: &Env, st: &mut State) {
         let primary = watcher_primary || by_path;
         let idle = (declined || (by_path && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings)))
             && env.switch("agent_tracker.rearm_idle_setting");
-        let armed = Some(idle || watcher_armed(env, &id));
+        let armed = Some(idle || watcher_armed(env, &id, &key));
         a.ws = Some(Ws { id: id.clone(), armed, step, done, primary });
         live_plan(env, &id, a, done);
     }
+    unbind(st, &bound);
+}
+
+/// Drop the workspace facts of every row no live descriptor bound this tick (its descriptor was archived or removed): stale facts
+/// would keep a re-arm order (or an exemption) alive for a watcher nobody judges any more. Counted per dropped row.
+fn unbind(st: &mut State, bound: &std::collections::BTreeSet<String>) {
+    for (k, a) in st.agents.iter_mut() {
+        if a.ws.is_some() && !bound.contains(k) {
+            a.ws = None;
+            crate::metrics::bump("agent_ws_coverage", &[("how", "unbound")]);
+        }
+    }
+}
+
+/// An archived twin hides a descriptor only while the descriptor is not provably in use: a live wake-watch lock under its id, or a
+/// descriptor written after the archive, means the archive is the stale one (#972: an archive from August hid the live Primary's
+/// descriptor, so its session was bound to the app's sessionless row instead).
+fn archived_shadow(env: &Env, root: &Path, id: &str, desc: &Path) -> bool {
+    let arch = root.join(pth("archived")).join(format!("{id}{}", pth("json_ext")));
+    if !arch.exists() {
+        return false;
+    }
+    let newer = mtime_ms(desc).zip(mtime_ms(&arch)).is_some_and(|(d, a)| d > a);
+    let live = crate::meshw::watcher::lock_live(&env.home, id, env.now_ms as i64).unwrap_or(false);
+    if newer || live {
+        crate::metrics::bump("agent_ws_coverage", &[("how", "archive_ignored")]);
+        return false;
+    }
+    true
 }
 
 /// The live facts of a workspace's work (task-list completions, commits, pushes, merges and deploys, and when it last shipped), kept in
@@ -246,12 +292,35 @@ fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
 
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
 /// row on its checkout). A lock the check cannot read decides nothing, so it reads as not armed.
-fn watcher_armed(env: &Env, id: &str) -> bool {
+fn watcher_armed(env: &Env, id: &str, session: &str) -> bool {
     let found = crate::meshw::watcher::live_for_workspace(&env.home, id, env.now_ms as i64);
     if found.as_ref().is_ok_and(|f| f.by_checkout) {
         crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
     }
-    found.is_ok_and(|f| f.armed)
+    if found.is_ok_and(|f| f.armed) {
+        return true;
+    }
+    // the watcher this session armed holds a live lock naming the session, under whatever row id it resolved: the same lock that
+    // refuses a second arm ("lock-held") covers the session (#972)
+    let by_session = session_lock_live(env, session);
+    if by_session {
+        crate::metrics::bump("agent_ws_coverage", &[("how", "session_lock")]);
+    }
+    by_session
+}
+
+/// A live wake-watch lock (fresh, holder not provably gone: `meshw::watcher::lock_live`) whose record names `session`.
+fn session_lock_live(env: &Env, session: &str) -> bool {
+    if session.is_empty() {
+        return false;
+    }
+    let f = defaults::raw("agent_tracker.devswarm_fields");
+    let (pre, ext) = (defaults::text("mesh_write.wake_lock_prefix"), defaults::text("mesh_write.wake_lock_suffix"));
+    read_dir(&env.base().join(pth("devswarm")).join(pth("locks"))).iter().any(|p| {
+        let Some(id) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(pre)).and_then(|n| n.strip_suffix(ext)) else { return false };
+        json_of(p).is_some_and(|v| v.get(f.str_field("lock_session")).and_then(Value::as_str) == Some(session))
+            && crate::meshw::watcher::lock_live(&env.home, id, env.now_ms as i64).unwrap_or(false)
+    })
 }
 
 // ---- the Claude Code CLI --------------------------------------------------------------------------------

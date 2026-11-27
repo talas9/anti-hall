@@ -6627,3 +6627,82 @@ fn n964_completing_the_step_counts_and_ends_it_even_with_closed_statuses_emptied
     assert_eq!(steps, 1, "the completion counted");
     assert!(!open && step.is_empty(), "the completed step ended: open={open} step={step:?}");
 }
+
+// ---- #972 class 7: the tracker's wake-watch coverage follows the live lock, every tick -------------------------------
+
+/// The 2026-11-27 SkyCrew layout: the session's own descriptor `primary-p1` (with an archive twin written long ago), the app's
+/// sessionless row `app-row` on the same checkout, and the watcher's live lock under `primary-p1` naming the session.
+fn sky_layout(h: &Path, n: u64, lock: bool) {
+    let d = h.join(".anti-hall/devswarm");
+    write(
+        &h.join(".claude/projects/p/sessP.jsonl"),
+        &[prompt(n - 5 * MIN, "/wt/sky"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "on it"}]), Some("end_turn"))],
+    );
+    for sub in ["workspaces", "plans", "locks", "archived"] {
+        std::fs::create_dir_all(d.join(sub)).unwrap();
+    }
+    std::fs::write(d.join("archived/primary-p1.json"), r#"{"id":"primary-p1","sessionId":"sessP","worktreePath":"/wt/sky"}"#).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 24 * 3600);
+    std::fs::File::options().write(true).open(d.join("archived/primary-p1.json")).unwrap().set_modified(old).unwrap();
+    std::fs::write(d.join("workspaces/app-row.json"), r#"{"id":"app-row","sessionId":null,"worktreePath":"/wt/sky"}"#).unwrap();
+    std::fs::write(d.join("workspaces/primary-p1.json"), r#"{"id":"primary-p1","sessionId":"sessP","worktreePath":"/wt/sky"}"#).unwrap();
+    if lock {
+        sky_lock(h, n);
+    }
+}
+
+fn sky_lock(h: &Path, ts: u64) {
+    let d = h.join(".anti-hall/devswarm/locks/wake-watch-primary-p1.lock");
+    std::fs::write(d, json!({"ts": ts, "pid": std::process::id(), "sessionId": "sessP"}).to_string()).unwrap();
+}
+
+/// Ticks without arming the session wake stamp (the workspace path decides by the DevSwarm lock alone).
+fn ticks_bare(h: &Path, st: &mut State, at: &[u64]) {
+    for t in at {
+        tick(&env(h, *t), st);
+    }
+}
+
+#[test]
+fn n972_a_live_lock_under_the_sessions_own_descriptor_covers_it_despite_a_stale_archive_twin() {
+    let h = home("n972-sky");
+    let n = now0();
+    sky_layout(&h, n, true);
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessP");
+    let w = a.ws.as_ref().expect("the session is a workspace");
+    assert_eq!((w.id.as_str(), w.armed), ("primary-p1", Some(true)), "bound to its own descriptor and covered: {w:?}");
+    assert!(escalate::primary(a), "its own descriptor says Primary");
+    assert!(!a.flags.contains_key("monitor_unarmed"), "{:?}", a.flags.keys().collect::<Vec<_>>());
+    assert!(queue(&h, "sessP").iter().all(|r| r["signal"] != "monitor_unarmed"), "{:?}", queue(&h, "sessP"));
+}
+
+#[test]
+fn n972_coverage_is_judged_again_every_tick_not_frozen_at_first_sight() {
+    // the row was first seen with no watcher (the flag went up); the watcher armed later and its lock is live: the next tick must see it
+    let h = home("n972-refresh");
+    let n = now0();
+    sky_layout(&h, n, false);
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + 2 * MIN, n + 4 * MIN]);
+    assert_eq!(agent(&st, "sessP").ws.as_ref().and_then(|w| w.armed), Some(false), "no lock yet: not covered");
+    assert!(agent(&st, "sessP").flags.contains_key("monitor_unarmed"), "the true positive still fires");
+    sky_lock(&h, n + 5 * MIN);
+    ticks_bare(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN]);
+    let a = agent(&st, "sessP");
+    assert_eq!(a.ws.as_ref().and_then(|w| w.armed), Some(true), "{:?}", a.ws);
+    assert!(!a.flags.contains_key("monitor_unarmed"), "the flag clears once the live lock covers it");
+}
+
+#[test]
+fn n972_a_sessionless_app_row_never_displaces_the_sessions_own_descriptor() {
+    // no archive twin, no lock: whichever order the rows are read in, the session-id match wins over the checkout match
+    let h = home("n972-order");
+    let n = now0();
+    sky_layout(&h, n, false);
+    std::fs::remove_file(h.join(".anti-hall/devswarm/archived/primary-p1.json")).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(agent(&st, "sessP").ws.as_ref().map(|w| w.id.as_str()), Some("primary-p1"));
+}
