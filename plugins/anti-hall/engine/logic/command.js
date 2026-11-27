@@ -1689,20 +1689,18 @@ function isSafeGitPull(segment) {
   for (let i = gitIdx + 1; i < subIdx; i++) {
     if (tokens[i] === '-c' || tokens[i].startsWith('--config-env') || /^-c./.test(tokens[i])) return false;
   }
-  // the last mode flag wins in git: the pull fast-forwards only when --ff-only is the effective one
+  // light only when every flag is on the allowlist (command.pull_light_flags, command.pull_light_short for bundled short flags) and --ff-only
+  // is among them: any other flag (a mode, --squash, --autostash, --no-commit, a prune or force flag, a digit) makes the pull heavy
+  const flags = ah.cfg('command.pull_light_flags'), shorts = ah.cfg('command.pull_light_short');
   let ffOnly = false;
   for (let i = subIdx + 1; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t === '--ff-only') { ffOnly = true; continue; }
-    if (T.fetchDangerous.has(t) || t.startsWith('--prune') || t.startsWith('--force')) return false;
     if (t.startsWith('+') || t.includes(':')) return false;
-    if (/^--(?:ff|no-ff|squash|no-squash|rebase|no-rebase)(?:=|$)/.test(t)) { ffOnly = false; continue; }
-    // bundled short flags (-qp): r is --rebase, p and f are --prune and --force
-    if (/^-[A-Za-z]+$/.test(t)) {
-      for (const ch of t.slice(1)) {
-        if (ch === 'p' || ch === 'f') return false;
-        if (ch === 'r') ffOnly = false;
-      }
+    if (t.startsWith('--')) {
+      if (flags.indexOf(t) < 0) return false;
+      if (t === '--ff-only') ffOnly = true;
+    } else if (t.startsWith('-') && t.length > 1) {
+      if (flags.indexOf(t) < 0 && !Array.prototype.every.call(t.slice(1), function (ch) { return shorts.indexOf(ch) >= 0; })) return false;
     }
   }
   return ffOnly;
