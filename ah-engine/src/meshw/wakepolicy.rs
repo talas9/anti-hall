@@ -55,7 +55,8 @@ pub fn resolve(b: &Bc<'_>, roster: &[&str]) -> Result<Audience, Ambiguous> {
     }
     let role = role_of(b.sender);
     let all_roles = defaults::list("mesh_wake.mention_all_roles");
-    let all_tokens = defaults::list("mesh_wake.mention_all");
+    // an owner/admin relay (`[@admin] …`, sent through the Primary) is addressed to every recipient of the room, like @all
+    let all_tokens: Vec<&str> = defaults::list("mesh_wake.mention_all").into_iter().chain(defaults::list("mesh_wake.mention_admin")).collect();
     let primary_tokens = defaults::list("mesh_wake.mention_primary");
     let min = defaults::num("mesh_wake.mention_min_prefix") as usize;
     let mut ids: Vec<String> = Vec::new();
@@ -219,6 +220,7 @@ mod tests {
         assert_eq!(aud(&pm(), "high", false, "PRIMARY -> ALL: report presence"), Ok(Audience::All));
         assert_eq!(aud(B, "urgent", false, "I need the sim"), Ok(Audience::Nobody), "a child's urgency wakes no one");
         assert_eq!(aud(&pm(), "normal", false, "@all merge now"), Ok(Audience::All));
+        assert_eq!(aud(&pm(), "normal", false, "[@admin] who can read this?"), Ok(Audience::All), "an owner relay through the Primary reaches its room");
         assert_eq!(aud(B, "normal", false, "@all look at my PR"), Ok(Audience::Nobody));
     }
 

@@ -24,7 +24,10 @@ Both columns are added with `ALTER TABLE` at open, through `mesh_write.messages_
 The input is one broadcast: sender id, body, urgency, `--question`, and the roster (registry ids), as `send` already reads them.
 
 1. Collect the mention tokens from the body with `mesh_wake.mention_re` (case-insensitive; group 1 is the token, lower-cased).
-   - A token in `mesh_wake.mention_all` (`all`, `everyone`) is `ALL`.
+   - A token in `mesh_wake.mention_all` (`all`, `everyone`) or `mesh_wake.mention_admin` (`admin`: the owner relay `[@admin] …`)
+     is `ALL` (honoured only from a role in `mesh_wake.mention_all_roles`; a child's `RE @admin` addresses no one).
+   - Owner rule (2026-11-28): a plain Primary broadcast (no @all/@admin, question, high/urgent or mention) wakes no child; the
+     Primary sends orders as `@all` or `--urgency high`.
    - A token in `mesh_wake.mention_primary` (`primary`) resolves to every registry id that starts with `mesh_write.primary_prefix`.
    - Any other token resolves to the registry ids it equals, or that it prefixes when it is at least `mesh_wake.mention_min_prefix` (6) characters long. Matching is case-insensitive.
    - A token that resolves to nothing (for example `admin`) is ignored.

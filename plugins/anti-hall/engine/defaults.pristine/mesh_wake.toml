@@ -92,6 +92,10 @@ value = '(?:^|[^A-Za-z0-9_])@([A-Za-z0-9][A-Za-z0-9_-]*)'
 doc = "Mention tokens that address every reader (honoured only from a role in mesh_wake.mention_all_roles)."
 value = ["all", "everyone"]
 
+[mesh_wake.mention_admin]
+doc = "Mention tokens of an owner/admin relay (`[@admin] …`): from a role in mesh_wake.mention_all_roles they address every recipient of the room, like @all; from anyone else (a child's `RE @admin`) they address no one."
+value = ["admin"]
+
 [mesh_wake.mention_all_roles]
 doc = "Sender roles whose @all reaches every reader; from anyone else it addresses no one."
 value = ["primary"]
