@@ -318,3 +318,79 @@ pub(crate) fn ack_broadcasts(st: &crate::meshw::store::MeshStore, reader: &str, 
     crate::meshw::mark_committed();
     Ok(Some(to))
 }
+
+#[cfg(test)]
+mod bc_drain_tests {
+    use super::*;
+    use crate::meshw::store::{MeshStore, mesh_message_row, mesh_message_hash};
+
+    fn scratch(tag: &str) -> (std::path::PathBuf, MeshStore, Inv) {
+        let d = crate::testtmp::child("test-bcdrain", format!("{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a leftover from an earlier run
+        std::fs::create_dir_all(&d).unwrap();
+        let st = MeshStore::open(&d.join("devswarm.db")).unwrap();
+        let inv = Inv {
+            home: d.clone(),
+            write_home: d.clone(),
+            env: std::collections::HashMap::new(),
+            cwd: "/".into(),
+            now: 1_795_000_000_000,
+            stdin: None,
+            store_override: None,
+        };
+        (d, st, inv)
+    }
+
+    fn broadcast(st: &MeshStore, from: &str, body: &str, ts: i64) {
+        let h = mesh_message_hash(Some(from), None, defaults::text("mesh_write.mtype_broadcast"), "normal", body, &ts.to_string(), false);
+        st.append_mesh_row(&mesh_message_row(Some(from), None, true, body, ts, "normal", &h, false, None)).unwrap();
+    }
+
+    /// GH #845 (Codex P0-2): a broadcast that lands between `inbox read` and `inbox ack` is never acked unseen: the ack moves only
+    /// through the boundary the read listed.
+    #[test]
+    fn an_arrival_between_read_and_ack_stays_unread() {
+        let (_d, st, inv) = scratch("race");
+        broadcast(&st, "w-b", "first", 1);
+        broadcast(&st, "w-b", "second", 2);
+        let u = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        assert_eq!(u.rows.len(), 2);
+        let target = u.target.unwrap();
+        broadcast(&st, "w-b", "arrived during the read", 3);
+        assert_eq!(ack_broadcasts(&st, "w-a", target).unwrap(), Some(target));
+        let again = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        assert_eq!(again.rows.len(), 1, "the arrival is still unread");
+        assert_eq!(again.rows[0].get("message"), Some(&OVal::Str("arrived during the read".into())));
+    }
+
+    /// The cap lists the OLDEST unread and the ack stops at the last listed: the rest wait for the next drain (`more`).
+    #[test]
+    fn the_cap_keeps_the_rest_unread_and_the_cursor_never_goes_back() {
+        let (_d, st, inv) = scratch("cap");
+        let cap = defaults::num("mesh_wake.inbox_broadcast_cap") as i64;
+        for i in 0..cap + 3 {
+            broadcast(&st, "w-b", &format!("m{i}"), i + 1);
+        }
+        broadcast(&st, "w-a", "my own", cap + 10);
+        let u = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        assert!(u.more);
+        assert_eq!(u.rows.len() as i64, cap);
+        ack_broadcasts(&st, "w-a", u.target.unwrap()).unwrap();
+        let rest = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        assert_eq!(rest.rows.len(), 3, "the own broadcast is not listed");
+        assert_eq!(ack_broadcasts(&st, "w-a", 1).unwrap(), None, "an older target never moves the cursor back");
+        assert_eq!(ack_broadcasts(&st, "w-a", i64::MAX).unwrap().map(|c| c <= st.broadcast_head().unwrap()), Some(true), "never past the head");
+    }
+
+    /// The receipt op carries exactly the delivered boundary, and none is made when nothing was listed.
+    #[test]
+    fn the_receipt_op_names_the_delivered_boundary() {
+        let (_d, st, inv) = scratch("op");
+        assert!(broadcast_op("w-a", &unread_broadcasts(&st, &inv, "w-a").unwrap()).is_none());
+        broadcast(&st, "w-b", "hello", 1);
+        let u = unread_broadcasts(&st, &inv, "w-a").unwrap();
+        let op = broadcast_op("w-a", &u).unwrap();
+        assert_eq!(op.get("k"), Some(&OVal::Str(defaults::text("mesh_write.op_broadcast").into())));
+        assert_eq!(op.get("target"), Some(&n(u.target.unwrap() as f64)));
+    }
+}
