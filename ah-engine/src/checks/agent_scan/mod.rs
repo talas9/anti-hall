@@ -144,6 +144,9 @@ pub struct Scan {
     /// Agent ids of teammates a `TaskStop` ended, which names the teammate (`task_id` is the name, not the agent id) and was issued
     /// after its latest spawn. A stop that failed because the task no longer exists counts: the teammate is gone either way.
     pub stopped_agents: HashSet<String>,
+    /// The time (ms) of the latest terminal or stop evidence per id of `terminal` and `stopped_agents`, when the transcript dated it: a
+    /// stop older than an agent's own later writes is history, not a fresh stop (#972 round 2).
+    pub ended_ts: HashMap<String, f64>,
     /// Teammates sent a message they have not reported on.
     pub pending: Vec<(String, Pending)>,
 }
@@ -1841,6 +1844,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
 
     // A stop names a teammate by its name: the agent id of that spawn ended too (only a stop after the latest spawn counts).
     let mut stopped_agents: HashSet<String> = HashSet::new();
+    let mut stop_ts: HashMap<String, f64> = HashMap::new();
     for s in &stops {
         let Some(tuid) = s.tool_use_id.as_ref() else { continue };
         if (w.errored.contains(tuid.as_str()) && !w.gone.contains(tuid.as_str())) || !(w.answered.contains(tuid.as_str())) {
@@ -1850,6 +1854,10 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         let spawned_at = team_events.get(&s.id).and_then(|evs| evs.iter().filter(|e| e.kind == "spawn").map(|e| e.seq).max());
         if spawned_at.is_some_and(|sp| s.seq > sp) {
             stopped_agents.insert(info.agent_id.clone());
+            if s.ts.is_finite() {
+                let e = stop_ts.entry(info.agent_id.clone()).or_insert(s.ts);
+                *e = e.max(s.ts);
+            }
         }
     }
 
@@ -2063,7 +2071,14 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         );
         terminal.remove(&name);
     }
-    Ok(Some(Scan { launched, terminal, stopped_agents, pending }))
+    let mut ended_ts = stop_ts;
+    for id in &terminal {
+        if let Some(t) = terminal_ev.get(id).and_then(|evs| evs.iter().map(|(_, t)| *t).filter(|t| t.is_finite()).reduce(f64::max)) {
+            let e = ended_ts.entry(id.clone()).or_insert(t);
+            *e = e.max(t);
+        }
+    }
+    Ok(Some(Scan { launched, terminal, stopped_agents, ended_ts, pending }))
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows

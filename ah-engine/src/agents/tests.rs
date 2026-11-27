@@ -6775,12 +6775,24 @@ fn confirm_ms() -> u64 {
     defaults::raw("nudges.hold").get("confirm_ms").and_then(V::as_integer).unwrap() as u64
 }
 
-/// Write a task file whose mtime is the simulated clock `at` (the tracker compares it with the tick time of the reminder).
+/// Set a task file's mtime to the simulated clock `at` (a real write's mtime is the time of the write).
+fn touch_task_at(h: &Path, sid: &str, id: &str, at: u64) {
+    let sid8: String = sid.chars().take(8).collect();
+    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{id}.json"));
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+}
+
+/// Write a task file and, as the session would, the TaskUpdate call that saved its blocker (`metadata.blockedOn`) at the simulated
+/// clock `at` (the tracker compares the call's time with the tick time of the reminder).
 fn task_file_at(h: &Path, sid: &str, t: Value, at: u64) {
     task_file(h, sid, t.clone());
-    let sid8: String = sid.chars().take(8).collect();
-    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{}.json", t["id"].as_str().unwrap()));
-    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+    let id = format!("tu{at}");
+    let input = json!({"taskId": t["id"], "metadata": t["metadata"]});
+    touch_task_at(h, sid, t["id"].as_str().unwrap(), at);
+    let p = sess(h, sid);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+    writeln!(f, "{}\n{}", tool(at, &format!("m{at}"), 5, &id, "TaskUpdate", input), result(at + 500, &id, "Updated task", false)).unwrap();
 }
 
 fn n972_hold_rows(h: &Path) -> Vec<Value> {
@@ -6978,4 +6990,134 @@ fn n972_a_session_whose_descriptor_is_gone_is_a_main_session_again_covered_by_it
     assert!(a.ws.is_none() && a.kind == kind_name("main"), "kind={} ws={:?}", a.kind, a.ws);
     assert!(escalate::primary(a), "the main session is exempt from the runtime ladder");
     assert!(!a.flags.contains_key("monitor_unarmed"), "its own armed stamp covers it: {:?}", a.flags.keys().collect::<Vec<_>>());
+}
+
+/// Codex #838 P1.1: the old stop notice stays in the parent's tail while the resumed child keeps working; over several ticks the old
+/// notice must never re-latch the stop.
+#[test]
+fn n972r_a_resumed_child_is_not_re_latched_by_its_old_stop_notice_over_several_ticks() {
+    let h = home("n972r-relatch");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "the true positive: the answered stop ends it");
+    let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
+    for (i, t) in [5u64, 6, 7, 8].iter().enumerate() {
+        append(&child, &[tool(n + t * MIN, &format!("r{i}"), 5, &format!("rt{i}"), "Read", json!({"file_path": "/w/a"}))]);
+        ticks(&h, &mut st, &[n + t * MIN + 1000]);
+        let a = agent(&st, "abc");
+        assert!(a.stopped_at == 0 && !a.finished, "tick {i}: re-latched by the stop at n-30min: stopped_at={} finished={}", a.stopped_at, a.finished);
+    }
+}
+
+/// Codex #838 P1.2: a live lock that names the session but belongs to another workspace (another checkout, another inbox) does not
+/// cover the workspace the session is bound to.
+#[test]
+fn n972r_a_lock_naming_the_session_under_another_checkout_does_not_cover_it() {
+    let h = home("n972r-other-inbox");
+    let n = now0();
+    devswarm(&h, n, None);
+    let d = h.join(".anti-hall/devswarm");
+    std::fs::write(d.join("workspaces/wsB.json"), r#"{"id":"wsB","sessionId":"other","worktreePath":"/wt/b"}"#).unwrap();
+    std::fs::write(d.join("locks/wake-watch-wsB.lock"), json!({"ts": n, "pid": std::process::id(), "sessionId": "sessW"}).to_string()).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().map(|w| (w.id.as_str(), w.armed)), Some(("ws1", Some(false))), "B's watcher reads B's inbox");
+    // the true positive of coverage: a lock under its own row
+    std::fs::write(d.join("locks/wake-watch-ws1.lock"), json!({"ts": n + 2 * MIN, "pid": std::process::id(), "sessionId": "sessW"}).to_string()).unwrap();
+    ticks_bare(&h, &mut st, &[n + 2 * MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().and_then(|w| w.armed), Some(true));
+}
+
+/// Codex #838 P1.3: the same status message sent again earns nothing; only distinct reports are outcomes.
+#[test]
+fn n972r_a_repeated_report_earns_no_fresh_progress() {
+    let n = now0();
+    let h = home("n972r-repeat-report");
+    let status = "Status: still working on the hold bookkeeping, tests pending, ETA about thirty minutes from now, no blockers so far.";
+    let other = "Findings, round 4: P1 the stop notice re-latches; P2 the drift dedupe keys the old text; P2 an unrelated write confirms.";
+    sub_with_calls(
+        &h,
+        n,
+        &[
+            ("SendMessage", json!({"to": "main", "message": status})),
+            ("SendMessage", json!({"to": "main", "message": status})),
+            ("SendMessage", json!({"to": "main", "message": format!("  {status}  ")})),
+            ("SendMessage", json!({"to": "main", "message": other})),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.reports, a.progress), (2, 2 * weight("report")), "two distinct reports, the repeats earn nothing");
+}
+
+/// Codex #838 P1.3 (merge): a merge segment the shell may skip (after `||`), or whose failure the call's success does not rule out (a
+/// `;` or `|` after it), earns no shipping credit; one the whole call's success proves ran does.
+#[test]
+fn n972r_a_merge_credits_only_when_the_calls_success_proves_it_ran() {
+    let n = now0();
+    for (tag, cmd, want) in [
+        ("or", "true || gh pr merge 42", 0),
+        ("semi-after", "gh pr merge 42 ; true", 0),
+        ("pipe", "gh pr merge 42 | tee /dev/null", 0),
+        ("and", "cd /w/repo && gh pr merge 42 && echo merged", 1),
+        ("semi-before", "cd /w/repo ; gh pr merge 42", 1),
+    ] {
+        let h = home(&format!("n972r-merge-{tag}"));
+        sub_with_calls(&h, n, &[("Bash", json!({"command": cmd}))]);
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n]);
+        assert_eq!(agent(&st, "w1").shipped, want, "{tag}: {cmd}");
+    }
+}
+
+/// Codex #838 P2.4: a write of the task that does not touch its blocker (a subject fix) is no answer to the hold reminder.
+#[test]
+fn n972r_an_unrelated_task_write_does_not_confirm_the_hold() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972r-subject-write");
+    let max = hold_max();
+    let task = |subj: &str| json!({"id": "75", "subject": subj, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}});
+    task_file_at(&h, SID, task("Task 75"), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    append(&sess(&h, SID), &[tool(n - MIN, "m0", 5, "tu0", "TaskUpdate", json!({"taskId": "75", "metadata": {"blockedOn": "waiting on the store review"}})), result(n - MIN + 500, "tu0", "Updated task", false)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1);
+    // a subject fix after the reminder: the file changes, the blocker does not
+    task_file(&h, SID, task("Task 75 (renamed)"));
+    touch_task_at(&h, SID, "75", n + max + 5 * MIN);
+    append(&sess(&h, SID), &[tool(n + max + 5 * MIN, "m1", 5, "tu1", "TaskUpdate", json!({"taskId": "75", "subject": "Task 75 (renamed)"})), result(n + max + 5 * MIN + 500, "tu1", "Updated task", false)]);
+    ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
+    assert!(agent(&st, SID).hold_confirmed.get("75").is_none(), "no blocker field was written");
+    assert_eq!(n972_hold_rows(&h).len(), 2, "unanswered: reminded again after the cooldown");
+}
+
+/// Codex #838 P2.5: the once-per-step dedupe of drift keys on the step the reminder is about (the task's current subject), so a rename
+/// is a new step that may be reminded again.
+#[test]
+fn n972r_a_renamed_step_is_a_new_step_for_the_drift_dedupe() {
+    let n = now0();
+    let h = home("n972r-drift-rename");
+    let task = |subj: &str| json!({"id": "53", "subject": subj, "status": "in_progress", "owner": "", "blockedBy": []});
+    task_file(&h, SID, task("T-53 stall on scheduled wait"));
+    let mut lines = vec![prompt(n - 60 * MIN, "/w"), tool(n - 50 * MIN, "u0", 5, "tu", "TaskUpdate", json!({"taskId": "53", "status": "in_progress", "subject": "T-53 stall on scheduled wait"})), result(n - 50 * MIN + 500, "tu", "Updated task", false)];
+    for i in 0..12u64 {
+        let id = format!("b{i}");
+        lines.push(tool(n - 40 * MIN + i * 1000, &format!("c{i}"), 5, &id, "Bash", json!({"command": format!("du -sh /cache/derived/data{i} && rm -rf /cache/derived/data{i}")})));
+        lines.push(result(n - 40 * MIN + i * 1000 + 500, &id, "ok", false));
+    }
+    lines.push(asst(n - 30 * MIN, "e", 5, 5, json!([{"type": "text", "text": "cleaned"}]), Some("end_turn")));
+    write(&sess(&h, SID), &lines);
+    let drifts = |h: &Path| queue(h, SID).into_iter().filter(|r| r["signal"] == "drift").count();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(drifts(&h), 1, "the true positive: drift from the declared step");
+    take_queue(&h, SID);
+    task_file(&h, SID, task("T-53 tracker guard misfires on waits"));
+    ticks(&h, &mut st, &[n + 70 * MIN, n + 71 * MIN]);
+    assert_eq!(drifts(&h), 2, "the renamed step is a new step: reminded again after the cooldown");
 }

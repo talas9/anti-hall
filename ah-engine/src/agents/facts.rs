@@ -545,8 +545,17 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             push_ring(&mut a.work, w, lim("work_words_max"));
         }
     } else if super::is_child(a) && tools("report").contains(&name) && report_to(&input) {
-        // a child's message to its lead is a delivered report (#972 class 3: a reviewer's findings sent by SendMessage read "0 outcomes")
-        class = "report".into();
+        // a child's message to its lead is a delivered report (#972 class 3: a reviewer's findings sent by SendMessage read "0 outcomes");
+        // the same text sent again is no new outcome (#972 round 2: a repeated status reset the runtime and waste clocks)
+        let r = defaults::raw("agent_tracker.report_to");
+        let body: String = str_of(&input, r.str_field("body_field")).split_whitespace().collect::<Vec<_>>().join(" ");
+        let key = format!("{:x}", crate::health::fnv(&body));
+        if a.report_keys.iter().any(|k| *k == key) {
+            crate::metrics::bump("agent_report_repeat", &[]);
+        } else {
+            push_ring(&mut a.report_keys, key, r.get("dedupe_max").and_then(V::as_integer).unwrap_or(0).max(1) as u64);
+            class = "report".into();
+        }
     } else if tools("read").contains(&name) {
         // reading is work on the step too: its targets are the words the drift check compares with the step
         a.step_events += 1;
@@ -570,14 +579,22 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         // the program the segment runs: quoted argument text (`rg 'git commit' src`, `echo "git push"`) is never the command.
         let unq: Vec<String> = segs.iter().map(|s| unquoted(s)).collect();
         let seg_hit = |k: &str| pat(k).is_some_and(|r| unq.iter().any(|s| r.is_match(s)));
+        // a shipping segment earns credit only when the call's success proves it ran and succeeded: every delimiter before it runs it
+        // (agent_tracker.ran_delims.before: never `||`) and every one after it needs it to succeed (ran_delims.after: `&&`), #972 round 2
+        let rd = defaults::raw("agent_tracker.ran_delims");
+        let (before, after) = (rd.get("before").map(V::strings).unwrap_or_default(), rd.get("after").map(V::strings).unwrap_or_default());
+        let ran = |i: usize| {
+            delims.iter().take(i).all(|d| before.contains(d)) && delims.iter().take(segs.len().saturating_sub(1)).skip(i).all(|d| after.contains(d))
+        };
+        let ran_hit = |k: &str| pat(k).is_some_and(|r| unq.iter().enumerate().any(|(i, s)| r.is_match(s) && ran(i)));
         push = seg_hit("push");
         if seg_hit("commit") {
             class = "commit".into();
-        } else if seg_hit("merge") {
+        } else if ran_hit("merge") {
             // per segment, like commit and push: the merge and deploy patterns are anchored at the program a segment runs, so matched
             // against the joined segments they saw only the first one (`cd repo && gh pr merge 840` was no merge, #972 class 3)
             class = "merge".into();
-        } else if seg_hit("deploy") {
+        } else if ran_hit("deploy") {
             class = "deploy".into();
         } else if pat("test").is_some_and(|r| r.is_match(arg)) {
             class = "test".into();
@@ -642,6 +659,19 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         todos(a, &input);
     } else if tools("task_update").contains(&name) {
         let task = str_of(&input, tr("task_id")).to_string();
+        // a write of the task's blocker (its blockedOn, owner or status, nudges.idle_wake field names): the answer a hold reminder asks
+        // for; a write of anything else (a subject fix) is not (#972 round 2, Codex #838 P2.4)
+        let iw = defaults::raw("nudges.idle_wake");
+        let blocker = input.get(iw.str_field("f_metadata")).is_some_and(|m| m.get(iw.str_field("f_blocked_on")).is_some())
+            || input.get(iw.str_field("f_owner")).is_some()
+            || input.get(iw.str_field("f_status")).is_some();
+        if blocker && !task.is_empty() {
+            a.blocker_writes.insert(task.clone(), ts);
+            while a.blocker_writes.len() > lim("task_names_max") as usize {
+                let Some(k) = a.blocker_writes.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
+                a.blocker_writes.remove(&k);
+            }
+        }
         let text = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
         let subject = str_of(&input, tr("subject"));
         if !task.is_empty() && !subject.is_empty() {

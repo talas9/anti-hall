@@ -1112,7 +1112,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64,
     let day = fmtn("day_ms");
     a.sent_log.retain(|(_, t)| now.saturating_sub(*t) < day);
     let once = cd.and_then(|c| c.get("once")).and_then(V::as_bool).unwrap_or(false);
-    let step_hash = crate::health::fnv(&a.step);
+    // the drift dedupe keys on the step the reminder is about: the flag's text, the task's current subject (#972 round 2, Codex #838
+    // P2.5: keyed on the stored step text, a renamed step stayed "the same step" and its next drift reminder was suppressed)
+    let step_hash = crate::health::fnv(a.flags.get(sig).filter(|_| sig == "drift").map_or(a.step.as_str(), |f| f.text.as_str()));
     let already_once = once && a.flags.get(sig).is_some_and(|f| f.reminded_at > 0);
     let drift_same_step = sig == "drift" && lim("drift_once_per_step") > 0 && a.drift_step == step_hash;
     let why = if already_once || drift_same_step {

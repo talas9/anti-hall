@@ -26,8 +26,6 @@ pub(super) struct Task {
     pub(super) held_key: String,
     /// The `blockedOn` reason names the owner or a human (a word of `dispatch_tier.owner_values`): only they can clear it.
     pub(super) owner_held: bool,
-    /// When the task file was last written (ms; 0 unknown): a write after a hold reminder named the task confirms the hold (#972).
-    pub(super) mtime: u64,
 }
 
 fn num(t: &V, k: &str) -> u64 {
@@ -123,8 +121,7 @@ pub(super) fn session_tasks(env: &Env, sid: &str) -> Vec<Task> {
         let held = reason.chars().count() >= defaults::num("idle_rule.blocked_on_min") as usize;
         let held_key = if held { format!("{}#{:x}", s("f_id"), crate::health::fnv(reason)) } else { String::new() };
         let owner_held = held && owner_named(reason);
-        let mtime = crate::checks::agent_scan::mtime_ms(&e.path()).map_or(0, |m| m.max(0.0) as u64);
-        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key, owner_held, mtime });
+        out.push(Task { id: s("f_id"), subject: s("f_subject"), status: s("f_status"), owner: s("f_owner"), blocked, held, held_key, owner_held });
     }
     out.sort_by(|x, y| x.id.cmp(&y.id));
     out
@@ -267,11 +264,12 @@ pub(super) fn update_held(env: &Env, a: &mut Agent, tasks: &[Task], now: u64) {
             a.blocked_since.insert((*id).to_string(), oldest);
         }
     }
-    // #961 confirm-once, tracker side: a write of a task after a hold reminder named it (a rewritten reason, or the same reason saved
-    // again) is the session's answer; that hold is silent for confirm_ms, tied to the reason it confirmed
+    // #961 confirm-once, tracker side: a task update that wrote the task's blocker fields after a hold reminder named it (a rewritten
+    // reason, or the same reason saved again) is the session's answer; a write of anything else is not (Codex #838 P2.4). That hold is
+    // silent for confirm_ms, tied to the reason it confirmed
     for t in &open_held {
         if let Some(told) = a.hold_told.get(&t.id).copied()
-            && t.mtime > told
+            && a.blocker_writes.get(&t.id).is_some_and(|w| *w > told)
         {
             a.hold_confirmed.insert(t.id.clone(), (t.held_key.clone(), now));
             a.hold_told.remove(&t.id);
