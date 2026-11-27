@@ -46,7 +46,7 @@ value = { kind = "counter", unit = "wakes", labels = ["reason"] }
 
 [mesh_wake.addressed_mode]
 doc = "`on`: a broadcast wakes only its stored audience (mentions, or everyone for a question, a privileged urgent send or a privileged @all); `off`: every broadcast of others wakes, the rule before GH #845. The audience is stored at send either way."
-value = "off"
+value = "on"
 
 [mesh_wake.mode_on]
 doc = "The mesh_wake.addressed_mode value that turns the addressed rule on."
@@ -112,7 +112,7 @@ max = 64
 
 [mesh_wake.allow_broadcast_question]
 doc = "1 = `mesh send --broadcast --question` is allowed (stored with needs_reply; audience by the rule above, a question with an ambiguous mention refused); 0 = refused, as before GH #845. Node's send must allow it in the same release."
-value = 0
+value = 1
 min = 0
 max = 1
 

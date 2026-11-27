@@ -603,11 +603,11 @@ are the only surfaces that clear `broadcastUnread`. (Phase 5: `read-primary` / `
 **Who a broadcast wakes, and reading broadcasts (GH #845).** Every broadcast stores its audience, resolved at send:
 `@<id or id prefix>` mentions name it (`@primary` = the Primary), even for a question or an urgent send; without a mention,
 a `--question`, a `high`/`urgent` broadcast from the Primary, or `@all` from the Primary reaches everyone; anything else
-reaches no one (`@admin` names no one). With `mesh_wake.addressed_mode = "on"` only the audience is woken (off by default:
-every broadcast wakes, as before); a Primary reader keeps the old rule unless `mesh_wake.primary_reader = "addressed"`. The
+reaches no one (`@admin` names no one). Only the audience is woken (`mesh_wake.addressed_mode`, on by default;
+`off` = every broadcast wakes, as before); a Primary reader keeps the old rule unless `mesh_wake.primary_reader = "addressed"`. The
 wake fires on a per-reader watermark (`broadcastWakeSeq`), so mail arriving while you drain is never missed. Broadcast
-`--question` is behind `mesh_wake.allow_broadcast_question` (off); a question whose mention matches several workspaces is
-refused. `send --ack-only` marks an explicit ack (it wakes no one once `mesh_chat.ack_suppression` is on). The drain verbs
+`--question` is allowed (`mesh_wake.allow_broadcast_question`); a question whose mention matches several workspaces is
+refused. `send --ack-only` marks an explicit ack (it wakes no one; `mesh_chat.ack_suppression`). The drain verbs
 list broadcasts, oldest first: `inbox read <id>` shows `broadcasts` (each with `addressed`) and `broadcastAckTarget`; ack them
 with `inbox ack <id> --broadcast-to <broadcastAckTarget>` (never further). `read-primary` lists them and its receipt acks exactly
 those (`broadcastCursor` in the ack result). No sqlite3 needed. Rules: `engine/defaults/mesh_wake.toml`, `mesh_chat.toml`.

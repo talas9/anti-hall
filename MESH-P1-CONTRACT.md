@@ -4,7 +4,7 @@ Status: binding for mesh-p1 (Rust), mesh-node (Node parity), mesh-sim (replay/ra
 It replaces the phase-1 parts of `mesh-queue-design.md` after the Codex review (`mesh-design-codex-review.md`).
 If a lane needs a change, it messages mesh-p1. This file is edited only by mesh-p1, in the same commit as the code.
 
-Each switch starts OFF. Producers ship first, then readers, then the switches flip.
+Owner call 2026-11-28: all three switches ship ON (no Node writer runs live; replay gate passed in mesh-sim).
 
 ## 1. Store: new `messages` columns
 
@@ -134,8 +134,8 @@ Each listed row: `{from, message, kind:"broadcast", timestamp, urgency, seq, nee
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mesh_wake.addressed_mode` | `"off"` | §3; `on` activates addressee-only broadcast wakes |
-| `mesh_wake.allow_broadcast_question` | `0` | `--question` on `--broadcast` |
+| `mesh_wake.addressed_mode` | `"on"` | §3; `on` activates addressee-only broadcast wakes |
+| `mesh_wake.allow_broadcast_question` | `1` | `--question` on `--broadcast` |
 | `mesh_wake.primary_reader` | `"all"` | `all` or `addressed` |
 | `mesh_wake.broadcast_wake_urgency` | `["high","urgent"]` | |
 | `mesh_wake.broadcast_wake_roles` | `["primary"]` | |
@@ -148,7 +148,7 @@ Each listed row: `{from, message, kind:"broadcast", timestamp, urgency, seq, nee
 | `mesh_wake.audience_all` / `audience_none` | `"all"` / `"none"` | the `wake_audience` words |
 | `mesh_chat.kind_ack` | `"ack"` | |
 | `mesh_chat.flag_ack_only` | `"ack-only"` | |
-| `mesh_chat.ack_suppression` | `0` | |
+| `mesh_chat.ack_suppression` | `1` | |
 | `mesh_write.op_broadcast` | `"bc"` | |
 | `wake_watch.field_broadcast_seq` / `field_broadcast_pending` | `broadcastWakeSeq` / `broadcastWakePending` | |
 
