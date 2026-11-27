@@ -320,7 +320,7 @@ pub(crate) fn ack_broadcasts(st: &crate::meshw::store::MeshStore, reader: &str, 
 }
 
 #[cfg(test)]
-mod bc_drain_tests {
+mod tests {
     use super::*;
     use crate::meshw::store::{MeshStore, mesh_message_row, mesh_message_hash};
 
