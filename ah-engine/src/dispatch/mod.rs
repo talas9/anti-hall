@@ -1945,20 +1945,22 @@ mod tests {
         assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
         assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
         // #969: an engine call the exemption can not pass (here a redirection into a file outside /tmp; #971: /dev/null passes) is
-        // held as engine-unlisted, never as an unread script; #971 review: a write into a config file is held as config-write
+        // never held as an unread script; engine-unlisted is off by default (parsed.unlisted_rule = "", 0.3.31), so it passes;
+        // #971 review: a write into a config file is held as config-write
         let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ./out.json");
-        assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
+        assert_eq!(e.rule, None, "unlisted_rule off: an engine call the exemption can not pass is not held");
         let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ~/.claude/settings.json");
         assert_eq!(e.rule.as_deref(), Some("config-write"));
         assert_eq!(decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null").rule, None);
         // a script whose whole body the parsed read exemption passes (a local engine verb, a plain read) is no engine-unlisted call
         std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
         assert_eq!(got("bash eng.sh"), (None, None));
-        // #969 review: a script's engine call off the local list is held as engine-unlisted, as the same call at the top level is
+        // #969 review: a script's engine call off the local list is decided as the same call at the top level is (engine-unlisted is
+        // off by default, 0.3.31: it passes there and here)
         std::fs::write(dir.join("engw.sh"), "ah-engine agents stop x\n").unwrap();
-        assert_eq!(got("bash engw.sh"), want("script:engine-unlisted", "script_read"));
+        assert_eq!(got("bash engw.sh"), (None, None));
         std::fs::write(dir.join("engw2.sh"), "ls\nenv -S 'ah-engine config set daemon.nice 0'\n").unwrap();
-        assert_eq!(got("bash engw2.sh"), want("script:engine-unlisted", "script_read"), "through a split option too");
+        assert_eq!(got("bash engw2.sh"), (None, None), "through a split option too");
         assert_eq!(got("ls -la && cd /tmp"), (None, None));
         assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1995,13 +1997,14 @@ mod tests {
             ("git pf", "git-unknown-subcommand", true),
             ("git -C /r -c a=b pf", "git-unknown-subcommand", true),
             ("r\\m -rf /x", "recursive-delete", true),
-            ("cat f | python3 -", "pipe-to-interpreter", false), // a new rule, not a new reading
-            ("cat f | node", "pipe-to-interpreter", false),
-            ("python3 <<'EOF'\nx\nEOF", "interpreter-heredoc", false),
         ] {
             let d = decide(cmd);
             assert_eq!(d.rule.as_deref(), Some(want), "{cmd:?}");
             assert_eq!(d.normalised, via_norm, "{cmd:?}: counted as found by the normalised text only");
+        }
+        // 0.3.31 (owner's live edit): pipe-to-interpreter and interpreter-heredoc are removed, so these pass
+        for cmd in ["cat f | python3 -", "cat f | node", "python3 <<'EOF'\nx\nEOF"] {
+            assert_eq!(rule(cmd), None, "{cmd:?}");
         }
         // a gh text value is data; the command words still decide
         assert_eq!(rule("gh issue create --title t --body \"x; git push -f\"").as_deref(), Some("gh-remote-change"));

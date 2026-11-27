@@ -30,6 +30,9 @@ fn write(h: &str, file: &str) -> Value {
 /// The date the edit guard names: the local calendar date (`ho.localDate`), the UTC date only when the zone can not be read.
 fn today() -> String {
     let now = crate::checks::taskkit::time::now_ms();
+    // the same zone proof the check runs under (run() passes no TZ, so the process's own zone is the request's)
+    let same = RequestEnv::from_pairs(crate::checks::jsport::date::process_zone().map(|t| vec![("TZ".to_string(), t)]).unwrap_or_default());
+    let _zone = crate::checks::jsport::date::ZoneGuard::new(&same);
     crate::checks::jsport::date::local_ymd(now as f64).unwrap_or_else(|| crate::checks::taskkit::time::iso(now)[..10].to_string())
 }
 
@@ -80,10 +83,14 @@ mod handover_redirect {
         let h = home("ho-bash");
         let cmd = format!("cat > {h}/.omc/handoffs/HANDOVER-x.md <<'EOF'\nstate\nEOF");
         let p = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": h, "session_id": "s1"});
-        let (code, out) = run("command", "PreToolUse", p, &[]);
+        // the main-thread write gate holds a non-notes write only where it applies: a DevSwarm checkout (see wrapper_scripts::DEVSWARM)
+        std::fs::create_dir_all(format!("{h}/.git")).unwrap();
+        std::fs::write(format!("{h}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let ds = [("CLAUDE_CODE_ENTRYPOINT", "cli"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feat"), ("ANTIHALL_INGEST_DRY_RUN", "1")];
+        let (code, out) = run("command", "PreToolUse", p, &ds);
         assert_eq!(code, 2, "{out}");
         let ok = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": format!("cat > {h}/.omc/notepad.md <<'EOF'\nx\nEOF")}, "cwd": h, "session_id": "s1"});
-        assert_eq!(run("command", "PreToolUse", ok, &[]).0, 0, "other .omc notes stay allowed");
+        assert_eq!(run("command", "PreToolUse", ok, &ds).0, 0, "other .omc notes stay allowed");
     }
 }
 
