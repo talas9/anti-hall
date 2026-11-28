@@ -209,14 +209,27 @@ pub fn is_engine_program(word: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) 
     !cfg.ro_programs.is_empty() && ro_expand(word, Exp::Quoted, &[], cfg, home, At::Command).is_some_and(|w| cfg.ro_programs.contains(&w))
 }
 
-/// Whether the words after the engine program are one of its local verbs (`ro_verbs`).
+/// Whether the words after the engine program are one of its local verbs (`ro_verbs`). An entry's words: the leading words (a flag
+/// that stands before any plain word is one too: `--version`), then flags that must stand as a whole word somewhere after
+/// (`config set --check`), and `!--flag` words that must NOT appear anywhere (`doctor !--repair`: the read-only form of a verb
+/// that also writes).
 fn ro_verb(words: &[String], verbs: &[String]) -> bool {
     verbs.iter().any(|v| {
-        let (flags, lead): (Vec<&str>, Vec<&str>) = v.split_whitespace().partition(|w| w.starts_with('-'));
+        let (mut lead, mut need, mut deny) = (Vec::new(), Vec::new(), Vec::new());
+        for w in v.split_whitespace() {
+            if let Some(d) = w.strip_prefix('!') {
+                deny.push(d);
+            } else if w.starts_with('-') && !lead.is_empty() {
+                need.push(w);
+            } else {
+                lead.push(w);
+            }
+        }
         !lead.is_empty()
             && lead.len() <= words.len()
             && lead.iter().zip(words).all(|(p, w)| *p == "*" || *p == w.as_str())
-            && flags.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
+            && need.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
+            && !deny.iter().any(|f| words.iter().any(|w| w.as_str() == *f))
     })
 }
 
@@ -1621,7 +1634,7 @@ mod tests {
             ro_placeholder: "_".into(),
             ro_home: "HOME".into(),
             ro_programs: v(&["ah-engine", "~/.anti-hall/ah-engine/bin/ah-engine"]),
-            ro_verbs: v(&["mesh send", "status", "config set --check", "agents nudge * msg"]),
+            ro_verbs: v(&["mesh send", "status", "config set --check", "agents nudge * msg", "--version", "doctor !--repair !--fix"]),
             ..cfg()
         }
     }
@@ -1641,12 +1654,18 @@ mod tests {
         assert_eq!(parts("E=/Users/me/.anti-hall/ah-engine/bin/ah-engine; $E status | head -3"), Some(vec![local("head -3")]), "the home path reads as ~");
         assert_eq!(parts("ah-engine config set daemon.nice 0 --check"), Some(vec![local("")]));
         assert_eq!(parts("ah-engine agents nudge abc msg hi"), Some(vec![local("")]), "* is any one word");
+        assert_eq!(parts("ah-engine --version"), Some(vec![local("")]), "a leading flag is the verb's own word");
+        assert_eq!(parts("ah-engine doctor"), Some(vec![local("")]), "the read-only form of a verb that can also write");
+        assert_eq!(parts("ah-engine doctor --json --quiet"), Some(vec![local("")]));
         assert_eq!(parts("cd x; ls -la"), Some(vec![read("ls -la")]), "the caller's read pattern judges what is left");
         assert_eq!(parts("cd /tmp > f && ls"), Some(vec![read("cd /tmp > f"), read("ls")]), "a cd with a redirection is not dropped");
         assert_eq!(parts("cd -P /tmp && ls"), Some(vec![read("cd -P /tmp"), read("ls")]), "only a bare cd <dir> is dropped");
         assert_eq!(parts("A=1 grep x"), Some(vec![read("A=1 grep x")]), "an assignment in front of a command is left for the read pattern to refuse");
         for (cmd, why) in [
             ("ah-engine config set daemon.nice 0", "config set without --check writes"),
+            ("ah-engine doctor --repair", "a denied flag turns the verb into a writing one"),
+            ("ah-engine doctor --json --fix", "a denied flag anywhere after the verb"),
+            ("ah-engine --versions", "the flag stands as a whole word"),
             ("ah-engine config set daemon.nice 0 --check=x", "the flag must stand as a whole word"),
             ("ah-engine agents nudge abc stop", "a verb not on the list"),
             ("ah-engine --json status", "the verb words lead"),
